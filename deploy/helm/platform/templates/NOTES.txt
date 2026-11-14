@@ -1,0 +1,13 @@
+The platform API is deploying as {{ include "platform.fullname" . }}-api.
+
+1. Migrations ran in the "{{ include "platform.fullname" . }}-migrate" job before the pods started.
+2. Check readiness:
+     kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "platform.fullname" . }}-api
+3. Reach it locally:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "platform.fullname" . }} 8080:{{ .Values.service.port }}
+   then open http://localhost:8080/healthz
+{{- if .Values.networkPolicy.enabled }}
+
+The network policy only lets in traffic from: {{ toJson .Values.networkPolicy.ingressFrom }}
+Port-forwarding bypasses it; ingress traffic does not.
+{{- end }}

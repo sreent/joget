@@ -1,0 +1,120 @@
+# Values for the platform chart.
+#
+# Secrets never go in values. Point `existingSecret` at a Kubernetes Secret created by your secret
+# manager (for example with the External Secrets Operator). It must hold:
+#   DATABASE_URL, COOKIE_SECRET, AUDIT_SIGNING_KEY_PEM, and OIDC_CLIENT_SECRET for a confidential client.
+existingSecret: platform-secrets
+
+image:
+  repository: ghcr.io/your-org/platform-api
+  # Defaults to the chart's appVersion. In production, pin a digest instead: tag: "0.1.0@sha256:..."
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Ignored while autoscaling is enabled.
+replicaCount: 2
+
+# Non-secret configuration, passed as environment variables. See apps/api/src/config.ts for all settings.
+config:
+  PUBLIC_BASE_URL: https://platform.example.com
+  ORG_NAME: My company
+  ORG_OWNER_EMAILS: ""
+  OIDC_ISSUER: https://login.example.com
+  OIDC_CLIENT_ID: platform
+  OIDC_SCOPES: openid profile email
+  OIDC_GROUPS_CLAIM: groups
+  MFA_EVIDENCE: amr
+  MFA_AMR_VALUES: mfa
+  TRUST_PROXY: "true"
+  LOG_LEVEL: info
+  MIN_TEAM_SPACE_OWNERS: "2"
+  PAT_MAX_TTL_DAYS: "90"
+  SERVICE_ACCOUNT_TOKEN_MAX_TTL_DAYS: "90"
+  AUDIT_SIGNING_KEY_ID: audit-signing-key-1
+  AUDIT_SEAL_INTERVAL_SECONDS: "60"
+  AUDIT_SEAL_SAFETY_WINDOW_SECONDS: "60"
+
+# Extra environment variables for the API container, in Kubernetes `env` format.
+extraEnv: []
+
+telemetry:
+  # An OTLP/HTTP endpoint, for example http://otel-collector.observability:4318. Empty disables export.
+  otlpEndpoint: ""
+  serviceName: platform-api
+
+migrations:
+  # Run database migrations as a Job before each install and upgrade, before new pods start.
+  enabled: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: platform.example.com
+  # - secretName: platform-tls
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Spread pods across zones, so losing one zone doesn't take the API down.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+
+networkPolicy:
+  # Deny everything except what is listed here. DNS is always allowed.
+  enabled: true
+  # Who may call the API: usually the ingress controller's namespace.
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+  # Where the API may connect: the database, the identity provider and the OTLP collector.
+  # Narrow these with `to:` selectors or CIDRs for your environment.
+  egress:
+    - ports:
+        - port: 5432
+          protocol: TCP
+    - ports:
+        - port: 443
+          protocol: TCP
+    - ports:
+        - port: 4318
+          protocol: TCP
+
+serviceAccount:
+  create: true
+  # Defaults to the release's full name.
+  name: ""
+  # For workload identity, for example eks.amazonaws.com/role-arn, iam.gke.io/gcp-service-account,
+  # or azure.workload.identity/client-id.
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -20,6 +20,8 @@ const tz = { withTimezone: true } as const;
 const createdAt = () => timestamp('created_at', tz).notNull().defaultNow();
 const updatedAt = () => timestamp('updated_at', tz).notNull().defaultNow();
 const scopeTypes = ['org', 'space', 'app', 'env'] as const;
+/** Who did something: a person, a service account, or the platform itself. */
+const actorTypes = ['system', 'user', 'service_account'] as const;
 
 /** The top-level boundary. A one-company deployment has exactly one row. */
 export const orgs = pgTable('orgs', {
@@ -104,6 +106,68 @@ export const spaces = pgTable(
   ],
 );
 
+/** Non-human principals for integrations and CI. Each belongs to a team space. */
+export const serviceAccounts = pgTable(
+  'service_accounts',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    name: text('name').notNull(),
+    description: text('description'),
+    status: text('status', { enum: ['active', 'disabled'] })
+      .notNull()
+      .default('active'),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    disabledAt: timestamp('disabled_at', tz),
+  },
+  (t) => [uniqueIndex('service_accounts_space_name_uq').on(t.spaceId, t.name)],
+);
+
+/**
+ * API tokens: personal access tokens (owned by a user) and service-account tokens. Only a SHA-256
+ * hash is stored. Effective permissions are the owner's grants intersected with the token's scopes.
+ */
+export const apiTokens = pgTable(
+  'api_tokens',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    serviceAccountId: uuid('service_account_id').references(() => serviceAccounts.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** The start of the token, so people can recognize it. Never enough to use it. */
+    displayPrefix: text('display_prefix').notNull(),
+    secretHash: text('secret_hash').notNull(),
+    scopes: text('scopes').array().notNull(),
+    expiresAt: timestamp('expires_at', tz).notNull(),
+    /** Tokens are only ever created by a person in an interactive session. */
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    lastUsedAt: timestamp('last_used_at', tz),
+    revokedAt: timestamp('revoked_at', tz),
+    revokedByType: text('revoked_by_type', { enum: actorTypes }),
+    revokedBy: uuid('revoked_by'),
+  },
+  (t) => [
+    uniqueIndex('api_tokens_secret_hash_uq').on(t.secretHash),
+    index('api_tokens_user_idx').on(t.userId),
+    index('api_tokens_service_account_idx').on(t.serviceAccountId),
+    check('api_tokens_one_owner', sql`(${t.userId} is null) <> (${t.serviceAccountId} is null)`),
+  ],
+);
+
 /** Reusable permission bundles. Platform-managed sets have no org. */
 export const permissionSets = pgTable('permission_sets', {
   id: text('id').primaryKey(),
@@ -174,11 +238,13 @@ export const bindings = pgTable(
     scopeId: uuid('scope_id').notNull(),
     expiresAt: timestamp('expires_at', tz),
     justification: text('justification'),
-    /** Null when the platform itself granted the binding (for example, a personal space owner). */
-    grantedBy: uuid('granted_by').references(() => users.id),
+    /** Who granted it. `system` (with no ID) when the platform did, for example for a personal space owner. */
+    grantedByType: text('granted_by_type', { enum: actorTypes }).notNull().default('system'),
+    grantedBy: uuid('granted_by'),
     createdAt: createdAt(),
     revokedAt: timestamp('revoked_at', tz),
-    revokedBy: uuid('revoked_by').references(() => users.id),
+    revokedByType: text('revoked_by_type', { enum: actorTypes }),
+    revokedBy: uuid('revoked_by'),
   },
   (t) => [
     index('bindings_principal_idx').on(t.principalType, t.principalId),

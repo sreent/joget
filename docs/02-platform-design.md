@@ -196,7 +196,7 @@ Why: personal spaces stay fast and free of ceremony. Anything that outgrows "me 
 - **Local accounts** exist only for small installs and break-glass access, with a password policy, MFA (TOTP or WebAuthn/passkeys) and lockout.
 - **Groups** are either synced from the IdP (read-only on the platform) or managed on the platform and owned by a space.
 - **Service accounts** are owned by a space and have no interactive login. They get short-lived tokens through client credentials or workload identity federation.
-- **Personal access tokens** carry a scoped subset of the user's own permissions and have a maximum TTL (for example 90 days). Admins can see and revoke them. Effective permissions are the intersection of the user's permissions and the token's scopes.
+- **Personal access tokens** carry a scoped subset of the user's own permissions and have a maximum TTL (for example 90 days). Admins can see and revoke them. Effective permissions are the intersection of the user's permissions and the token's scopes. Tokens can only be created from an interactive session with fresh MFA, so a leaked token cannot mint more tokens, and a token never satisfies a fresh-MFA guardrail.
 - **Sessions** use short-lived access tokens, rotating refresh tokens, idle and absolute timeouts, and server-side revocation.
 - **Step-up MFA** is required for sensitive actions: deploying to Prod, changing bindings or guardrails, exporting data, and break-glass. The platform asks the IdP for a fresh MFA login through standard OIDC parameters (`max_age`, `acr_values`), so this works with any IdP.
 - **Impersonation** ("view as") is for support only. It is time-boxed, needs a justification, is visible to the impersonated user, is audited with `on_behalf_of`, and is read-only by default.

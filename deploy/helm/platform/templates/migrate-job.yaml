@@ -1,0 +1,49 @@
+{{- if .Values.migrations.enabled }}
+# Runs before every install and upgrade, so schema changes land before new pods start
+# (expand/contract migrations keep the previous release working meanwhile).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "platform.fullname" . }}-migrate
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "platform.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "platform.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "dist/migrate.js"]
+          envFrom:
+            - secretRef:
+                name: {{ required "existingSecret is required" .Values.existingSecret }}
+          securityContext:
+            {{- include "platform.containerSecurityContext" . | nindent 12 }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+{{- end }}

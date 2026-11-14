@@ -62,7 +62,11 @@ describe('sign-in provisions people just in time', () => {
     const orgBindings = await t.app.inject({ method: 'GET', url: `/v1/bindings?scopeType=org&scopeId=${t.ctx.org.id}`, ...as(alice) });
     expect(orgBindings.statusCode).toBe(200);
     expect(orgBindings.json().bindings).toEqual([
-      expect.objectContaining({ roleId: 'org.owner', principal: expect.objectContaining({ id: alice.userId }), grantedBy: null }),
+      expect.objectContaining({
+        roleId: 'org.owner',
+        principal: expect.objectContaining({ id: alice.userId }),
+        grantedBy: { type: 'system', id: null },
+      }),
     ]);
   });
 

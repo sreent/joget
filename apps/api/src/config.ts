@@ -55,6 +55,11 @@ export const ConfigSchema = z
 
     MIN_TEAM_SPACE_OWNERS: z.coerce.number().int().min(1).default(2),
 
+    /** The longest a personal access token may live. */
+    PAT_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
+    /** The longest a service-account token may live. */
+    SERVICE_ACCOUNT_TOKEN_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
+
     /** Ed25519 private key (PKCS#8 PEM) that signs audit seals. Required in production. */
     AUDIT_SIGNING_KEY_PEM: z.string().min(1).optional(),
     AUDIT_SIGNING_KEY_ID: z.string().min(1).default('audit-signing-key-1'),

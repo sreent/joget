@@ -52,7 +52,8 @@ export function installAccessControl(app: FastifyInstance, ctx: AppContext): voi
     }
     const access = request.routeOptions.config?.access;
     if (!access || access.kind === 'public') return; // no rule means no route matched: the 404 handler answers
-    const auth = await ctx.sessions.authenticate(request);
+    // A bearer token wins over a session cookie; an invalid token is an error, never a fallback.
+    const auth = (await ctx.tokens.authenticate(request)) ?? (await ctx.sessions.authenticate(request));
     if (!auth) throw unauthorized();
     request.auth = auth;
   });

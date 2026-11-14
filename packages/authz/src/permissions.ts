@@ -21,6 +21,9 @@ export const PLATFORM_PERMISSIONS = {
   'access.permission_set.manage': 'Create and change custom permission sets and roles',
   'access.review.run': 'Run access-review campaigns',
   'access.breakglass.activate': 'Activate break-glass access',
+  'access.token.read': 'See every API token in the organization (never the secrets)',
+  'access.token.revoke': 'Revoke any API token in the organization',
+  'token.personal.create': 'Create personal access tokens for yourself',
 
   'space.create': 'Create team spaces',
   'space.read': 'See a space and its members',
@@ -29,6 +32,7 @@ export const PLATFORM_PERMISSIONS = {
   'space.freeze': 'Freeze a space, making it read-only',
   'space.transfer': 'Transfer a personal space to another owner',
   'space.delete': 'Delete an archived space',
+  'space.service_account.manage': "Create and disable a space's service accounts, and issue and revoke their tokens",
 
   'app.create': 'Create apps',
   'app.read': 'Read app definitions',
