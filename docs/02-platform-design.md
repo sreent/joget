@@ -7,11 +7,11 @@
 
 ## TL;DR
 
-- **Decided (2026-11-14): one company, public cloud, ISO 27001:2022.** Production is separated from everything else (§7.3), and §15 maps the design to ISO 27001 controls.
+- **Decided (2026-11-14):** one company; cloud-agnostic and IdP-agnostic; TypeScript; ISO 27001:2022; no data-residency constraint. Production is separated from everything else (§7.3), and §15 maps the design to ISO 27001 controls.
 - **Surpass, don't clone.** Match Joget's builder breadth, beat it on governance, isolation, delivery, observability and audit, and build security in rather than selling it as an extra (§1).
-- **Modern, proven stack:** TypeScript end to end (React builders and a NestJS modular monolith), PostgreSQL, Temporal for long-running processes, OpenTelemetry and Kubernetes (§12).
+- **Modern, proven stack:** TypeScript end to end (React builders and a Fastify modular monolith), PostgreSQL, Temporal for long-running processes, OpenTelemetry and Kubernetes (§12).
 - **Build the governance kernel first:** organizations, spaces, identity, one authorization engine and an audit pipeline. Joget attaches permissions to each component, and retrofitting them is the most expensive change a low-code platform can face.
-- **Two kinds of space.** Every user gets a private **personal space** with no ceremony but limited reach. Teams work in **team spaces**, which have members, Dev/Test/Prod environments, change requests and approvals. An app moves from a personal space to a team space through an audited *promotion*.
+- **Build in personal, run in team.** Every user gets a private **personal space**, which is their development environment, both for their own apps and for working copies of team apps. **Team spaces** run approved apps in **Prod**. Each change request gets a temporary **preview** for review and testing, and a persistent **Staging** environment is optional. Changes reach a team space only through an audited change request.
 - **Permissions are permission sets bound at a scope.** Atomic permissions are grouped into reusable **permission sets**. Permission sets are composed into **roles**. Both are granted through **bindings**, which record who gets what, where, and until when. Org-level **guardrails** can only deny. One policy decision point (PDP) answers every request, whether it comes from the API, the UI, the workflow engine or custom code.
 - **Deploying means flipping a pointer.** Each app change becomes an immutable, hashed **release**. Deploying it applies a reviewed migration plan and switches the environment's active version. That takes seconds, needs no restart, and rolls back instantly. The platform itself runs as stateless containers.
 - **Observable and auditable by construction.** Every request carries OpenTelemetry org, space, app and env attributes. Every state change writes an audit event in the same database transaction, and the events are sealed in signed hash batches on WORM storage.
@@ -47,7 +47,7 @@ The left column summarizes the [review](01-joget-review.md) of Joget DX 9.1: the
 | App permissions | Inline rules on each menu, form and list. The API uses a different model | One model for the UI, API, workflow and code, with record- and field-level rules and permission diffs in review (§5.5) |
 | Data isolation | Global `app_fd_*` tables shared by all apps. Every column is text | Typed schemas per app and environment, declared cross-app references, classification tags (§6.4) |
 | Custom code | BeanShell inside the server JVM | A capability-limited sandbox, out of process (§10) |
-| Change control | Publishing flips a flag and the live version is editable. No locks, review or rollback | Drafts → change requests → checks → approvals → immutable releases (§6) |
+| Change control | Publishing flips a flag and the live version is editable. No locks, review or rollback | Working copies in personal spaces → change requests with a live preview → checks → approvals → immutable releases (§6) |
 | Schema changes | Additive DDL at runtime | Generated, reviewed, expand/contract migrations (§6.4) |
 | Delivery | `.jwa` import through the console. No CLI or import API | API and CLI, signed bundles, GitOps, promotion across installations (§7.1) |
 | Topology | Single WAR with a local data directory. Clustering is Enterprise-only | Stateless pods on managed Kubernetes with autoscaling, built in (§7.2) |
@@ -90,7 +90,7 @@ These are initial targets, to validate with load tests and pilot teams:
 | Security | OWASP ASVS Level 2, and Level 3 for authentication and access control. TLS 1.2+ and encryption at rest. Encryption keys held in the cloud KMS under your security team's control, and field-level encryption for `Restricted` data. Signed images and SBOMs, an annual penetration test, and patch SLAs for critical vulnerabilities |
 | Compliance | ISO 27001:2022 (decided). The platform implements and evidences the Annex A controls mapped in §15: the audit log, access reviews, change records and environment separation. Tooling for data-subject export and erasure. Retention policies and legal holds |
 | Accessibility | WCAG 2.2 AA for the builders and for generated apps |
-| Operations | Runs on the chosen cloud's managed Kubernetes and PostgreSQL, defined as infrastructure as code (OpenTofu or Terraform) and deployed by GitOps. Workload identity instead of static cloud keys. Runbooks and support bundles |
+| Operations | Runs on any conformant Kubernetes and any PostgreSQL, managed or self-hosted, defined as infrastructure as code (OpenTofu) and deployed by GitOps. Workload identity instead of static cloud keys. Runbooks and support bundles |
 | Compatibility | App definitions carry a schema version and are upgraded automatically. Releases stay deployable for at least one platform major version. A documented deprecation policy |
 
 ### Non-goals for the MVP (phases 0–2)
@@ -138,9 +138,9 @@ erDiagram
 | **User / group / service account** | The principals. Users and groups usually come from the corporate IdP through SCIM. Service accounts are non-human, are owned by a space, and serve integrations and CI. |
 | **Space** | A container that owns apps, connections, service accounts and environments. It is either `personal` (exactly one per user) or `team`. |
 | **App** | A set of definition artifacts: data models, forms, views, pages, processes, automations, connectors and app roles. It belongs to exactly one space and has a named owner. |
-| **Draft / change request** | A draft is a working copy of an app's definitions. A change request asks to merge a draft, and carries its diff, checks and approvals. |
+| **Working copy / change request** | A working copy is a builder's editable copy of a team app, kept in their personal space. A change request asks to merge it into the team app, and carries its diff, checks, preview and approvals. |
 | **Release** | An immutable, content-hashed, signed snapshot of an app's definitions, plus a manifest of its dependencies. |
-| **Environment** | An isolated runtime namespace in a space, such as Dev, Test or Prod. It has its own data schema, config values, secrets, connection bindings and role-to-group mappings. |
+| **Environment** | An isolated runtime namespace: a personal space's **Sandbox**, a team space's **Prod**, an optional **Staging**, or a temporary **Preview** for a change request. Each has its own data schema, config values, secrets, connection bindings and role-to-group mappings. |
 | **Deployment** | The record of putting a release into an environment: plan, approvals, executor, result and health. |
 | **Permission / permission set / role / binding** | See §5. |
 | **Guardrail** | An org-level policy that can deny an action, or require something such as approvals, regardless of grants. |
@@ -154,13 +154,24 @@ erDiagram
 |---|---|---|
 | Created | Automatically at first login | By users holding `space.create`, or on request |
 | Visible to | Only the owner. Individual apps can be shared with up to *N* named users | Members, according to their space role. App users, according to app roles |
-| Environments | One **Sandbox** in the non-production plane (§7.3), where edits apply immediately | **Dev → Test → Prod**, with tiers defined by the org. Prod runs in the production plane |
-| Change control | None: the owner edits live | Change requests, reviews, approvals, releases |
+| Environments | One **Sandbox** in the non-production plane (§7.3), where edits apply immediately. This is where all building happens | **Prod** in the production plane, plus a temporary **Preview** for each open change request. A persistent **Staging** environment is optional |
+| Change control | None: the owner edits live | Change requests from builders' working copies, reviewed in their preview, then approved and released |
 | Data connections | Sample data and connections tagged `personal-allowed`. A guardrail blocks production connections | Bound per environment |
 | Public/anonymous access | Never | Only with Security admin approval (a guardrail) |
 | Custom code | Off by default | For holders of `code.author`, reviewed in change requests |
 | Quotas | Small fixed caps on apps, records, storage and automation runs | Set for each space by org admins |
 | When the owner leaves | The space is frozen. Its apps go to the manager, or are archived after a retention period | No effect: a team space must always have at least 2 owners |
+
+### Working copies: building team apps in your personal space
+
+Team spaces have no permanent Dev environment, because each builder's personal space already plays that role.
+
+1. A builder who holds `app.edit` on a team app chooses **Edit in my space**. The platform creates a linked **working copy** in their personal space, with sample or synthetic data and only non-production connections.
+2. They build and try the change in their Sandbox, without ceremony, exactly as they would with a personal app.
+3. **Submit change** opens a change request in the team space. The request carries the diff, the automated checks (§6.3) and a **Preview**: a temporary environment in the non-production plane, built from the change, that reviewers and business testers can click through.
+4. On approval, the change is merged and released, and the release is deployed to Prod (§7.1). The preview is deleted, and the working copy is either reset to the new main line or archived.
+
+Several builders can work on the same app at once, each in their own working copy. Conflicts are detected when changes are merged (§6.3). Teams that test against other systems' test instances, such as an ERP sandbox, can enable a persistent **Staging** environment between the release and Prod.
 
 ### Promotion: personal → team
 
@@ -180,14 +191,14 @@ Why: personal spaces stay fast and free of ceremony. Anything that outgrows "me 
 
 ## 4. Identity
 
-- **Federation first.** The platform signs users in through OIDC (preferred) or SAML against the corporate IdP: Entra ID, Okta, Google or Keycloak. It does not store corporate passwords.
+- **IdP-agnostic, federation first.** The platform is a standard OIDC relying party, so it works with any IdP that speaks OIDC: Entra ID, Okta, Google, Keycloak, Ping and others. SAML-only IdPs connect through an optional broker (Keycloak). The platform never calls an IdP's proprietary API and does not store corporate passwords. Group claims and MFA evidence (the `acr` and `amr` claims) are mapped by configuration, not code.
 - **SCIM 2.0** provisions users and groups. Deprovisioning revokes sessions and tokens immediately and freezes the user's personal space.
 - **Local accounts** exist only for small installs and break-glass access, with a password policy, MFA (TOTP or WebAuthn/passkeys) and lockout.
 - **Groups** are either synced from the IdP (read-only on the platform) or managed on the platform and owned by a space.
 - **Service accounts** are owned by a space and have no interactive login. They get short-lived tokens through client credentials or workload identity federation.
 - **Personal access tokens** carry a scoped subset of the user's own permissions and have a maximum TTL (for example 90 days). Admins can see and revoke them. Effective permissions are the intersection of the user's permissions and the token's scopes.
 - **Sessions** use short-lived access tokens, rotating refresh tokens, idle and absolute timeouts, and server-side revocation.
-- **Step-up MFA** is required for sensitive actions: deploying to Prod, changing bindings or guardrails, exporting data, and break-glass.
+- **Step-up MFA** is required for sensitive actions: deploying to Prod, changing bindings or guardrails, exporting data, and break-glass. The platform asks the IdP for a fresh MFA login through standard OIDC parameters (`max_age`, `acr_values`), so this works with any IdP.
 - **Impersonation** ("view as") is for support only. It is time-boxed, needs a justification, is visible to the impersonated user, is audited with `on_behalf_of`, and is read-only by default.
 
 ---
@@ -243,7 +254,7 @@ A binding applies to its scope and everything below it. **Exception:** personal 
 | Org | **Platform operator** | Monitoring, platform health, job retries. No app data |
 | Space | **Space owner** | Everything in the space. At least 2 required in a team space |
 | Space | **Space admin** | Members, settings, environment config, role-to-group mappings |
-| Space | **Builder** | Edits drafts, opens change requests, deploys to Dev |
+| Space | **Builder** | Creates working copies of the space's apps in their personal space, and opens change requests |
 | Space | **Reviewer** | Reviews and approves change requests |
 | Space | **Release manager** | Cuts releases, requests and executes deployments (Prod still needs approval) |
 | Space | **Operator** | Monitors apps, retries automations and reassigns tasks in its environments |
@@ -262,7 +273,7 @@ Builders define **app roles as permission sets over the app's own entities and p
 - **Process level:** who may start a process, which role each human task is assigned to, and who may reassign tasks.
 - **The UI follows the data.** Pages, menus and buttons are shown according to the same permission sets, so there is no separate "menu permission" to forget. If a role cannot `record.read` an entity, its page is hidden **and** its API is denied.
 
-App roles are bound to groups **per environment**, for example *QA testers* in Test and *Finance approvers* in Prod. These mappings belong to the environment, only Space admins can change them, and every change is audited.
+App roles are bound to groups **per environment**, for example *QA testers* in previews and Staging, and *Finance approvers* in Prod. These mappings belong to the environment, only Space admins can change them, and every change is audited.
 
 ```yaml
 # permissions/approver.yaml: an example app permission set
@@ -416,21 +427,23 @@ expense/
   tests/approval_flow.yaml    # optional scenario tests
 ```
 
-The platform stores definitions in Postgres, with drafts held as copy-on-write over the main line, and stores release bundles in object storage. **Git sync** (push to GitHub or GitLab, and optionally pull) is an export and integration feature, not the runtime's source of truth, so the runtime never needs a shared filesystem.
+The platform stores definitions in Postgres, with working copies held as copy-on-write over the main line, and stores release bundles in object storage. **Git sync** (push to GitHub or GitLab, and optionally pull) is an export and integration feature, not the runtime's source of truth, so the runtime never needs a shared filesystem.
 
 ### 6.3 Lifecycle in a team space
 
 ```mermaid
 flowchart LR
-  D[Draft] -->|open| CR[Change request]
+  W[Working copy in a personal space] -->|submit| CR[Change request]
   CR --> CHK[Automated checks]
+  CR --> PRV[Preview environment]
   CHK --> REV{Review}
-  REV -- changes requested --> D
+  PRV --> REV
+  REV -- changes requested --> W
   REV -- approved --> M[Merge to main line]
   M --> R[Release 1.4.0: immutable, hashed, signed]
-  R -->|automatic| DEV[Dev]
-  DEV -->|request| TEST[Test]
-  TEST -->|approval gate and SoD check| PROD[Prod]
+  R -->|optional| STG[Staging]
+  R -->|approval gate and SoD check| PROD[Prod]
+  STG -.-> PROD
 ```
 
 Rolling back means re-activating the previous release in that environment (§7.1).
@@ -444,7 +457,7 @@ Rolling back means re-activating the previous release in that environment (§7.1
 - A **migration plan** for data-model changes, with destructive steps flagged.
 - Scenario tests, where present.
 
-**Concurrency.** Each builder (or each change) has its own draft. Artifacts carry versions for optimistic locking, merges are three-way at the artifact level, and conflicts are shown in the UI. Real-time co-editing can come later.
+**Concurrency.** Each builder has their own working copy. Artifacts carry versions for optimistic locking, merges are three-way at the artifact level, and conflicts are shown in the UI. Real-time co-editing can come later.
 
 ### 6.4 Data-model migrations
 
@@ -471,7 +484,7 @@ Running process instances stay on the release they started on, while new instanc
 Deploying release *R* to environment *E* runs these steps:
 
 1. **Plan.** Diff R against E's active release to get the migrations, permission changes, config and secret requirements, and dependency checks (plugins and connections present in E).
-2. **Approve,** as the guardrails require: for example automatically for Dev, 1 approval for Test, and 2 approvals plus SoD for Prod.
+2. **Approve,** as the guardrails require: for example automatically for previews and Staging, and 2 approvals plus SoD for Prod.
 3. **Execute.** Apply the migrations (expand phase), warm caches and run smoke checks.
 4. **Activate.** Switch E's active-release pointer in one transaction. Runtime nodes pick up the change through a cache-invalidation event.
 5. **Verify.** Watch error rate and latency for a short window, and roll back automatically on a breach.
@@ -484,7 +497,7 @@ Target: deploys and rollbacks that touch only metadata finish in under 30 second
 **CI/CD.** Everything in the UI is also available through the API and a CLI. An illustrative command:
 
 ```bash
-platform deploy --space finance --app expense --release 1.4.0 --env test --wait
+platform deploy --space finance --app expense --release 1.4.0 --env prod --wait
 ```
 
 ### 7.2 Deploying the platform
@@ -532,7 +545,7 @@ flowchart TB
 
 ### 7.3 Target deployment: one company on a public cloud
 
-The decisions are one company, a public cloud and ISO 27001. With no customer tenants, the main isolation boundary becomes **production versus everything else** (ISO 27001 control 8.31).
+The decisions are one company, cloud-agnostic hosting and ISO 27001. With no customer tenants, the main isolation boundary becomes **production versus everything else** (ISO 27001 control 8.31).
 
 ```mermaid
 flowchart TB
@@ -542,7 +555,7 @@ flowchart TB
   subgraph platformprod[Platform production account]
     CP[Control plane: builder studio, governance, definitions, releases, audit]
     subgraph np[Non-production plane]
-      NPR[Runtime: personal sandboxes, Dev, Test]
+      NPR[Runtime: personal sandboxes, previews, Staging]
       NPD[(PostgreSQL: non-production data)]
     end
     subgraph pp[Production plane]
@@ -559,7 +572,7 @@ flowchart TB
 
 - **Platform environments.** The platform team develops the platform in its own dev and staging accounts and promotes versions to the production account by GitOps.
 - **Control plane.** The builder studio, governance console, definitions, releases, identity integration and audit log. It lives in the production account, because it holds production evidence and drives Prod deployments.
-- **Runtime planes.** Apps run in a *non-production plane* (personal sandboxes, Dev, Test) and a *production plane* (Prod). Each plane has its own database cluster, object storage, secrets and network segment, and network policies deny traffic between them.
+- **Runtime planes.** Apps run in a *non-production plane* (personal sandboxes, previews and Staging) and a *production plane* (Prod). Each plane has its own database cluster, object storage, secrets and network segment, and network policies deny traffic between them.
 - **Test data.** Production data never flows into the non-production plane. Test data is synthetic, or masked under an approved and audited copy (ISO 27001 control 8.33).
 - **Later:** move the production plane into its own cloud account to shrink the blast radius further.
 - **Plumbing:**
@@ -568,18 +581,44 @@ flowchart TB
   - Workload identity instead of static cloud keys.
   - If you use Temporal Cloud, encrypt workflow payloads client-side with Temporal's payload codec, so business data never leaves your accounts in readable form.
 
-Managed services by provider (pick one):
+**Cloud-agnostic by design.** The platform depends only on portable interfaces: any conformant Kubernetes, the PostgreSQL wire protocol, the Redis protocol (Valkey), OTLP for telemetry, and OIDC, SAML and SCIM for identity. Everything provider-specific sits behind an adapter that must pass a shared conformance test suite: blob storage, the WORM audit archive, encryption keys and secrets. OpenTofu modules describe each provider's infrastructure, and one Helm chart deploys everything inside the cluster.
 
-| Need | AWS | Azure | Google Cloud |
+Adapter targets by provider:
+
+| Need | AWS | Azure | Google Cloud | Any cloud or on-premises |
+|---|---|---|---|---|
+| Kubernetes | EKS | AKS | GKE | Any conformant Kubernetes |
+| PostgreSQL | RDS for PostgreSQL, or Aurora PostgreSQL | Azure Database for PostgreSQL (flexible server) | Cloud SQL for PostgreSQL, or AlloyDB | CloudNativePG operator |
+| Blob storage and the WORM audit archive | S3 with Object Lock | Blob Storage with immutability policies | Cloud Storage with Bucket Lock | S3-compatible storage with Object Lock (for example Ceph RGW) |
+| Encryption keys | AWS KMS | Azure Key Vault | Cloud KMS | OpenBao or Vault Transit |
+| Secrets (through the External Secrets Operator) | AWS Secrets Manager | Azure Key Vault | Secret Manager | OpenBao or Vault |
+| Cache (Valkey or Redis) | ElastiCache for Valkey | Azure Managed Redis | Memorystore for Valkey | Valkey on the cluster |
+| Metrics and dashboards (OTLP) | Amazon Managed Service for Prometheus, Amazon Managed Grafana | Azure Monitor managed service for Prometheus, Azure Managed Grafana | Google Cloud Managed Service for Prometheus, Cloud Monitoring | Prometheus, Loki, Tempo and Grafana |
+| Processes | Temporal Cloud, or Temporal self-hosted on the cluster | Same | Same | Temporal self-hosted |
+
+
+### 7.4 Kubernetes layout
+
+Kubernetes is the platform's one hard runtime requirement, and any conformant distribution works: EKS, AKS, GKE, OpenShift or on-premises. One Helm chart installs the platform, and a GitOps controller (Argo CD or Flux) keeps each cluster in sync with Git.
+
+| Workload | Kind | Scaling | Notes |
 |---|---|---|---|
-| Kubernetes | EKS | AKS | GKE |
-| PostgreSQL | RDS for PostgreSQL, or Aurora PostgreSQL | Azure Database for PostgreSQL (flexible server) | Cloud SQL for PostgreSQL, or AlloyDB |
-| WORM storage for the audit archive | S3 with Object Lock | Blob Storage with immutability policies | Cloud Storage with Bucket Lock |
-| Encryption keys | AWS KMS | Azure Key Vault | Cloud KMS |
-| Secrets | AWS Secrets Manager | Azure Key Vault | Secret Manager |
-| Cache (Valkey or Redis) | ElastiCache for Valkey | Azure Managed Redis | Memorystore for Valkey |
-| Metrics and dashboards | Amazon Managed Service for Prometheus, Amazon Managed Grafana | Azure Monitor managed service for Prometheus, Azure Managed Grafana | Google Cloud Managed Service for Prometheus, Cloud Monitoring |
-| Processes | Temporal Cloud, or Temporal self-hosted on the cluster | Same | Same |
+| `api` | Deployment | Horizontal Pod Autoscaler on CPU and request rate | Stateless. Serves the builders, the runtime API and the governance console |
+| `worker` | Deployment | On job-queue depth, for example with KEDA | Automations, timers, the outbox relay and audit sealing |
+| `sandbox` | Deployment on a dedicated node pool | On queue depth | Runs custom code. Where available, it adds a sandboxed container runtime (gVisor or Kata Containers) for stronger isolation |
+| `migrate` | Job, run as a Helm pre-upgrade hook | None | Applies expand-phase database migrations before new pods start |
+| Temporal | A separate Helm release, or Temporal Cloud | Per Temporal's guidance | From phase 3 |
+| PostgreSQL | A managed service, or the CloudNativePG operator | Vertical, plus read replicas | Outside the chart |
+
+**Cluster-wide baseline:**
+
+- The Pod Security Standards **restricted** profile: non-root, read-only root filesystem, no privilege escalation.
+- **Default-deny network policies** with explicit allows, for example api → database, and sandbox → egress proxy only.
+- Workload identity for cloud access, with no static cloud keys in Secrets.
+- Pod disruption budgets, topology spread across zones, and readiness and liveness probes on every pod.
+- Separate namespaces, or separate clusters, for the non-production and production planes (§7.3).
+
+Local development doesn't need Kubernetes: Docker Compose runs the same images.
 
 ---
 
@@ -610,7 +649,7 @@ Three audiences share one pipeline: OpenTelemetry → collector → Prometheus, 
 | Authentication | Login success and failure, MFA, logout, token creation/use/revocation, SCIM provisioning |
 | Access control | Changes to bindings, roles, permission sets and guardrails; access reviews; JIT elevation; break-glass; **denials** |
 | Configuration | Changes to orgs, spaces, environments, connections and secret metadata (secret values are never logged) |
-| App lifecycle | Draft edits (summarized), change requests, reviews, approvals, merges, releases, deployments, rollbacks |
+| App lifecycle | Working-copy edits (summarized), change requests, previews, reviews, approvals, merges, releases, deployments, rollbacks |
 | Runtime data | Creates, updates and deletes with field-level diffs (configured per entity); reads and exports of classified data |
 | Workflow | Process starts, task assignment, claim, completion (with the decision and comment), reassignment, escalation |
 | Support | Impersonation sessions, and everything done in them |
@@ -677,7 +716,7 @@ Start as a **modular monolith**: one deployable unit with strict module boundari
 | Identity and directory | Users, groups, service accounts, tokens, SCIM, sessions |
 | Access control | Permissions, permission sets, roles, bindings, guardrails, SoD, JIT elevation, access reviews, the PDP |
 | Spaces and catalog | Orgs, spaces, membership, the app registry, ownership, quotas |
-| Definitions | Artifacts, drafts, change requests, checks, diffs |
+| Definitions | Artifacts, working copies, change requests, previews, checks, diffs |
 | Releases and deployments | Releases, environments, plans, approvals, migrations, activation |
 | Runtime | The data API, form/view/page metadata, record and field security |
 | Workflow and automation | The process engine, human tasks, timers, SLAs, triggers |
@@ -692,7 +731,7 @@ Start as a **modular monolith**: one deployable unit with strict module boundari
 
 "Modern" here means the architecture first: stateless services, declarative definitions, API-first design, OpenTelemetry, sandboxed code and GitOps, all on proven infrastructure (PostgreSQL, Kubernetes, S3). Joget DX 9.1 already runs on current Java and Spring. What dates it is its architecture ([review §4](01-joget-review.md#4-findings-by-area)), not its language.
 
-Within that, **TypeScript end to end** is the recommended default. A low-code platform is mostly a metadata platform, and TypeScript lets the builders, the runtime, the API, the CLI and the sandbox share the same app-definition schemas.
+Within that, **TypeScript end to end** is the chosen stack (decided 2026-11-14). A low-code platform is mostly a metadata platform, and TypeScript lets the builders, the runtime, the API, the CLI and the sandbox share the same app-definition schemas.
 
 | Concern | Choice | Why |
 |---|---|---|
@@ -701,7 +740,7 @@ Within that, **TypeScript end to end** is the recommended default. A low-code pl
 | Definition schemas | Zod schemas, exported as JSON Schema | Definitions validate identically in the browser, on the server and in the CLI |
 | Frontend | React 19, Vite, TanStack Router and Query, and Tailwind CSS with shadcn/ui (Radix primitives) | Accessible components for the builders and for generated apps |
 | Builders | dnd-kit for the form and page canvases; React Flow (xyflow) for the process designer | MIT-licensed building blocks for our own designers |
-| Backend | NestJS on Fastify, organized as a modular monolith | Its modules map onto §11, its guards host the PDP enforcement point, and it generates OpenAPI |
+| Backend | Fastify 5 with Zod schemas, organized as a modular monolith | Every route must declare its access rule, and the server refuses to start if one is missing. No decorator metadata. OpenAPI is generated from the schemas |
 | API | REST with OpenAPI 3.1, a generated TypeScript SDK, and webhooks | Serves CI/CD and integrations. The CLI is built on the same SDK |
 | Database | PostgreSQL 17+ (RLS, JSONB). Drizzle ORM and migrations for platform tables; generated SQL for app schemas | One reliable store for metadata, app data and audit |
 | Jobs and outbox | graphile-worker, which is Postgres-backed and enqueues jobs in the same transaction as the change | No message broker needed early on. Add Kafka only if volume demands it |
@@ -709,8 +748,9 @@ Within that, **TypeScript end to end** is the recommended default. A low-code pl
 | Expressions | A CEL subset, parsed in TypeScript and compiled to SQL for record rules | One safe language for permissions, validation and routing |
 | Sandbox | A separate service that runs JavaScript in WebAssembly (QuickJS), with CPU, memory and time limits | Custom code cannot touch the platform process |
 | Cache | Valkey (Redis-compatible) | Permission caches, rate limits, presence |
-| Identity | The corporate IdP over OIDC or SAML, with Keycloak bundled for self-hosted installs | Federation, MFA and passkeys without building them |
-| Files | S3-compatible object storage | Files, release bundles, the WORM audit archive |
+| Identity | Any OIDC IdP through openid-client; SAML through an optional Keycloak broker | IdP-agnostic federation, MFA and passkeys without building them |
+| Files | Object storage through an adapter (S3 API, Azure Blob, Google Cloud Storage) | Files, release bundles, the WORM audit archive |
+| Cloud portability | Ports and adapters for blob storage, the WORM archive, keys and secrets; OpenTofu modules per provider; one Helm chart | Runs on any cloud or on-premises (§7.3) |
 | Observability | OpenTelemetry JS SDK and Pino structured logs → OpenTelemetry Collector → Prometheus, Loki, Tempo, Grafana | Vendor-neutral |
 | Testing | Vitest, Playwright, Testcontainers | Unit tests, end-to-end tests, and integration tests against a real Postgres |
 | Delivery | GitHub Actions, signed images (cosign), SBOMs, Helm, Argo CD | Repeatable, auditable platform deploys |
@@ -730,9 +770,9 @@ Check each component's licence as you adopt it. Prefer Apache-2.0 and MIT, and r
 
 | Phase | Scope | Exit criterion |
 |---|---|---|
-| **0. Governance kernel** | Orgs, personal and team spaces, membership · OIDC login, directory, service accounts, tokens · the PDP with permission sets, roles, bindings and expiry · RLS isolation · the audit pipeline (same-transaction writes, sealing) · OpenTelemetry conventions · CI/CD, Helm chart, Compose file | An admin creates a team space and assigns roles, and every action appears in a verifiable audit log |
+| **0. Governance kernel** | Orgs, personal and team spaces, membership · OIDC login, directory, service accounts, tokens · the PDP with permission sets, roles, bindings and expiry · scope-based isolation · the audit pipeline (same-transaction writes, sealing) · OpenTelemetry conventions · CI/CD, Helm chart, Compose file | An admin creates a team space and assigns roles, and every action appears in a verifiable audit log |
 | **1. Minimum builder** | Entities, forms, views, pages · personal-space sandbox (edit live) · runtime data API with record- and field-level permissions · record history | A user builds a working app in their personal space and shares it with two colleagues |
-| **2. Governed delivery** | Team-space environments · drafts and change requests with checks and permission diffs · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · an auto-generated, permissioned REST API for each app · app templates, import and export | A change goes Dev → Test → Prod with approvals and is rolled back in under a minute |
+| **2. Governed delivery** | Working copies in personal spaces · change requests with checks, permission diffs and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · an auto-generated, permissioned REST API for each app · app templates, import and export | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
 | **3. Workflow and automation** | Processes on Temporal, human tasks, universal inbox, org-chart routing, timers and SLAs · automations and connectors · notifications · document generation · workflow monitoring | An approval process runs end to end with SLA alerts and a complete audit trail |
 | **4. Enterprise hardening** | Guardrail editor, SoD, JIT elevation, access reviews · plugin registry, sandboxed scripts · SIEM streaming, quotas and metering · the production plane in its own cloud account · DR drills, ASVS verification and a penetration test | Passes an internal audit against ISO 27001:2022 using the §15 mapping, and meets the readiness targets in §1 |
 | **5. Beyond parity** | An AI assistant that drafts definitions and change requests within the user's own permissions · a signed marketplace of templates and plugins · an installable PWA with offline drafts · a BI connector (read replica, governed exports) | A business user describes an app, reviews the AI-drafted change request, and ships it through the normal approval flow |
@@ -749,17 +789,18 @@ Phases 0–2 are the MVP. Phase 0 comes first on purpose: users never see it, bu
 |---|---|---|
 | Fork or build | Build new ([review §6](01-joget-review.md#6-fork-or-build)) | Joget is a reference, not a codebase |
 | Tenants | One company | One org. Isolation comes from spaces, apps and environment planes, with no billing and no customer cells |
-| Hosting | Public cloud | Managed Kubernetes, PostgreSQL, KMS and WORM storage (§7.3) |
+| Hosting | Public cloud, cloud-agnostic | Portable interfaces, with adapters for each provider (§7.3) |
+| Identity provider | IdP-agnostic | Standard OIDC, SAML and SCIM only; MFA evidence and groups are mapped by configuration (§4) |
+| Language | TypeScript end to end | Fastify API and React builders (§12) |
+| Environments | Build in personal spaces. Team spaces run Prod, with a preview for each change request and optional Staging | No permanent Dev environment (§3, §6.3) |
+| Data residency | No constraint | One primary region, with backups copied to a second region |
 | Compliance | ISO 27001:2022 | The Annex A mapping in §15 drives the backlog and the evidence the platform produces |
 
 **Still open:**
 
-1. **Cloud provider:** AWS, Azure or Google Cloud? §7.3 lists the managed services for each.
-2. **Identity provider:** Entra ID, Okta, Google Workspace or another? It drives SSO, SCIM and MFA (§4).
-3. **Team skills:** TypeScript end to end is the recommended default (§12), and n8n uses the same family of stack ([n8n reference](03-n8n-reference.md)). Does your team's experience change that?
-4. **Workflow depth:** is a BPMN-style subset enough, or do you need full BPMN 2.0 conformance, for example to import existing process models?
-5. **Platform database:** PostgreSQL only for the platform's own store, with Oracle and SQL Server reached through connectors? This is recommended, and n8n has narrowed itself to PostgreSQL (plus SQLite for small installs) in the same way.
-6. **Data residency:** must any data stay in a particular country or region? The answer picks the cloud region and the backup locations.
+1. **Workflow depth:** is a BPMN-style subset enough, or do you need full BPMN 2.0 conformance, for example to import existing process models? This must be settled before phase 3.
+2. **Platform database:** PostgreSQL only for the platform's own store, with Oracle and SQL Server reached through connectors? This is the working assumption. n8n has narrowed itself to PostgreSQL (plus SQLite for small installs) in the same way ([n8n reference](03-n8n-reference.md)).
+3. **Product name:** "the platform" is still a placeholder.
 
 ---
 
@@ -793,9 +834,9 @@ Building and running the platform is itself in scope of your ISMS: secure develo
 | 8.24 Use of cryptography | TLS everywhere, encryption at rest with cloud KMS keys, field-level encryption, signed releases and audit seals | §7, §9.3 | Key inventory, rotation records |
 | 8.25 Secure development life cycle, 8.28 Secure coding and 8.29 Security testing | For the platform: CI with tests, static analysis, dependency and image scanning, signed images, ASVS verification, penetration tests. For apps: checks on every change request | §6.3, §7.2, §13 | CI results, scan and pen-test reports |
 | 8.8 Management of technical vulnerabilities | SBOMs, image scanning, patch SLAs, and a plugin registry with signed, pinned versions | §7.2, §10 | Vulnerability backlog, SBOMs |
-| 8.31 Separation of development, test and production environments | Separate runtime planes and databases for non-production and production, plus dev and staging accounts for the platform itself | §7.3 | Environment topology |
-| 8.32 Change management | Drafts → change requests → approvals → releases → deployments, with permission diffs and rollback | §6.3, §7.1 | Change request and deployment records |
+| 8.31 Separation of development, test and production environments | Development happens in personal spaces, and testing in previews or Staging, all in the non-production plane. Prod runs in the production plane with its own databases. The platform itself has dev and staging accounts | §3, §7.3 | Environment topology |
+| 8.32 Change management | Working copies → change requests with previews → approvals → releases → deployments, with permission diffs and rollback | §6.3, §7.1 | Change request and deployment records |
 | 8.33 Test information | No production data in the non-production plane. Test data is synthetic or masked | §7.3 | Approvals for any data copy |
-| 5.23 Information security for use of cloud services | A shared-responsibility mapping for the chosen cloud, with managed services configured through infrastructure as code | §7.3 | Cloud configuration baselines |
+| 5.23 Information security for use of cloud services | A shared-responsibility mapping for each supported cloud, with managed services configured through infrastructure as code | §7.3 | Cloud configuration baselines |
 | 5.24–5.28 Incident management and collection of evidence | Audit events, traces and logs correlated by request ID. Tamper-evident seals preserve evidence | §8, §9 | Incident timelines |
 | 5.34 Privacy and protection of PII | PII tags, masking, and tooling for data-subject export and erasure | §5.5, §9.5 | Data-subject request records |

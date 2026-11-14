@@ -18,5 +18,5 @@ The working name is a placeholder. The product should get its own name rather th
 
 Design stage, no code yet.
 
-- **Decided:** build new; one company; public cloud; ISO 27001:2022.
-- **Still open** (§14 of the design doc): cloud provider, identity provider, team skills (TypeScript is the default), workflow depth, PostgreSQL-only, and data residency.
+- **Decided:** build new; one company; cloud-agnostic on Kubernetes; IdP-agnostic; TypeScript; ISO 27001:2022; no data-residency constraint. Building happens in personal spaces, and team spaces run Prod, with a preview for each change request.
+- **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), and the product name.
