@@ -11,8 +11,12 @@ The working name is a placeholder. The product should get its own name rather th
 | Document | What it covers |
 |---|---|
 | [docs/01-joget-review.md](docs/01-joget-review.md) | A review of Joget DX 9.1 (Community Edition source) against our requirements: what to borrow, what to avoid, and whether to fork or build |
-| [docs/02-platform-design.md](docs/02-platform-design.md) | The proposed design: spaces, identity, roles and permission sets, governed app lifecycle, deployment, monitoring, audit, reference stack, roadmap and open decisions |
+| [docs/02-platform-design.md](docs/02-platform-design.md) | The proposed design: spaces, identity, roles and permission sets, governed app lifecycle, deployment on the cloud, monitoring, audit, reference stack, roadmap, decisions and the ISO 27001 control mapping |
+| [docs/03-n8n-reference.md](docs/03-n8n-reference.md) | Prior art: n8n's tech stack and governance model, read from its source, and what it means for our choices |
 
 ## Status
 
-Design stage. No code yet. The open decisions in §14 of the design doc come first.
+Design stage, no code yet.
+
+- **Decided:** build new; one company; public cloud; ISO 27001:2022.
+- **Still open** (§14 of the design doc): cloud provider, identity provider, team skills (TypeScript is the default), workflow depth, PostgreSQL-only, and data residency.
