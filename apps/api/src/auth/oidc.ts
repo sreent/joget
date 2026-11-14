@@ -1,0 +1,118 @@
+import * as client from 'openid-client';
+import type { Config } from '../config.js';
+
+/** What the platform needs to know about a login. Built from standard OIDC claims only. */
+export interface OidcIdentity {
+  readonly issuer: string;
+  readonly subject: string;
+  readonly email: string | null;
+  readonly emailVerified: boolean;
+  readonly name: string | null;
+  readonly groups: readonly string[];
+  /** Authentication methods (RFC 8176), for example ["pwd", "mfa"]. */
+  readonly amr: readonly string[];
+  readonly acr: string | null;
+  readonly authTime: Date | null;
+}
+
+export interface LoginStart {
+  readonly url: string;
+  readonly state: string;
+  readonly nonce: string;
+  readonly codeVerifier: string;
+}
+
+/** The port the API depends on. Any OIDC-compliant IdP can sit behind it. */
+export interface OidcProvider {
+  startLogin(options: { redirectUri: string; forceReauthentication?: boolean; acrValues?: readonly string[] }): Promise<LoginStart>;
+  completeLogin(options: {
+    callbackUrl: URL;
+    redirectUri: string;
+    state: string;
+    nonce: string;
+    codeVerifier: string;
+  }): Promise<OidcIdentity>;
+}
+
+const MAX_GROUPS = 500;
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+/** Map ID-token claims to an identity. `groupsClaim` is configurable because IdPs name it differently. */
+export function identityFromClaims(claims: Record<string, unknown>, groupsClaim: string): OidcIdentity {
+  const { iss, sub } = claims;
+  if (typeof iss !== 'string' || typeof sub !== 'string' || !iss || !sub) {
+    throw new Error('The ID token has no issuer or subject');
+  }
+  const name = [claims['name'], claims['preferred_username']].find((v): v is string => typeof v === 'string' && v.length > 0);
+  return {
+    issuer: iss,
+    subject: sub,
+    email: typeof claims['email'] === 'string' ? claims['email'].toLowerCase() : null,
+    emailVerified: claims['email_verified'] === true,
+    name: name ?? null,
+    groups: [...new Set(stringArray(claims[groupsClaim]))].slice(0, MAX_GROUPS),
+    amr: stringArray(claims['amr']),
+    acr: typeof claims['acr'] === 'string' ? claims['acr'] : null,
+    authTime: typeof claims['auth_time'] === 'number' ? new Date(claims['auth_time'] * 1000) : null,
+  };
+}
+
+/** When the IdP last confirmed MFA for this login, or null if it did not. */
+export function mfaTimestamp(identity: OidcIdentity, config: Config, now: Date): Date | null {
+  const at = identity.authTime ?? now;
+  switch (config.MFA_EVIDENCE) {
+    case 'assume':
+      return at;
+    case 'amr':
+      return identity.amr.some((method) => config.MFA_AMR_VALUES.includes(method)) ? at : null;
+    case 'acr':
+      return identity.acr !== null && config.MFA_ACR_VALUES.includes(identity.acr) ? at : null;
+  }
+}
+
+/** The real provider: OpenID Connect discovery, authorization code flow with PKCE. */
+export async function createOpenIdProvider(config: Config): Promise<OidcProvider> {
+  const execute = config.OIDC_ALLOW_HTTP ? [client.allowInsecureRequests] : [];
+  const configuration = await client.discovery(
+    new URL(config.OIDC_ISSUER),
+    config.OIDC_CLIENT_ID,
+    config.OIDC_CLIENT_SECRET,
+    config.OIDC_CLIENT_SECRET ? client.ClientSecretPost(config.OIDC_CLIENT_SECRET) : client.None(),
+    { execute },
+  );
+
+  return {
+    async startLogin({ redirectUri, forceReauthentication, acrValues }) {
+      const codeVerifier = client.randomPKCECodeVerifier();
+      const state = client.randomState();
+      const nonce = client.randomNonce();
+      const parameters: Record<string, string> = {
+        redirect_uri: redirectUri,
+        scope: config.OIDC_SCOPES,
+        code_challenge: await client.calculatePKCECodeChallenge(codeVerifier),
+        code_challenge_method: 'S256',
+        state,
+        nonce,
+      };
+      // Step-up: ask the IdP for a fresh login (and a stronger method, if configured) with standard parameters.
+      if (forceReauthentication) parameters['max_age'] = '0';
+      if (acrValues && acrValues.length > 0) parameters['acr_values'] = acrValues.join(' ');
+      return { url: client.buildAuthorizationUrl(configuration, parameters).href, state, nonce, codeVerifier };
+    },
+
+    async completeLogin({ callbackUrl, state, nonce, codeVerifier }) {
+      const tokens = await client.authorizationCodeGrant(configuration, callbackUrl, {
+        pkceCodeVerifier: codeVerifier,
+        expectedState: state,
+        expectedNonce: nonce,
+        idTokenExpected: true,
+      });
+      const claims = tokens.claims();
+      if (!claims) throw new Error('The IdP did not return an ID token');
+      return identityFromClaims(claims as Record<string, unknown>, config.OIDC_GROUPS_CLAIM);
+    },
+  };
+}

@@ -1,0 +1,50 @@
+{
+  "name": "@platform/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The platform API: login, spaces, roles and bindings, audit, health.",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "dev": "tsx watch --conditions=source --env-file=.env src/main.ts",
+    "start": "node --import ./dist/telemetry.js dist/main.js",
+    "migrate": "node dist/migrate.js",
+    "audit:keygen": "tsx --conditions=source src/keygen.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/helmet": "^13.2.0",
+    "@fastify/swagger": "^9.9.4",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.301.2",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.301.2",
+    "@opentelemetry/instrumentation": "^0.301.2",
+    "@opentelemetry/instrumentation-http": "^0.301.2",
+    "@opentelemetry/instrumentation-pg": "^0.78.0",
+    "@opentelemetry/instrumentation-undici": "^0.35.1",
+    "@opentelemetry/sdk-metrics": "^3.1.1",
+    "@opentelemetry/sdk-node": "^0.301.2",
+    "@platform/audit": "workspace:*",
+    "@platform/authz": "workspace:*",
+    "@platform/db": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.8",
+    "fastify-type-provider-zod": "^7.0.0",
+    "openid-client": "^6.9.0",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "vitest": "^5.1.0"
+  }
+}
