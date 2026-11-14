@@ -2,10 +2,13 @@
 
 > **Status:** draft v0.1 for discussion · 2026-11-14
 > **Companion:** [01-joget-review.md](01-joget-review.md), which covers what we learned from Joget DX 9.1 and why this design differs.
+> **Ambition:** surpass Joget DX and be fit for enterprise use, rather than clone it.
 > **Name:** "the platform" is a placeholder. Pick your own name and don't reuse the Joget trademark.
 
 ## TL;DR
 
+- **Surpass, don't clone.** Match Joget's builder breadth, beat it on governance, isolation, delivery, observability and audit, and include security in every edition (§1).
+- **Modern, proven stack:** TypeScript end to end (React builders and a NestJS modular monolith), PostgreSQL, Temporal for long-running processes, OpenTelemetry and Kubernetes (§12).
 - **Build the governance kernel first:** organizations, spaces, identity, one authorization engine and an audit pipeline. Joget attaches permissions to each component, and retrofitting them is the most expensive change a low-code platform can face.
 - **Two kinds of space.** Every user gets a private **personal space** with no ceremony but limited reach. Teams work in **team spaces**, which have members, Dev/Test/Prod environments, change requests and approvals. An app moves from a personal space to a team space through an audited *promotion*.
 - **Permissions are permission sets bound at a scope.** Atomic permissions are grouped into reusable **permission sets**. Permission sets are composed into **roles**. Both are granted through **bindings**, which record who gets what, where, and until when. Org-level **guardrails** can only deny. One policy decision point (PDP) answers every request, whether it comes from the API, the UI, the workflow engine or custom code.
@@ -14,7 +17,7 @@
 
 ---
 
-## 1. Goals, non-goals, principles
+## 1. Goals, positioning, principles
 
 ### Goals
 
@@ -29,10 +32,69 @@
 | G7 | Deploy efficiently | App deploys in seconds without restarts, promotion across environments, instant rollback, a CI/CD API, zero-downtime platform upgrades |
 | G8 | Monitoring | Platform SLOs; health, workflow and automation monitoring for each space and app; alerting; usage metering |
 | G9 | Auditable | Every security-relevant action records who, what, when, where, why, and before/after. The log is tamper-evident, searchable and exportable, and can stream to a SIEM |
+| G10 | Enterprise-grade | Meets the readiness targets below for availability, disaster recovery, security, compliance, accessibility and operations |
+| G11 | Surpass Joget | Matches Joget's builder breadth (the parity list below) and beats it on every row of the comparison below |
 
-### Non-goals for v1
+### Where this surpasses Joget
 
-Marketplace, native mobile apps, AI app generation, real-time co-editing, and a BI/reporting suite. All of these can come later, and none of them should shape the kernel.
+The left column summarizes the [review](01-joget-review.md) of Joget DX 9.1: the Community Edition, with Enterprise features noted where Joget's own pages list them.
+
+| Area | Joget DX 9.1 | This platform |
+|---|---|---|
+| Workspaces | None: every app is global to the instance | Personal and team spaces as first-class scopes (§3) |
+| Roles | 4 fixed roles. Per-app delegation works by temporary admin elevation | Custom, scoped roles built from permission sets, with SoD, JIT elevation and access reviews (§5) |
+| App permissions | Inline rules on each menu, form and list. The API uses a different model | One model for the UI, API, workflow and code, with record- and field-level rules and permission diffs in review (§5.5) |
+| Data isolation | Global `app_fd_*` tables shared by all apps. Every column is text | Typed schemas per app and environment, declared cross-app references, classification tags (§6.4) |
+| Custom code | BeanShell inside the server JVM | A capability-limited sandbox, out of process (§10) |
+| Change control | Publishing flips a flag and the live version is editable. No locks, review or rollback | Drafts → change requests → checks → approvals → immutable releases (§6) |
+| Schema changes | Additive DDL at runtime | Generated, reviewed, expand/contract migrations (§6.4) |
+| Delivery | `.jwa` import through the console. No CLI or import API | API and CLI, signed bundles, GitOps, promotion across installations (§7.1) |
+| Topology | Single WAR with a local data directory. Clustering is Enterprise-only | Stateless pods on Kubernetes, autoscaling and cells, in every edition (§7.2) |
+| Monitoring | Log viewer. APM is Enterprise-only. No metrics endpoints | OpenTelemetry built in: SLOs, per-app dashboards, workflow SLAs, alerts, metering (§8) |
+| Audit | Method-level trail with no outcomes, diffs, tamper evidence or retention | Structured events written in the same transaction, sealed, retained and streamed to a SIEM, plus record history (§9) |
+| Identity | Unsalted MD5 hashes in the built-in directory. LDAP, MFA and password policies are Enterprise-only | Federation first (OIDC, SAML, SCIM), MFA and passkeys, scoped tokens, in every edition (§4) |
+| Multi-tenancy | Database per profile. CE's single connection pool isn't built for concurrent tenants | `org_id` everywhere with RLS, and dedicated cells for stronger isolation (§7.2) |
+| AI | Joget Intelligence (DX 9) | An assistant that drafts change requests and never bypasses checks or permissions (§13, phase 5) |
+
+### Parity: what Joget already does that we must also do
+
+Surpassing Joget on governance is worthless if builders miss features they rely on. These are table stakes:
+
+| Capability | Phase (§13) |
+|---|---|
+| Form builder with rich fields: lookups and relations, subforms and grids, file and image upload, rich text, calculated fields, conditional visibility, multi-page forms, validation | 1 |
+| List views with filters, sorting and bulk actions, and export (CSV, Excel, PDF) governed by `record.export` | 1 |
+| Pages, menus, dashboards, themes and branding, with a responsive UI | 1–2 |
+| Internationalization: UI translations, right-to-left layouts, per-app message bundles, time zones | 1–2 |
+| App templates, import and export | 2 |
+| An auto-generated, permissioned REST API for each app (Joget's API Builder is Enterprise-only) | 2 |
+| Processes with human tasks, org-chart routing (requester, head of department, reporting line, department, group, role), parallel branches, timers and SLA escalation | 3 |
+| A universal task inbox across apps, with delegation, out-of-office cover and reassignment | 3 |
+| Notifications by email, Teams and Slack, with deep links | 3 |
+| Connectors: REST, SOAP, databases (including Oracle and SQL Server), webhooks in and out, inbound email, scheduled jobs | 3 |
+| Document generation (PDF from templates) | 3 |
+| An installable PWA with offline drafts | 5 |
+| A marketplace of signed templates and plugins | 5 |
+
+### Enterprise readiness targets
+
+These are initial targets, to validate with load tests and early customers:
+
+| Area | Target |
+|---|---|
+| Availability | 99.9% monthly for the app runtime (99.95% with multi-zone deployment). No single point of failure. Zero-downtime upgrades |
+| Disaster recovery | RPO ≤ 5 minutes (continuous WAL archiving), RTO ≤ 1 hour. Cross-region backups, with restore drills every quarter |
+| Scale per cell (design target) | 50,000 users, 5,000 concurrent sessions, 2,000 apps and 100 million records. Scale beyond that by adding cells |
+| Performance | Runtime API p95 under 300 ms for single-record reads and writes. Deploy and rollback in under 30 seconds |
+| Security | OWASP ASVS Level 2, and Level 3 for authentication and access control. TLS 1.2+ and encryption at rest. Customer-managed keys for dedicated cells, and field-level encryption for `Restricted` data. Signed images and SBOMs, an annual penetration test, and patch SLAs for critical vulnerabilities |
+| Compliance | The product produces its own evidence for SOC 2 Type II and ISO 27001 controls: audit log, access reviews, change records. GDPR tooling for data-subject export and erasure. Data residency through cells. Retention policies and legal holds |
+| Accessibility | WCAG 2.2 AA for the builders and for generated apps |
+| Operations | Runs on any conformant Kubernetes, including OpenShift (non-root, read-only root filesystem). Supports air-gapped installs (mirrored images, an offline licence, no required outbound calls). Ships runbooks and support bundles |
+| Compatibility | App definitions carry a schema version and are upgraded automatically. Releases stay deployable for at least one platform major version. A documented deprecation policy |
+
+### Non-goals for the MVP (phases 0–2)
+
+Marketplace, native mobile apps, AI-assisted building, real-time co-editing, and a BI/reporting suite. Several of these arrive in later phases (§13), but none of them should shape the kernel.
 
 ### Principles
 
@@ -327,7 +389,7 @@ This keeps Joget's proven breakdown of an app, but uses one permission model and
 | Form | Form | Layout and validation, bound to an entity |
 | View | Datalist | Columns, filters, actions |
 | Page / navigation | Userview | Visibility derived from permissions |
-| Process | Process (XPDL) | BPMN 2.0: human tasks, timers, SLAs |
+| Process | Process (XPDL) | A BPMN-style model (start, human and service tasks, gateways, timers, end), run durably on Temporal |
 | Automation | Process tools, plugins | Triggered by record events, schedules or webhooks |
 | Connector | Plugins, API connectors | Declarative HTTP, database or queue connections; secrets by reference |
 | App roles | Userview/form permission plugins, participant mappings | Permission sets (§5.5) |
@@ -345,7 +407,7 @@ expense/
   forms/claim_form.json
   views/my_claims.json
   pages/navigation.json
-  processes/expense_approval.bpmn
+  processes/expense_approval.yaml
   automations/notify_finance.yaml
   connectors/erp.yaml
   permissions/requester.yaml
@@ -464,7 +526,7 @@ flowchart TB
 - **Packaging:** signed OCI images with SBOMs, and one Helm chart. Small and evaluation installs use Docker Compose with the same images.
 - **Stateless pods** sit behind the gateway and autoscale horizontally. Workers scale on queue depth.
 - **Database:** managed PostgreSQL, or PostgreSQL under an operator such as CloudNativePG, with point-in-time recovery and read replicas for reporting.
-- **Zero-downtime upgrades:** rolling deploys, readiness probes, pod disruption budgets, expand/contract schema migrations (Flyway) and feature flags.
+- **Zero-downtime upgrades:** rolling deploys, readiness probes, pod disruption budgets, expand/contract schema migrations (Drizzle) and feature flags.
 - **Platform delivery:** CI builds, tests, scans and signs the images. GitOps (Argo CD or Flux) then promotes them through the platform's own dev → staging → prod.
 - **Cells for scale and isolation.** A *cell* is a complete platform stack with its own database, and each org is assigned to a cell. Regulated customers, or those with data-residency needs, get a dedicated cell. Cells limit the blast radius of incidents and noisy neighbours.
 
@@ -577,21 +639,37 @@ Start as a **modular monolith**: one deployable unit with strict module boundari
 
 ## 12. Reference stack (recommended default)
 
+"Modern" here means the architecture first: stateless services, declarative definitions, API-first design, OpenTelemetry, sandboxed code and GitOps, all on proven infrastructure (PostgreSQL, Kubernetes, S3). Joget DX 9.1 already runs on current Java and Spring. What dates it is its architecture ([review §4](01-joget-review.md#4-findings-by-area)), not its language.
+
+Within that, **TypeScript end to end** is the recommended default. A low-code platform is mostly a metadata platform, and TypeScript lets the builders, the runtime, the API, the CLI and the sandbox share the same app-definition schemas.
+
 | Concern | Choice | Why |
 |---|---|---|
-| Backend | Java 21 + Spring Boot 3, with Spring Modulith for module boundaries | Mature security and observability ecosystem, a natural fit for the BPMN engine, and familiar to enterprises |
-| Frontend | React + TypeScript; bpmn-js for the process designer | The builder UIs are heavy front-end work |
-| Workflow | Flowable 7 (BPMN 2.0, Apache 2.0), embedded | Open-source BPMN with human tasks and timers |
-| Expressions | CEL (cel-java) | One safe condition language for permissions, validation and routing |
-| Database | PostgreSQL 16+ (RLS, JSONB), Flyway | One reliable store for metadata, app data and audit |
-| Jobs / events | Postgres outbox + a `SKIP LOCKED` job queue; add Kafka only when needed | Fewer moving parts early on |
-| Cache | Redis | Permission caches, rate limits |
-| Identity | The corporate IdP; Keycloak bundled for self-hosted installs | OIDC, SAML, MFA and passkeys without building them |
+| Language | TypeScript everywhere, on Node.js (current LTS) | One type system for app definitions across builders, runtime, API and CLI. JSON-native, with a large talent pool |
+| Repository | A pnpm workspaces + Turborepo monorepo | Shared packages with enforced boundaries, and fast incremental builds |
+| Definition schemas | Zod schemas, exported as JSON Schema | Definitions validate identically in the browser, on the server and in the CLI |
+| Frontend | React 19, Vite, TanStack Router and Query, and Tailwind CSS with shadcn/ui (Radix primitives) | Accessible components for the builders and for generated apps |
+| Builders | dnd-kit for the form and page canvases; React Flow (xyflow) for the process designer | MIT-licensed building blocks for our own designers |
+| Backend | NestJS on Fastify, organized as a modular monolith | Its modules map onto §11, its guards host the PDP enforcement point, and it generates OpenAPI |
+| API | REST with OpenAPI 3.1, a generated TypeScript SDK, and webhooks | Serves CI/CD and integrations. The CLI is built on the same SDK |
+| Database | PostgreSQL 17+ (RLS, JSONB). Drizzle ORM and migrations for platform tables; generated SQL for app schemas | One reliable store for metadata, app data and audit |
+| Jobs and outbox | graphile-worker, which is Postgres-backed and enqueues jobs in the same transaction as the change | No message broker needed early on. Add Kafka only if volume demands it |
+| Processes | Temporal (TypeScript SDK), running an interpreter workflow for our process model, from phase 3 | Durable timers, SLAs, retries and version pinning, without writing a workflow engine |
+| Expressions | A CEL subset, parsed in TypeScript and compiled to SQL for record rules | One safe language for permissions, validation and routing |
+| Sandbox | A separate service that runs JavaScript in WebAssembly (QuickJS), with CPU, memory and time limits | Custom code cannot touch the platform process |
+| Cache | Valkey (Redis-compatible) | Permission caches, rate limits, presence |
+| Identity | The corporate IdP over OIDC or SAML, with Keycloak bundled for self-hosted installs | Federation, MFA and passkeys without building them |
 | Files | S3-compatible object storage | Files, release bundles, the WORM audit archive |
-| Observability | OpenTelemetry (Java agent + Micrometer) → Prometheus, Loki, Tempo, Grafana | Vendor-neutral |
-| Delivery | GitHub Actions, signed images (cosign), Helm, Argo CD | Repeatable, auditable platform deploys |
+| Observability | OpenTelemetry JS SDK and Pino structured logs → OpenTelemetry Collector → Prometheus, Loki, Tempo, Grafana | Vendor-neutral |
+| Testing | Vitest, Playwright, Testcontainers | Unit tests, end-to-end tests, and integration tests against a real Postgres |
+| Delivery | GitHub Actions, signed images (cosign), SBOMs, Helm, Argo CD | Repeatable, auditable platform deploys |
 
-If your team is stronger in TypeScript, Node.js (NestJS) with the same Postgres, Redis and OpenTelemetry choices also works. The trade-off is a weaker BPMN option: you would build a simpler approval engine or use Temporal. Check licences as you adopt components; for example, bpmn-js requires its bpmn.io watermark to stay visible.
+**Alternatives, if your team's skills point elsewhere:**
+
+- **Go** for hot paths such as the gateway or the sandbox host (wazero runs WebAssembly natively in Go), if profiling ever shows that Node.js is the bottleneck.
+- **Java 21 or Kotlin, with Spring Boot 3 and Flowable,** if the team is Java-first and needs full BPMN 2.0 conformance. Modern Java is not "legacy"; it just can't share types with the builders.
+
+Check each component's licence as you adopt it. Prefer Apache-2.0 and MIT, and record the decision.
 
 ---
 
@@ -601,9 +679,10 @@ If your team is stronger in TypeScript, Node.js (NestJS) with the same Postgres,
 |---|---|---|
 | **0. Governance kernel** | Orgs, personal and team spaces, membership · OIDC login, directory, service accounts, tokens · the PDP with permission sets, roles, bindings and expiry · RLS isolation · the audit pipeline (same-transaction writes, sealing) · OpenTelemetry conventions · CI/CD, Helm chart, Compose file | An admin creates a team space and assigns roles, and every action appears in a verifiable audit log |
 | **1. Minimum builder** | Entities, forms, views, pages · personal-space sandbox (edit live) · runtime data API with record- and field-level permissions · record history | A user builds a working app in their personal space and shares it with two colleagues |
-| **2. Governed delivery** | Team-space environments · drafts and change requests with checks and permission diffs · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team | A change goes Dev → Test → Prod with approvals and is rolled back in under a minute |
-| **3. Workflow and automation** | BPMN processes, human tasks, inbox, timers and SLAs, automations, workflow monitoring | An approval process runs end to end with SLA alerts and a complete audit trail |
-| **4. Enterprise hardening** | Guardrail editor, SoD, JIT elevation, access reviews · connectors, plugin registry, sandboxed scripts · SIEM streaming, quotas and metering, dedicated cells | Passes an internal audit against your chosen control framework (for example ISO 27001 or SOC 2) |
+| **2. Governed delivery** | Team-space environments · drafts and change requests with checks and permission diffs · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · an auto-generated, permissioned REST API for each app · app templates, import and export | A change goes Dev → Test → Prod with approvals and is rolled back in under a minute |
+| **3. Workflow and automation** | Processes on Temporal, human tasks, universal inbox, org-chart routing, timers and SLAs · automations and connectors · notifications · document generation · workflow monitoring | An approval process runs end to end with SLA alerts and a complete audit trail |
+| **4. Enterprise hardening** | Guardrail editor, SoD, JIT elevation, access reviews · plugin registry, sandboxed scripts · SIEM streaming, quotas and metering · dedicated cells with customer-managed keys · DR drills, ASVS verification and a penetration test | Passes an internal audit against your chosen control framework (for example ISO 27001 or SOC 2) and meets the readiness targets in §1 |
+| **5. Beyond parity** | An AI assistant that drafts definitions and change requests within the user's own permissions · a signed marketplace of templates and plugins · an installable PWA with offline drafts · a BI connector (read replica, governed exports) | A business user describes an app, reviews the AI-drafted change request, and ships it through the normal approval flow |
 
 Phases 0–2 are the MVP. Phase 0 comes first on purpose: users never see it, but everything else depends on it.
 
@@ -612,8 +691,10 @@ Phases 0–2 are the MVP. Phase 0 comes first on purpose: users never see it, bu
 ## 14. Open decisions
 
 1. **Who are the tenants?** Either one company (a single org, with spaces doing the separating) or a SaaS for many companies (several orgs, cells, billing). The design supports both, but the MVP scope differs.
-2. **Team skills:** Java/Spring (recommended above) or TypeScript?
+2. **Team skills:** TypeScript end to end is the recommended default (§12). Does your team's experience, for example strong Java or Go, change that?
 3. **Hosting:** your cloud, customers' on-premises servers, or both? This affects packaging, promotion into air-gapped environments, and the default IdP.
-4. **Workflow depth for v1:** full BPMN like Joget, or simple approval flows first?
+4. **Workflow depth:** is a BPMN-style subset enough, or do you need full BPMN 2.0 conformance, for example to import existing process models?
 5. **Compliance target:** which framework (ISO 27001, SOC 2, sector rules, data residency) sets audit retention and evidence requirements?
-6. **Fork or build:** the review recommends building; see [01-joget-review.md §6](01-joget-review.md#6-fork-or-build).
+6. **Fork or build:** decided on 2026-11-14: build new ([review §6](01-joget-review.md#6-fork-or-build)).
+7. **Platform database:** PostgreSQL only for the platform's own store (recommended; enterprise databases such as Oracle and SQL Server are reached through connectors), or must the platform itself run on other databases?
+8. **Editions:** keep security and governance features in every edition, and differentiate paid tiers on scale, support and dedicated cells?

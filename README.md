@@ -1,6 +1,8 @@
 # joget
 
-Design work for a **governed, multi-user low-code application platform**, inspired by Joget DX: users and teams build forms, views, pages and workflows, with roles, personal and team spaces, permission sets, efficient deployment, monitoring and a full audit trail.
+Design work for a **governed, multi-user, enterprise-grade low-code application platform**. Users and teams build forms, views, pages and workflows, with roles, personal and team spaces, permission sets, efficient deployment, monitoring and a full audit trail.
+
+The goal is not to clone Joget DX but to surpass it: match its builder breadth, beat it on governance, isolation, delivery, observability and audit, and build on a modern TypeScript stack.
 
 The working name is a placeholder. The product should get its own name rather than reuse the Joget trademark.
 
