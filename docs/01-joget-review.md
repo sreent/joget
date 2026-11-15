@@ -132,7 +132,7 @@ Paths are relative to the Joget repository root:
 - **Git mirroring.** Each app version has a local JGit repository under `app_src/<appId>/<appId>_<version>`. After each request that changes it, a background thread commits the change as the current user, and can push to or pull from a per-app remote (`web/java/org/joget/apps/app/web/GitRequestFilter.java`). With "always pull" and auto-sync turned on, newer definitions from the remote are imported into the database (`core/apps/app/service/AppDevUtil.java`, around line 2114). Anyone who can push to that remote can therefore change a running app without review.
 - **Process versions.** Running instances stay on the package version they started with. But re-saving a version's process migrates that version's running instances, and any instance whose current activity no longer exists is **aborted** (`AppServiceImpl.java`, around line 2990).
 
-**Lesson:** separate editing from releasing. Use drafts, change requests with checks and approvals, immutable releases, pointer-flip deploys and one-step rollback ([design §6–7](02-platform-design.md#6-app-model-and-governed-change)). Migrating in-flight process instances must be explicit, previewed and audited.
+**Lesson:** separate editing from releasing. Use drafts, change requests with checks and approvals, immutable releases, pointer-flip deploys and one-step rollback ([design §6–7](02-platform-design.md#6-apps-capabilities-and-governed-change)). Migrating in-flight process instances must be explicit, previewed and audited.
 
 ### 4.6 Deployment and runtime topology
 
@@ -146,7 +146,7 @@ Paths are relative to the Joget repository root:
 - **Plugins.** Apache Felix (OSGi) runs inside the JVM. The `app_plugins` folder is polled every 20 seconds, and any JAR found there is installed (`plugin/PluginManager.java:247`). Plugins can also arrive through the console, app import and git sync. Nothing checks signatures or versions, apps cannot pin plugin versions, and plugins are isolated only by classloader.
 - **Clustering.** CE assumes a shared data directory, caches locally (the distributed cache is a no-op placeholder, `wflow-commons/src/main/resources/commonsApplicationContext.xml:223`) and has no session replication. High availability and clustering are Enterprise features.
 
-**Lesson:** use stateless pods, object storage instead of a shared filesystem, reviewed migrations on typed tables, signed and pinned plugins, and an API and CLI for CI/CD ([design §6.4 and §7](02-platform-design.md#7-deployment)).
+**Lesson:** use stateless pods, object storage instead of a shared filesystem, reviewed migrations on typed tables, signed and pinned plugins, and an API and CLI for CI/CD ([design §6.8 and §7](02-platform-design.md#7-deployment)).
 
 ### 4.7 Monitoring
 
@@ -166,7 +166,7 @@ Paths are relative to the Joget repository root:
 
 **Consequence:** anyone who can design an app can, in practice, read and change all data and run arbitrary code with platform privileges. App designers must be trusted like platform administrators, which rules out real delegation to teams.
 
-**Lesson:** use separate app schemas and declared cross-app references, and run custom code out of process in a capability-limited sandbox ([design §6.4 and §10](02-platform-design.md#10-extensibility-and-safe-custom-code)).
+**Lesson:** use separate app schemas and declared cross-app references, and run custom code out of process in a capability-limited sandbox ([design §6.8 and §10](02-platform-design.md#10-extensibility-and-safe-custom-code)).
 
 ### 4.9 Audit
 

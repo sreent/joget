@@ -1,6 +1,6 @@
 # joget
 
-Design and first code for a **governed, multi-user, enterprise-grade low-code application platform**. Users and teams build forms, views, pages and workflows, with roles, personal and team spaces, permission sets, efficient deployment, monitoring and a full audit trail.
+Design and first code for a **governed capability platform for people and AI agents**. People ask for outcomes, in Teams, Slack or any other chat app, through an agent, or on the web. Builders, working with an AI copilot, publish the capabilities that deliver them: actions, queries, rules and review cards. Every capability is an MCP tool and an API operation. An agent always acts for a named person, and the person confirms what matters before it's committed. Roles, personal and team spaces, permission sets, efficient deployment, monitoring and a full audit trail govern all of it.
 
 The goal is not to clone Joget DX but to surpass it: match its builder breadth, beat it on governance, isolation, delivery, observability and audit, and build on a modern TypeScript stack. The working name is a placeholder; the product should get its own name rather than reuse the Joget trademark.
 
@@ -9,14 +9,20 @@ The goal is not to clone Joget DX but to surpass it: match its builder breadth, 
 | Document | What it covers |
 |---|---|
 | [docs/01-joget-review.md](docs/01-joget-review.md) | A review of Joget DX 9.1 (Community Edition source) against our requirements: what to borrow, what to avoid, and whether to fork or build |
-| [docs/02-platform-design.md](docs/02-platform-design.md) | The design: spaces, identity, roles and permission sets, governed app lifecycle, cloud-agnostic Kubernetes deployment, monitoring, audit, reference stack, roadmap, decisions and the ISO 27001 control mapping |
+| [docs/02-platform-design.md](docs/02-platform-design.md) | The design: capabilities for people and agents, proposals and confirmation, spaces, identity, roles and permission sets, governed app lifecycle, cloud-agnostic Kubernetes deployment, monitoring, audit, reference stack, roadmap, decisions and the ISO 27001 control mapping |
 | [docs/03-n8n-reference.md](docs/03-n8n-reference.md) | Prior art: n8n's tech stack and governance model, read from its source, and what it means for our choices |
 
 ## Status
 
-- **Decided:** build new; one company; cloud-agnostic on Kubernetes; IdP-agnostic; TypeScript; ISO 27001:2022; no data-residency constraint. Building happens in personal spaces, and team spaces run Prod, with a preview for each change request.
-- **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), and the product name.
-- **Built so far:** phase 0, the governance kernel (below).
+- **Decided:**
+  - build new; one company; cloud-agnostic on Kubernetes; IdP-agnostic; TypeScript; ISO 27001:2022; no data-residency constraint;
+  - building happens in personal spaces, and team spaces run Prod, with a preview for each change request;
+  - people ask for outcomes and builders publish capabilities, with apps as the packages they ship in;
+  - the agent and its chat adapters are a separate project that calls the platform;
+  - data lives in the platform's built-in store, which is reached like any other connector;
+  - people build with an AI copilot, and AI clients such as Claude can build through an MCP server.
+- **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), the product name, and which chat platforms can carry an approval.
+- **Built so far:** phase 0, the governance kernel (below), proven on a real Kubernetes cluster. The first piece of phase 1 is also built: the policy engine turns record-level conditions into database filters.
 
 ## What the code does today
 
@@ -29,7 +35,13 @@ The goal is not to clone Joget DX but to surpass it: match its builder breadth, 
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
 | Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
-Next: phase 1 (entities, forms, views, record-level permissions), and workload identity federation so CI systems can swap their own OIDC tokens for short-lived platform tokens, with no stored secrets.
+Next is phase 1, the capability core (§13 of the design doc):
+- the built-in store, with record- and field-level permissions and record history;
+- rules, actions and queries;
+- review cards and proposals, with confirmation enforced by the platform;
+- MCP endpoints for agents and for AI builders such as Claude.
+
+Later: workload identity federation, so CI systems can swap their own OIDC tokens for short-lived platform tokens with no stored secrets.
 
 ## Repository layout
 
