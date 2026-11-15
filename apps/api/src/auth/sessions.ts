@@ -54,9 +54,9 @@ export class SessionService {
     if (!row) return null;
     const principal = await this.#policy.userPrincipal(row.user.id, row.session.mfaAt ? { mfaAt: row.session.mfaAt } : {});
     return {
-      user: { id: row.user.id, email: row.user.email, displayName: row.user.displayName },
+      actor: { type: 'user', id: row.user.id, name: row.user.displayName, email: row.user.email },
       principal,
-      sessionId: id,
+      credential: { kind: 'session', sessionId: id },
     };
   }
 

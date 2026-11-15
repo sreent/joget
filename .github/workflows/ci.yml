@@ -42,3 +42,31 @@ jobs:
       - run: pnpm test
       - run: pnpm test:integration
       - run: pnpm build
+
+  helm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KUBECONFORM_VERSION: v0.8.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/platform
+      - name: Validate rendered manifests against Kubernetes schemas
+        run: |
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar -xz kubeconform
+          helm template platform deploy/helm/platform > default.yaml
+          helm template platform deploy/helm/platform \
+            --set ingress.enabled=true --set autoscaling.enabled=false \
+            --set telemetry.otlpEndpoint=http://otel-collector:4318 > variant.yaml
+          ./kubeconform -strict -summary -kubernetes-version 1.31.0 default.yaml variant.yaml
+      - name: Refuse unsafe values
+        run: |
+          for args in "--set config.PUBLIC_BASE_URL=http://insecure.example.com" \
+                      "--set config.DATABASE_URL=postgres://user:pass@db/platform" \
+                      "--set existingSecret=" \
+                      "--set config.MFA_EVIDENCE=assume"; do
+            if helm template platform deploy/helm/platform $args > /dev/null 2>&1; then
+              echo "::error::The chart accepted unsafe values: $args"; exit 1
+            fi
+          done

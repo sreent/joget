@@ -18,6 +18,7 @@ import type { AppContext } from './context.js';
 import { HttpError } from './errors.js';
 import { healthRoutes } from './health/routes.js';
 import { spaceRoutes } from './spaces/routes.js';
+import { tokenRoutes } from './tokens/routes.js';
 
 const REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -52,8 +53,13 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(swagger, {
     openapi: {
       info: { title: 'Platform API', version: '0.1.0', description: 'Governance kernel: identity, spaces, roles and permission sets, audit.' },
-      components: { securitySchemes: { session: { type: 'apiKey', in: 'cookie', name: ctx.config.SESSION_COOKIE_NAME } } },
-      security: [{ session: [] }],
+      components: {
+        securitySchemes: {
+          session: { type: 'apiKey', in: 'cookie', name: ctx.config.SESSION_COOKIE_NAME },
+          token: { type: 'http', scheme: 'bearer', description: 'A platform API token (plt_pat_... or plt_sat_...)' },
+        },
+      },
+      security: [{ session: [] }, { token: [] }],
     },
     transform: jsonSchemaTransform,
   });
@@ -92,6 +98,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(spaceRoutes(ctx));
   await app.register(accessRoutes(ctx));
   await app.register(auditRoutes(ctx));
+  await app.register(tokenRoutes(ctx));
   app.get(
     '/openapi.json',
     { config: { access: { kind: 'authenticated' } }, schema: { hide: true } },

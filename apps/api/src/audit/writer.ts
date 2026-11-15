@@ -34,8 +34,14 @@ export interface AuditScope {
 export const SYSTEM_ACTOR: AuditActor = { type: 'system', id: 'platform', via: 'system' };
 
 export function auditScopeFor(request: FastifyRequest, orgId: string, now: Date): AuditScope {
-  const actor: AuditActor = request.auth
-    ? { type: 'user', id: request.auth.user.id, via: 'api', sessionId: request.auth.sessionId }
+  const auth = request.auth;
+  const actor: AuditActor = auth
+    ? {
+        type: auth.actor.type,
+        id: auth.actor.id,
+        via: 'api',
+        ...(auth.credential.kind === 'session' ? { sessionId: auth.credential.sessionId } : { tokenId: auth.credential.tokenId }),
+      }
     : { type: 'anonymous', id: 'anonymous', via: 'api' };
   const traceId = trace.getActiveSpan()?.spanContext().traceId;
   const userAgent = request.headers['user-agent'];

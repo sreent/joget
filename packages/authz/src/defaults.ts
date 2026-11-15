@@ -21,6 +21,8 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'directory.service_account.manage',
     'access.binding.read',
     'access.binding.manage',
+    'access.token.read',
+    'access.token.revoke',
     'space.create',
     'space.read',
     'space.settings.manage',
@@ -37,6 +39,8 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'access.binding.manage',
     'access.permission_set.manage',
     'access.review.run',
+    'access.token.read',
+    'access.token.revoke',
   ]),
   permissionSet('ps.org.audit', 'Audit (read-only)', 'org', [
     'org.settings.read',
@@ -44,6 +48,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'org.audit.export',
     'directory.user.read',
     'access.binding.read',
+    'access.token.read',
     'space.read',
     'app.read',
     'deploy.read',
@@ -54,6 +59,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'space.read',
     'space.settings.manage',
     'space.member.manage',
+    'space.service_account.manage',
     'access.binding.read',
     'env.config.manage',
     'env.secret.write',
@@ -85,6 +91,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'connection.manage',
     'deploy.read',
     'ops.monitor.read',
+    'token.personal.create',
   ]),
 ];
 
@@ -132,13 +139,15 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
   },
   {
     id: 'gr.step-up.access-administration',
-    name: 'Fresh MFA for access administration',
+    name: 'Fresh MFA for access administration and new credentials',
     actions: [
       'access.binding.manage',
       'space.member.manage',
       'access.permission_set.manage',
       'org.guardrail.manage',
       'access.breakglass.activate',
+      'token.personal.create',
+      'space.service_account.manage',
     ],
     effect: 'step_up',
     maxMfaAgeSeconds: 900,
@@ -169,6 +178,7 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
     actions: [
       'space.settings.manage',
       'space.member.manage',
+      'space.service_account.manage',
       'app.create',
       'app.edit',
       'app.share',

@@ -16,7 +16,7 @@ The goal is not to clone Joget DX but to surpass it: match its builder breadth, 
 
 - **Decided:** build new; one company; cloud-agnostic on Kubernetes; IdP-agnostic; TypeScript; ISO 27001:2022; no data-residency constraint. Building happens in personal spaces, and team spaces run Prod, with a preview for each change request.
 - **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), and the product name.
-- **Built so far:** the first slice of phase 0, the governance kernel (below).
+- **Built so far:** phase 0, the governance kernel (below).
 
 ## What the code does today
 
@@ -25,10 +25,11 @@ The goal is not to clone Joget DX but to surpass it: match its builder breadth, 
 | Identity | Sign-in with any OIDC provider (authorization code + PKCE). Just-in-time provisioning, IdP group sync, server-side sessions with revocation, MFA evidence from standard `amr`/`acr` claims, step-up sign-in |
 | Spaces | A personal space for every user, created at first sign-in. Team spaces with a minimum number of owners. Freezing |
 | Authorization | One policy decision point (`@platform/authz`): permissions, permission sets, roles, scoped bindings with expiry, the personal-space boundary, guardrails (deny and fresh-MFA rules), separation of duties, privilege-escalation checks and explained decisions. Every route must declare an access rule, or the server refuses to start |
+| API tokens | Personal access tokens and service accounts owned by team spaces. Tokens are scoped, expire (90 days at most by default), are stored only as hashes, and can only be created from an interactive session with fresh MFA. Service accounts start with no access and gain it only through bindings. Admins can list and revoke any token, and every step is audited |
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
-| Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a migration entry point for a Kubernetes Job, a container image, and generated OpenAPI |
+| Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
-Next: service accounts and API tokens, the Helm chart, then phase 1 (entities, forms, views, record-level permissions).
+Next: phase 1 (entities, forms, views, record-level permissions), and workload identity federation so CI systems can swap their own OIDC tokens for short-lived platform tokens, with no stored secrets.
 
 ## Repository layout
 
@@ -38,6 +39,7 @@ packages/authz      Policy decision point (pure TypeScript, no I/O)
 packages/audit      Canonical hashing, Merkle seals, signatures, verification
 packages/db         Drizzle schema, SQL migrations, seeding, test-database helper
 deploy/compose      Local PostgreSQL and a sample IdP (Keycloak)
+deploy/helm         Helm chart for Kubernetes
 docs                Review, design and reference notes
 ```
 
@@ -89,8 +91,54 @@ pnpm typecheck && pnpm build
 docker build -f apps/api/Dockerfile -t platform-api .
 ```
 
-Run migrations as a one-off job before starting new API pods (`node dist/migrate.js`), and give the API an Ed25519 signing key for audit seals:
+Give the API an Ed25519 signing key for audit seals:
 
 ```bash
 pnpm --filter @platform/api audit:keygen
 ```
+
+## Using API tokens
+
+Create a personal access token while signed in. It can do at most what you can, narrowed to its scopes. The token is shown once:
+
+```bash
+curl -X POST http://localhost:3000/v1/me/tokens -H 'content-type: application/json' \
+  -b 'platform_session=<your session cookie>' \
+  -d '{"name": "reporting script", "scopes": ["space.read", "org.audit.read"], "expiresInDays": 30}'
+```
+
+Use it as a bearer token:
+
+```bash
+curl http://localhost:3000/v1/spaces -H 'authorization: Bearer plt_pat_...'
+```
+
+For automation, a team-space admin creates a service account (`POST /v1/spaces/{spaceId}/service-accounts`), grants it roles like any other principal (`POST /v1/bindings`), and issues it a token (`POST /v1/service-accounts/{id}/tokens`). Security admins can list every token (`GET /v1/tokens`) and revoke any of them (`POST /v1/tokens/{id}/revoke`).
+
+## Deploying to Kubernetes
+
+The chart in `deploy/helm/platform` runs on any conformant cluster. It includes:
+
+- restricted pod security;
+- probes, autoscaling, a disruption budget and zone spreading;
+- a default-deny network policy;
+- migrations as a pre-install and pre-upgrade job.
+
+Secrets come from an existing Secret, which your secret manager creates. The chart refuses to put secrets in values:
+
+```bash
+kubectl create secret generic platform-secrets \
+  --from-literal=DATABASE_URL='postgres://...' \
+  --from-literal=COOKIE_SECRET="$(openssl rand -base64 48)" \
+  --from-literal=OIDC_CLIENT_SECRET='...' \
+  --from-file=AUDIT_SIGNING_KEY_PEM=audit-signing-key.pem
+```
+
+```bash
+helm install platform deploy/helm/platform \
+  --set image.repository=ghcr.io/your-org/platform-api \
+  --set config.PUBLIC_BASE_URL=https://platform.example.com \
+  --set config.OIDC_ISSUER=https://login.example.com
+```
+
+The values schema rejects plain-http URLs, secrets in values and development-only settings. CI lints the chart and validates the rendered manifests against Kubernetes schemas.

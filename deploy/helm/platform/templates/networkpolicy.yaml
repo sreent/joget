@@ -1,0 +1,38 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default deny for the platform's pods (the API and the migration job), with explicit allows.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "platform.fullname" . }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- with .Values.networkPolicy.ingressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

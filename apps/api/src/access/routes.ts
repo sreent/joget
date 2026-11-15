@@ -8,7 +8,7 @@ import {
   type Binding,
   type Principal,
 } from '@platform/authz';
-import { bindings, groups, users } from '@platform/db';
+import { bindings, groups, serviceAccounts, users } from '@platform/db';
 import { and, eq, gt, isNull, or } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import type { FastifyRequest } from 'fastify';
@@ -25,7 +25,7 @@ const Scope = z.object({ type: z.enum(['org', 'space']), id: z.uuid() });
 
 const CreateBinding = z
   .object({
-    principal: z.object({ type: z.enum(['user', 'group']), id: z.uuid() }),
+    principal: z.object({ type: z.enum(['user', 'group', 'service_account']), id: z.uuid() }),
     roleId: z.string().min(1).max(100).optional(),
     permissionSetId: z.string().min(1).max(100).optional(),
     scope: Scope,
@@ -230,7 +230,8 @@ export function accessRoutes(ctx: AppContext): FastifyPluginAsyncZod {
               scopeId: body.scope.id,
               expiresAt,
               justification: body.justification ?? null,
-              grantedBy: auth.user.id,
+              grantedByType: auth.actor.type,
+              grantedBy: auth.actor.id,
               createdAt: now,
             })
             .returning();
@@ -297,7 +298,7 @@ export function accessRoutes(ctx: AppContext): FastifyPluginAsyncZod {
         const revoked = await ctx.db.transaction(async (tx) => {
           const [updated] = await tx
             .update(bindings)
-            .set({ revokedAt: now, revokedBy: auth.user.id })
+            .set({ revokedAt: now, revokedByType: auth.actor.type, revokedBy: auth.actor.id })
             .where(and(eq(bindings.id, row.id), isNull(bindings.revokedAt)))
             .returning();
           if (!updated) throw conflict('already_revoked', 'This binding is already revoked');
@@ -348,7 +349,7 @@ export function accessRoutes(ctx: AppContext): FastifyPluginAsyncZod {
   };
 }
 
-type Target = { type: 'user'; id: string } | { type: 'group'; id: string };
+type Target = { type: 'user' | 'group' | 'service_account'; id: string };
 
 async function loadPrincipal(ctx: AppContext, principal: Target): Promise<Target> {
   if (principal.type === 'user') {
@@ -357,6 +358,12 @@ async function loadPrincipal(ctx: AppContext, principal: Target): Promise<Target
       .from(users)
       .where(and(eq(users.id, principal.id), eq(users.orgId, ctx.org.id), eq(users.status, 'active')));
     if (!row) throw unprocessable('unknown_principal', 'No such active user');
+  } else if (principal.type === 'service_account') {
+    const [row] = await ctx.db
+      .select({ id: serviceAccounts.id })
+      .from(serviceAccounts)
+      .where(and(eq(serviceAccounts.id, principal.id), eq(serviceAccounts.orgId, ctx.org.id), eq(serviceAccounts.status, 'active')));
+    if (!row) throw unprocessable('unknown_principal', 'No such active service account');
   } else {
     const [row] = await ctx.db
       .select({ id: groups.id })
@@ -369,8 +376,8 @@ async function loadPrincipal(ctx: AppContext, principal: Target): Promise<Target
 
 /**
  * The bindings that separation of duties must consider for a target: for a user, their own and
- * their groups'; for a group, the group's own. (Conflicts that arise only through a group's members
- * are left to periodic access reviews.)
+ * their groups'; for a group or a service account, its own. (Conflicts that arise only through a
+ * group's members are left to periodic access reviews.)
  */
 async function bindingsOfTarget(ctx: AppContext, target: Target): Promise<Binding[]> {
   if (target.type === 'user') {
@@ -380,6 +387,6 @@ async function bindingsOfTarget(ctx: AppContext, target: Target): Promise<Bindin
   const rows: BindingRow[] = await ctx.db
     .select()
     .from(bindings)
-    .where(and(eq(bindings.principalType, 'group'), eq(bindings.principalId, target.id), isNull(bindings.revokedAt)));
+    .where(and(eq(bindings.principalType, target.type), eq(bindings.principalId, target.id), isNull(bindings.revokedAt)));
   return rows.map(toBinding);
 }

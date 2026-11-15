@@ -7,7 +7,7 @@ import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { describeBindings, BindingOut } from '../access/describe.js';
 import { loadSpace, orgResource, spaceResource, type SpaceRow } from '../access/resources.js';
-import { once, requireAuth } from '../access/rules.js';
+import { once, requireAuth, requireUser } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import { conflict, unprocessable } from '../errors.js';
@@ -89,8 +89,9 @@ export function spaceRoutes(ctx: AppContext): FastifyPluginAsyncZod {
         },
       },
       async (request, reply) => {
-        const auth = requireAuth(request);
-        const coOwners = [...new Set(request.body.coOwnerUserIds)].filter((id) => id !== auth.user.id);
+        // Team spaces are owned by people, so a service account cannot create one.
+        const auth = requireUser(request);
+        const coOwners = [...new Set(request.body.coOwnerUserIds)].filter((id) => id !== auth.actor.id);
         const minimum = ctx.config.MIN_TEAM_SPACE_OWNERS;
         if (coOwners.length + 1 < minimum) {
           throw unprocessable('not_enough_owners', `A team space needs at least ${minimum} owners. Name ${minimum - 1} co-owner(s).`);
@@ -106,11 +107,11 @@ export function spaceRoutes(ctx: AppContext): FastifyPluginAsyncZod {
 
         const now = ctx.now();
         const audit = auditScopeFor(request, ctx.org.id, now);
-        const owners = [auth.user.id, ...coOwners];
+        const owners = [auth.actor.id, ...coOwners];
         const space = await ctx.db.transaction(async (tx) => {
           const [created] = await tx
             .insert(spaces)
-            .values({ id: uuidv7(now.getTime()), orgId: ctx.org.id, kind: 'team', name: request.body.name, createdBy: auth.user.id, createdAt: now })
+            .values({ id: uuidv7(now.getTime()), orgId: ctx.org.id, kind: 'team', name: request.body.name, createdBy: auth.actor.id, createdAt: now })
             .returning();
           await recordAudit(tx, audit, {
             action: 'space.create',
@@ -128,7 +129,8 @@ export function spaceRoutes(ctx: AppContext): FastifyPluginAsyncZod {
               roleId: 'space.owner',
               scopeType: 'space',
               scopeId: created!.id,
-              grantedBy: auth.user.id,
+              grantedByType: 'user',
+              grantedBy: auth.actor.id,
               createdAt: now,
             });
             await recordAudit(tx, audit, {

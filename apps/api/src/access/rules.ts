@@ -1,6 +1,7 @@
 import type { Decision, Resource } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
 import type { AuthContext } from '../context.js';
+import { forbidden } from '../errors.js';
 
 /**
  * Every route must declare exactly one access rule in `config.access`. The server refuses to start
@@ -31,10 +32,26 @@ declare module 'fastify' {
   }
 }
 
-/** The signed-in user, for handlers on non-public routes. */
+/** The authenticated caller, for handlers on non-public routes. */
 export function requireAuth(request: FastifyRequest): AuthContext {
   if (!request.auth) throw new Error('requireAuth() called on a route without authentication');
   return request.auth;
+}
+
+/** The caller, who must be a person rather than a service account. */
+export function requireUser(request: FastifyRequest): AuthContext {
+  const auth = requireAuth(request);
+  if (auth.actor.type !== 'user') throw forbidden('person_required', 'Only people can do this, not service accounts');
+  return auth;
+}
+
+/** The caller, who must be a person signed in interactively: API tokens cannot do this. */
+export function requireSession(request: FastifyRequest): AuthContext & { credential: { kind: 'session'; sessionId: string } } {
+  const auth = requireUser(request);
+  if (auth.credential.kind !== 'session') {
+    throw forbidden('session_required', 'Sign in interactively to do this. API tokens cannot.');
+  }
+  return auth as AuthContext & { credential: { kind: 'session'; sessionId: string } };
 }
 
 const memo = new WeakMap<FastifyRequest, Map<string, Promise<unknown>>>();

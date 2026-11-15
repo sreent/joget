@@ -1,8 +1,8 @@
-import { groupMembers, groups, spaces, users } from '@platform/db';
+import { groupMembers, groups, spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { requireAuth } from '../access/rules.js';
+import { requireAuth, requireSession } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import { badRequest, HttpError, unauthorized } from '../errors.js';
@@ -141,12 +141,12 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
         schema: { tags: ['auth'], summary: 'Sign out and revoke the session' },
       },
       async (request, reply) => {
-        const auth = requireAuth(request);
+        const auth = requireSession(request);
         await ctx.db.transaction(async (tx) => {
-          await ctx.sessions.revoke(tx, auth.sessionId);
+          await ctx.sessions.revoke(tx, auth.credential.sessionId);
           await recordAudit(tx, auditScopeFor(request, ctx.org.id, ctx.now()), {
             action: 'auth.logout',
-            target: { type: 'session', id: auth.sessionId },
+            target: { type: 'session', id: auth.credential.sessionId },
           });
         });
         ctx.sessions.clearCookie(reply);
@@ -160,38 +160,61 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
         config: { access: { kind: 'authenticated' } },
         schema: {
           tags: ['auth'],
-          summary: 'The signed-in user, their groups and their personal space',
+          summary: 'Who you are: a person or a service account, how you signed in, your groups and your personal space',
           response: {
             200: z.object({
+              type: z.enum(['user', 'service_account']),
               id: z.uuid(),
               email: z.string().nullable(),
               displayName: z.string().nullable(),
               mfaVerifiedAt: z.string().nullable(),
               personalSpaceId: z.uuid().nullable(),
               groups: z.array(z.object({ id: z.uuid(), name: z.string(), source: z.enum(['idp', 'platform']) })),
+              credential: z.object({
+                kind: z.enum(['session', 'token']),
+                tokenId: z.uuid().nullable(),
+                scopes: z.array(z.string()).nullable(),
+              }),
             }),
           },
         },
       },
       async (request) => {
         const auth = requireAuth(request);
-        const [user] = await ctx.db.select().from(users).where(eq(users.id, auth.user.id));
+        const credential =
+          auth.credential.kind === 'token'
+            ? { kind: 'token' as const, tokenId: auth.credential.tokenId, scopes: [...auth.credential.scopes] }
+            : { kind: 'session' as const, tokenId: null, scopes: null };
+        if (auth.actor.type === 'service_account') {
+          return {
+            type: 'service_account' as const,
+            id: auth.actor.id,
+            email: null,
+            displayName: auth.actor.name,
+            mfaVerifiedAt: null,
+            personalSpaceId: null,
+            groups: [],
+            credential,
+          };
+        }
         const memberships = await ctx.db
           .select({ id: groups.id, name: groups.displayName, source: groups.source })
           .from(groupMembers)
           .innerJoin(groups, eq(groups.id, groupMembers.groupId))
-          .where(eq(groupMembers.userId, auth.user.id));
+          .where(eq(groupMembers.userId, auth.actor.id));
         const [personal] = await ctx.db
           .select({ id: spaces.id })
           .from(spaces)
-          .where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.user.id)));
+          .where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
         return {
-          id: auth.user.id,
-          email: user?.email ?? null,
-          displayName: user?.displayName ?? null,
+          type: 'user' as const,
+          id: auth.actor.id,
+          email: auth.actor.email,
+          displayName: auth.actor.name,
           mfaVerifiedAt: auth.principal.mfaAt?.toISOString() ?? null,
           personalSpaceId: personal?.id ?? null,
           groups: memberships,
+          credential,
         };
       },
     );
