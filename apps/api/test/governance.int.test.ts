@@ -82,6 +82,18 @@ describe('sign-in provisions people just in time', () => {
     expect(await groupsOf(erin)).toEqual(['finance']);
   });
 
+  it('answers 503 while the identity provider is unreachable, and recovers when it is back', async () => {
+    t.idp.reachable = false;
+    try {
+      const login = await t.app.inject({ method: 'GET', url: '/auth/login' });
+      expect(login.statusCode).toBe(503);
+      expect(login.json()).toMatchObject({ error: 'idp_unavailable' });
+    } finally {
+      t.idp.reachable = true;
+    }
+    expect((await t.app.inject({ method: 'GET', url: '/auth/login' })).statusCode).toBe(302);
+  });
+
   it('refuses deprovisioned users', async () => {
     const frank = await t.login('frank');
     await t.handle.db.update(users).set({ status: 'deprovisioned' }).where(eq(users.id, frank.userId));

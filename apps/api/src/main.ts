@@ -2,7 +2,7 @@ import { generateEd25519KeyPair } from '@platform/audit';
 import { createDatabase, migrateDatabase } from '@platform/db';
 import { createAppContext } from './app.js';
 import { startAuditSealer } from './audit/sealer.js';
-import { createOpenIdProvider } from './auth/oidc.js';
+import { createResilientOidcProvider } from './auth/oidc.js';
 import { loadConfig } from './config.js';
 import { buildServer } from './server.js';
 
@@ -21,14 +21,13 @@ if (!signingKey) {
   );
 }
 
-const ctx = await createAppContext({
-  config,
-  db: database.db,
-  oidc: await createOpenIdProvider(config),
-  auditSigningKeyPem: signingKey,
-});
+let reportIdpError = (error: unknown) => console.error('Cannot reach the identity provider', error);
+const oidc = createResilientOidcProvider(config, (error) => reportIdpError(error));
+const ctx = await createAppContext({ config, db: database.db, oidc, auditSigningKeyPem: signingKey });
 const { app } = await buildServer(ctx);
 for (const warning of warnings) app.log.warn(warning);
+reportIdpError = (error) => app.log.error({ err: error }, 'Cannot reach the identity provider: sign-in answers 503 until it can');
+void oidc.warmUp();
 
 const stopSealer =
   config.AUDIT_SEAL_INTERVAL_SECONDS > 0

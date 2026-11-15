@@ -91,6 +91,12 @@ pnpm typecheck && pnpm build
 docker build -f apps/api/Dockerfile -t platform-api .
 ```
 
+Behind a TLS-inspecting proxy, as on many corporate networks, pass the proxy's CA bundle as a build secret. It is used only while dependencies download, and never ends up in the image:
+
+```bash
+docker build --secret id=build_ca,src=/path/to/ca-bundle.pem -f apps/api/Dockerfile -t platform-api .
+```
+
 Give the API an Ed25519 signing key for audit seals:
 
 ```bash
@@ -142,3 +148,17 @@ helm install platform deploy/helm/platform \
 ```
 
 The values schema rejects plain-http URLs, secrets in values and development-only settings. CI lints the chart and validates the rendered manifests against Kubernetes schemas.
+
+`deploy/helm/e2e/run.sh` installs the chart on a throwaway [kind](https://kind.sigs.k8s.io/) cluster and proves that:
+
+- the migration job runs before the pods start;
+- the pods are admitted in a namespace that enforces the "restricted" Pod Security Standard, while a privileged pod is not;
+- the API answers health checks, and sign-in returns 503 while the identity provider is unreachable;
+- the network policy blocks other namespaces;
+- `helm upgrade` rolls the pods without failing a request.
+
+CI runs it on every pull request. To run it yourself:
+
+```bash
+docker build -f apps/api/Dockerfile -t platform-api:e2e . && deploy/helm/e2e/run.sh
+```

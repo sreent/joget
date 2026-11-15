@@ -73,6 +73,39 @@ export function mfaTimestamp(identity: OidcIdentity, config: Config, now: Date):
   }
 }
 
+/** The identity provider could not be reached (discovery failed). */
+export class IdpUnavailableError extends Error {
+  override readonly name = 'IdpUnavailableError';
+  constructor(cause: unknown) {
+    super('The identity provider cannot be reached', { cause });
+  }
+}
+
+/**
+ * Discover the IdP lazily, and try again on the next sign-in after a failure. An IdP outage at
+ * startup therefore doesn't crash-loop the platform: health checks and API tokens keep working,
+ * and sign-in answers 503 until the IdP is reachable.
+ */
+export function createResilientOidcProvider(
+  config: Config,
+  onError: (error: unknown) => void = () => {},
+): OidcProvider & { warmUp(): Promise<boolean> } {
+  let discovered: Promise<OidcProvider> | undefined;
+  const provider = () => {
+    discovered ??= createOpenIdProvider(config).catch((error: unknown) => {
+      discovered = undefined;
+      onError(error);
+      throw new IdpUnavailableError(error);
+    });
+    return discovered;
+  };
+  return {
+    warmUp: () => provider().then(() => true, () => false),
+    startLogin: async (options) => (await provider()).startLogin(options),
+    completeLogin: async (options) => (await provider()).completeLogin(options),
+  };
+}
+
 /** The real provider: OpenID Connect discovery, authorization code flow with PKCE. */
 export async function createOpenIdProvider(config: Config): Promise<OidcProvider> {
   const execute = config.OIDC_ALLOW_HTTP ? [client.allowInsecureRequests] : [];

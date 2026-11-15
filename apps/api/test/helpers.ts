@@ -5,7 +5,7 @@ import { createTestDatabase } from '@platform/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { expect } from 'vitest';
 import { createAppContext } from '../src/app.js';
-import type { OidcIdentity, OidcProvider } from '../src/auth/oidc.js';
+import { IdpUnavailableError, type OidcIdentity, type OidcProvider } from '../src/auth/oidc.js';
 import { loadConfig } from '../src/config.js';
 import type { AppContext } from '../src/context.js';
 import { buildServer, type Server } from '../src/server.js';
@@ -28,8 +28,11 @@ export function identity(subject: string, overrides: Partial<OidcIdentity> = {})
 /** A stand-in identity provider: the authorization code is simply the user's subject. */
 export class FakeIdp implements OidcProvider {
   readonly identities = new Map<string, OidcIdentity>();
+  /** Set to false to simulate an outage: the provider then fails the way the real one does. */
+  reachable = true;
 
   async startLogin({ redirectUri }: { redirectUri: string }) {
+    if (!this.reachable) throw new IdpUnavailableError(new Error('connect ECONNREFUSED'));
     const state = randomUUID();
     return {
       url: `https://idp.test/authorize?state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`,
@@ -40,6 +43,7 @@ export class FakeIdp implements OidcProvider {
   }
 
   async completeLogin({ callbackUrl, state }: { callbackUrl: URL; state: string }) {
+    if (!this.reachable) throw new IdpUnavailableError(new Error('connect ECONNREFUSED'));
     if (callbackUrl.searchParams.get('state') !== state) throw new Error('state mismatch');
     const found = this.identities.get(callbackUrl.searchParams.get('code') ?? '');
     if (!found) throw new Error('invalid authorization code');

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { identityFromClaims, mfaTimestamp } from '../src/auth/oidc.js';
+import { createResilientOidcProvider, IdpUnavailableError, identityFromClaims, mfaTimestamp } from '../src/auth/oidc.js';
 import { loadConfig } from '../src/config.js';
 
 const base = {
@@ -68,6 +68,17 @@ describe('mfaTimestamp reads MFA evidence the way it is configured', () => {
   it('uses acr assurance levels', () => {
     expect(mfaTimestamp(identity, loadConfig({ ...base, MFA_EVIDENCE: 'acr', MFA_ACR_VALUES: 'urn:acme:loa:2' }), now)).toEqual(new Date(1_000_000));
     expect(mfaTimestamp(identity, loadConfig({ ...base, MFA_EVIDENCE: 'acr', MFA_ACR_VALUES: 'urn:acme:loa:3' }), now)).toBeNull();
+  });
+});
+
+describe('createResilientOidcProvider', () => {
+  it('reports an unreachable IdP instead of failing at startup, and keeps retrying', async () => {
+    const errors: unknown[] = [];
+    // Nothing listens on port 9 here, so discovery fails fast.
+    const provider = createResilientOidcProvider(loadConfig({ ...base, OIDC_ISSUER: 'http://127.0.0.1:9', OIDC_ALLOW_HTTP: 'true' }), (e) => errors.push(e));
+    expect(await provider.warmUp()).toBe(false);
+    await expect(provider.startLogin({ redirectUri: 'https://platform.example.com/auth/callback' })).rejects.toBeInstanceOf(IdpUnavailableError);
+    expect(errors).toHaveLength(2);
   });
 });
 
