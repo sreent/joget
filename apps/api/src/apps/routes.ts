@@ -15,6 +15,7 @@ import type { LoadedApp } from './catalog.js';
 import { appResource } from './resources.js';
 import type { AppRuntime } from './runtime.js';
 import { AppOut, AppParams, PlanOut } from './schemas.js';
+import { describeUi } from './ui.js';
 
 /** An app as the API shows it, with what the caller may do. */
 export async function describeApp(ctx: AppContext, runtime: AppRuntime, auth: AuthContext, loaded: LoadedApp): Promise<z.infer<typeof AppOut>> {
@@ -129,6 +130,32 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         schema: { tags: ['apps'], summary: 'One app, and what you may do with it', params: AppParams, response: { 200: AppOut } },
       },
       async (request) => describeApp(ctx, runtime, requireAuth(request), await theApp(request)),
+    );
+
+    app.get(
+      '/v1/apps/:appId/ui',
+      {
+        config: { access: appRule('app.run') },
+        schema: {
+          tags: ['apps'],
+          summary: 'What you can use in an app, for screens: entities and fields with your access, forms, actions and queries',
+          params: AppParams,
+          response: {
+            200: z.object({
+              app: AppOut,
+              entities: z.record(z.string(), z.unknown()),
+              forms: z.record(z.string(), z.unknown()),
+              actions: z.record(z.string(), z.unknown()),
+              queries: z.record(z.string(), z.unknown()),
+            }),
+          },
+        },
+      },
+      async (request) => {
+        const auth = requireAuth(request);
+        const loaded = await theApp(request);
+        return { app: await describeApp(ctx, runtime, auth, loaded), ...(await describeUi(ctx, runtime, request, auth, loaded)) };
+      },
     );
 
     app.patch(

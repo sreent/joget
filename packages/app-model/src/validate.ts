@@ -161,6 +161,14 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       title: card.title.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g, (_, name: string) => `{{${fieldName(entity)(name)}}}`),
     };
   });
+  const forms = mapRecord(definition.forms, (form) => {
+    const entity = entityName(form.entity);
+    return {
+      ...form,
+      entity,
+      sections: form.sections.map((section) => ({ ...section, fields: section.fields.map((item) => ({ ...item, field: fieldName(entity)(item.field) })) })),
+    };
+  });
   const roles = mapRecord(definition.roles, (role) => ({
     ...role,
     entities: Object.fromEntries(
@@ -188,7 +196,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
     ),
   }));
   for (const change of touched) notes.push(`Updated references for the rename ${change}`);
-  return { ...definition, entities, rules, actions, queries, cards, roles } as StoredDefinition;
+  return { ...definition, entities, rules, actions, queries, cards, forms, roles } as StoredDefinition;
 }
 
 function assignIds(
@@ -426,6 +434,29 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     for (const [, field] of card.title.matchAll(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g)) {
       if (!fields.has(field!)) issues.push({ path: `cards.${name}.title`, message: `No field named ${field}` });
     }
+  }
+
+  for (const [name, form] of Object.entries(definition.forms)) {
+    const path = `forms.${name}`;
+    const fields = entityAt(form.entity, `${path}.entity`);
+    if (!fields) continue;
+    const action = form.action ? definition.actions[form.action] : undefined;
+    if (form.action && !action) issues.push({ path: `${path}.action`, message: `No action named ${form.action}` });
+    else if (action && action.entity !== form.entity) issues.push({ path: `${path}.action`, message: `${form.action} works on ${action.entity}, not ${form.entity}` });
+    const placed = new Set<string>();
+    form.sections.forEach((section, s) => {
+      section.fields.forEach((item, f) => {
+        const at = `${path}.sections[${s}].fields[${f}]`;
+        const info = fields.get(item.field);
+        if (!info) issues.push({ path: at, message: `No field named ${item.field}` });
+        else if (!item.readOnly && !isWritable(info)) issues.push({ path: at, message: `${item.field} is set by the platform: show it read-only` });
+        else if (action && !item.readOnly && !action.input.includes(item.field)) {
+          issues.push({ path: at, message: `${item.field} isn't an input of ${form.action}: show it read-only, or add it to the action's inputs` });
+        }
+        if (placed.has(item.field)) issues.push({ path: at, message: `${item.field} is on the form twice` });
+        placed.add(item.field);
+      });
+    });
   }
 
   for (const [roleName, role] of Object.entries(definition.roles)) {

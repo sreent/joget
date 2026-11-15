@@ -182,6 +182,32 @@ export const Card = z.strictObject({
 });
 export type Card = z.infer<typeof Card>;
 
+const FormField = z.strictObject({
+  field: Name,
+  /** Overrides the field's own label on this form. */
+  label: Label.optional(),
+  help: z.string().trim().min(1).max(500).optional(),
+  width: z.enum(['full', 'half']).default('full'),
+  /** Shown but not editable here. */
+  readOnly: z.boolean().default(false),
+});
+
+/**
+ * A form lays out an entity's fields for people who work in screens. The rules still run on the
+ * server whatever the form shows: a form is a convenience, never where checking happens.
+ */
+export const Form = z.strictObject({
+  label: Label,
+  entity: Name,
+  /** Submit through this action, so its rules and confirmation apply. Without one, the form creates and edits records. */
+  action: Name.optional(),
+  sections: z
+    .array(z.strictObject({ title: Label.optional(), fields: z.array(FormField).max(MAX_FIELDS) }))
+    .min(1)
+    .max(20),
+});
+export type Form = z.infer<typeof Form>;
+
 const FieldSelection = z.union([
   z.strictObject({ include: z.array(Name).max(MAX_FIELDS) }),
   z.strictObject({ exclude: z.array(Name).max(MAX_FIELDS) }),
@@ -223,7 +249,7 @@ export const AppRole = z.strictObject({
 });
 export type AppRole = z.infer<typeof AppRole>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, roles: 20 } as const;
+export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20 } as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
   z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
@@ -235,6 +261,7 @@ export const AppDefinition = z.strictObject({
   actions: bounded(Action, LIMITS.actions, 'actions'),
   queries: bounded(Query, LIMITS.queries, 'queries'),
   cards: bounded(Card, LIMITS.cards, 'cards'),
+  forms: bounded(Form, LIMITS.forms, 'forms'),
   roles: bounded(AppRole, LIMITS.roles, 'roles'),
 });
 export type AppDefinition = z.infer<typeof AppDefinition>;

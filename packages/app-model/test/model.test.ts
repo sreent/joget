@@ -57,9 +57,10 @@ describe('validateDefinition', () => {
     if (!result.ok) throw new Error(JSON.stringify(result.issues));
     const journey = result.definition.entities['expense_claim']!.fields.find((f) => f.name === 'journey')!;
     expect(journey.id).toBe(first.entities['expense_claim']!.fields.find((f) => f.name === 'trip')!.id);
-    // The rename reaches every reference: the action's input and the review card.
+    // The rename reaches every reference: the action's input, the review card and the form.
     expect(result.definition.actions['submit_claim']!.input).toContain('journey');
     expect(result.definition.cards['claim_review']!.show).toContain('journey');
+    expect(result.definition.forms['claim_form']!.sections[0]!.fields.map((f) => f.field)).toContain('journey');
     expect(result.notes).toEqual(['Updated references for the rename expense_claim.trip → journey']);
   });
 
@@ -97,6 +98,7 @@ describe('validateDefinition', () => {
 
   it('catches actions that could never succeed, and conditions with the wrong types', () => {
     const broken = clone(EXPENSE_APP) as any;
+    broken.forms = {}; // the form would rightly complain too; this test is about the action
     broken.actions.submit_claim.input = ['title', 'category'];
     broken.rules.hotel_cap.assert = { lte: [{ ref: 'record.category' }, 250] };
     broken.roles.requester.entities.expense_claim.read.where = { eq: [{ ref: 'record.amount' }, 'lots'] };
@@ -104,6 +106,16 @@ describe('validateDefinition', () => {
       "rules.hotel_cap.assert: lte compares numbers, and category isn't one",
       'actions.submit_claim.input: amount is required, so the action must take it as input, set it, or the field needs a default',
       'roles.requester.entities.expense_claim.read.where: amount holds numbers, not strings',
+    ]);
+  });
+
+  it('checks forms against their entity and action', () => {
+    const broken = clone(EXPENSE_APP) as any;
+    broken.forms.claim_form.sections[0].fields.push({ field: 'status' }, { field: 'title' }, { field: 'created_at' });
+    expect(issuesOf(broken)).toEqual([
+      "forms.claim_form.sections[0].fields[3]: status isn't an input of submit_claim: show it read-only, or add it to the action's inputs",
+      'forms.claim_form.sections[0].fields[4]: title is on the form twice',
+      'forms.claim_form.sections[0].fields[5]: created_at is set by the platform: show it read-only',
     ]);
   });
 

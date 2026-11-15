@@ -115,6 +115,19 @@ describe('sharing with colleagues', () => {
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(bob), payload: { email: 'carol@example.com', role: 'requester' } }, 403);
   });
 
+  it('describes what each person can use, for screens', async () => {
+    const bobs = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(bob) }, 200)).json();
+    expect(bobs.entities.expense_claim.can).toEqual({ read: true, create: true, update: false, delete: false });
+    expect(bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'iban')).toMatchObject({ read: 'full', create: true, update: false });
+    expect(Object.keys(bobs.actions)).toEqual(['submit_claim']);
+    expect(Object.keys(bobs.forms)).toEqual(['claim_form']);
+    const carols = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(carol) }, 200)).json();
+    expect(carols.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'iban')).toMatchObject({ read: 'masked', update: false });
+    expect(carols.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'status')).toMatchObject({ update: true });
+    expect(Object.keys(carols.actions)).toEqual(['approve_claim']);
+    expect(carols.forms).toEqual({});
+  });
+
   it('shows each person only the records and fields their role allows', async () => {
     const submitted = await inject({
       method: 'POST',
@@ -312,6 +325,7 @@ describe('building with an AI client', () => {
     dropping.entities.expense_claim.fields = dropping.entities.expense_claim.fields.filter((f: { name: string }) => f.name !== 'journey');
     dropping.actions.submit_claim.input = dropping.actions.submit_claim.input.filter((f: string) => f !== 'journey');
     dropping.cards.claim_review.show = dropping.cards.claim_review.show.filter((f: string) => f !== 'journey');
+    for (const section of dropping.forms.claim_form.sections) section.fields = section.fields.filter((f: { field: string }) => f.field !== 'journey');
     const held = await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'apply_change', arguments: { app_id: appId, definition: dropping } });
     expect(held.result).toMatchObject({ isError: true, structuredContent: { error: 'destructive_change' } });
     expect(held.result.structuredContent.details.plan.steps).toEqual([expect.objectContaining({ kind: 'drop_field', records: 2 })]);

@@ -84,6 +84,17 @@ export const EXPENSE_APP = {
   cards: {
     claim_review: { entity: 'expense_claim', title: '{{title}}: SGD {{amount}}', show: ['trip', 'category', 'amount', 'iban'] },
   },
+  forms: {
+    claim_form: {
+      label: 'Claim an expense',
+      entity: 'expense_claim',
+      action: 'submit_claim',
+      sections: [
+        { title: 'What it was', fields: [{ field: 'title' }, { field: 'trip', width: 'half' }, { field: 'category', width: 'half' }] },
+        { title: 'Paying you back', fields: [{ field: 'amount', width: 'half' }, { field: 'iban', width: 'half', help: 'Where we send the money' }] },
+      ],
+    },
+  },
   roles: {
     requester: {
       label: 'Requester',
