@@ -134,7 +134,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
                   version: z.number().int(),
                   operation: z.enum(['create', 'update', 'delete']),
                   at: z.string(),
-                  actor: z.object({ type: z.string(), id: z.uuid().nullable() }),
+                  actor: z.object({ type: z.string(), id: z.uuid().nullable(), onBehalfOf: z.uuid().nullable() }),
                   via: z.string(),
                   changes: z.array(z.record(z.string(), z.unknown())),
                 }),

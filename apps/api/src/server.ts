@@ -22,9 +22,11 @@ import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
 import { authRoutes } from './auth/routes.js';
 import { designRoutes } from './design/routes.js';
+import { studioRoutes } from './studio/routes.js';
 import type { AppContext } from './context.js';
 import { HttpError } from './errors.js';
 import { healthRoutes } from './health/routes.js';
+import { peopleRoutes } from './people/routes.js';
 import { spaceRoutes } from './spaces/routes.js';
 import { tokenRoutes } from './tokens/routes.js';
 
@@ -57,7 +59,10 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   // before sessions are authenticated.
   const routes = requireAccessRules(app);
   await app.register(cookie, { secret: ctx.config.COOKIE_SECRET });
-  await app.register(helmet);
+  // Over plain http (local development only: production requires https), don't ask browsers to upgrade requests.
+  await app.register(helmet, {
+    contentSecurityPolicy: { directives: { upgradeInsecureRequests: ctx.config.PUBLIC_BASE_URL.startsWith('https://') ? [] : null } },
+  });
   await app.register(swagger, {
     openapi: {
       info: { title: 'Ambit API', version: '0.1.0', description: 'Governance kernel and capability core: identity, spaces, roles and permission sets, apps, records, actions, queries, proposals, audit.' },
@@ -74,8 +79,9 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   installAccessControl(app, ctx);
 
   app.setErrorHandler((error, request, reply) => {
-    // People who open a review link before signing in are sent to sign in, and then back.
-    if (error instanceof HttpError && error.statusCode === 401 && request.method === 'GET' && request.url.startsWith('/review/')) {
+    // People who open a review link or the studio before signing in are sent to sign in, and then back.
+    const page = request.url.startsWith('/review/') || request.url === '/studio' || request.url.startsWith('/studio/');
+    if (error instanceof HttpError && error.statusCode === 401 && request.method === 'GET' && page) {
       return reply.redirect(`/auth/login?returnTo=${encodeURIComponent(request.url)}`);
     }
     if (error instanceof HttpError) {
@@ -119,6 +125,8 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(mcpRoutes(ctx, builder, runtime));
   await app.register(designRoutes());
   await app.register(agentRoutes(ctx));
+  await app.register(peopleRoutes(ctx));
+  await app.register(studioRoutes());
   app.get(
     '/openapi.json',
     { config: { access: { kind: 'authenticated' } }, schema: { hide: true } },

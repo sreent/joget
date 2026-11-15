@@ -166,6 +166,13 @@ describe('sharing with colleagues', () => {
       ['update', carol.userId],
     ]);
     expect(history[1].changes).toEqual([{ field: 'status', before: 'submitted', after: 'approved' }]);
+    expect(history[1].actor).toEqual({ type: 'user', id: carol.userId, onBehalfOf: null });
+    // Changes come in the entity's field order, the owner last.
+    const { definition } = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json();
+    const order: string[] = [...definition.entities.expense_claim.fields.map((f: { name: string }) => f.name), 'owner'];
+    const created = history[0].changes.map((c: { field: string }) => c.field);
+    expect(created).toEqual([...created].sort((a, b) => order.indexOf(a) - order.indexOf(b)));
+    expect(created.at(-1)).toBe('owner');
     // Carol sees the same history with the bank account masked.
     const carolsView = (await inject({ method: 'GET', url: `${records()}/${claim.id}/history`, ...as(carol) }, 200)).json().history;
     expect(carolsView[0].changes).toContainEqual({ field: 'iban', masked: true });

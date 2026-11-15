@@ -91,6 +91,10 @@ describe('acting for one named person', () => {
     delegated = body.access_token;
     const me = (await inject({ method: 'GET', url: '/v1/me', ...bearer(delegated) }, 200)).json();
     expect(me).toMatchObject({ id: bob.userId, agent: { id: agentId, name: 'agentos' }, credential: { kind: 'token' } });
+    // Acting for Bob, it may look a colleague up to fill a person field, as Bob could. On its own it may not.
+    const found = (await inject({ method: 'GET', url: '/v1/people?search=carol', ...bearer(delegated) }, 200)).json();
+    expect(found.people).toMatchObject([{ id: carol.userId, name: 'Carol' }]);
+    expect((await inject({ method: 'GET', url: '/v1/people?search=carol', ...bearer(agentToken) }, 403)).json().error).toBe('person_required');
   });
 
   it('refuses tokens the IdP did not issue, scopes beyond the approval, and anyone but the agent', async () => {

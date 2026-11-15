@@ -497,23 +497,35 @@ export class AppRuntime {
     // Field access is decided on what the caller can see now: a field hidden today stays hidden in the past too.
     const query = selectHistory(this.#names(loaded), entity, id);
     const rows = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => (await tx.query(query.text, query.values)).rows);
+    // Changes come in the entity's field order, then the owner, then fields deleted since.
+    const position = (fieldId: string) => {
+      const index = entity.fields.findIndex((f) => f.id === fieldId);
+      return index >= 0 ? index : fieldId === 'owner' ? entity.fields.length : entity.fields.length + 1;
+    };
     return rows.map((row) => {
       const changes = row['changes'] as Record<string, { name: string; before: FieldValue; after: FieldValue; source?: unknown }>;
       return {
         version: row['version'] as number,
         operation: row['operation'] as 'create' | 'update' | 'delete',
         at: row['occurred_at'] as string,
-        actor: { type: row['actor_type'] as string, id: (row['actor_id'] as string | null) ?? null },
+        actor: {
+          type: row['actor_type'] as string,
+          id: (row['actor_id'] as string | null) ?? null,
+          // When an agent made the change: the person it acted for.
+          onBehalfOf: (row['on_behalf_of'] as string | null) ?? null,
+        },
         via: row['via'] as string,
-        changes: Object.entries(changes).flatMap(([fieldId, change]): HistoryChangeOut[] => {
-          if (fieldId === 'owner') return [{ field: 'owner', before: change.before, after: change.after }];
-          const field = entity.fields.find((f) => f.id === fieldId);
-          if (!field) return [{ field: change.name, removed: true }];
-          const access = fieldAccess(read, field.name);
-          if (access === 'hidden') return [];
-          if (access === 'masked') return [{ field: field.name, masked: true }];
-          return [{ field: field.name, before: change.before, after: change.after, ...(change.source ? { source: change.source } : {}) }];
-        }),
+        changes: Object.entries(changes)
+          .sort(([a], [b]) => position(a) - position(b))
+          .flatMap(([fieldId, change]): HistoryChangeOut[] => {
+            if (fieldId === 'owner') return [{ field: 'owner', before: change.before, after: change.after }];
+            const field = entity.fields.find((f) => f.id === fieldId);
+            if (!field) return [{ field: change.name, removed: true }];
+            const access = fieldAccess(read, field.name);
+            if (access === 'hidden') return [];
+            if (access === 'masked') return [{ field: field.name, masked: true }];
+            return [{ field: field.name, before: change.before, after: change.after, ...(change.source ? { source: change.source } : {}) }];
+          }),
       };
     });
   }

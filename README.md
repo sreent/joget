@@ -22,7 +22,7 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
   - data lives in the platform's built-in store, which is reached like any other connector;
   - it stays a low-code platform like Joget and Mendix: visual designers, an AI copilot and code edit the same definitions, and AI clients such as Claude can build through an MCP server.
 - **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), and which chat platforms can carry an approval.
-- **Built so far:** phase 0, the governance kernel, proven on a real Kubernetes cluster; and the backend of phase 1, the capability core (below). The studio's visual designers are next.
+- **Built so far:** phase 0, the governance kernel, proven on a real Kubernetes cluster; the backend of phase 1, the capability core; and the first slice of the studio: the data-model and form designers, and the screens every app gets (below). Line items and file fields are next.
 
 ## What the code does today
 
@@ -33,11 +33,12 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
 | Authorization | One policy decision point (`@platform/authz`): permissions, permission sets, roles, scoped bindings with expiry, the personal-space boundary, guardrails (deny and fresh-MFA rules), separation of duties, privilege-escalation checks and explained decisions. Every route must declare an access rule, or the server refuses to start |
 | API tokens | Personal access tokens and service accounts owned by team spaces. Tokens are scoped, expire (90 days at most by default), are stored only as hashes, and can only be created from an interactive session with fresh MFA. Service accounts start with no access and gain it only through bindings. Admins can list and revoke any token, and every step is audited |
 | Apps (built-in store) | Apps live in personal spaces, defined as entities, rules, actions, queries, review cards and roles:<ul><li>Each app environment gets its own database schema and NOLOGIN role, and every query switches to that role.</li><li>Definitions are versioned. Entities and fields have stable IDs, so a rename is free and carries through to every reference. Changes apply live, but anything that deletes data waits for confirmation.</li><li>Record- and field-level permissions are compiled to SQL filters, and PII is masked by default.</li><li>Every record keeps a field-level history, with where each value came from.</li><li>Apps can be shared with named colleagues, each in one of the app's roles.</li></ul> |
+| Studio | A web app at `/studio`, in the Ocean design system, light and dark:<ul><li>The data designer: entities and fields, drag to reorder, and renames that keep the data. Saving shows the plan first, and asks again before anything deletes data.</li><li>The form designer: sections, half- or full-width fields, labels and help text, and the action a form submits through, so its rules and confirmation apply.</li><li>Every app's screens, generated from what the person may do: lists, forms, and record pages that show who changed what and when. Person fields have a picker. A colleague in a narrower role sees only what that role allows.</li><li>Sharing, the revision history, and an editor for what has no designer yet (rules, actions, queries, cards and roles).</li></ul> |
 | Agents | Every action and query a person may run is an MCP tool (`/mcp`), and AI clients such as Claude can build apps through a second MCP server (`/mcp/build`). An agent that serves many people, such as agentos or a Copilot Studio bot, is approved by a Security admin, then exchanges a person's IdP token for a 10-minute Ambit token that acts for that one person (RFC 8693). Agents work through errands only, never on raw records, and the audit log names both the agent and the person. When an API token runs an action that needs confirmation, the action becomes a proposal sealed with a digest. Only the person, signed in, can approve exactly that change, on a review page where they can also edit it |
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
 | Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
-Next, to finish phase 1 (§13 of the design doc): the studio's data-model and form designers, line items and file fields (for receipts), and generated pages.
+Next, to finish phase 1 (§13 of the design doc): line items and file fields, so a claim holds one line per receipt and keeps the receipts themselves.
 
 Later: workload identity federation, so CI systems can swap their own OIDC tokens for short-lived platform tokens with no stored secrets.
 
@@ -45,10 +46,12 @@ Later: workload identity federation, so CI systems can swap their own OIDC token
 
 ```text
 apps/api            Fastify API: auth, spaces, bindings, apps, records, actions, proposals, MCP, audit, health
+apps/studio         Ambit Studio (React, Vite, Tailwind): the designers and every app's screens, served by the API at /studio
 packages/app-model  App definitions: validation, stable IDs, migration plans, roles, and the SQL behind record-level permissions
 packages/authz      Policy decision point (pure TypeScript, no I/O)
 packages/audit      Canonical hashing, Merkle seals, signatures, verification
 packages/db         Drizzle schema, SQL migrations, seeding, test-database helper
+packages/design     The Ocean design system: tokens, IBM Plex fonts and Ambit's own styles
 deploy/compose      Local PostgreSQL and a sample IdP (Keycloak)
 deploy/helm         Helm chart for Kubernetes
 docs                Review, design and reference notes
@@ -76,6 +79,22 @@ pnpm dev
 
 Open http://localhost:3000/auth/login and sign in as `alice` / `alice` (an org owner), `bob` / `bob` or `carol` / `carol`. Then try http://localhost:3000/v1/me and http://localhost:3000/v1/spaces. The API description is at http://localhost:3000/openapi.json once you're signed in.
 
+The API serves the studio's built files at http://localhost:3000/studio/. Build them once:
+
+```bash
+pnpm --filter @platform/studio build
+```
+
+To work on the studio with hot reload, run its dev server alongside the API, tell the API that's where people come from, and open http://localhost:5173/studio/:
+
+```bash
+PUBLIC_BASE_URL=http://localhost:5173 pnpm dev
+```
+
+```bash
+pnpm --filter @platform/studio dev
+```
+
 ### Tests
 
 Unit tests need nothing else:
@@ -88,6 +107,13 @@ Integration tests run against a real PostgreSQL. Each test file gets its own thr
 
 ```bash
 TEST_DATABASE_URL=postgres://platform:platform@localhost:5432/platform pnpm test:integration
+```
+
+The studio's browser test runs in Chromium through Playwright, which isn't a dependency, so it's opt-in. It drives a real API and saves screenshots if you name a folder:
+
+```bash
+pnpm --filter @platform/studio build && STUDIO_E2E=1 SCREENSHOT_DIR=/tmp/shots \
+  TEST_DATABASE_URL=postgres://platform:platform@localhost:5432/platform pnpm --filter @platform/api test:integration -- studio
 ```
 
 Type-check and build everything:
@@ -134,7 +160,9 @@ For automation, a team-space admin creates a service account (`POST /v1/spaces/{
 
 ## Building an app and letting an agent use it
 
-Sign in as `alice`. `GET /v1/app-model/schema` returns the definition format and a complete example: an expense-claim app. Create an app in your personal space from that example:
+Sign in as `alice` and open http://localhost:3000/studio/. Create an app, starting from the example, an expense-claim app. Change its fields in the data designer, lay out its form, and share it with `bob` as a requester. **Open the app** shows the screens everyone gets; sign in as `bob` to see his narrower view.
+
+Everything the studio does goes through the API, so you can do the same without it. `GET /v1/app-model/schema` returns the definition format and the example. Create an app in your personal space from it:
 
 ```bash
 curl -X POST http://localhost:3000/v1/spaces/<your personal space ID>/apps -H 'content-type: application/json' \

@@ -18,6 +18,7 @@ COPY packages/design/package.json packages/design/
 COPY packages/authz/package.json packages/authz/
 COPY packages/audit/package.json packages/audit/
 COPY packages/db/package.json packages/db/
+COPY apps/studio/package.json apps/studio/
 RUN --mount=type=secret,id=build_ca,required=false \
     if [ -s /run/secrets/build_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi \
  && pnpm install --frozen-lockfile
