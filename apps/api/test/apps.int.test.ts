@@ -137,7 +137,7 @@ describe('sharing with colleagues', () => {
     expect(bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'total')).toMatchObject({ computed: true, create: false, read: 'full' });
     const lines = bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'lines');
     expect(lines).toMatchObject({ type: 'lines', create: true, lines: { max: 50, label: 'Receipt' } });
-    expect(lines.lines.fields.map((f: { name: string; create: boolean }) => `${f.name}:${f.create}`)).toEqual(['date:true', 'merchant:true', 'category:true', 'amount:true']);
+    expect(lines.lines.fields.map((f: { name: string; create: boolean }) => `${f.name}:${f.create}`)).toEqual(['date:true', 'merchant:true', 'category:true', 'amount:true', 'receipt:true']);
     // Lines are part of a claim, never a page of their own.
     expect(Object.keys(bobs.entities)).toEqual(['expense_claim']);
     expect(Object.keys(bobs.actions)).toEqual(['submit_claim']);
@@ -165,7 +165,7 @@ describe('sharing with colleagues', () => {
     expect(forApproval).toHaveLength(1);
     expect(forApproval[0].values).not.toHaveProperty('iban');
     expect(forApproval[0].masked).toEqual(['iban']);
-    expect(forApproval[0].values.lines).toEqual([{ id: expect.any(String), ...line('Comfort', 'travel', 32.4) }]);
+    expect(forApproval[0].values.lines).toEqual([{ id: expect.any(String), ...line('Comfort', 'travel', 32.4), receipt: null }]);
 
     // Carol may change only the status, and only through what her role allows: not the lines either.
     const lines = forApproval[0].values.lines.map((l: { id: string }) => ({ ...l, amount: 1 }));
@@ -409,10 +409,10 @@ describe('lines', () => {
     const claims = (await inject({ method: 'GET', url: records(), ...as(carol) }, 200)).json().records;
     const taxi = claims.find((r: { values: { title: string } }) => r.values.title === 'Taxi to the airport');
     expect(taxi.masked).toEqual(['lines.merchant', 'iban']);
-    expect(taxi.values.lines).toEqual([{ id: expect.any(String), date: '2026-11-02', category: 'travel', amount: 32.4 }]);
+    expect(taxi.values.lines).toEqual([{ id: expect.any(String), date: '2026-11-02', category: 'travel', amount: 32.4, receipt: null }]);
     const history = (await inject({ method: 'GET', url: `${records()}/${taxi.id}/history`, ...as(carol) }, 200)).json().history;
     expect(history[0].changes.find((c: { field: string }) => c.field === 'lines').lines.added).toEqual([
-      { id: expect.any(String), values: { date: '2026-11-02', category: 'travel', amount: 32.4 }, masked: ['merchant'] },
+      { id: expect.any(String), values: { date: '2026-11-02', category: 'travel', amount: 32.4, receipt: null }, masked: ['merchant'] },
     ]);
   });
 });

@@ -43,7 +43,7 @@ async function lines(parent = CLAIM): Promise<StoredLine[]> {
 async function write(current: StoredLine[], next: StoredLine[]) {
   for (const statement of writeLines(names, lineEntity(), CLAIM, current, next)) await client.query(statement.text, statement.values as unknown[]);
 }
-const line = (n: number, merchant: string, amount: number): StoredLine => ({ id: id(n), values: { date: '2026-11-02', merchant, category: 'travel', amount } });
+const line = (n: number, merchant: string, amount: number): StoredLine => ({ id: id(n), values: { date: '2026-11-02', merchant, category: 'travel', amount, receipt: null } });
 
 beforeAll(async () => {
   const url = process.env['TEST_DATABASE_URL'];

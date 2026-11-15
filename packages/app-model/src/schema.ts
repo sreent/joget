@@ -105,6 +105,20 @@ const ReferenceField = z.strictObject({ ...fieldCommon, type: z.literal('referen
 /** A person in the directory, for example who a request is assigned to. */
 const UserField = z.strictObject({ ...fieldCommon, type: z.literal('user') });
 
+/** The kinds of file a file field can take. The platform reads each file's type from its content, not its name. */
+export const FILE_KINDS = ['image', 'pdf'] as const;
+export type FileKind = (typeof FILE_KINDS)[number];
+
+/**
+ * A file, such as a receipt: uploaded first, then set as the field's value by its ID. The
+ * platform keeps it, checks it for malware, and lets only those who can see the field download it.
+ */
+const FileField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('file'),
+  accept: z.array(z.enum(FILE_KINDS)).min(1).max(FILE_KINDS.length).default([...FILE_KINDS]),
+});
+
 /**
  * Line items: records of another entity that belong to each record of this one, such as one line
  * per receipt on an expense claim. That entity becomes part of this one: its records exist only
@@ -129,6 +143,7 @@ export const Field = z.discriminatedUnion('type', [
   ChoiceField,
   ReferenceField,
   UserField,
+  FileField,
   LinesField,
 ]);
 export type Field = z.infer<typeof Field>;

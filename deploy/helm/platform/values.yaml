@@ -34,6 +34,15 @@ config:
   AUDIT_SIGNING_KEY_ID: audit-signing-key-1
   AUDIT_SEAL_INTERVAL_SECONDS: "60"
   AUDIT_SEAL_SAFETY_WINDOW_SECONDS: "60"
+  # Files people upload, such as receipts. `postgres` keeps them with each app's data; `s3` keeps them
+  # in any S3-compatible store: set S3_BUCKET, S3_REGION and, outside AWS, S3_ENDPOINT. Put
+  # S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY in the Secret, or leave them out to use workload identity.
+  FILE_STORE: postgres
+  FILE_MAX_BYTES: "10485760"
+  # Uploads are scanned for malware by a ClamAV clamd service, and refused while it can't answer.
+  FILE_SCANNER: clamav
+  CLAMAV_HOST: clamav.clamav.svc.cluster.local
+  CLAMAV_PORT: "3310"
 
 # Extra environment variables for the API container, in Kubernetes `env` format.
 extraEnv: []
@@ -92,7 +101,8 @@ networkPolicy:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
-  # Where the API may connect: the database, the identity provider and the OTLP collector.
+  # Where the API may connect: the database, the identity provider, the OTLP collector, the malware
+  # scanner and, over HTTPS, an object store.
   # Narrow these with `to:` selectors or CIDRs for your environment.
   egress:
     - ports:
@@ -103,6 +113,10 @@ networkPolicy:
           protocol: TCP
     - ports:
         - port: 4318
+          protocol: TCP
+    # The malware scanner (clamd).
+    - ports:
+        - port: 3310
           protocol: TCP
 
 serviceAccount:

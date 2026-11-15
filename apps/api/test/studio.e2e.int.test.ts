@@ -22,6 +22,7 @@ interface Locator {
   getByLabel(text: string, options?: { exact?: boolean }): Locator;
   getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
   first(): Locator;
+  setInputFiles(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
 }
 interface Page extends Locator {
   goto(url: string): Promise<unknown>;
@@ -138,6 +139,9 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByLabel('Receipt 1, Merchant').fill('Comfort taxi');
     await page.getByLabel('Receipt 1, Category').selectOption('travel');
     await page.getByLabel('Receipt 1, Amount (SGD)').fill('32.40');
+    // The receipt uploads as soon as it's picked, and shows as a link to it.
+    await page.getByLabel('Receipt 1, Receipt').setInputFiles({ name: 'taxi.jpg', mimeType: 'image/jpeg', buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(2048, 9)]) });
+    await visible(page.getByRole('link', { name: /taxi\.jpg/ }));
     await page.getByRole('button', { name: 'Add a line' }).click();
     await page.getByLabel('Receipt 2, Date').fill('2026-11-03');
     await page.getByLabel('Receipt 2, Merchant').fill('Marina Bay Sands');
@@ -150,6 +154,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.getByRole('heading', { name: 'Singapore trip' }));
     await visible(page.getByText('Submitted', { exact: true }));
     await visible(page.getByRole('cell', { name: 'Marina Bay Sands' }));
+    await visible(page.getByRole('link', { name: /taxi\.jpg/ }));
     await visible(page.getByText('Created by Alice'));
 
     // Pick the approver by name, not by ID.

@@ -58,10 +58,18 @@ export interface CardData {
   readonly responses: Array<'approve' | 'edit' | 'reject'>;
 }
 
-/** How a value reads to a person. */
-export function displayValue(definition: StoredDefinition, entity: string, field: string, value: FieldValue): string {
+/** A file as cards and screens name it. */
+export interface FileInfo {
+  readonly name: string;
+  readonly contentType: string;
+  readonly size: number;
+}
+
+/** How a value reads to a person. A file reads as its name, if known. */
+export function displayValue(definition: StoredDefinition, entity: string, field: string, value: FieldValue, files: Readonly<Record<string, FileInfo>> = {}): string {
   if (value === null) return '—';
   const declared = definition.entities[entity]?.fields.find((f) => f.name === field);
+  if (declared?.type === 'file') return typeof value === 'string' && files[value] ? files[value].name : 'A file';
   if (declared?.type === 'choice') {
     const label = (v: string) => declared.options.find((option) => option.value === v)?.label ?? v;
     return Array.isArray(value) ? value.map(label).join(', ') : label(value as string);
@@ -86,6 +94,8 @@ export function buildCard(input: {
   readonly findings: readonly Finding[];
   /** Where values came from, by field; for a line's value, as `lines[2].amount`. */
   readonly provenance?: Readonly<Record<string, Provenance>>;
+  /** The files the values name, so the card can show their names. */
+  readonly files?: Readonly<Record<string, FileInfo>>;
 }): CardData {
   const { definition, entity, values } = input;
   const card = input.card ? definition.cards[input.card] : undefined;
@@ -114,7 +124,7 @@ export function buildCard(input: {
         cells: declared.map((f) => {
           const value = line.values[f.name] ?? null;
           const source = input.provenance?.[`${of}[${index}].${f.name}`];
-          return { name: f.name, label: f.label, type: f.type, value, display: displayValue(definition, lines.entity, f.name, value), ...(source ? { source } : {}) };
+          return { name: f.name, label: f.label, type: f.type, value, display: displayValue(definition, lines.entity, f.name, value, input.files), ...(source ? { source } : {}) };
         }),
       })),
     }];
@@ -133,7 +143,7 @@ export function buildCard(input: {
         label: info.field?.label ?? name,
         type: info.field?.type ?? ('system' as const),
         value,
-        display: displayValue(definition, entity, name, value),
+        display: displayValue(definition, entity, name, value, input.files),
         ...(source ? { source } : {}),
       }];
     }),

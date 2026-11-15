@@ -18,6 +18,7 @@ export const FIELD_TYPES: ReadonlyArray<{ type: FieldType; label: string; hint: 
   { type: 'email', label: 'Email', hint: 'An email address' },
   { type: 'user', label: 'Person', hint: 'Someone in your organization' },
   { type: 'reference', label: 'Link', hint: 'A record of another entity' },
+  { type: 'file', label: 'File', hint: 'A receipt, a photo or a PDF' },
   { type: 'lines', label: 'Lines', hint: 'A table in each record, such as one line per receipt' },
 ];
 
@@ -169,6 +170,8 @@ function fieldOfType(base: Pick<Field, 'name' | 'label'> & Partial<Field>, type:
     }
     case 'lines':
       return { ...common, classification: 'internal', type, entity: base.type === 'lines' && base.entity ? base.entity : '', max: 100 };
+    case 'file':
+      return { ...common, type, accept: ['image', 'pdf'] };
     case 'boolean':
     case 'date':
     case 'datetime':

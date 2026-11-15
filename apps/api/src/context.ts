@@ -7,6 +7,7 @@ import type { PolicyService } from './access/policy-service.js';
 import type { OidcProvider } from './auth/oidc.js';
 import type { SessionService } from './auth/sessions.js';
 import type { Config } from './config.js';
+import type { FileService } from './files/service.js';
 import type { TokenService } from './tokens/service.js';
 
 /** Everything the API needs, created once at startup and passed explicitly. */
@@ -21,6 +22,8 @@ export interface AppContext {
   readonly policy: PolicyService;
   readonly sessions: SessionService;
   readonly tokens: TokenService;
+  /** Files people upload, such as receipts: where they're kept, and how they're checked. */
+  readonly files: FileService;
   readonly auditSigner: Signer;
   readonly auditVerifier: SignatureVerifier;
   /** The clock. Injectable so tests can move time. */

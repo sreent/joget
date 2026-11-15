@@ -37,9 +37,19 @@ function sourceTag(source: Record<string, unknown> | undefined): string {
   }
 }
 
-function formControl(definition: StoredDefinition, entity: string, name: string, value: unknown): string {
+/** A file's link, for those who may open it. */
+const fileLink = (appId: string, id: unknown, name: string) => `<a href="/v1/apps/${escape(appId)}/files/${escape(id)}" target="_blank" rel="noopener">${escape(name)}</a>`;
+
+/** Files on the review page: their names by ID, from the card, and the app they belong to. */
+interface FileLinks {
+  readonly appId: string;
+  readonly names: ReadonlyMap<string, string>;
+}
+
+function formControl(definition: StoredDefinition, entity: string, name: string, value: unknown, files: FileLinks): string {
   const field = entityFields(definition.entities[entity]!).get(name)?.field;
   const id = `f-${escape(name)}`;
+  if (field?.type === 'file') return lineFieldControl(field, name, id, value, files);
   const label = `<label for="${id}">${escape(field?.label ?? name)}</label>`;
   if (field?.type === 'boolean') {
     return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escape(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
@@ -54,8 +64,12 @@ function formControl(definition: StoredDefinition, entity: string, name: string,
   return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escape(name)}" value="${escape(value ?? '')}"></div>`;
 }
 
-/** One labelled control for a field of a line. */
-function lineFieldControl(field: StoredField, name: string, id: string, value: unknown): string {
+/** One labelled control for a field of a line. A file is kept as it is: it's added in the app, not here. */
+function lineFieldControl(field: StoredField, name: string, id: string, value: unknown, files: FileLinks): string {
+  if (field.type === 'file') {
+    const kept = typeof value === 'string' ? `<input type="hidden" name="${escape(name)}" value="${escape(value)}">${fileLink(files.appId, value, files.names.get(value) ?? 'The file')}` : '<span>None</span>';
+    return `<div class="ambit-field"><span class="ambit-label">${escape(field.label)}</span>${kept}</div>`;
+  }
   const label = `<label for="${id}">${escape(field.label)}</label>`;
   if (field.type === 'boolean') {
     return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escape(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
@@ -75,13 +89,13 @@ function lineFieldControl(field: StoredField, name: string, id: string, value: u
  * platform knows which line changed, with a box to remove it; then an empty one to add a line.
  * Blocks rather than a table, so it fits a phone.
  */
-function linesControl(definition: StoredDefinition, field: Extract<StoredField, { type: 'lines' }>, lines: ReadonlyArray<Record<string, unknown>>): string {
+function linesControl(definition: StoredDefinition, field: Extract<StoredField, { type: 'lines' }>, lines: ReadonlyArray<Record<string, unknown>>, files: FileLinks): string {
   const lineEntity = definition.entities[field.entity]!;
   const block = (line: Record<string, unknown> | null, index: number) => {
     const at = (f: string) => `${field.name}[${index}][${f}]`;
     const id = (f: string) => `f-${escape(field.name)}-${index}-${escape(f)}`;
     const title = line ? `${lineEntity.label} ${index + 1}` : `Add a ${lineEntity.label.toLowerCase()} (optional)`;
-    const fields = lineEntity.fields.map((f) => lineFieldControl(f, at(f.name), id(f.name), line?.[f.name] ?? null)).join('');
+    const fields = lineEntity.fields.map((f) => lineFieldControl(f, at(f.name), id(f.name), line?.[f.name] ?? null, files)).join('');
     const keep = line && typeof line['id'] === 'string' ? `<input type="hidden" name="${at('id')}" value="${escape(line['id'])}">` : '';
     const remove = line ? `<div class="ambit-check"><input type="checkbox" id="${id('remove')}" name="${at('remove')}"><label for="${id('remove')}">Remove this ${escape(lineEntity.label.toLowerCase())}</label></div>` : '';
     return `<div class="approval-line${line ? '' : ' new'}"><p class="approval-line-title">${escape(title)}</p>${keep}<div class="approval-line-fields">${fields}</div>${remove}</div>`;
@@ -167,8 +181,16 @@ function page(input: {
         )
         .join('')}</ul>`
     : '<p class="approval-clear">The app\'s rules found nothing to check.</p>';
+  // Files open from the card: the person may, as the one who uploaded them or can see them.
+  const names = new Map<string, string>();
+  for (const cell of [...card.fields, ...(card.tables ?? []).flatMap((table) => table.rows.flatMap((row) => row.cells))]) {
+    if (cell.type === 'file' && typeof cell.value === 'string') names.set(cell.value, cell.display);
+  }
+  const files: FileLinks = { appId: proposal.appId, names };
+  const shown = (cell: { type: string; value: unknown; display: string }) =>
+    cell.type === 'file' && typeof cell.value === 'string' ? fileLink(proposal.appId, cell.value, cell.display) : escape(cell.display);
   const fields = card.fields
-    .map((f) => `<div class="pair"><dt>${escape(f.label)}</dt><dd>${escape(f.display)}${sourceTag(f.source as Record<string, unknown> | undefined)}</dd></div>`)
+    .map((f) => `<div class="pair"><dt>${escape(f.label)}</dt><dd>${shown(f)}${sourceTag(f.source as Record<string, unknown> | undefined)}</dd></div>`)
     .join('');
   const tables = (card.tables ?? [])
     .map(
@@ -179,7 +201,7 @@ function page(input: {
           .map(
             (row) =>
               `<tr>${row.cells
-                .map((cell) => `<td${cell.type === 'number' ? ' class="number"' : ''}>${escape(cell.display)}${sourceTag(cell.source as Record<string, unknown> | undefined)}</td>`)
+                .map((cell) => `<td${cell.type === 'number' ? ' class="number"' : ''}>${shown(cell)}${sourceTag(cell.source as Record<string, unknown> | undefined)}</td>`)
                 .join('')}</tr>`,
           )
           .join('')}</tbody></table></div></section>`,
@@ -189,8 +211,8 @@ function page(input: {
   const control = (name: string) => {
     const field = input.definition!.entities[input.entity!]!.fields.find((f) => f.name === name);
     return field?.type === 'lines'
-      ? linesControl(input.definition!, field, (effect[name] as Array<Record<string, unknown>> | undefined) ?? [])
-      : formControl(input.definition!, input.entity!, name, effect[name]);
+      ? linesControl(input.definition!, field, (effect[name] as Array<Record<string, unknown>> | undefined) ?? [], files)
+      : formControl(input.definition!, input.entity!, name, effect[name], files);
   };
   const edit =
     pending && input.definition && input.entity && input.inputs.length
@@ -220,7 +242,11 @@ ${findings}
 ${tables}
 ${edit}
 ${actions}
-<p class="approval-signed">You are approving exactly this change, sealed as <code>${escape(proposal.digest.slice(0, 16))}</code>…. Expires ${escape(proposal.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.</p>
+<p class="approval-signed">${
+    pending
+      ? `You are approving exactly this change, sealed as <code>${escape(proposal.digest.slice(0, 16))}</code>…. Expires ${escape(proposal.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.`
+      : `${proposal.status === 'approved' ? 'You approved exactly this change' : 'This change was'}, sealed as <code>${escape(proposal.digest.slice(0, 16))}</code>….`
+  }</p>
 </div></article>
 </main></body></html>`;
 }

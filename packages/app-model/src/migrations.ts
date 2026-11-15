@@ -1,4 +1,4 @@
-import { columnName, lineOwners, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
+import { columnName, hasFiles, lineOwners, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
 import { NAME_PATTERN } from './schema.js';
 import { ident } from './sql.js';
 
@@ -62,6 +62,8 @@ export function physicalType(field: StoredField, entities: Readonly<Record<strin
       return 'uuid';
     case 'reference':
       return `uuid references ${tableName(entities[field.entity]!.id)}`;
+    case 'file':
+      return 'uuid references files';
     case 'lines':
       return null;
   }
@@ -135,8 +137,9 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
   const addColumn = (entity: StoredEntity, field: StoredField) => {
     const type = physicalType(field, next.entities);
     if (type === null) return;
-    if (field.type === 'reference') {
-      const target = tableOf(next.entities[field.entity]!.id);
+    if (field.type === 'reference' || field.type === 'file') {
+      // A file stays while anything refers to it: a record, a line, or their history.
+      const target = field.type === 'reference' ? tableOf(next.entities[field.entity]!.id) : `${schema}.files`;
       references.push(`alter table ${table(entity)} add column ${column(field)} uuid references ${target} (id) on delete restrict`);
       references.push(`create index ${index(entity, field, 'idx')} on ${table(entity)} (${column(field)})`);
     } else {
@@ -304,12 +307,35 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
   // Drop the tables together, so references between them don't get in the way.
   if (dropTables.length) drops.unshift(`drop table ${dropTables.join(', ')}`);
 
+  // Environments made before file fields existed get their file tables with their first file field.
+  const fileTables = hasFiles(next) && !hasFiles(previous ?? { entities: {} }) ? filesTables(names) : [];
+
   return {
     steps,
     destructive: steps.some((s) => s.destructive),
-    statements: [...drops, ...creates, ...lineCreates, ...adds, ...references, ...indexes, ...comments, ...computes],
+    statements: [...drops, ...fileTables, ...creates, ...lineCreates, ...adds, ...references, ...indexes, ...comments, ...computes],
     impact,
   };
+}
+
+/**
+ * An environment's files: what each is, who uploaded it and for whom, and, in the database store,
+ * its content. A file is attached once a record refers to it; until then it expires. The role may
+ * add and read files, and attach them, but never delete one: the platform removes expired files.
+ */
+export function filesTables(names: EnvironmentNames): string[] {
+  const schema = ident(names.schema);
+  const role = ident(names.role);
+  return [
+    `create table if not exists ${schema}.files (id uuid primary key, name text not null, content_type text not null, size bigint not null, ` +
+      `sha256 text not null, storage_key text not null, scan text not null check (scan in ('clean', 'not_scanned')), ` +
+      `created_at timestamptz not null, created_by uuid not null, on_behalf_of uuid, ` +
+      `attached_at timestamptz, entity_id text, record_id uuid, expires_at timestamptz)`,
+    `create index if not exists files_expiry_idx on ${schema}.files (expires_at) where attached_at is null`,
+    `create table if not exists ${schema}.file_contents (file_id uuid primary key references ${schema}.files (id) on delete cascade, content bytea not null)`,
+    `grant select, insert on ${schema}.files, ${schema}.file_contents to ${role}`,
+    `grant update (attached_at, entity_id, record_id, expires_at) on ${schema}.files to ${role}`,
+  ];
 }
 
 /**
@@ -330,6 +356,7 @@ export function provisionEnvironment(names: EnvironmentNames): string[] {
       `actor_id uuid, on_behalf_of uuid, via text not null, occurred_at timestamptz not null, audit_event_id uuid)`,
     `create index history_record_idx on ${schema}.history (entity_id, record_id, occurred_at)`,
     `grant select, insert on ${schema}.history to ${role}`,
+    ...filesTables(names),
   ];
 }
 

@@ -352,6 +352,21 @@ function FieldPanel(props: {
         <Checkbox label="No two records may share a value" checked={field.unique} onChange={(value) => set({ unique: value })} />
       ) : null}
       {field.type === 'choice' ? <ChoiceOptions options={field.options} multiple={field.multiple} onChange={set} /> : null}
+      {field.type === 'file' ? (
+        <div className="grid gap-1.5">
+          <span className="text-sm text-muted">Takes</span>
+          {(['image', 'pdf'] as const).map((kind) => (
+            <Checkbox
+              key={kind}
+              label={kind === 'image' ? 'Images: photos and scans' : 'PDFs'}
+              checked={field.accept.includes(kind)}
+              disabled={field.accept.length === 1 && field.accept.includes(kind)}
+              onChange={(on) => set({ accept: on ? [...field.accept, kind] : field.accept.filter((k) => k !== kind) })}
+            />
+          ))}
+          <span className="text-xs text-faint">Every upload is checked for what it really is, and for malware.</span>
+        </div>
+      ) : null}
       {field.type === 'reference' ? (
         <Field label="Links to">
           {(id) => (

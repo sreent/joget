@@ -142,10 +142,11 @@ export function LinesChangeView({ field, change, current }: { field: UiField; ch
     const text = display(fieldOf(spec?.titleField ?? ''), (named ?? known ?? null) as Value);
     return text === '—' ? `a ${spec?.label.toLowerCase() ?? 'line'}` : text;
   };
+  // In the line's own field order; a file is said to be attached, never shown by its ID.
   const summary = (values: Readonly<Record<string, Value>>) =>
-    Object.entries(values)
-      .filter(([name]) => name !== spec?.titleField)
-      .map(([name, value]) => display(fieldOf(name), value))
+    (spec?.fields ?? [])
+      .filter((f) => f.name !== spec?.titleField && f.name in values)
+      .map((f) => (f.type === 'file' ? (values[f.name] ? `${f.label} attached` : '—') : display(f, values[f.name] ?? null)))
       .filter((text) => text !== '—')
       .join(', ');
   return (

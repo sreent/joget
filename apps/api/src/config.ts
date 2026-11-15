@@ -78,6 +78,33 @@ export const ConfigSchema = z
     /** The longest a service-account token may live. */
     SERVICE_ACCOUNT_TOKEN_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
 
+    /**
+     * Where files people upload are kept: `postgres` keeps them in each app environment's own schema,
+     * with its records; `s3` keeps them in any S3-compatible object store (S3, MinIO, Ceph, R2).
+     */
+    FILE_STORE: z.enum(['postgres', 's3']).default('postgres'),
+    S3_BUCKET: z.string().min(1).optional(),
+    S3_REGION: z.string().min(1).default('us-east-1'),
+    /** For stores other than AWS, such as https://minio.example.com */
+    S3_ENDPOINT: z.url().optional(),
+    S3_FORCE_PATH_STYLE: bool.default(false),
+    /** Optional: without them, the AWS SDK's own chain is used, such as a pod's workload identity. */
+    S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+    S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    /** The largest file anyone may upload. */
+    FILE_MAX_BYTES: z.coerce.number().int().min(1024).max(50 * 1024 * 1024).default(10 * 1024 * 1024),
+    /**
+     * How uploads are checked for malware before anyone can use them: `clamav` asks a clamd server.
+     * With `none`, files are marked as not scanned; in production, uploads are then refused.
+     */
+    FILE_SCANNER: z.enum(['none', 'clamav']).default('none'),
+    CLAMAV_HOST: z.string().min(1).default('localhost'),
+    CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).default(3310),
+    /** How long an upload waits to be attached to a record. At least as long as a proposal waits. */
+    FILE_UNATTACHED_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 90).default(24 * 7),
+    /** How often expired uploads are removed. 0 turns it off, for example when a worker does it. */
+    FILE_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(3600),
+
     /** Ed25519 private key (PKCS#8 PEM) that signs audit seals. Required in production. */
     AUDIT_SIGNING_KEY_PEM: z.string().min(1).optional(),
     AUDIT_SIGNING_KEY_ID: z.string().min(1).default('audit-signing-key-1'),
@@ -111,6 +138,15 @@ export const ConfigSchema = z
     ];
     for (const [broken, path, message] of rules) {
       if (broken) ctx.addIssue({ code: 'custom', message, path: [path] });
+    }
+  })
+  .superRefine((config, ctx) => {
+    if (config.FILE_STORE === 's3' && !config.S3_BUCKET) ctx.addIssue({ code: 'custom', message: 'FILE_STORE=s3 needs S3_BUCKET', path: ['S3_BUCKET'] });
+    if (Boolean(config.S3_ACCESS_KEY_ID) !== Boolean(config.S3_SECRET_ACCESS_KEY)) {
+      ctx.addIssue({ code: 'custom', message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither', path: ['S3_ACCESS_KEY_ID'] });
+    }
+    if (config.FILE_UNATTACHED_TTL_HOURS < config.PROPOSAL_TTL_HOURS) {
+      ctx.addIssue({ code: 'custom', message: 'FILE_UNATTACHED_TTL_HOURS must be at least PROPOSAL_TTL_HOURS, so files outlive the proposals that name them', path: ['FILE_UNATTACHED_TTL_HOURS'] });
     }
   });
 

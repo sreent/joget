@@ -27,6 +27,7 @@ import type { AppContext } from './context.js';
 import { HttpError } from './errors.js';
 import { healthRoutes } from './health/routes.js';
 import { peopleRoutes } from './people/routes.js';
+import { fileRoutes } from './files/routes.js';
 import { spaceRoutes } from './spaces/routes.js';
 import { tokenRoutes } from './tokens/routes.js';
 
@@ -129,6 +130,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(designRoutes());
   await app.register(agentRoutes(ctx));
   await app.register(peopleRoutes(ctx));
+  await app.register(fileRoutes(ctx, runtime));
   await app.register(studioRoutes());
   app.get(
     '/openapi.json',

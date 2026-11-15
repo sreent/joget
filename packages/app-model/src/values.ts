@@ -138,6 +138,7 @@ export function canonicalValue(info: FieldInfo, value: unknown): Result {
     }
     case 'reference':
     case 'user':
+    case 'file':
       return uuid(value);
     case 'lines':
       return fail('invalid_type', 'Lines are checked as a list');

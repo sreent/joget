@@ -19,6 +19,8 @@ export interface UiField {
   readonly decimals?: number;
   readonly maxLength?: number;
   readonly multiline?: boolean;
+  /** For a file field: the kinds it takes. */
+  readonly accept?: readonly string[];
   /** True for a number worked out from lines: shown, never entered. */
   readonly computed?: boolean;
   /** How it is worked out, such as `{ sum: 'lines.amount' }`, so screens can show it while people type. */
@@ -42,6 +44,7 @@ function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'u
     ...(field.type === 'reference' || field.type === 'lines' ? { entity: field.entity } : {}),
     ...(field.type === 'number' ? { decimals: field.decimals, ...(field.rollup ? { computed: true, rollup: field.rollup as Record<string, string> } : {}) } : {}),
     ...(field.type === 'text' ? { maxLength: field.maxLength, multiline: field.multiline } : {}),
+    ...(field.type === 'file' ? { accept: [...field.accept] } : {}),
   };
 }
 

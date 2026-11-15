@@ -139,7 +139,7 @@ describe('validateDefinition', () => {
     expect(issuesOf(broken)).toEqual([
       "entities.expense_claim.fields[3].rollup: merchant isn't a number field of lines",
       'entities.expense_claim.fields[7].entity: expense_line is already the lines of expense_claim.lines',
-      "entities.expense_line.fields[4].unique: Fields of lines can't be unique yet",
+      "entities.expense_line.fields[5].unique: Fields of lines can't be unique yet",
       'entities.other.fields[0].entity: expense_line is lines of another entity, so nothing else can refer to its lines',
       "rules.cap.assert: record.lines: conditions can't test lines one by one. Add a rollup, such as a total, and test that",
       'queries.lines_query.entity: expense_line is the lines of expense_claim.lines, so it has no records of its own: use expense_claim',
@@ -172,7 +172,7 @@ describe('validateDefinition', () => {
     const claim = definition.entities['expense_claim']!;
     expect(claim.fields.find((f) => f.name === 'receipts')).toMatchObject({ type: 'lines', entity: 'receipt' });
     expect(claim.fields.find((f) => f.name === 'total')).toMatchObject({ rollup: { sum: 'receipts.value' } });
-    expect(definition.cards['claim_review']!.table).toEqual({ of: 'receipts', columns: ['date', 'merchant', 'category', 'value'] });
+    expect(definition.cards['claim_review']!.table).toEqual({ of: 'receipts', columns: ['date', 'merchant', 'category', 'value', 'receipt'] });
     expect(definition.rules['hotel_cap']).toMatchObject({ entity: 'receipt', assert: { lte: [{ ref: 'record.value' }, 250] } });
     expect(definition.actions['submit_claim']!.input).toContain('receipts');
     expect(definition.roles['approver']!.entities['expense_claim']!.read).toMatchObject({ fields: { include: ['title', 'total', 'receipts.value'] } });
@@ -248,7 +248,7 @@ describe('lines', () => {
   it('completes the lines a caller sends against the lines a record has', () => {
     const hotel = { date: '2026-11-02', merchant: 'Hilton', category: 'hotel', amount: 300 };
     expect(completeLines(lineEntity, field, [{ id: 'line-1', values: { amount: 15 } }, { values: hotel }], [grab])).toEqual({
-      lines: [{ id: 'line-1', values: { ...grab.values, amount: 15 } }, { id: null, values: hotel }],
+      lines: [{ id: 'line-1', values: { ...grab.values, amount: 15, receipt: null } }, { id: null, values: { ...hotel, receipt: null } }],
       issues: [],
     });
     expect(completeLines(lineEntity, field, [{ id: 'line-9', values: {} }], [grab]).issues).toMatchObject([{ field: 'lines[0].id', code: 'invalid_uuid' }]);
@@ -275,13 +275,13 @@ describe('lines', () => {
   });
 
   it('records what changed between two versions of the lines', () => {
-    const [date, merchant, category, amount] = lineEntity.fields.map((f) => f.id);
+    const [date, merchant, category, amount, receipt] = lineEntity.fields.map((f) => f.id);
     const taxi = { id: 'line-2', values: { date: '2026-11-03', merchant: 'Taxi', category: 'travel', amount: 20 } };
     const meal = { id: 'line-3', values: { date: '2026-11-03', merchant: 'Lau Pa Sat', category: 'meals', amount: 18 } };
     const change = diffLines(lineEntity, [grab, taxi], [{ ...taxi, values: { ...taxi.values, amount: 22 } }, meal], { '0.amount': { source: 'person' }, '1.amount': { source: 'document' } });
     expect(change).toEqual({
-      added: [{ id: 'line-3', values: { [date!]: '2026-11-03', [merchant!]: 'Lau Pa Sat', [category!]: 'meals', [amount!]: 18 }, sources: { [amount!]: { source: 'document' } } }],
-      removed: [{ id: 'line-1', values: { [date!]: '2026-11-01', [merchant!]: 'Grab', [category!]: 'travel', [amount!]: 12 } }],
+      added: [{ id: 'line-3', values: { [date!]: '2026-11-03', [merchant!]: 'Lau Pa Sat', [category!]: 'meals', [amount!]: 18, [receipt!]: null }, sources: { [amount!]: { source: 'document' } } }],
+      removed: [{ id: 'line-1', values: { [date!]: '2026-11-01', [merchant!]: 'Grab', [category!]: 'travel', [amount!]: 12, [receipt!]: null } }],
       changed: [{ id: 'line-2', changes: { [amount!]: { before: 20, after: 22, source: { source: 'person' } } } }],
       reordered: false,
     });
@@ -305,13 +305,17 @@ describe('planMigration', () => {
     const plan = planMigration(undefined, expense(), names);
     expect(plan.steps.map((s) => s.description)).toEqual(['Create expense_claim', 'Create expense_line, the lines of expense_claim.lines']);
     expect(plan.destructive).toBe(false);
-    expect(plan.statements[0]).toMatch(/^create table "app_\w+_sandbox"\."e_id0001" \(id uuid primary key/);
+    // The environment's file tables come first: file columns refer to them.
+    expect(plan.statements[0]).toMatch(/^create table if not exists "app_\w+_sandbox"\.files /);
+    const claimTable = plan.statements.findIndex((s) => s.startsWith(`create table "${names.schema}"."e_id0001" (id uuid primary key`));
+    expect(claimTable).toBeGreaterThan(0);
+    expect(plan.statements).toContain(`alter table "${names.schema}"."e_id0009" add column "f_id0014" uuid references "${names.schema}".files (id) on delete restrict`);
     expect(plan.statements).toContain(`grant select, insert, update, delete on "${names.schema}"."e_id0001" to "${names.role}"`);
     expect(plan.statements).toContain(`alter table "${names.schema}"."e_id0001" add column "f_id0005" numeric`);
     expect(plan.statements).toContain(`comment on column "${names.schema}"."e_id0001"."f_id0005" is 'total'`);
     // Lines get their own table, after their record's, and go with it.
     const lineTable = plan.statements.findIndex((s) => s.startsWith(`create table "${names.schema}"."e_id0009"`));
-    expect(lineTable).toBeGreaterThan(0);
+    expect(lineTable).toBeGreaterThan(claimTable);
     expect(plan.statements[lineTable]).toBe(
       `create table "${names.schema}"."e_id0009" (id uuid primary key, parent_id uuid not null references "${names.schema}"."e_id0001" (id) on delete cascade, position integer not null)`,
     );
@@ -496,10 +500,10 @@ describe('rules and review cards', () => {
       ['iban', 'SG12 3456', null],
     ]);
     const [table] = card.tables!;
-    expect(table!.columns.map((c) => c.label)).toEqual(['Date', 'Merchant', 'Category', 'Amount (SGD)']);
+    expect(table!.columns.map((c) => c.label)).toEqual(['Date', 'Merchant', 'Category', 'Amount (SGD)', 'Receipt']);
     expect(table!.rows.map((row) => row.cells.map((cell) => cell.display))).toEqual([
-      ['2026-11-02', 'Comfort', 'Travel', '32.40'],
-      ['2026-11-02', 'Marina Bay', 'Hotel', '270.00'],
+      ['2026-11-02', 'Comfort', 'Travel', '32.40', '—'],
+      ['2026-11-02', 'Marina Bay', 'Hotel', '270.00', '—'],
     ]);
     expect(table!.rows[1]!.cells[3]!.source).toEqual({ source: 'document', document: 'receipt.jpg' });
   });

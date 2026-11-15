@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { Line, RecordValue, UiField, Value } from '../types.js';
+import { FileInput, FileLink } from './files.js';
 import { PersonName, PersonPicker } from './people.js';
 import { Checkbox, Select, TextInput } from './ui.js';
 
@@ -13,14 +14,16 @@ export function display(field: UiField | undefined, value: RecordValue | undefin
     return Array.isArray(value) ? value.map(label).join(', ') : label(String(value));
   }
   if (field.type === 'boolean') return value ? 'Yes' : 'No';
+  if (field.type === 'file') return 'a file';
   if (field.type === 'number' && typeof value === 'number') return value.toLocaleString(undefined, { minimumFractionDigits: field.decimals ?? 0, maximumFractionDigits: field.decimals ?? 0 });
   if (field.type === 'datetime' && typeof value === 'string') return new Date(value).toLocaleString();
   return Array.isArray(value) ? value.join(', ') : String(value);
 }
 
 /** A value as people read it: names for people, labels for choices. */
-export function ValueView({ field, value }: { field: UiField | undefined; value: RecordValue | undefined }) {
+export function ValueView({ field, value, link = true }: { field: UiField | undefined; value: RecordValue | undefined; link?: boolean }) {
   if (field?.type === 'user' && typeof value === 'string' && value) return <PersonName id={value} />;
+  if (field?.type === 'file' && typeof value === 'string' && value) return <FileLink id={value} link={link} />;
   return <>{display(field, value)}</>;
 }
 
@@ -37,6 +40,8 @@ export const asLines = (value: RecordValue | undefined): Line[] => (Array.isArra
 export function ValueInput({ field, value, onChange, id, label }: { field: UiField; value: Value | undefined; onChange: (value: Value) => void; id: string; label?: string }): ReactNode {
   const aria = label ? { 'aria-label': label } : {};
   switch (field.type) {
+    case 'file':
+      return <FileInput id={id} value={typeof value === 'string' ? value : null} accept={field.accept ?? ['image', 'pdf']} onChange={onChange} {...(label ? { label } : {})} />;
     case 'user':
       return <PersonPicker id={id} value={typeof value === 'string' ? value : null} onChange={onChange} {...(label ? { label } : {})} />;
     case 'boolean':

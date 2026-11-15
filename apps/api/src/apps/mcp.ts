@@ -43,8 +43,11 @@ type JsonRpcId = string | number;
 
 const rpcError = (id: JsonRpcId | null, code: number, message: string) => ({ jsonrpc: '2.0' as const, id, error: { code, message } });
 
-/** The JSON Schema of a field's value, as an agent sends it. Line fields are required only on new records. */
-function fieldSchema(field: StoredField, definition: StoredDefinition, operation: 'create' | 'update'): Record<string, unknown> {
+/**
+ * The JSON Schema of a field's value, as an agent sends it. Line fields are required only on new
+ * records. A file is sent by ID, after uploading it to `uploadUrl`.
+ */
+function fieldSchema(field: StoredField, definition: StoredDefinition, operation: 'create' | 'update', uploadUrl: string): Record<string, unknown> {
   const about = { title: field.label, ...(field.description ? { description: field.description } : {}) };
   switch (field.type) {
     case 'text':
@@ -75,6 +78,13 @@ function fieldSchema(field: StoredField, definition: StoredDefinition, operation
       return { ...about, type: 'string', format: 'uuid', description: `The ID of a ${field.entity} record` };
     case 'user':
       return { ...about, type: 'string', format: 'uuid', description: "A person's ID" };
+    case 'file':
+      return {
+        ...about,
+        type: 'string',
+        format: 'uuid',
+        description: `The ID of a file you uploaded for the person: POST its content to ${uploadUrl}, with its type (${field.accept.join(' or ')}). Give its ID here.`,
+      };
     case 'lines': {
       const lineEntity = definition.entities[field.entity]!;
       const properties: Record<string, unknown> = {
@@ -82,7 +92,7 @@ function fieldSchema(field: StoredField, definition: StoredDefinition, operation
       };
       const required: string[] = [];
       for (const f of lineEntity.fields) {
-        properties[f.name] = fieldSchema(f, definition, operation);
+        properties[f.name] = fieldSchema(f, definition, operation, uploadUrl);
         if (operation === 'create' && f.required && !('default' in f && f.default !== undefined)) required.push(f.name);
       }
       return {
@@ -173,7 +183,7 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
       continue;
     }
     const field = entity.fields.find((f) => f.name === input)!;
-    properties[input] = fieldSchema(field, loaded.definition, action.operation);
+    properties[input] = fieldSchema(field, loaded.definition, action.operation, new URL(`/v1/apps/${loaded.app.id}/files`, ctx.config.PUBLIC_BASE_URL).href);
     if (field.required && !('default' in field && field.default !== undefined) && !(input in action.set)) required.push(input);
   }
   const confirm =

@@ -33,6 +33,7 @@ import {
   writeLines,
   type CardData,
   type FieldValue,
+  type FileInfo,
   type Finding,
   type HistoryChange,
   type LineInput,
@@ -54,6 +55,7 @@ import { checkQuery, principalEnv } from '../access/check.js';
 import type { AllowedQuery } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
+import type { FileUse } from '../files/service.js';
 import { badRequest, conflict, forbidden, notFound, unprocessable } from '../errors.js';
 import type { LoadedApp } from './catalog.js';
 import { capabilityResource, recordResource } from './resources.js';
@@ -77,6 +79,8 @@ export interface RecordOut {
   readonly updatedBy: string;
   readonly values: Record<string, FieldValue | LineOut[]>;
   readonly masked: string[];
+  /** The files the values name, by ID: their names, types and sizes. */
+  readonly files?: Record<string, FileInfo>;
 }
 
 /** Lines read for some records: by lines field, then by record ID. */
@@ -341,6 +345,7 @@ export class AppRuntime {
       });
       return this.project(loaded, entity, record, applicable, options.fields, lines);
     });
+    await this.#withFiles(loaded, entity, records);
     const last = parsed.at(-1)?.record;
     return { records, nextCursor: rows.length > options.limit && last ? encodeCursor(cursorOf(last, query.sortKeys)) : null };
   }
@@ -455,6 +460,8 @@ export class AppRuntime {
       readonly reason?: Record<string, unknown>;
       /** The lines fields this write changes: the lines each will have, and the lines it has now. */
       readonly lines?: Readonly<Record<string, { readonly next: readonly LineValues[]; readonly current: readonly StoredLine[] }>>;
+      /** Files the record now holds for the first time, already checked: they are attached to it. */
+      readonly files?: readonly FileUse[];
     },
   ): Promise<StoredRecord | null> {
     const ctx = this.#ctx;
@@ -499,6 +506,9 @@ export class AppRuntime {
       const change = diffLines(lineEntity, current, lines, lineSources(write.provenance, name));
       if (change) changes[field.id] = { name, lines: change };
     }
+    if (write.files?.length && write.operation !== 'delete') {
+      await ctx.files.attach(tx, loaded, { entityId: entity.id, recordId: record.id }, write.files.map((use) => use.fileId));
+    }
     const event = await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
       action: `record.${write.operation}`,
       target: { type: 'record', id: record.id, name: write.entityName },
@@ -536,7 +546,60 @@ export class AppRuntime {
     const entity = this.entity(loaded, entityName);
     const wanted = linesFieldsOf(entity).filter((field) => fieldAccess(grants.map((g) => g.grant), field.name) === 'full');
     const lines = wanted.length ? await withAppTransaction(this.#ctx.pool, loaded.env, 'records', (tx) => this.#readLines(tx, loaded, [record.id], wanted)) : undefined;
-    return this.project(loaded, entity, record, grants, undefined, lines);
+    const out = this.project(loaded, entity, record, grants, undefined, lines);
+    await this.#withFiles(loaded, entity, [out]);
+    return out;
+  }
+
+  /** The IDs of the files a record holds, as the caller sees it: in its file fields, and its lines'. */
+  #fileIds(loaded: LoadedApp, entity: StoredEntity, record: { readonly values: Readonly<Record<string, unknown>> }): string[] {
+    return entity.fields.flatMap((field) => {
+      const value = record.values[field.name];
+      if (field.type === 'file') return typeof value === 'string' ? [value] : [];
+      if (field.type !== 'lines' || !Array.isArray(value)) return [];
+      const fileFields = loaded.definition.entities[field.entity]!.fields.filter((f) => f.type === 'file');
+      return (value as Array<Record<string, unknown>>).flatMap((line) => fileFields.flatMap((f) => (typeof line[f.name] === 'string' ? [line[f.name] as string] : [])));
+    });
+  }
+
+  /** Add the names, types and sizes of the files records hold, read in one go. */
+  async #withFiles(loaded: LoadedApp, entity: StoredEntity, records: RecordOut[]): Promise<void> {
+    const ids = records.flatMap((record) => this.#fileIds(loaded, entity, record));
+    if (!ids.length) return;
+    const described = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', (tx) => this.#ctx.files.describe(tx, loaded, ids));
+    for (const record of records) {
+      const own = Object.fromEntries(this.#fileIds(loaded, entity, record).flatMap((id) => (described[id] ? [[id, described[id]]] : [])));
+      if (Object.keys(own).length) (record as { files?: Record<string, FileInfo> }).files = own;
+    }
+  }
+
+  /**
+   * The files a write sets that the record doesn't hold yet, with where each goes: `receipt`, or
+   * `lines[2].receipt`. Files the record already holds, even moved to another line, are its own.
+   */
+  #newFiles(
+    loaded: LoadedApp,
+    entity: StoredEntity,
+    before: RecordValues | null,
+    values: Readonly<Record<string, FieldValue>>,
+    lines: Readonly<Record<string, readonly LineValues[]>>,
+    current: Readonly<Record<string, readonly StoredLine[]>>,
+  ): FileUse[] {
+    const held = new Set(this.#fileIds(loaded, entity, { values: { ...(before ?? {}), ...Object.fromEntries(Object.entries(current).map(([name, list]) => [name, list.map((line) => line.values)])) } }));
+    const uses: FileUse[] = [];
+    for (const field of entity.fields) {
+      const value = values[field.name];
+      if (field.type === 'file' && typeof value === 'string' && !held.has(value)) uses.push({ fileId: value, field, path: field.name });
+      if (field.type !== 'lines') continue;
+      const fileFields = loaded.definition.entities[field.entity]!.fields.filter((f) => f.type === 'file');
+      (lines[field.name] ?? []).forEach((line, index) => {
+        for (const f of fileFields) {
+          const id = line.values[f.name];
+          if (typeof id === 'string' && !held.has(id)) uses.push({ fileId: id, field: f, path: `${field.name}[${index}].${f.name}` });
+        }
+      });
+    }
+    return uses;
   }
 
   async create(
@@ -565,8 +628,10 @@ export class AppRuntime {
     await this.#checkPeople(loaded, entity, after, 'owner' in input.values, prepared.lines);
     const record = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
+      const files = this.#newFiles(loaded, entity, null, values, prepared.lines, {});
+      await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: null });
       const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
-      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines }))!;
+      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines, files }))!;
     });
     return this.#respond(auth, loaded, entityName, record);
   }
@@ -612,7 +677,9 @@ export class AppRuntime {
       if (Object.keys(changed).length === 0 && prepared.changed.length === 0) return before;
       const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: current[name] ?? [] }]));
       await this.#checkPeople(loaded, entity, changed, 'owner' in changed, Object.fromEntries(prepared.changed.map((name) => [name, prepared.lines[name]!])));
-      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'update', before, values: changed, provenance, lines }))!;
+      const files = this.#newFiles(loaded, entity, beforeValues, changed, prepared.lines, current);
+      await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: before.id });
+      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'update', before, values: changed, provenance, lines, files }))!;
     });
     return this.#respond(auth, loaded, entityName, record);
   }
@@ -858,6 +925,9 @@ export class AppRuntime {
       );
       const findings = this.#rules(loaded, action.entity, auth, after, lines);
       await this.#checkPeople(loaded, entity, values, 'owner' in values, lines);
+      // An agent can only propose files the person uploaded (or it uploaded for them): checked now, attached on approval.
+      const files = this.#newFiles(loaded, entity, before ? recordValues(before) : null, values, lines, current);
+      await ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: before?.id ?? null });
       const card = buildCard({
         definition: loaded.definition,
         entity: action.entity,
@@ -868,6 +938,7 @@ export class AppRuntime {
         lines,
         findings,
         provenance,
+        files: await ctx.files.describe(tx, loaded, this.#fileIds(loaded, entity, { values: { ...after, ...Object.fromEntries(Object.entries(lines).map(([name, list]) => [name, list.map((line) => line.values)])) } })),
       });
       if (input.dryRun) return { status: 'preview' as const, needsConfirmation, findings, card };
       if (!commit) {
@@ -896,6 +967,7 @@ export class AppRuntime {
         provenance,
         reason: { action: name },
         lines: Object.fromEntries(prepared.changed.map((field) => [field, { next: lines[field]!, current: current[field] ?? [] }])),
+        files,
       });
       return { status: 'done' as const, record: { id: record!.id, version: record!.version } };
     }).then(async (result) => {
@@ -1087,6 +1159,8 @@ export class AppRuntime {
       }
       this.#blockedBy(permission, after);
       this.#rules(loaded, action.entity, auth, after, sealedLines);
+      const files = this.#newFiles(loaded, entity, before ? recordValues(before) : null, effect.values, sealedLines, current);
+      await ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: before?.id ?? null });
       const record = await this.#writeRecord(request, auth, loaded, tx, {
         entityName: action.entity,
         operation: action.operation,
@@ -1096,6 +1170,7 @@ export class AppRuntime {
         provenance: locked!.provenance as unknown as Record<string, Provenance>,
         reason: { action: proposal.action, proposal: id, digest, proposedBy: { type: locked!.proposedByType, id: locked!.proposedBy } },
         lines: Object.fromEntries(Object.entries(sealedLines).map(([field, lines]) => [field, { next: lines, current: current[field] ?? [] }])),
+        files,
       });
       await tx.db.update(proposals).set({ status: 'approved', decidedAt: now, resultRecordId: record!.id }).where(eq(proposals.id, id));
       await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {

@@ -5,7 +5,7 @@ const me = { ref: 'principal.id' } as const;
 const status = { ref: 'record.status' } as const;
 
 /**
- * A small expense-claim app: a claim with one line per receipt and a total worked out from them,
+ * A small expense-claim app: a claim with one line per receipt, each with its file, and a total worked out from them,
  * rules on each line, two actions, a query, a review card with the lines as a table, a form and
  * two roles. It's the running example in the design doc (§6.2) and in the tests.
  */
@@ -42,6 +42,7 @@ export const EXPENSE_APP = {
           { value: 'meals', label: 'Meals' },
         ] },
         { name: 'amount', label: 'Amount (SGD)', type: 'number', decimals: 2, min: 0, required: true },
+        { name: 'receipt', label: 'Receipt', type: 'file', accept: ['image', 'pdf'] },
       ],
     },
   },
@@ -98,7 +99,7 @@ export const EXPENSE_APP = {
       entity: 'expense_claim',
       title: '{{title}}: SGD {{total}}',
       show: ['trip', 'total', 'iban'],
-      table: { of: 'lines', columns: ['date', 'merchant', 'category', 'amount'] },
+      table: { of: 'lines', columns: ['date', 'merchant', 'category', 'amount', 'receipt'] },
     },
   },
   forms: {

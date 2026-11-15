@@ -22,7 +22,7 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
   - data lives in the platform's built-in store, which is reached like any other connector;
   - it stays a low-code platform like Joget and Mendix: visual designers, an AI copilot and code edit the same definitions, and AI clients such as Claude can build through an MCP server.
 - **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), and which chat platforms can carry an approval.
-- **Built so far:** phase 0, the governance kernel, proven on a real Kubernetes cluster; the backend of phase 1, the capability core, with line items; and the first slice of the studio: the data-model and form designers, and the screens every app gets (below). File fields are next.
+- **Built so far:** phase 0, the governance kernel, proven on a real Kubernetes cluster; and phase 1, the capability core with line items and files, and the first slice of the studio: the data-model and form designers, and the screens every app gets (below). Phase 2, governed delivery and the full studio, is next.
 
 ## What the code does today
 
@@ -32,13 +32,13 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
 | Spaces | A personal space for every user, created at first sign-in. Team spaces with a minimum number of owners. Freezing |
 | Authorization | One policy decision point (`@platform/authz`): permissions, permission sets, roles, scoped bindings with expiry, the personal-space boundary, guardrails (deny and fresh-MFA rules), separation of duties, privilege-escalation checks and explained decisions. Every route must declare an access rule, or the server refuses to start |
 | API tokens | Personal access tokens and service accounts owned by team spaces. Tokens are scoped, expire (90 days at most by default), are stored only as hashes, and can only be created from an interactive session with fresh MFA. Service accounts start with no access and gain it only through bindings. Admins can list and revoke any token, and every step is audited |
-| Apps (built-in store) | Apps live in personal spaces, defined as entities, rules, actions, queries, review cards and roles:<ul><li>Each app environment gets its own database schema and NOLOGIN role, and every query switches to that role.</li><li>Definitions are versioned. Entities and fields have stable IDs, so a rename is free and carries through to every reference. Changes apply live, but anything that deletes data waits for confirmation.</li><li>Record- and field-level permissions are compiled to SQL filters, and PII is masked by default.</li><li>Every record keeps a field-level history, with where each value came from.</li><li>Line items: a record can hold lines of another entity, such as one line per receipt on a claim. Lines are read, written, permitted and kept in history with their record, each value with its source. Rules check every line, and totals and counts are worked out from the lines (rollups).</li><li>Apps can be shared with named colleagues, each in one of the app's roles.</li></ul> |
+| Apps (built-in store) | Apps live in personal spaces, defined as entities, rules, actions, queries, review cards and roles:<ul><li>Each app environment gets its own database schema and NOLOGIN role, and every query switches to that role.</li><li>Definitions are versioned. Entities and fields have stable IDs, so a rename is free and carries through to every reference. Changes apply live, but anything that deletes data waits for confirmation.</li><li>Record- and field-level permissions are compiled to SQL filters, and PII is masked by default.</li><li>Every record keeps a field-level history, with where each value came from.</li><li>Line items: a record can hold lines of another entity, such as one line per receipt on a claim. Lines are read, written, permitted and kept in history with their record, each value with its source. Rules check every line, and totals and counts are worked out from the lines (rollups).</li><li>Files, such as receipts: each upload is checked for what it really is and scanned for malware (ClamAV), then kept in the app's own schema or any S3-compatible store. Only whoever can see the field holding a file can download it.</li><li>Apps can be shared with named colleagues, each in one of the app's roles.</li></ul> |
 | Studio | A web app at `/studio`, in the Ocean design system, light and dark:<ul><li>The data designer: entities and fields, drag to reorder, and renames that keep the data. Saving shows the plan first, and asks again before anything deletes data.</li><li>The form designer: sections, half- or full-width fields, labels and help text, and the action a form submits through, so its rules and confirmation apply.</li><li>Every app's screens, generated from what the person may do: lists, forms, and record pages that show who changed what and when. Person fields have a picker. A colleague in a narrower role sees only what that role allows.</li><li>Sharing, the revision history, and an editor for what has no designer yet (rules, actions, queries, cards and roles).</li></ul> |
 | Agents | Every action and query a person may run is an MCP tool (`/mcp`), and AI clients such as Claude can build apps through a second MCP server (`/mcp/build`). An agent that serves many people, such as agentos or a Copilot Studio bot, is approved by a Security admin, then exchanges a person's IdP token for a 10-minute Ambit token that acts for that one person (RFC 8693). Agents work through errands only, never on raw records, and the audit log names both the agent and the person. When an API token runs an action that needs confirmation, the action becomes a proposal sealed with a digest. Only the person, signed in, can approve exactly that change, on a review page where they can also edit it |
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
 | Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
-Next, to finish phase 1 (§13 of the design doc): file fields, so each line of a claim keeps its receipt.
+Next, phase 2 (§13 of the design doc): working copies and change requests with previews, releases to Prod, and the page, dashboard and logic-flow designers.
 
 Later: workload identity federation, so CI systems can swap their own OIDC tokens for short-lived platform tokens with no stored secrets.
 
@@ -107,6 +107,13 @@ Integration tests run against a real PostgreSQL. Each test file gets its own thr
 
 ```bash
 TEST_DATABASE_URL=postgres://platform:platform@localhost:5432/platform pnpm test:integration
+```
+
+The S3 file store has its own opt-in test, against any S3-compatible server, such as MinIO or moto (`moto_server -p 9000`):
+
+```bash
+TEST_S3_ENDPOINT=http://127.0.0.1:9000 TEST_DATABASE_URL=postgres://platform:platform@localhost:5432/platform \
+  pnpm --filter @platform/api test:integration -- files-s3
 ```
 
 The studio's browser test runs in Chromium through Playwright, which isn't a dependency, so it's opt-in. It drives a real API and saves screenshots if you name a folder:

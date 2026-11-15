@@ -78,6 +78,8 @@ export interface UiField {
   decimals?: number;
   maxLength?: number;
   multiline?: boolean;
+  /** For a file field: the kinds it takes, `image` and `pdf`. */
+  accept?: string[];
   /** A number worked out from lines: shown, never entered. */
   computed?: boolean;
   /** How it is worked out, such as `{ sum: 'lines.amount' }`. */
@@ -129,6 +131,13 @@ export type Line = { id?: string } & { [field: string]: Value | undefined };
 /** A value of a record: a single value, or a lines field's lines. */
 export type RecordValue = Value | Line[];
 
+/** A file, as screens show it. */
+export interface FileInfo {
+  name: string;
+  contentType: string;
+  size: number;
+}
+
 export interface RecordOut {
   id: string;
   version: number;
@@ -140,6 +149,8 @@ export interface RecordOut {
   values?: Record<string, RecordValue>;
   /** Fields shown masked; fields of lines as `lines.amount`. */
   masked?: string[];
+  /** The files the values name, by ID. */
+  files?: Record<string, FileInfo>;
 }
 
 /** Someone a record or its history names: a person, or an agent that changed the record. */

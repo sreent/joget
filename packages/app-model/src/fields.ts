@@ -86,6 +86,7 @@ export function fieldKind(field: Field): ValueKind {
       return 'datetime';
     case 'reference':
     case 'user':
+    case 'file':
       return 'uuid';
     case 'lines':
       throw new Error(`${field.name} holds lines, which have no single value`);
@@ -93,6 +94,11 @@ export function fieldKind(field: Field): ValueKind {
 }
 
 export const columnName = (fieldId: string): string => `f_${fieldId}`;
+
+/** True if a definition has a file field anywhere, lines included. */
+export function hasFiles(definition: { readonly entities: Readonly<Record<string, { readonly fields: readonly Field[] }>> }): boolean {
+  return Object.values(definition.entities).some((entity) => entity.fields.some((field) => field.type === 'file'));
+}
 export const tableName = (entityId: string): string => `e_${entityId}`;
 
 /**

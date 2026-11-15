@@ -39,6 +39,8 @@ export const RecordOut = z.object({
   updatedBy: z.uuid().optional(),
   values: z.record(z.string(), z.unknown()).optional(),
   masked: z.array(z.string()).optional(),
+  /** The files the values name, by ID. */
+  files: z.record(z.string(), z.object({ name: z.string(), contentType: z.string(), size: z.number().int() })).optional(),
 });
 
 export const PageOut = z.object({ records: z.array(RecordOut), nextCursor: z.string().nullable() });

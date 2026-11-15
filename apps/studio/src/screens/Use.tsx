@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, ApiError } from '../api.js';
+import { FilesProvider } from '../components/files.js';
 import { filledLines, LinesChangeView, LinesEditor, LinesTable, rollupValue } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
 import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
@@ -19,6 +20,7 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
   const current = page ?? entities[0]?.[0];
 
   return (
+    <FilesProvider appId={appId}>
     <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
       <nav aria-label={manifest.app.name} className="grid content-start gap-4">
         <div>
@@ -67,6 +69,7 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
         )}
       </div>
     </div>
+    </FilesProvider>
   );
 }
 
@@ -97,6 +100,7 @@ function RecordList({ appId, manifest, entityName }: { appId: string; manifest: 
       </div>
       {records.data?.records.length === 0 ? <EmptyState title={`No ${entity.pluralLabel.toLowerCase()} you can see`} /> : null}
       {records.data?.records.length ? (
+        <FilesProvider appId={appId} known={Object.assign({}, ...records.data.records.map((r) => r.files ?? {}))}>
         <Card className="overflow-x-auto p-0">
           <table className="w-full border-collapse text-sm">
             <thead>
@@ -131,6 +135,7 @@ function RecordList({ appId, manifest, entityName }: { appId: string; manifest: 
             </tbody>
           </table>
         </Card>
+        </FilesProvider>
       ) : null}
     </div>
   );
@@ -253,6 +258,7 @@ function RecordView({ appId, manifest, entityName, recordId }: { appId: string; 
   const problems = problemsOf(save.error ?? run.error);
 
   return (
+    <FilesProvider appId={appId} known={record.data.files ?? {}}>
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
       <Card className="grid content-start gap-4">
         <div>
@@ -332,6 +338,7 @@ function RecordView({ appId, manifest, entityName, recordId }: { appId: string; 
         </ol>
       </Card>
     </div>
+    </FilesProvider>
   );
 }
 
@@ -378,11 +385,11 @@ function HistoryItem({ entry, entity, record }: { entry: HistoryEntry; entity: U
               <span className="text-muted">{label}:</span>{' '}
               {entry.operation === 'update' ? (
                 <>
-                  <ValueView field={field} value={change.before ?? null} />
+                  <ValueView field={field} value={change.before ?? null} link={false} />
                   {' → '}
                 </>
               ) : null}
-              <ValueView field={field} value={change.after ?? null} />
+              <ValueView field={field} value={change.after ?? null} link={false} />
               {change.source?.source === 'document' ? <span className="ml-1 text-outside">from {String(change.source['document'] ?? 'a document')}</span> : null}
               {change.source?.source === 'agent' ? <span className="ml-1 text-agent">inferred by the agent</span> : null}
             </li>

@@ -1,4 +1,4 @@
-import type { AppSummary, Definition, HistoryEntry, Me, Person, Plan, RecordOut, Revision, Share, UiManifest } from './types.js';
+import type { AppSummary, Definition, FileInfo, HistoryEntry, Me, Person, Plan, RecordOut, Revision, Share, UiManifest } from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -60,6 +60,19 @@ function peopleLoader() {
 }
 
 const app = (id: string) => `/v1/apps/${encodeURIComponent(id)}`;
+
+/** Upload a file to an app, as its content: the platform reads its type from it, and checks it for malware. */
+export async function uploadFile(appId: string, file: File): Promise<FileInfo & { id: string }> {
+  const response = await fetch(`${app(appId)}/files?name=${encodeURIComponent(file.name)}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  const data = (await response.json().catch(() => ({}))) as { error?: string; message?: string; details?: unknown } & FileInfo & { id: string };
+  if (!response.ok) throw new ApiError(response.status, data.error ?? 'error', response.status === 413 ? 'The file is too big' : (data.message ?? response.statusText), data.details);
+  return data;
+}
 const records = (id: string, entity: string) => `${app(id)}/entities/${encodeURIComponent(entity)}/records`;
 
 export const api = {

@@ -7,6 +7,9 @@ import type { OidcProvider } from './auth/oidc.js';
 import { SessionService } from './auth/sessions.js';
 import type { Config } from './config.js';
 import type { AppContext } from './context.js';
+import { clamdScanner, noScanner, type Scanner } from './files/scan.js';
+import { FileService } from './files/service.js';
+import { createBlobStore, type BlobStore } from './files/store.js';
 import { TokenService } from './tokens/service.js';
 
 /** Seed the managed policy, find (or create) the organization, and wire the services together. */
@@ -17,6 +20,9 @@ export async function createAppContext(input: {
   oidc: OidcProvider;
   auditSigningKeyPem: string;
   now?: () => Date;
+  /** For tests: where files go, and how they're scanned. Otherwise from the configuration. */
+  fileStore?: BlobStore;
+  scanner?: Scanner;
 }): Promise<AppContext> {
   const { config, db, pool, oidc } = input;
   const now = input.now ?? (() => new Date());
@@ -31,5 +37,7 @@ export async function createAppContext(input: {
     [config.AUDIT_SIGNING_KEY_ID]: publicKeyPemFor(input.auditSigningKeyPem),
   });
   const apps = new AppCatalog(db, org.id);
-  return { config, db, pool, apps, org, oidc, policy, sessions, tokens, auditSigner, auditVerifier, now };
+  const scanner = input.scanner ?? (config.FILE_SCANNER === 'clamav' ? clamdScanner({ host: config.CLAMAV_HOST, port: config.CLAMAV_PORT }) : noScanner);
+  const files = new FileService({ config, db, pool, org, now }, input.fileStore ?? createBlobStore(config), scanner);
+  return { config, db, pool, apps, org, oidc, policy, sessions, tokens, files, auditSigner, auditVerifier, now };
 }
