@@ -14,6 +14,13 @@ export const Provenance = z.discriminatedUnion('source', [
   z.strictObject({ source: z.literal('person') }),
   /** Set or computed by the platform, for example by an action. */
   z.strictObject({ source: z.literal('platform') }),
+  /** Predicted by a model, with the model and version that produced it, and how sure it was. */
+  z.strictObject({
+    source: z.literal('model'),
+    model: z.string().trim().min(1).max(200),
+    version: z.string().trim().min(1).max(100).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+  }),
 ]);
 export type Provenance = z.infer<typeof Provenance>;
 

@@ -1,0 +1,61 @@
+/* Ambit's pages, drawn in Ocean (ocean.css). Every colour is one of Ocean's meanings, and every
+   rule is scoped to a class, so these sit beside Tailwind's preflight in the studio.
+
+   Ocean's grammar, as Ambit uses it:
+   - a change an agent prepared is drawn with Ocean's `--changes` stripe;
+   - agents are drawn in `--agent-tone`, and people never are;
+   - a value read from a document is `--outside`: it came from outside the conversation;
+   - rule warnings are `--warn` (waiting on someone), errors `--bad`, and a clean check `--good`. */
+
+.ambit-page { margin: 0; min-height: 100vh; background: var(--page); color: var(--text); font: var(--text-base)/1.5 var(--font-sans); }
+.ambit-page *, .ambit-page *::before, .ambit-page *::after { box-sizing: border-box; }
+.ambit-page :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.ambit-review { display: grid; gap: var(--space-4); max-width: 34rem; margin: 0 auto; padding: var(--space-8) var(--space-4); }
+
+.badge { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.08rem 0.5rem; border-radius: var(--radius-pill);
+         font-size: var(--text-xs); font-weight: 600; line-height: 1.5; white-space: nowrap; background: var(--idle-bg); color: var(--idle); }
+.badge.good { background: var(--good-bg); color: var(--good); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.bad { background: var(--bad-bg); color: var(--bad); }
+
+.approval { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-raised); }
+.approval-stripe { height: 4px; background: var(--changes); }
+.approval-body { display: grid; gap: var(--space-3); padding: var(--space-4) var(--space-5) var(--space-5); }
+.approval-from { display: flex; align-items: center; gap: var(--space-2); margin: 0; color: var(--agent-tone); font-size: var(--text-sm); font-weight: 500; }
+.approval-from::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: var(--radius-pill); background: var(--agent-tone); }
+.approval-from.person { color: var(--muted); }
+.approval-from.person::before { background: var(--muted); }
+.approval-title { margin: 0; font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.01em; }
+.approval-findings { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.approval-finding { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn); }
+.approval-finding.error { background: var(--bad-bg); color: var(--bad); }
+.approval-clear { margin: 0; color: var(--good); }
+.approval-changes { display: grid; grid-template-columns: minmax(6rem, max-content) 1fr; gap: var(--space-2) var(--space-4); margin: 0;
+                    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); background: var(--sunken); }
+.approval-changes .pair { display: contents; }
+.approval-changes dt { color: var(--muted); }
+.approval-changes dd { margin: 0; overflow-wrap: anywhere; }
+.approval-source { display: block; color: var(--muted); font-size: var(--text-xs); }
+.approval-source.document { color: var(--outside); }
+.approval-source.agent { color: var(--agent-tone); }
+.approval-source.person { color: var(--text); font-weight: 600; }
+.approval-edit summary { color: var(--accent); font-weight: 500; cursor: pointer; }
+.approval-edit form { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
+.approval-actions { display: flex; gap: var(--space-2); }
+.approval-actions form { display: flex; flex: 1; }
+.approval-signed { margin: 0; color: var(--faint); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.approval-signed code { font-family: var(--font-mono); }
+
+.ambit-field { display: grid; gap: var(--space-1); }
+.ambit-field label { color: var(--muted); font-size: var(--text-sm); }
+.ambit-check { display: flex; align-items: center; gap: var(--space-2); }
+.ambit-input { padding: 0.45rem 0.6rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+               background: var(--surface); color: var(--text); font: inherit; }
+.ambit-button { display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.7rem 1rem;
+                border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text);
+                font: inherit; font-weight: 500; cursor: pointer; }
+.ambit-button:hover { background: var(--sunken); }
+.ambit-button.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
+.ambit-button.primary:hover { border-color: var(--accent-strong); background: var(--accent-strong); }
+.ambit-error { margin: 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--bad-bg); color: var(--bad); }

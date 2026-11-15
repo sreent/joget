@@ -20,6 +20,7 @@ import { appRoutes } from './apps/routes.js';
 import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
 import { authRoutes } from './auth/routes.js';
+import { designRoutes } from './design/routes.js';
 import type { AppContext } from './context.js';
 import { HttpError } from './errors.js';
 import { healthRoutes } from './health/routes.js';
@@ -115,6 +116,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(runtimeRoutes(ctx, runtime));
   await app.register(proposalRoutes(ctx, runtime));
   await app.register(mcpRoutes(ctx, builder, runtime));
+  await app.register(designRoutes());
   app.get(
     '/openapi.json',
     { config: { access: { kind: 'authenticated' } }, schema: { hide: true } },

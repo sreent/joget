@@ -8,6 +8,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
  */
 export const workspaceAliases = [
   { find: /^@platform\/app-model$/, replacement: `${root}packages/app-model/src/index.ts` },
+  { find: /^@platform\/design$/, replacement: `${root}packages/design/src/index.ts` },
   { find: /^@platform\/authz$/, replacement: `${root}packages/authz/src/index.ts` },
   { find: /^@platform\/audit$/, replacement: `${root}packages/audit/src/index.ts` },
   { find: /^@platform\/db$/, replacement: `${root}packages/db/src/index.ts` },

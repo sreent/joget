@@ -463,6 +463,7 @@ Not everything is a task. Exploring data, comparing options and monitoring a pro
 | Rule | A check the server runs for every write, whatever the path: form, API, agent or automation. An error blocks the write. A warning travels with the record to the approver | Form validators |
 | Action | A business operation that changes something: create or update records, or start a process. It has typed inputs, a confirmation level and a review card. Its effect starts simple (set these values) and grows into a flow of steps, designed visually, like a Mendix microflow or an n8n workflow | Form submission and process start |
 | Query | A named, parameterized read, such as "my open claims" or "status of a claim" | Datalist |
+| Prediction | A value or flag a model computes, such as the likely category of a receipt, how unusual a claim is, or a forecast on a dashboard. Like any value, it records its source: the model and its version | None |
 | Review card | What a person checks before confirming an action. The app's owner designs it, and the platform fills it from the exact data the action will write | None |
 | Process | A BPMN-style model (start, human and service tasks, gateways, timers, end), run durably on Temporal | Process (XPDL) |
 | Automation | Steps triggered by record events, schedules or webhooks | Process tools, plugins |
@@ -533,7 +534,7 @@ first: findings                     # rule findings and open questions before ev
   - read from a document, with the attachment and the place on it;
   - inferred by the agent;
   - entered or edited by the person;
-  - computed by the platform.
+  - computed by the platform, or predicted by a model (with the model's name and version).
 
   The review card shows the source, the approver sees it, and the record's history keeps it (§9.4). Without it, review turns into rubber-stamping.
 
@@ -981,7 +982,7 @@ Check each component's licence as you adopt it. Prefer Apache-2.0 and MIT, and r
 | **2. Governed delivery and the full studio** | Working copies in personal spaces · change requests with checks, permission and capability diffs, and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · app templates, import and export · the page, navigation and dashboard designers, and logic flows for actions | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
 | **3. Approvals and the shared agent** | Processes on Temporal with human tasks, org-chart routing, timers and SLAs · universal inbox · agents registered to act for people (token exchange, approval by a Security admin) · a reference Teams bot and chat adapters, in the separate agent project · notifications · document generation | An employee claims expenses in Teams, the approver approves in Teams, and SLA alerts and the audit trail are complete |
 | **4. Connectors and enterprise hardening** | Connectors that publish other systems' operations as capabilities (REST and OpenAPI first) · automations · guardrail editor, SoD, JIT elevation, access reviews · plugin registry, sandboxed scripts · SIEM streaming, quotas and metering · the production plane in its own cloud account · DR drills, ASVS verification and a penetration test | Passes an internal audit against ISO 27001:2022 using the §15 mapping, and meets the readiness targets in §1 |
-| **5. Earned autonomy and beyond** | Confirmation levels that step down once a capability has earned trust, per person or team, within guardrails · AI that drafts whole apps from a description into change requests · a signed marketplace of templates and plugins · an installable PWA with offline drafts · a BI connector (read replica, governed exports) | A routine claim type moves from review to preview on measured trust, and a business user ships a new capability that an AI drafted, through the normal approval flow |
+| **5. Earned autonomy and beyond** | Confirmation levels that step down once a capability has earned trust, per person or team, within guardrails · predictions in apps: predicted fields, anomaly flags and forecasts, with the model recorded as each value's source · AI that drafts whole apps from a description into change requests · a signed marketplace of templates and plugins · an installable PWA with offline drafts · a BI connector (read replica, governed exports) | A routine claim type moves from review to preview on measured trust, and a business user ships a new capability that an AI drafted, through the normal approval flow |
 
 Phases 0–3 are the MVP: the point where an employee can claim expenses through the company's bot, and an approver can approve them there. Phase 0 came first on purpose. Users never see it, but everything else depends on it.
 
@@ -1010,6 +1011,7 @@ Phases 0–3 are the MVP: the point where an employee can claim expenses through
 | Low-code | A low-code platform like Joget and Mendix. Visual designers for data, forms, pages and logic sit next to an AI copilot and code | The studio is core: the data-model and form designers in phase 1, and pages, dashboards and logic flows in phase 2 (§6.5) |
 | The agent | A separate project: the agent runtime and its chat adapters for Teams, Slack, Matrix and Signal. It calls the platform through MCP and the API | The platform depends on no single chat app. Any agent can use the same capabilities: Copilot, Claude or our own (§6.4) |
 | Systems of record | The first processes, expenses included, have no existing system. Their data lives in the platform's built-in store, which is reached like any other connector | Phase 1 builds the built-in store behind the connector interface. Connectors to other systems follow in phase 4 (§6.1) |
+| Ambit and autonomic | Split by job: Ambit for data apps and the errands agents run, autonomic (a7c) for automation. Ambit still does predictive analytics and ML where they serve an app | Predictions are app artifacts (§6.1) and record the model behind each value. A model can live in Ambit or come from autonomic through a connection |
 | Name | Ambit (a3t) | It sits beside autonomic (a7c) and agentos (a5s). What Ambit lets people get done are called errands |
 | Who builds | People, in the studio and with an AI copilot. AI clients such as Claude can also build through the builder MCP and API, with the builder's permissions | The builder MCP arrives in phase 1, and AI changes pass the same checks and reviews (§6.5) |
 

@@ -14,6 +14,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/
 COPY packages/app-model/package.json packages/app-model/
+COPY packages/design/package.json packages/design/
 COPY packages/authz/package.json packages/authz/
 COPY packages/audit/package.json packages/audit/
 COPY packages/db/package.json packages/db/

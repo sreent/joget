@@ -14,17 +14,22 @@ type FormBody = Record<string, string | string[]>;
 const escape = (value: unknown): string =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-function sourceLabel(source: Record<string, unknown> | undefined): string {
+function sourceTag(source: Record<string, unknown> | undefined): string {
   if (!source) return '';
+  const tag = (kind: string, text: string) => `<span class="approval-source${kind ? ` ${kind}` : ''}">${text}</span>`;
   switch (source['source']) {
     case 'document':
-      return `Read from ${escape(source['document'] ?? 'a document')}${source['location'] ? `, ${escape(source['location'])}` : ''}`;
+      return tag('document', `Read from ${escape(source['document'] ?? 'a document')}${source['location'] ? `, ${escape(source['location'])}` : ''}`);
     case 'agent':
-      return `Inferred by the agent${source['note'] ? `: ${escape(source['note'])}` : ''}`;
+      return tag('agent', `Inferred by the agent${source['note'] ? `: ${escape(source['note'])}` : ''}`);
     case 'person':
-      return 'Edited by you';
+      return tag('person', 'Edited by you');
+    case 'model': {
+      const confidence = typeof source['confidence'] === 'number' ? `, ${Math.round(source['confidence'] * 100)}% sure` : '';
+      return tag('', `Predicted by ${escape(source['model'])}${source['version'] ? ` ${escape(source['version'])}` : ''}${confidence}`);
+    }
     case 'platform':
-      return 'Set by the app';
+      return tag('', 'Set by the app');
     default:
       return '';
   }
@@ -34,15 +39,17 @@ function formControl(definition: StoredDefinition, entity: string, name: string,
   const field = entityFields(definition.entities[entity]!).get(name)?.field;
   const id = `f-${escape(name)}`;
   const label = `<label for="${id}">${escape(field?.label ?? name)}</label>`;
+  if (field?.type === 'boolean') {
+    return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escape(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
+  }
   if (field?.type === 'choice') {
     const chosen = new Set(Array.isArray(value) ? value : [value]);
     const options = field.options.map((o) => `<option value="${escape(o.value)}"${chosen.has(o.value) ? ' selected' : ''}>${escape(o.label)}</option>`).join('');
-    return `${label}<select id="${id}" name="${escape(name)}"${field.multiple ? ' multiple' : ''}>${field.multiple ? '' : '<option value=""></option>'}${options}</select>`;
+    return `<div class="ambit-field">${label}<select class="ambit-input" id="${id}" name="${escape(name)}"${field.multiple ? ' multiple' : ''}>${field.multiple ? '' : '<option value=""></option>'}${options}</select></div>`;
   }
-  if (field?.type === 'boolean') return `<span class="check"><input type="checkbox" id="${id}" name="${escape(name)}"${value === true ? ' checked' : ''}> ${label}</span>`;
   const type = field?.type === 'number' ? 'number' : field?.type === 'date' ? 'date' : field?.type === 'email' ? 'email' : 'text';
   const step = field?.type === 'number' ? ` step="${field.decimals ? (1 / 10 ** field.decimals).toFixed(field.decimals) : '1'}"` : '';
-  return `${label}<input type="${type}"${step} id="${id}" name="${escape(name)}" value="${escape(value ?? '')}">`;
+  return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escape(name)}" value="${escape(value ?? '')}"></div>`;
 }
 
 /** Form fields back to typed values, using the entity's field types. */
@@ -62,64 +69,62 @@ function fromForm(definition: StoredDefinition, entity: string, names: readonly 
   return values;
 }
 
-const STATUS_TEXT: Record<ProposalRow['status'], string> = {
-  pending: 'Waiting for you to confirm',
-  approved: 'Approved and submitted',
-  rejected: 'Rejected',
-  superseded: 'Replaced by a revised version',
-  expired: 'Expired',
+const STATUS: Record<ProposalRow['status'], { text: string; tone: 'warn' | 'good' | 'bad' | 'idle' }> = {
+  pending: { text: 'Waiting for you to confirm', tone: 'warn' },
+  approved: { text: 'Approved and submitted', tone: 'good' },
+  rejected: { text: 'Rejected', tone: 'bad' },
+  superseded: { text: 'Replaced by a revised version', tone: 'idle' },
+  expired: { text: 'Expired', tone: 'idle' },
 };
 
+/** The review page, drawn in Ocean (packages/design): one approval card, built from the stored proposal. */
 function page(input: { proposal: ProposalRow; card: CardData; definition: StoredDefinition | null; entity: string | null; inputs: readonly string[]; error?: string }): string {
   const { proposal, card } = input;
   const pending = proposal.status === 'pending';
+  const status = STATUS[proposal.status];
+  // Agents are drawn in the agent tone, and people never are.
+  const byAgent = proposal.proposedWithToken !== null || proposal.proposedByType !== 'user' || proposal.proposedBy !== proposal.onBehalfOf;
+  const from = byAgent
+    ? '<p class="approval-from">Prepared by an agent acting for you</p>'
+    : '<p class="approval-from person">Revised by you</p>';
   const findings = card.findings.length
-    ? `<ul class="findings">${card.findings.map((f) => `<li class="${f.severity}"><strong>${f.severity === 'error' ? 'Blocked' : 'Check'}:</strong> ${escape(f.message)}</li>`).join('')}</ul>`
-    : '<p class="ok">The app\'s rules found nothing to check.</p>';
+    ? `<ul class="approval-findings">${card.findings
+        .map((f) => `<li class="approval-finding${f.severity === 'error' ? ' error' : ''}"><strong>${f.severity === 'error' ? 'Blocked' : 'Check'}:</strong> ${escape(f.message)}</li>`)
+        .join('')}</ul>`
+    : '<p class="approval-clear">The app\'s rules found nothing to check.</p>';
   const fields = card.fields
-    .map((f) => `<div class="row"><dt>${escape(f.label)}</dt><dd>${escape(f.display)}${f.source ? `<span class="source">${sourceLabel(f.source as Record<string, unknown>)}</span>` : ''}</dd></div>`)
+    .map((f) => `<div class="pair"><dt>${escape(f.label)}</dt><dd>${escape(f.display)}${sourceTag(f.source as Record<string, unknown> | undefined)}</dd></div>`)
     .join('');
   const effect = (proposal.effect as { input?: Record<string, unknown> }).input ?? {};
   const edit =
     pending && input.definition && input.entity && input.inputs.length
-      ? `<details><summary>Edit the values</summary><form method="post" action="/review/${proposal.id}/revise" class="edit">${input.inputs
-          .map((name) => `<div class="field">${formControl(input.definition!, input.entity!, name, effect[name])}</div>`)
-          .join('')}<button type="submit">Save changes</button></form></details>`
+      ? `<details class="approval-edit"><summary>Edit the values</summary><form method="post" action="/review/${proposal.id}/revise">${input.inputs
+          .map((name) => formControl(input.definition!, input.entity!, name, effect[name]))
+          .join('')}<button type="submit" class="ambit-button">Save changes</button></form></details>`
       : '';
   const actions = pending
-    ? `<div class="actions"><form method="post" action="/review/${proposal.id}/approve"><input type="hidden" name="digest" value="${escape(proposal.digest)}"><button type="submit" class="primary">Approve and submit</button></form>` +
-      `<form method="post" action="/review/${proposal.id}/reject"><button type="submit">Reject</button></form></div>`
+    ? `<div class="approval-actions"><form method="post" action="/review/${proposal.id}/approve"><input type="hidden" name="digest" value="${escape(proposal.digest)}"><button type="submit" class="ambit-button primary">Approve and submit</button></form>` +
+      `<form method="post" action="/review/${proposal.id}/reject"><button type="submit" class="ambit-button">Reject</button></form></div>`
     : '';
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Review: ${escape(card.title)}</title>
-<style>
-:root{color-scheme:light dark;--fg:#1d1d1f;--muted:#5f6368;--line:#d9d9de;--bg:#fff;--card:#f7f7f9;--warn:#8a5a00;--warnbg:#fff4d6;--err:#a50e0e;--errbg:#fde7e7;--accent:#1f5eff}
-@media (prefers-color-scheme:dark){:root{--fg:#ececf1;--muted:#a0a3ab;--line:#3a3b40;--bg:#17181b;--card:#202125;--warn:#ffcf66;--warnbg:#3a2f12;--err:#ff8a8a;--errbg:#3d1b1b;--accent:#7aa2ff}}
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:640px;margin:0 auto;padding:24px 16px 48px}
-.status{color:var(--muted);margin:0 0 4px;font-size:14px}h1{font-size:24px;margin:0 0 16px}
-.findings{list-style:none;padding:0;margin:0 0 16px}.findings li{padding:10px 12px;border-radius:8px;margin-bottom:8px}
-.findings .warning{background:var(--warnbg);color:var(--warn)}.findings .error{background:var(--errbg);color:var(--err)}
-.ok{color:var(--muted)}dl{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px 16px;margin:0 0 16px}
-.row{display:flex;gap:16px;padding:10px 0;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}
-dt{flex:0 0 38%;color:var(--muted)}dd{margin:0;flex:1;overflow-wrap:anywhere}.source{display:block;font-size:13px;color:var(--muted)}
-details{margin:0 0 16px}summary{cursor:pointer;color:var(--accent)}.edit{display:grid;gap:12px;margin-top:12px}
-.field{display:grid;gap:4px}input,select{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
-.check{display:flex;gap:8px;align-items:center}.actions{display:flex;gap:12px;flex-wrap:wrap}
-button{font:inherit;padding:10px 16px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff}.error-box{background:var(--errbg);color:var(--err);padding:10px 12px;border-radius:8px;margin-bottom:16px}
-.seal{color:var(--muted);font-size:13px;margin-top:24px;overflow-wrap:anywhere}
-</style></head>
-<body><main>
-<p class="status">${escape(STATUS_TEXT[proposal.status])}</p>
-<h1>${escape(card.title)}</h1>
-${input.error ? `<p class="error-box">${escape(input.error)}</p>` : ''}
+<link rel="stylesheet" href="/assets/ocean.css"><link rel="stylesheet" href="/assets/ambit.css">
+</head>
+<body class="ambit-page"><main class="ambit-review">
+<p><span class="badge ${status.tone}">${escape(status.text)}</span></p>
+${input.error ? `<p class="ambit-error" role="alert">${escape(input.error)}</p>` : ''}
+<article class="approval" aria-labelledby="approval-title">
+<div class="approval-stripe"></div>
+<div class="approval-body">
+${from}
+<h1 class="approval-title" id="approval-title">${escape(card.title)}</h1>
 ${findings}
-<dl>${fields}</dl>
+<dl class="approval-changes">${fields}</dl>
 ${edit}
 ${actions}
-<p class="seal">You are approving exactly this change, sealed as ${escape(proposal.digest.slice(0, 16))}…. Expires ${escape(proposal.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.</p>
+<p class="approval-signed">You are approving exactly this change, sealed as <code>${escape(proposal.digest.slice(0, 16))}</code>…. Expires ${escape(proposal.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.</p>
+</div></article>
 </main></body></html>`;
 }
 

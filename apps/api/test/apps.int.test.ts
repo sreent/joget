@@ -220,6 +220,8 @@ describe('agents propose, people approve', () => {
     expect(anonymous.headers.location).toBe(`/auth/login?returnTo=${encodeURIComponent(`/review/${proposalId}`)}`);
 
     const review = await inject({ method: 'GET', url: `/review/${proposalId}`, ...as(bob) }, 200);
+    expect(review.body).toContain('<link rel="stylesheet" href="/assets/ocean.css">');
+    expect(review.body).toContain('Prepared by an agent acting for you');
     expect(review.body).toContain('Marina Bay hotel: SGD 270.00');
     expect(review.body).toContain('Hotel is above the SGD 250 nightly cap');
     expect(review.body).toContain('Read from receipt.jpg');
@@ -318,6 +320,19 @@ describe('building with an AI client', () => {
     const bobToken = await mintPat(bob, ['app.read', 'app.edit']);
     const denied = await rpc(bobToken, '/mcp/build', 'tools/call', { name: 'get_definition', arguments: { app_id: appId } });
     expect(denied.result).toMatchObject({ isError: true, structuredContent: { error: 'forbidden' } });
+  });
+});
+
+describe('the look', () => {
+  it('serves Ocean and its fonts from Ambit itself, and nothing else', async () => {
+    const css = await inject({ method: 'GET', url: '/assets/ocean.css', ...as(bob) }, 200);
+    expect(css.headers['content-type']).toMatch(/^text\/css/);
+    expect(css.body).toContain('--accent: var(--ocean-600);');
+    const font = await inject({ method: 'GET', url: '/assets/fonts/plex-sans-400.woff2', ...as(bob) }, 200);
+    expect(font.headers['content-type']).toBe('font/woff2');
+    await inject({ method: 'GET', url: '/assets/..%2Fpackage.json', ...as(bob) }, 400);
+    await inject({ method: 'GET', url: '/assets/fonts/OFL-plex-sans.txt', ...as(bob) }, 400);
+    await inject({ method: 'GET', url: '/assets/ocean.css' }, 401);
   });
 });
 
