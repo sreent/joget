@@ -32,7 +32,7 @@ import {
   type ValueKind,
 } from '@platform/app-model';
 import { proposals, users } from '@platform/db';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { checkQuery, principalEnv } from '../access/check.js';
@@ -474,8 +474,11 @@ export class AppRuntime {
   async history(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, entityName: string, id: string) {
     const entity = this.entity(loaded, entityName);
     const decision = await this.decide(request, auth, loaded, 'record.read', entityName);
-    const current = await this.get(request, auth, loaded, entityName, id, decision);
-    const read = grantsFor(decision.grants, { ...current.values, owner: current.owner, id: current.id }).map((g) => g.grant);
+    await this.get(request, auth, loaded, entityName, id, decision); // 404 unless the caller can read the record
+    // Which grants apply is decided on the whole record, including fields the caller can't see.
+    const stored = await this.#readBack(loaded, entity, id);
+    if (!stored) throw notFound('Record');
+    const read = grantsFor(decision.grants, recordValues(stored)).map((g) => g.grant);
     // Field access is decided on what the caller can see now: a field hidden today stays hidden in the past too.
     const query = selectHistory(this.#names(loaded), entity, id);
     const rows = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => (await tx.query(query.text, query.values)).rows);
@@ -773,7 +776,7 @@ export class AppRuntime {
     const rows = await this.#ctx.db
       .select()
       .from(proposals)
-      .where(and(eq(proposals.orgId, this.#ctx.org.id), eq(proposals.onBehalfOf, auth.actor.id), eq(proposals.status, 'pending')))
+      .where(and(eq(proposals.orgId, this.#ctx.org.id), eq(proposals.onBehalfOf, auth.actor.id), eq(proposals.status, 'pending'), gt(proposals.expiresAt, this.#ctx.now())))
       .orderBy(desc(proposals.createdAt))
       .limit(100);
     return rows.map((row) => this.toProposalOut(this.#withFindings(row)));
