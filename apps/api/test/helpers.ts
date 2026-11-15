@@ -93,6 +93,7 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
   const ctx = await createAppContext({
     config,
     db: handle.db,
+    pool: handle.pool,
     oidc: idp,
     auditSigningKeyPem: generateEd25519KeyPair().privateKeyPem,
     now: () => new Date(Date.now() + clock.offsetMs),

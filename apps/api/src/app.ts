@@ -1,5 +1,7 @@
 import { createEd25519Signer, createEd25519Verifier, publicKeyPemFor } from '@platform/audit';
 import { ensureSingleOrg, seedManagedPolicy, type Database } from '@platform/db';
+import type pg from 'pg';
+import { AppCatalog } from './apps/catalog.js';
 import { PolicyService } from './access/policy-service.js';
 import type { OidcProvider } from './auth/oidc.js';
 import { SessionService } from './auth/sessions.js';
@@ -11,11 +13,12 @@ import { TokenService } from './tokens/service.js';
 export async function createAppContext(input: {
   config: Config;
   db: Database;
+  pool: pg.Pool;
   oidc: OidcProvider;
   auditSigningKeyPem: string;
   now?: () => Date;
 }): Promise<AppContext> {
-  const { config, db, oidc } = input;
+  const { config, db, pool, oidc } = input;
   const now = input.now ?? (() => new Date());
   await seedManagedPolicy(db);
   const org = await ensureSingleOrg(db, config.ORG_NAME);
@@ -27,5 +30,6 @@ export async function createAppContext(input: {
     ...config.AUDIT_VERIFY_PUBLIC_KEYS,
     [config.AUDIT_SIGNING_KEY_ID]: publicKeyPemFor(input.auditSigningKeyPem),
   });
-  return { config, db, org, oidc, policy, sessions, tokens, auditSigner, auditVerifier, now };
+  const apps = new AppCatalog(db, org.id);
+  return { config, db, pool, apps, org, oidc, policy, sessions, tokens, auditSigner, auditVerifier, now };
 }

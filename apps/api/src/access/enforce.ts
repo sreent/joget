@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import { auditScopeFor, recordAudit, spaceIdOf } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import { forbidden, unauthorized } from '../errors.js';
+import { checkPermission, checkQuery } from './check.js';
 import { requireAuth, type AccessRule } from './rules.js';
 
 export interface RouteAccess {
@@ -27,7 +27,7 @@ export function requireAccessRules(app: FastifyInstance, registry: RouteAccess[]
         method,
         url: route.url,
         kind: access.kind,
-        ...(access.kind === 'permission' && typeof access.action === 'string' ? { action: access.action } : {}),
+        ...((access.kind === 'permission' || access.kind === 'query') && typeof access.action === 'string' ? { action: access.action } : {}),
       });
     }
   });
@@ -41,6 +41,7 @@ export function installAccessControl(app: FastifyInstance, ctx: AppContext): voi
   const publicOrigin = new URL(ctx.config.PUBLIC_BASE_URL).origin;
   app.decorateRequest('auth', null);
   app.decorateRequest('decision', null);
+  app.decorateRequest('queryDecision', null);
 
   app.addHook('onRequest', async (request) => {
     // Defence in depth against cross-site request forgery, on top of SameSite=Lax cookies.
@@ -60,22 +61,14 @@ export function installAccessControl(app: FastifyInstance, ctx: AppContext): voi
 
   app.addHook('preHandler', async (request) => {
     const access = request.routeOptions.config?.access;
-    if (access?.kind !== 'permission') return;
+    if (access?.kind !== 'permission' && access?.kind !== 'query') return;
     const auth = requireAuth(request);
     const resource = await access.resource(request);
     const action = typeof access.action === 'string' ? access.action : await access.action(request);
     const context = access.context ? await access.context(request) : undefined;
-    const decision = await ctx.policy.authorize(auth.principal, action, resource, context);
-    if (!decision.allowed) {
-      await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
-        action: 'access.denied',
-        outcome: 'denied',
-        target: { type: resource.type, id: resource.id ?? '' },
-        spaceId: spaceIdOf(resource),
-        reason: { action, reasons: decision.reasons },
-      });
-      throw forbidden('forbidden', `You are not allowed to ${action} here`, { action, reasons: decision.reasons });
-    }
-    request.decision = decision;
+    const policy = access.policy ? await access.policy(request) : undefined;
+    const options = { ...(context ? { context } : {}), ...(policy ? { policy } : {}) };
+    if (access.kind === 'query') request.queryDecision = await checkQuery(ctx, request, auth, action, resource, options);
+    else request.decision = await checkPermission(ctx, request, auth, action, resource, options);
   });
 }

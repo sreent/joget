@@ -13,6 +13,12 @@ import {
 import { installAccessControl, requireAccessRules, type RouteAccess } from './access/enforce.js';
 import { accessRoutes } from './access/routes.js';
 import { auditRoutes } from './audit/routes.js';
+import { AppBuilder } from './apps/builder.js';
+import { mcpRoutes } from './apps/mcp.js';
+import { proposalRoutes } from './apps/proposal-routes.js';
+import { appRoutes } from './apps/routes.js';
+import { AppRuntime } from './apps/runtime.js';
+import { runtimeRoutes } from './apps/runtime-routes.js';
 import { authRoutes } from './auth/routes.js';
 import type { AppContext } from './context.js';
 import { HttpError } from './errors.js';
@@ -52,7 +58,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(helmet);
   await app.register(swagger, {
     openapi: {
-      info: { title: 'Platform API', version: '0.1.0', description: 'Governance kernel: identity, spaces, roles and permission sets, audit.' },
+      info: { title: 'Ambit API', version: '0.1.0', description: 'Governance kernel and capability core: identity, spaces, roles and permission sets, apps, records, actions, queries, proposals, audit.' },
       components: {
         securitySchemes: {
           session: { type: 'apiKey', in: 'cookie', name: ctx.config.SESSION_COOKIE_NAME },
@@ -66,6 +72,10 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   installAccessControl(app, ctx);
 
   app.setErrorHandler((error, request, reply) => {
+    // People who open a review link before signing in are sent to sign in, and then back.
+    if (error instanceof HttpError && error.statusCode === 401 && request.method === 'GET' && request.url.startsWith('/review/')) {
+      return reply.redirect(`/auth/login?returnTo=${encodeURIComponent(request.url)}`);
+    }
     if (error instanceof HttpError) {
       return reply.status(error.statusCode).send({
         error: error.code,
@@ -99,6 +109,12 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(accessRoutes(ctx));
   await app.register(auditRoutes(ctx));
   await app.register(tokenRoutes(ctx));
+  const builder = new AppBuilder(ctx);
+  const runtime = new AppRuntime(ctx);
+  await app.register(appRoutes(ctx, builder, runtime));
+  await app.register(runtimeRoutes(ctx, runtime));
+  await app.register(proposalRoutes(ctx, runtime));
+  await app.register(mcpRoutes(ctx, builder, runtime));
   app.get(
     '/openapi.json',
     { config: { access: { kind: 'authenticated' } }, schema: { hide: true } },

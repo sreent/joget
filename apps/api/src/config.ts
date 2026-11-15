@@ -57,6 +57,11 @@ export const ConfigSchema = z
 
     /** The longest a personal access token may live. */
     PAT_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
+    /** Personal spaces stay small (design §3): at most this many apps, each shared with at most this many people. */
+    PERSONAL_SPACE_MAX_APPS: z.coerce.number().int().min(1).default(20),
+    PERSONAL_APP_MAX_SHARES: z.coerce.number().int().min(1).default(10),
+    /** How long an agent's proposal waits for the person before it expires. */
+    PROPOSAL_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(72),
     /** The longest a service-account token may live. */
     SERVICE_ACCOUNT_TOKEN_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
 

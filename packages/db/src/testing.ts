@@ -21,7 +21,18 @@ export async function createTestDatabase(): Promise<{ url: string; drop(): Promi
   url.pathname = `/${name}`;
   return {
     url: url.toString(),
-    drop: () => withAdmin(adminUrl, (client) => client.query(`drop database if exists "${name}" with (force)`)).then(() => undefined),
+    async drop() {
+      // Roles belong to the whole cluster, so the per-app roles the tests created outlive the database: drop them too.
+      const roles = await withAdmin(url.toString(), async (client) => {
+        const table = await client.query<{ t: string | null }>("select to_regclass('public.app_environments')::text as t");
+        if (!table.rows[0]?.t) return [];
+        return (await client.query<{ db_role: string }>('select db_role from app_environments')).rows.map((row) => row.db_role);
+      }).catch(() => [] as string[]);
+      await withAdmin(adminUrl, (client) => client.query(`drop database if exists "${name}" with (force)`));
+      for (const role of roles) {
+        if (/^[a-z0-9_]+$/.test(role)) await withAdmin(adminUrl, (client) => client.query(`drop role if exists "${role}"`));
+      }
+    },
   };
 }
 

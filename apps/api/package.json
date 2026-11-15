@@ -30,6 +30,7 @@
     "@opentelemetry/instrumentation-undici": "^0.35.1",
     "@opentelemetry/sdk-metrics": "^3.1.1",
     "@opentelemetry/sdk-node": "^0.301.2",
+    "@platform/app-model": "workspace:*",
     "@platform/audit": "workspace:*",
     "@platform/authz": "workspace:*",
     "@platform/db": "workspace:*",

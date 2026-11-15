@@ -15,6 +15,8 @@ export const BindingOut = z.object({
   }),
   roleId: z.string().nullable(),
   permissionSetId: z.string().nullable(),
+  /** A role an app defines for itself, for example when an app is shared. */
+  appRoleId: z.string().nullable(),
   scope: z.object({ type: z.enum(['org', 'space', 'app', 'env']), id: z.uuid() }),
   expiresAt: z.string().nullable(),
   justification: z.string().nullable(),
@@ -52,6 +54,7 @@ export async function describeBindings(db: Executor, rows: readonly BindingRow[]
     principal: { type: row.principalType, id: row.principalId, name: names.get(row.principalId) ?? null },
     roleId: row.roleId,
     permissionSetId: row.permissionSetId,
+    appRoleId: row.appRoleId,
     scope: { type: row.scopeType, id: row.scopeId },
     expiresAt: row.expiresAt?.toISOString() ?? null,
     justification: row.justification,

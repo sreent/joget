@@ -1,6 +1,8 @@
 import type { SignatureVerifier, Signer } from '@platform/audit';
 import type { Principal } from '@platform/authz';
 import type { Database } from '@platform/db';
+import type pg from 'pg';
+import type { AppCatalog } from './apps/catalog.js';
 import type { PolicyService } from './access/policy-service.js';
 import type { OidcProvider } from './auth/oidc.js';
 import type { SessionService } from './auth/sessions.js';
@@ -11,6 +13,9 @@ import type { TokenService } from './tokens/service.js';
 export interface AppContext {
   readonly config: Config;
   readonly db: Database;
+  /** The same database as `db`, for transactions that switch to an app's own role (design §6.8). */
+  readonly pool: pg.Pool;
+  readonly apps: AppCatalog;
   readonly org: { readonly id: string; readonly name: string };
   readonly oidc: OidcProvider;
   readonly policy: PolicyService;

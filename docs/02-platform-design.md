@@ -1,9 +1,9 @@
-# Platform design: a governed capability platform for people and AI agents
+# Ambit: a governed capability platform for people and AI agents
 
 > **Status:** draft v0.2 for discussion · 2026-11-15. Version 0.2 reframes the platform around capabilities that people and AI agents use (§6).
 > **Companion:** [01-joget-review.md](01-joget-review.md), which covers what we learned from Joget DX 9.1 and why this design differs.
 > **Ambition:** surpass Joget DX and be fit for enterprise use, rather than clone it.
-> **Name:** "the platform" is a placeholder. Pick your own name and don't reuse the Joget trademark.
+> **Name:** **Ambit** (a3t), decided 2026-11-15: the bounds within which people and their agents act. It sits beside the owner's other apps, autonomic (a7c) and agentos (a5s). In product language, the things Ambit lets people get done are *errands*: "autonomic runs your errands, within your ambit". The rest of this document calls it "the platform".
 
 ## TL;DR
 
@@ -1010,14 +1010,14 @@ Phases 0–3 are the MVP: the point where an employee can claim expenses through
 | Low-code | A low-code platform like Joget and Mendix. Visual designers for data, forms, pages and logic sit next to an AI copilot and code | The studio is core: the data-model and form designers in phase 1, and pages, dashboards and logic flows in phase 2 (§6.5) |
 | The agent | A separate project: the agent runtime and its chat adapters for Teams, Slack, Matrix and Signal. It calls the platform through MCP and the API | The platform depends on no single chat app. Any agent can use the same capabilities: Copilot, Claude or our own (§6.4) |
 | Systems of record | The first processes, expenses included, have no existing system. Their data lives in the platform's built-in store, which is reached like any other connector | Phase 1 builds the built-in store behind the connector interface. Connectors to other systems follow in phase 4 (§6.1) |
+| Name | Ambit (a3t) | It sits beside autonomic (a7c) and agentos (a5s). What Ambit lets people get done are called errands |
 | Who builds | People, in the studio and with an AI copilot. AI clients such as Claude can also build through the builder MCP and API, with the builder's permissions | The builder MCP arrives in phase 1, and AI changes pass the same checks and reviews (§6.5) |
 
 **Still open:**
 
 1. **Workflow depth:** is a BPMN-style subset enough, or do you need full BPMN 2.0 conformance, for example to import existing process models? This must be settled before phase 3.
 2. **Platform database:** PostgreSQL only for the platform's own store, with Oracle and SQL Server reached through connectors? This is the working assumption. n8n has narrowed itself to PostgreSQL (plus SQLite for small installs) in the same way ([n8n reference](03-n8n-reference.md)).
-3. **Product name:** "the platform" is still a placeholder.
-4. **Approving in chat:** which chat platforms can prove who pressed Approve strongly enough to commit a proposal, and which must hand off to the review page? Teams, with the corporate sign-in, probably can. Signal can't. This must be settled before phase 3.
+3. **Approving in chat:** which chat platforms can prove who pressed Approve strongly enough to commit a proposal, and which must hand off to the review page? Teams, with the corporate sign-in, probably can. Signal can't. This must be settled before phase 3.
 
 ---
 

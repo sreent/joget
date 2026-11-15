@@ -1,4 +1,4 @@
-import type { Decision, Resource } from '@platform/authz';
+import type { Decision, Policy, QueryDecision, Resource } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
 import type { AuthContext } from '../context.js';
 import { forbidden } from '../errors.js';
@@ -13,12 +13,22 @@ export type AccessRule =
   /** Any signed-in user. For endpoints about the caller themselves, such as /v1/me. */
   | { readonly kind: 'authenticated' }
   /** A permission check by the policy decision point. */
-  | {
-      readonly kind: 'permission';
-      readonly action: string | ((request: FastifyRequest) => Promise<string>);
-      readonly resource: (request: FastifyRequest) => Promise<Resource>;
-      readonly context?: (request: FastifyRequest) => Promise<Record<string, unknown>>;
-    };
+  | ({ readonly kind: 'permission' } & PermissionCheck)
+  /**
+   * A permission check over many resources, such as an entity's records. The request is refused
+   * only if no grant can apply at all; the handler applies the record filters the decision carries.
+   */
+  | ({ readonly kind: 'query' } & PermissionCheck);
+
+interface PermissionCheck {
+  readonly action: string | ((request: FastifyRequest) => Promise<string>);
+  readonly resource: (request: FastifyRequest) => Promise<Resource>;
+  readonly context?: (request: FastifyRequest) => Promise<Record<string, unknown>>;
+  /** The policy to decide with, when it's more than the platform's: for example with an app's own roles. */
+  readonly policy?: (request: FastifyRequest) => Promise<Policy>;
+}
+
+export type AllowedQuery = Extract<QueryDecision, { allowed: true }>;
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -29,7 +39,15 @@ declare module 'fastify' {
     auth: AuthContext | null;
     /** Set for permission routes once the policy decision point allows the request. */
     decision: Decision | null;
+    /** Set for query routes: the grants that apply, with their record filters. */
+    queryDecision: AllowedQuery | null;
   }
+}
+
+/** The decision of a query route. */
+export function requireQueryDecision(request: FastifyRequest): AllowedQuery {
+  if (!request.queryDecision) throw new Error('requireQueryDecision() called on a route without a query access rule');
+  return request.queryDecision;
 }
 
 /** The authenticated caller, for handlers on non-public routes. */

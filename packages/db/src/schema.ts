@@ -234,6 +234,8 @@ export const bindings = pgTable(
     principalId: uuid('principal_id').notNull(),
     roleId: text('role_id').references(() => roles.id),
     permissionSetId: text('permission_set_id').references(() => permissionSets.id),
+    /** A role an app defines for itself (`app:<appId>:<role>`), bound at environment scope, for example to share an app. */
+    appRoleId: text('app_role_id'),
     scopeType: text('scope_type', { enum: scopeTypes }).notNull(),
     scopeId: uuid('scope_id').notNull(),
     expiresAt: timestamp('expires_at', tz),
@@ -249,14 +251,154 @@ export const bindings = pgTable(
   (t) => [
     index('bindings_principal_idx').on(t.principalType, t.principalId),
     index('bindings_scope_idx').on(t.scopeType, t.scopeId),
-    check('bindings_role_xor_permission_set', sql`(${t.roleId} is null) <> (${t.permissionSetId} is null)`),
+    check('bindings_grants_one_thing', sql`num_nonnulls(${t.roleId}, ${t.permissionSetId}, ${t.appRoleId}) = 1`),
+    check('bindings_app_roles_inside_apps', sql`${t.appRoleId} is null or ${t.scopeType} in ('app', 'env')`),
     uniqueIndex('bindings_active_role_uq')
       .on(t.principalType, t.principalId, t.scopeType, t.scopeId, t.roleId)
       .where(sql`${t.revokedAt} is null and ${t.roleId} is not null`),
     uniqueIndex('bindings_active_permission_set_uq')
       .on(t.principalType, t.principalId, t.scopeType, t.scopeId, t.permissionSetId)
       .where(sql`${t.revokedAt} is null and ${t.permissionSetId} is not null`),
+    uniqueIndex('bindings_active_app_role_uq')
+      .on(t.principalType, t.principalId, t.scopeType, t.scopeId, t.appRoleId)
+      .where(sql`${t.revokedAt} is null and ${t.appRoleId} is not null`),
   ],
+);
+
+/**
+ * Apps: the packages that capabilities ship in (design §6). The definition itself lives in
+ * app_revisions; `current_revision` points at the one in use.
+ */
+export const apps = pgTable(
+  'apps',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    /** A short identifier, unique in its space. Tool names for agents start with it. */
+    handle: text('handle').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    ownerUserId: uuid('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    status: text('status', { enum: ['active', 'deleted'] })
+      .notNull()
+      .default('active'),
+    currentRevision: integer('current_revision').notNull(),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at', tz),
+  },
+  (t) => [
+    index('apps_space_idx').on(t.spaceId),
+    uniqueIndex('apps_space_handle_uq').on(t.spaceId, t.handle).where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/** Every saved version of an app's definition. Kept for history, diffs and audit. */
+export const appRevisions = pgTable(
+  'app_revisions',
+  {
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    revision: integer('revision').notNull(),
+    definition: jsonb('definition').$type<Json>().notNull(),
+    /** SHA-256 of the definition's canonical JSON. */
+    digest: text('digest').notNull(),
+    /** The migration steps and notes of the save that made this revision. */
+    summary: jsonb('summary').$type<Json>(),
+    createdByType: text('created_by_type', { enum: actorTypes }).notNull(),
+    createdBy: uuid('created_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.appId, t.revision] })],
+);
+
+/**
+ * Where an app runs. Each environment has its own database schema and NOLOGIN role (design §6.8).
+ * A personal app has one: its sandbox.
+ */
+export const appEnvironments = pgTable(
+  'app_environments',
+  {
+    id: uuid('id').primaryKey(),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    kind: text('kind', { enum: ['sandbox', 'staging', 'prod'] }).notNull(),
+    schemaName: text('schema_name').notNull(),
+    dbRole: text('db_role').notNull(),
+    /** The definition revision whose data model the schema has. */
+    appliedRevision: integer('applied_revision').notNull(),
+    status: text('status', { enum: ['active', 'deleted'] })
+      .notNull()
+      .default('active'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('app_environments_schema_uq').on(t.schemaName),
+    uniqueIndex('app_environments_app_kind_uq').on(t.appId, t.kind).where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/**
+ * Actions an agent prepared that wait for the person they act for (design §6.3). The effect is
+ * exactly what will be written, and the digest seals it: approving names the digest.
+ */
+export const proposals = pgTable(
+  'proposals',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    action: text('action').notNull(),
+    /** The definition revision the proposal was checked against. */
+    revision: integer('revision').notNull(),
+    /** For updates: the record, and the version it had when the proposal was made. */
+    recordId: uuid('record_id'),
+    baseVersion: integer('base_version'),
+    status: text('status', { enum: ['pending', 'approved', 'rejected', 'superseded', 'expired'] })
+      .notNull()
+      .default('pending'),
+    /** The values the action writes, after its own fixed values and defaults. */
+    effect: jsonb('effect').$type<Json>().notNull(),
+    findings: jsonb('findings').$type<Json>().notNull(),
+    provenance: jsonb('provenance').$type<Json>().notNull(),
+    card: jsonb('card').$type<Json>().notNull(),
+    digest: text('digest').notNull(),
+    proposedByType: text('proposed_by_type', { enum: actorTypes }).notNull(),
+    proposedBy: uuid('proposed_by'),
+    /** The token the proposal came through, if any. */
+    proposedWithToken: uuid('proposed_with_token'),
+    /** The person the action is for. Only they can approve it. */
+    onBehalfOf: uuid('on_behalf_of')
+      .notNull()
+      .references(() => users.id),
+    /** The proposal this one revises, when the person edited it. */
+    revises: uuid('revises'),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at', tz).notNull(),
+    decidedAt: timestamp('decided_at', tz),
+    decisionNote: text('decision_note'),
+    resultRecordId: uuid('result_record_id'),
+  },
+  (t) => [index('proposals_person_idx').on(t.onBehalfOf, t.status), index('proposals_app_idx').on(t.appId)],
 );
 
 /** Org-level rules that deny, or demand fresh MFA, regardless of grants. */

@@ -1,8 +1,8 @@
-# joget
+# Ambit
 
-Design and first code for a **governed capability platform for people and AI agents**. People ask for outcomes, in Teams, Slack or any other chat app, through an agent, or on the web. Builders, working with an AI copilot, publish the capabilities that deliver them: actions, queries, rules and review cards. Every capability is an MCP tool and an API operation. An agent always acts for a named person, and the person confirms what matters before it's committed. Roles, personal and team spaces, permission sets, efficient deployment, monitoring and a full audit trail govern all of it.
+Design and first code for **Ambit** (a3t), a **governed capability platform for people and AI agents**. This repository is still called `joget`, after the platform it set out to surpass. People ask for outcomes, in Teams, Slack or any other chat app, through an agent, or on the web. Builders, working with an AI copilot, publish the capabilities that deliver them: actions, queries, rules and review cards. Every capability is an MCP tool and an API operation. An agent always acts for a named person, and the person confirms what matters before it's committed. Roles, personal and team spaces, permission sets, efficient deployment, monitoring and a full audit trail govern all of it.
 
-The goal is not to clone Joget DX but to surpass it: match its builder breadth, beat it on governance, isolation, delivery, observability and audit, and build on a modern TypeScript stack. The working name is a placeholder; the product should get its own name rather than reuse the Joget trademark.
+The goal is not to clone Joget DX but to surpass it: match what builders can deliver with it, beat it on governance, isolation, delivery, observability, audit and readiness for agents, and build on a modern TypeScript stack.
 
 ## Documents
 
@@ -21,8 +21,8 @@ The goal is not to clone Joget DX but to surpass it: match its builder breadth, 
   - the agent and its chat adapters are a separate project that calls the platform;
   - data lives in the platform's built-in store, which is reached like any other connector;
   - it stays a low-code platform like Joget and Mendix: visual designers, an AI copilot and code edit the same definitions, and AI clients such as Claude can build through an MCP server.
-- **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), the product name, and which chat platforms can carry an approval.
-- **Built so far:** phase 0, the governance kernel (below), proven on a real Kubernetes cluster. The first piece of phase 1 is also built: the policy engine turns record-level conditions into database filters.
+- **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), and which chat platforms can carry an approval.
+- **Built so far:** phase 0, the governance kernel, proven on a real Kubernetes cluster; and the backend of phase 1, the capability core (below). The studio's visual designers are next.
 
 ## What the code does today
 
@@ -32,21 +32,20 @@ The goal is not to clone Joget DX but to surpass it: match its builder breadth, 
 | Spaces | A personal space for every user, created at first sign-in. Team spaces with a minimum number of owners. Freezing |
 | Authorization | One policy decision point (`@platform/authz`): permissions, permission sets, roles, scoped bindings with expiry, the personal-space boundary, guardrails (deny and fresh-MFA rules), separation of duties, privilege-escalation checks and explained decisions. Every route must declare an access rule, or the server refuses to start |
 | API tokens | Personal access tokens and service accounts owned by team spaces. Tokens are scoped, expire (90 days at most by default), are stored only as hashes, and can only be created from an interactive session with fresh MFA. Service accounts start with no access and gain it only through bindings. Admins can list and revoke any token, and every step is audited |
+| Apps (built-in store) | Apps live in personal spaces, defined as entities, rules, actions, queries, review cards and roles:<ul><li>Each app environment gets its own database schema and NOLOGIN role, and every query switches to that role.</li><li>Definitions are versioned. Entities and fields have stable IDs, so a rename is free and carries through to every reference. Changes apply live, but anything that deletes data waits for confirmation.</li><li>Record- and field-level permissions are compiled to SQL filters, and PII is masked by default.</li><li>Every record keeps a field-level history, with where each value came from.</li><li>Apps can be shared with named colleagues, each in one of the app's roles.</li></ul> |
+| Agents | Every action and query a person may run is an MCP tool (`/mcp`), and AI clients such as Claude can build apps through a second MCP server (`/mcp/build`). When an API token runs an action that needs confirmation, the action becomes a proposal sealed with a digest. Only the person, signed in, can approve exactly that change, on a review page where they can also edit it |
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
 | Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
-Next is phase 1, the capability core (§13 of the design doc):
-- the built-in store, with record- and field-level permissions and record history;
-- rules, actions and queries;
-- review cards and proposals, with confirmation enforced by the platform;
-- MCP endpoints for agents and for AI builders such as Claude.
+Next, to finish phase 1 (§13 of the design doc): the studio's data-model and form designers, line items and file fields (for receipts), and generated pages.
 
 Later: workload identity federation, so CI systems can swap their own OIDC tokens for short-lived platform tokens with no stored secrets.
 
 ## Repository layout
 
 ```text
-apps/api            Fastify API: auth, spaces, bindings, explain, audit, health
+apps/api            Fastify API: auth, spaces, bindings, apps, records, actions, proposals, MCP, audit, health
+packages/app-model  App definitions: validation, stable IDs, migration plans, roles, and the SQL behind record-level permissions
 packages/authz      Policy decision point (pure TypeScript, no I/O)
 packages/audit      Canonical hashing, Merkle seals, signatures, verification
 packages/db         Drizzle schema, SQL migrations, seeding, test-database helper
@@ -133,6 +132,23 @@ curl http://localhost:3000/v1/spaces -H 'authorization: Bearer plt_pat_...'
 
 For automation, a team-space admin creates a service account (`POST /v1/spaces/{spaceId}/service-accounts`), grants it roles like any other principal (`POST /v1/bindings`), and issues it a token (`POST /v1/service-accounts/{id}/tokens`). Security admins can list every token (`GET /v1/tokens`) and revoke any of them (`POST /v1/tokens/{id}/revoke`).
 
+## Building an app and letting an agent use it
+
+Sign in as `alice`. `GET /v1/app-model/schema` returns the definition format and a complete example: an expense-claim app. Create an app in your personal space from that example:
+
+```bash
+curl -X POST http://localhost:3000/v1/spaces/<your personal space ID>/apps -H 'content-type: application/json' \
+  -b 'platform_session=<your session cookie>' -d '{"name": "Expenses", "definition": <the example>}'
+```
+
+Then share it, or point an agent at it:
+
+- **Share it with colleagues:** `POST /v1/apps/{appId}/shares`, with an email and one of the app's roles.
+- **Let an agent use it:** connect any MCP client to `http://localhost:3000/mcp` with a personal access token scoped to `app.run`, `action.run`, `query.run`, `record.read` and `record.create`. Each action and query the person may run is a tool.
+- **Build with Claude:** add `http://localhost:3000/mcp/build`, with a token scoped to `app.create`, `app.read` and `app.edit`.
+
+When an agent submits a claim, the person gets a review link: they check the card, edit what's wrong, and approve.
+
 ## Deploying to Kubernetes
 
 The chart in `deploy/helm/platform` runs on any conformant cluster. It includes:
@@ -158,6 +174,8 @@ helm install platform deploy/helm/platform \
   --set config.PUBLIC_BASE_URL=https://platform.example.com \
   --set config.OIDC_ISSUER=https://login.example.com
 ```
+
+The database user needs the `CREATEROLE` attribute: each app environment gets its own `NOLOGIN` role, and the API switches to it for every query on that app's data. A managed PostgreSQL's administrator user usually has it.
 
 The values schema rejects plain-http URLs, secrets in values and development-only settings. CI lints the chart and validates the rendered manifests against Kubernetes schemas.
 

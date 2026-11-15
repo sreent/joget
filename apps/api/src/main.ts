@@ -23,7 +23,7 @@ if (!signingKey) {
 
 let reportIdpError = (error: unknown) => console.error('Cannot reach the identity provider', error);
 const oidc = createResilientOidcProvider(config, (error) => reportIdpError(error));
-const ctx = await createAppContext({ config, db: database.db, oidc, auditSigningKeyPem: signingKey });
+const ctx = await createAppContext({ config, db: database.db, pool: database.pool, oidc, auditSigningKeyPem: signingKey });
 const { app } = await buildServer(ctx);
 for (const warning of warnings) app.log.warn(warning);
 reportIdpError = (error) => app.log.error({ err: error }, 'Cannot reach the identity provider: sign-in answers 503 until it can');

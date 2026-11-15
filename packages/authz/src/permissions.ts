@@ -40,6 +40,9 @@ export const PLATFORM_PERMISSIONS = {
   'app.share': 'Share a personal app with named users',
   'app.export': 'Export app definitions',
   'app.delete': 'Delete apps',
+  'app.run': "Use an app's capabilities, screens and review pages",
+  'action.run': "Run an app's action, under your record permissions",
+  'query.run': "Run an app's query, under your record permissions",
 
   'change.open': 'Open change requests',
   'change.review': 'Review change requests',

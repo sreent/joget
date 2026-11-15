@@ -13,6 +13,7 @@ RUN corepack enable
 # Install dependencies first, so this layer is cached until a manifest or the lockfile changes.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/
+COPY packages/app-model/package.json packages/app-model/
 COPY packages/authz/package.json packages/authz/
 COPY packages/audit/package.json packages/audit/
 COPY packages/db/package.json packages/db/
