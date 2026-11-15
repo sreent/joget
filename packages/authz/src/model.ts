@@ -25,14 +25,26 @@ export interface Principal {
   readonly attributes?: Readonly<Record<string, unknown>>;
 }
 
+/** Which fields of a record a grant covers. Absent means every field. */
+export type FieldSelection = { readonly include: readonly string[] } | { readonly exclude: readonly string[] };
+
 /** One entry in a permission set. */
 export interface PermissionGrant {
   /** A permission or pattern, for example `app.edit` or `record.*`. */
   readonly permission: string;
   /** Narrows the grant to one resource, for example an entity name. Defaults to `*`. */
   readonly resource?: string;
-  /** The grant applies only when this condition holds. */
+  /**
+   * The grant applies only when this condition holds. For record permissions it may refer to the
+   * record (`record.<field>`): see authorizeQuery, which turns that part into a filter.
+   */
   readonly condition?: Condition;
+  /** For record permissions: the fields this grant lets you read, or write. */
+  readonly fields?: FieldSelection;
+  /** For record reads: fields that are shown masked rather than in full. */
+  readonly mask?: readonly string[];
+  /** For record writes: a condition the record must satisfy after the change. */
+  readonly check?: Condition;
 }
 
 /** A reusable, named bundle of permissions. Permission sets only ever add permissions. */
@@ -98,6 +110,8 @@ export interface AuthorizationRequest {
   readonly resource: Resource;
   /** Available to conditions as `context.<name>`, for example the author of a change. */
   readonly context?: Readonly<Record<string, unknown>>;
+  /** The record acted on, if any, available to conditions as `record.<field>`. */
+  readonly record?: Readonly<Record<string, unknown>>;
   /** Candidate bindings of the principal and its groups. Others are ignored. */
   readonly bindings: readonly Binding[];
   readonly now?: Date;
