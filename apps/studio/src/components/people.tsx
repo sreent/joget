@@ -26,7 +26,7 @@ export function PersonName({ id }: { id: string }) {
  * Picks a colleague for a person field: type part of a name or email, then choose with the mouse
  * or the arrow keys and Enter. Shows the chosen person's name when not searching.
  */
-export function PersonPicker({ id, value, onChange }: { id: string; value: string | null; onChange: (value: string | null) => void }) {
+export function PersonPicker({ id, value, onChange, label }: { id: string; value: string | null; onChange: (value: string | null) => void; label?: string }) {
   const listId = useId();
   const client = useQueryClient();
   const [text, setText] = useState<string | null>(null); // null: not searching
@@ -61,6 +61,7 @@ export function PersonPicker({ id, value, onChange }: { id: string; value: strin
     <div className="relative">
       <TextInput
         id={id}
+        {...(label ? { 'aria-label': label } : {})}
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={options.length > 0}

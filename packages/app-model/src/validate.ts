@@ -6,12 +6,14 @@ import {
   isSortableKind,
   isWritable,
   jsTypeOf,
+  lineOwners,
+  rollupOf,
   type FieldInfo,
   type StoredDefinition,
   type StoredEntity,
   type StoredField,
 } from './fields.js';
-import { AppDefinition, SYSTEM_FIELDS, type Entity } from './schema.js';
+import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Entity } from './schema.js';
 import { canonicalValue } from './values.js';
 
 export interface Issue {
@@ -107,6 +109,19 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
     if (renamed) touched.add(`${entity}.${name} → ${renamed}`);
     return renamed ?? name;
   };
+  /** The line entity of an entity's lines field, by their new names. */
+  const lineEntityOf = (entity: string, lines: string) => {
+    const field = definition.entities[entity]?.fields.find((f) => f.name === lines);
+    return field?.type === 'lines' ? entityName(field.entity) : undefined;
+  };
+  /** A field name, or a path into lines such as `lines.amount`, after renames. */
+  const pathName = (entity: string) => (name: string) => {
+    const match = LINE_PATH_PATTERN.exec(name);
+    if (!match) return fieldName(entity)(name);
+    const lines = fieldName(entity)(match[1]!);
+    const lineEntity = lineEntityOf(entity, lines);
+    return `${lines}.${lineEntity ? fieldName(lineEntity)(match[2]!) : match[2]}`;
+  };
   const refs = (entity: string) => (ref: string) => (ref.startsWith('record.') ? `record.${fieldName(entity)(ref.slice('record.'.length))}` : ref);
   const condition = <T extends Condition | undefined>(entity: string, c: T): T => (c ? (mapRefs(c, refs(entity)) as T) : c);
   const mapRecord = <T>(record: Readonly<Record<string, T>>, map: (value: T) => T) =>
@@ -118,7 +133,14 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       {
         ...entity,
         ...(entity.titleField ? { titleField: fieldName(name)(entity.titleField) } : {}),
-        fields: entity.fields.map((field) => (field.type === 'reference' ? { ...field, entity: entityName(field.entity) } : field)),
+        fields: entity.fields.map((field) => {
+          if (field.type === 'reference' || field.type === 'lines') return { ...field, entity: entityName(field.entity) };
+          if (field.type === 'number' && field.rollup) {
+            const [op, path] = Object.entries(field.rollup)[0] as [string, string];
+            return { ...field, rollup: { [op]: op === 'count' ? fieldName(name)(path) : pathName(name)(path) } as typeof field.rollup };
+          }
+          return field;
+        }),
       },
     ]),
   );
@@ -158,6 +180,13 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       ...card,
       entity,
       show: card.show.map(fieldName(entity)),
+      ...(card.table
+        ? (() => {
+            const of = fieldName(entity)(card.table.of);
+            const lineEntity = lineEntityOf(entity, of);
+            return { table: { of, columns: card.table.columns.map((column) => (lineEntity ? fieldName(lineEntity)(column) : column)) } };
+          })()
+        : {}),
       title: card.title.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g, (_, name: string) => `{{${fieldName(entity)(name)}}}`),
     };
   });
@@ -174,7 +203,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
     entities: Object.fromEntries(
       Object.entries(role.entities).map(([oldEntity, permissions]) => {
         const entity = entityName(oldEntity);
-        const rename = fieldName(entity);
+        const rename = pathName(entity);
         const access = <T>(value: T): T => {
           if (typeof value !== 'object' || value === null) return value;
           const a = value as Record<string, unknown>;
@@ -252,6 +281,8 @@ function assignFieldIds(
 
 interface ConditionScope {
   readonly record?: ReadonlyMap<string, FieldInfo>;
+  /** The record's lines fields, which conditions can't test directly. */
+  readonly lines?: ReadonlySet<string>;
   readonly input?: ReadonlyMap<string, 'text' | 'number' | 'boolean'>;
 }
 
@@ -267,7 +298,9 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
       else if (!name || rest.length) issues.push({ path, message: `${ref}: refer to a record field as record.<field>` });
       else {
         const info = scope.record.get(name);
-        if (!info) issues.push({ path, message: `${ref}: no such field` });
+        if (!info && scope.lines?.has(name)) {
+          issues.push({ path, message: `${ref}: conditions can't test lines one by one. Add a rollup, such as a total, and test that` });
+        } else if (!info) issues.push({ path, message: `${ref}: no such field` });
         else if (!presenceOnly && !isConditionKind(info.kind)) {
           issues.push({ path, message: `${ref}: dates and times can't be compared in conditions yet, only tested with "exists"` });
         }
@@ -330,11 +363,35 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
 }
 
 function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
-  const fieldsOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, entityFields(entity)]));
+  const owners = lineOwners(definition);
+  const fieldsOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, entityFields(entity, { line: owners.has(name) })]));
+  const linesOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, new Set(entity.fields.filter((f) => f.type === 'lines').map((f) => f.name))]));
   const entityAt = (name: string, path: string) => {
     const fields = fieldsOf.get(name);
     if (!fields) issues.push({ path, message: `No entity named ${name}` });
     return fields;
+  };
+  /** The entity whose records something works on. Line entities have no records of their own. */
+  const recordEntityAt = (name: string, path: string) => {
+    const owner = owners.get(name);
+    if (owner) {
+      issues.push({ path, message: `${name} is the lines of ${owner.parent}.${owner.field}, so it has no records of its own: use ${owner.parent}` });
+      return undefined;
+    }
+    return entityAt(name, path);
+  };
+  /** The line entity of a lines field. */
+  const lineEntityOf = (entity: string, lines: string) => {
+    const field = definition.entities[entity]?.fields.find((f) => f.name === lines);
+    return field?.type === 'lines' ? definition.entities[field.entity] : undefined;
+  };
+  /** A field of an entity's records, or a field of its lines named as `lines.amount`. */
+  const fieldAt = (entity: string, name: string): { info?: FieldInfo; lines?: boolean } | undefined => {
+    const match = LINE_PATH_PATTERN.exec(name);
+    if (!match) return linesOf.get(entity)?.has(name) ? { lines: true } : fieldsOf.get(entity)?.has(name) ? { info: fieldsOf.get(entity)!.get(name)! } : undefined;
+    const lineEntity = lineEntityOf(entity, match[1]!);
+    const info = lineEntity ? entityFields(lineEntity, { line: true }).get(match[2]!) : undefined;
+    return info && !info.system ? { info } : undefined;
   };
 
   for (const [name, entity] of Object.entries(definition.entities)) {
@@ -347,6 +404,41 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       seen.add(field.name);
       if (field.type === 'reference' && !definition.entities[field.entity]) {
         issues.push({ path: `${path}.entity`, message: `No entity named ${field.entity}` });
+      } else if (field.type === 'reference' && owners.has(field.entity)) {
+        issues.push({ path: `${path}.entity`, message: `${field.entity} is lines of another entity, so nothing else can refer to its lines` });
+      }
+      if (field.type === 'lines') {
+        const target = definition.entities[field.entity];
+        const owner = owners.get(field.entity);
+        if (!target) issues.push({ path: `${path}.entity`, message: `No entity named ${field.entity}` });
+        else if (field.entity === name) issues.push({ path: `${path}.entity`, message: 'An entity can\'t be lines of itself' });
+        else if (owner && (owner.parent !== name || owner.field !== field.name)) {
+          issues.push({ path: `${path}.entity`, message: `${field.entity} is already the lines of ${owner.parent}.${owner.field}` });
+        } else if (target.fields.some((f) => f.type === 'lines')) {
+          issues.push({ path: `${path}.entity`, message: `${field.entity} has lines of its own; lines go one level deep` });
+        }
+        if (owners.has(name)) issues.push({ path, message: `${name} is itself lines of another entity; lines go one level deep` });
+        if (field.classification === 'pii') issues.push({ path: `${path}.classification`, message: `Classify the fields of ${field.entity} instead` });
+      }
+      if (owners.has(name) && 'unique' in field && field.unique) {
+        issues.push({ path: `${path}.unique`, message: 'Fields of lines can\'t be unique yet' });
+      }
+      const rollup = rollupOf(field);
+      if (rollup) {
+        const [op, at] = Object.entries(rollup)[0] as ['sum' | 'min' | 'max' | 'count', string];
+        const [linesName, sub] = at.split('.') as [string, string | undefined];
+        const lineEntity = lineEntityOf(name, linesName);
+        if (!lineEntity) issues.push({ path: `${path}.rollup`, message: `${name} has no lines field named ${linesName}` });
+        else if (op !== 'count') {
+          const source = lineEntity.fields.find((f) => f.name === sub);
+          if (source?.type !== 'number') issues.push({ path: `${path}.rollup`, message: `${sub} isn't a number field of ${linesName}` });
+          else if (field.type === 'number' && source.decimals > field.decimals) {
+            issues.push({ path: `${path}.decimals`, message: `${sub} has ${source.decimals} decimal places, so the ${op} needs at least as many` });
+          }
+        }
+        if (field.required) issues.push({ path: `${path}.required`, message: 'A field worked out from lines always has its value: it can\'t be required' });
+        if ('default' in field && field.default !== undefined) issues.push({ path: `${path}.default`, message: 'A field worked out from lines can\'t have a default' });
+        if ('unique' in field && field.unique) issues.push({ path: `${path}.unique`, message: 'A field worked out from lines can\'t be unique' });
       }
       if (field.type === 'number' && field.min !== undefined && field.max !== undefined && field.min > field.max) {
         issues.push({ path, message: 'min is greater than max' });
@@ -359,7 +451,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         if (!result.ok) issues.push({ path: `${path}.default`, message: result.issue.message });
       }
     });
-    if (entity.titleField && !entity.fields.some((f) => f.name === entity.titleField)) {
+    if (entity.titleField && !fieldsOf.get(name)!.has(entity.titleField)) {
       issues.push({ path: `${base}.titleField`, message: `No field named ${entity.titleField}` });
     }
   }
@@ -367,26 +459,32 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   for (const [name, rule] of Object.entries(definition.rules)) {
     const fields = entityAt(rule.entity, `rules.${name}.entity`);
     if (!fields) continue;
-    if (rule.when) checkCondition(rule.when, { record: fields }, `rules.${name}.when`, issues);
-    checkCondition(rule.assert, { record: fields }, `rules.${name}.assert`, issues);
+    const scope = { record: fields, lines: linesOf.get(rule.entity)! };
+    if (rule.when) checkCondition(rule.when, scope, `rules.${name}.when`, issues);
+    checkCondition(rule.assert, scope, `rules.${name}.assert`, issues);
     for (const field of rule.fields ?? []) if (!fields.has(field)) issues.push({ path: `rules.${name}.fields`, message: `No field named ${field}` });
   }
 
   for (const [name, action] of Object.entries(definition.actions)) {
     const path = `actions.${name}`;
-    const fields = entityAt(action.entity, `${path}.entity`);
+    const fields = recordEntityAt(action.entity, `${path}.entity`);
     if (!fields) continue;
     const entity = definition.entities[action.entity]!;
+    const lines = linesOf.get(action.entity)!;
     const input = new Set<string>();
     for (const field of action.input) {
       const info = fields.get(field);
-      if (!info) issues.push({ path: `${path}.input`, message: `No field named ${field}` });
-      else if (!isWritable(info)) issues.push({ path: `${path}.input`, message: `${field} is set by the platform` });
+      if (!info && !lines.has(field)) issues.push({ path: `${path}.input`, message: `No field named ${field}` });
+      else if (info && !isWritable(info)) issues.push({ path: `${path}.input`, message: info.system ? `${field} is set by the platform` : `${field} is worked out from lines` });
       if (input.has(field)) issues.push({ path: `${path}.input`, message: `${field} is listed twice` });
       input.add(field);
     }
     for (const [field, value] of Object.entries(action.set)) {
       const info = fields.get(field);
+      if (lines.has(field)) {
+        issues.push({ path: `${path}.set.${field}`, message: `An action can't set lines: take ${field} as input` });
+        continue;
+      }
       if (!info || !isWritable(info)) {
         issues.push({ path: `${path}.set.${field}`, message: info ? `${field} is set by the platform` : `No field named ${field}` });
         continue;
@@ -400,11 +498,17 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       for (const field of entity.fields) {
         const provided = input.has(field.name) || field.name in action.set || ('default' in field && field.default !== undefined);
         if (field.required && !provided) {
-          issues.push({ path: `${path}.input`, message: `${field.name} is required, so the action must take it as input, set it, or the field needs a default` });
+          issues.push({
+            path: `${path}.input`,
+            message:
+              field.type === 'lines'
+                ? `${field.name} needs at least one line, so the action must take it as input`
+                : `${field.name} is required, so the action must take it as input, set it, or the field needs a default`,
+          });
         }
       }
     } else if (action.where) {
-      checkCondition(action.where, { record: fields }, `${path}.where`, issues);
+      checkCondition(action.where, { record: fields, lines }, `${path}.where`, issues);
     }
     if (action.card) {
       const card = definition.cards[action.card];
@@ -415,31 +519,43 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
 
   for (const [name, query] of Object.entries(definition.queries)) {
     const path = `queries.${name}`;
-    const fields = entityAt(query.entity, `${path}.entity`);
+    const fields = recordEntityAt(query.entity, `${path}.entity`);
     if (!fields) continue;
-    for (const field of query.fields) if (!fields.has(field)) issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
+    const lines = linesOf.get(query.entity)!;
+    for (const field of query.fields) if (!fields.has(field) && !lines.has(field)) issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
     const input = new Map(Object.entries(query.parameters).map(([param, spec]) => [param, spec.type] as const));
-    if (query.filter) checkCondition(query.filter, { record: fields, input }, `${path}.filter`, issues);
+    if (query.filter) checkCondition(query.filter, { record: fields, lines, input }, `${path}.filter`, issues);
     query.sort.forEach((sort, index) => {
       const info = fields.get(sort.field);
-      if (!info) issues.push({ path: `${path}.sort[${index}]`, message: `No field named ${sort.field}` });
+      if (!info) issues.push({ path: `${path}.sort[${index}]`, message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}` });
       else if (!isSortableKind(info.kind)) issues.push({ path: `${path}.sort[${index}]`, message: `${sort.field} can't be sorted` });
     });
   }
 
   for (const [name, card] of Object.entries(definition.cards)) {
-    const fields = entityAt(card.entity, `cards.${name}.entity`);
+    const fields = recordEntityAt(card.entity, `cards.${name}.entity`);
     if (!fields) continue;
-    for (const field of card.show) if (!fields.has(field)) issues.push({ path: `cards.${name}.show`, message: `No field named ${field}` });
+    const lines = linesOf.get(card.entity)!;
+    for (const field of card.show) if (!fields.has(field) && !lines.has(field)) issues.push({ path: `cards.${name}.show`, message: `No field named ${field}` });
     for (const [, field] of card.title.matchAll(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g)) {
-      if (!fields.has(field!)) issues.push({ path: `cards.${name}.title`, message: `No field named ${field}` });
+      if (!fields.has(field!)) issues.push({ path: `cards.${name}.title`, message: lines.has(field!) ? `${field} holds lines: put a rollup, such as a total, in the title` : `No field named ${field}` });
+    }
+    if (card.table) {
+      const lineEntity = lineEntityOf(card.entity, card.table.of);
+      if (!lineEntity) issues.push({ path: `cards.${name}.table.of`, message: `${card.entity} has no lines field named ${card.table.of}` });
+      else {
+        for (const column of card.table.columns) {
+          if (!lineEntity.fields.some((f) => f.name === column)) issues.push({ path: `cards.${name}.table.columns`, message: `${card.table.of} has no field named ${column}` });
+        }
+      }
     }
   }
 
   for (const [name, form] of Object.entries(definition.forms)) {
     const path = `forms.${name}`;
-    const fields = entityAt(form.entity, `${path}.entity`);
+    const fields = recordEntityAt(form.entity, `${path}.entity`);
     if (!fields) continue;
+    const lines = linesOf.get(form.entity)!;
     const action = form.action ? definition.actions[form.action] : undefined;
     if (form.action && !action) issues.push({ path: `${path}.action`, message: `No action named ${form.action}` });
     else if (action && action.entity !== form.entity) issues.push({ path: `${path}.action`, message: `${form.action} works on ${action.entity}, not ${form.entity}` });
@@ -448,8 +564,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       section.fields.forEach((item, f) => {
         const at = `${path}.sections[${s}].fields[${f}]`;
         const info = fields.get(item.field);
-        if (!info) issues.push({ path: at, message: `No field named ${item.field}` });
-        else if (!item.readOnly && !isWritable(info)) issues.push({ path: at, message: `${item.field} is set by the platform: show it read-only` });
+        if (!info && !lines.has(item.field)) issues.push({ path: at, message: `No field named ${item.field}` });
+        else if (info && !item.readOnly && !isWritable(info)) issues.push({ path: at, message: `${item.field} is ${info.system ? 'set by the platform' : 'worked out from lines'}: show it read-only` });
         else if (action && !item.readOnly && !action.input.includes(item.field)) {
           issues.push({ path: at, message: `${item.field} isn't an input of ${form.action}: show it read-only, or add it to the action's inputs` });
         }
@@ -463,26 +579,29 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     const base = `roles.${roleName}`;
     for (const [entityName, permissions] of Object.entries(role.entities)) {
       const path = `${base}.entities.${entityName}`;
-      const fields = entityAt(entityName, path);
+      const fields = recordEntityAt(entityName, path);
       if (!fields) continue;
-      const entity = definition.entities[entityName]!;
+      const lines = linesOf.get(entityName)!;
       for (const [verb, access] of Object.entries(permissions)) {
         if (typeof access !== 'object' || access === null) continue;
-        if ('where' in access && access.where) checkCondition(access.where, { record: fields }, `${path}.${verb}.where`, issues);
-        if ('check' in access && access.check) checkCondition(access.check, { record: fields }, `${path}.${verb}.check`, issues);
+        if ('where' in access && access.where) checkCondition(access.where, { record: fields, lines }, `${path}.${verb}.where`, issues);
+        if ('check' in access && access.check) checkCondition(access.check, { record: fields, lines }, `${path}.${verb}.check`, issues);
         if ('fields' in access && access.fields) {
           const names = 'include' in access.fields ? access.fields.include : access.fields.exclude;
           for (const field of names) {
-            const info = fields.get(field);
-            if (!info) issues.push({ path: `${path}.${verb}.fields`, message: `No field named ${field}` });
-            else if (verb !== 'read' && !isWritable(info)) issues.push({ path: `${path}.${verb}.fields`, message: `${field} is set by the platform` });
+            const found = fieldAt(entityName, field);
+            if (!found) issues.push({ path: `${path}.${verb}.fields`, message: `No field named ${field}` });
+            else if (verb !== 'read' && found.info && !isWritable(found.info)) {
+              issues.push({ path: `${path}.${verb}.fields`, message: `${field} is ${found.info.system ? 'set by the platform' : 'worked out from lines'}` });
+            }
           }
         }
         for (const key of ['mask', 'unmask'] as const) {
           for (const field of (key in access ? (access as Record<string, string[] | undefined>)[key] : undefined) ?? []) {
-            const declared = entity.fields.find((f) => f.name === field);
-            if (!declared) issues.push({ path: `${path}.${verb}.${key}`, message: `No field named ${field}` });
-            else if (key === 'unmask' && declared.classification !== 'pii') {
+            const found = fieldAt(entityName, field);
+            const declared = found?.info?.field;
+            if (!found || (!declared && !found.lines)) issues.push({ path: `${path}.${verb}.${key}`, message: `No field named ${field}` });
+            else if (key === 'unmask' && declared?.classification !== 'pii') {
               issues.push({ path: `${path}.${verb}.unmask`, message: `${field} isn't classified as PII, so it is never masked` });
             }
           }

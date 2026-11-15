@@ -9,10 +9,14 @@ import {
   changeFieldType,
   FIELD_TYPES,
   isName,
+  lineOwner,
   moveField,
   removeEntity,
   removeField,
   renameEntity,
+  rollupChoices,
+  rollupKey,
+  setRollup,
   typeLabel,
   updateEntity,
   updateField,
@@ -24,10 +28,13 @@ type Props = { definition: Definition; onChange: (definition: Definition) => voi
 /** The data model: entities, and their fields. Renaming keeps a field's data; changing its type doesn't. */
 export function DataDesigner({ definition, onChange }: Props) {
   const names = Object.keys(definition.entities);
-  const [selected, setSelected] = useState<string | null>(names[0] ?? null);
+  // Line entities are listed under the entity whose lines they are.
+  const owners = new Map(names.flatMap((name) => (lineOwner(definition, name) ? [[name, lineOwner(definition, name)!] as const] : [])));
+  const ordered = names.filter((name) => !owners.has(name)).flatMap((name) => [name, ...names.filter((n) => owners.get(n)?.parent === name)]);
+  const [selected, setSelected] = useState<string | null>(ordered[0] ?? null);
   const [field, setField] = useState<number | null>(null);
   const [newEntity, setNewEntity] = useState('');
-  const entityName = selected && definition.entities[selected] ? selected : (names[0] ?? null);
+  const entityName = selected && definition.entities[selected] ? selected : (ordered[0] ?? null);
   const entity = entityName ? definition.entities[entityName] : undefined;
 
   return (
@@ -35,8 +42,8 @@ export function DataDesigner({ definition, onChange }: Props) {
       <Card className="grid content-start gap-3 p-4">
         <h2 className="m-0 text-sm font-semibold text-muted">Entities</h2>
         <ul className="m-0 grid list-none gap-1 p-0">
-          {names.map((name) => (
-            <li key={name}>
+          {ordered.map((name) => (
+            <li key={name} className={cx(owners.has(name) && 'ml-3 border-l border-line pl-2')}>
               <button
                 type="button"
                 onClick={() => {
@@ -47,7 +54,7 @@ export function DataDesigner({ definition, onChange }: Props) {
                 className={cx('w-full rounded-md px-2.5 py-1.5 text-left', name === entityName ? 'bg-accent-soft text-text' : 'hover:bg-sunken')}
               >
                 <span className="block font-medium">{definition.entities[name]!.label}</span>
-                <code className="text-xs text-faint">{name}</code>
+                <code className="text-xs text-faint">{owners.has(name) ? `lines of ${owners.get(name)!.parent}` : name}</code>
               </button>
             </li>
           ))}
@@ -73,6 +80,7 @@ export function DataDesigner({ definition, onChange }: Props) {
 
       {entity && entityName ? (
         <EntityPanel
+          key={entityName}
           definition={definition}
           name={entityName}
           selectedField={field}
@@ -99,6 +107,10 @@ export function DataDesigner({ definition, onChange }: Props) {
           entity={entityName}
           index={field}
           onChange={onChange}
+          onOpenEntity={(name) => {
+            setSelected(name);
+            setField(null);
+          }}
           onRemove={() => {
             onChange(removeField(definition, entityName, field));
             setField(null);
@@ -126,6 +138,7 @@ function EntityPanel(props: {
 }) {
   const { definition, name, onChange } = props;
   const entity = definition.entities[name]!;
+  const owner = lineOwner(definition, name);
   const [rename, setRename] = useState(name);
   const [newType, setNewType] = useState<FieldType>('text');
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
@@ -140,6 +153,13 @@ function EntityPanel(props: {
 
   return (
     <Card className="grid content-start gap-4">
+      {owner ? (
+        <p className="m-0 rounded-md bg-sunken px-3 py-2 text-sm text-muted">
+          These are the lines of <strong className="text-text">{definition.entities[owner.parent]!.label}</strong>, in its{' '}
+          <strong className="text-text">{definition.entities[owner.parent]!.fields.find((f) => f.name === owner.field)?.label ?? owner.field}</strong> field. Each line belongs to its record:
+          it is read, changed and kept in history with it, under the same permissions.
+        </p>
+      ) : null}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Label">{(id) => <TextInput id={id} value={entity.label} onChange={(e) => onChange(updateEntity(definition, name, { label: e.target.value }))} />}</Field>
         <Field label="Plural label">
@@ -156,20 +176,24 @@ function EntityPanel(props: {
             />
           )}
         </Field>
-        <Field label="Records are named by">
+        <Field label={owner ? 'Lines are named by' : 'Records are named by'}>
           {(id) => (
             <Select id={id} value={entity.titleField ?? ''} onChange={(e) => onChange(updateEntity(definition, name, { titleField: e.target.value }))}>
               <option value="">(their ID)</option>
-              {entity.fields.map((f) => (
-                <option key={f.name} value={f.name}>
-                  {f.label}
-                </option>
-              ))}
+              {entity.fields
+                .filter((f) => f.type !== 'lines')
+                .map((f) => (
+                  <option key={f.name} value={f.name}>
+                    {f.label}
+                  </option>
+                ))}
             </Select>
           )}
         </Field>
       </div>
-      <Checkbox label="Keep a history of every change to these records" checked={entity.history !== false} onChange={(value) => onChange(updateEntity(definition, name, { history: value }))} />
+      {owner ? null : (
+        <Checkbox label="Keep a history of every change to these records" checked={entity.history !== false} onChange={(value) => onChange(updateEntity(definition, name, { history: value }))} />
+      )}
 
       <div className="grid gap-2">
         <h3 className="m-0 text-sm font-semibold text-muted">Fields</h3>
@@ -184,7 +208,8 @@ function EntityPanel(props: {
         </DndContext>
         <div className="flex gap-2">
           <Select aria-label="Type of the new field" value={newType} onChange={(e) => setNewType(e.target.value as FieldType)} className="w-auto">
-            {FIELD_TYPES.map((t) => (
+            {/* Lines go one level deep: lines can't have lines of their own. */}
+            {FIELD_TYPES.filter((t) => !(owner && t.type === 'lines')).map((t) => (
               <option key={t.type} value={t.type}>
                 {t.label}
               </option>
@@ -227,13 +252,22 @@ function FieldRow({ field, selected, onSelect }: { field: FieldDef; selected: bo
         <span className="flex-1" />
         {field.required ? <Badge tone="warn">required</Badge> : null}
         {field.classification === 'pii' ? <Badge tone="bad">PII</Badge> : field.classification === 'confidential' ? <Badge tone="warn">confidential</Badge> : null}
+        {field.type === 'number' && field.rollup ? <Badge tone="good">worked out</Badge> : null}
         <Badge>{typeLabel(field.type)}</Badge>
       </button>
     </li>
   );
 }
 
-function FieldPanel(props: { definition: Definition; entity: string; index: number; onChange: (d: Definition) => void; onRemove: () => void; onMove: (to: number) => void }) {
+function FieldPanel(props: {
+  definition: Definition;
+  entity: string;
+  index: number;
+  onChange: (d: Definition) => void;
+  onRemove: () => void;
+  onMove: (to: number) => void;
+  onOpenEntity: (name: string) => void;
+}) {
   const { definition, entity, index, onChange } = props;
   const fields = definition.entities[entity]!.fields;
   const field = fields[index]!;
@@ -253,7 +287,7 @@ function FieldPanel(props: { definition: Definition; entity: string; index: numb
       <Field label="Type" hint={field.id ? "Changing the type deletes this field's values when you save." : undefined}>
         {(id) => (
           <Select id={id} value={field.type} onChange={(e) => onChange(changeFieldType(definition, entity, index, e.target.value as FieldType))}>
-            {FIELD_TYPES.map((t) => (
+            {FIELD_TYPES.filter((t) => t.type === field.type || !(lineOwner(definition, entity) && t.type === 'lines')).map((t) => (
               <option key={t.type} value={t.type}>
                 {t.label}: {t.hint}
               </option>
@@ -262,16 +296,44 @@ function FieldPanel(props: { definition: Definition; entity: string; index: numb
         )}
       </Field>
       <Field label="Description">{(id) => <TextInput id={id} value={field.description ?? ''} onChange={(e) => set({ description: e.target.value || undefined })} />}</Field>
-      <Checkbox label="Required" checked={field.required} onChange={(value) => set({ required: value })} />
-      <Field label="Classification" hint="PII is masked for app roles unless a role unmasks it.">
-        {(id) => (
-          <Select id={id} value={field.classification} onChange={(e) => set({ classification: e.target.value })}>
-            <option value="internal">Internal</option>
-            <option value="confidential">Confidential</option>
-            <option value="pii">Personal data (PII)</option>
-          </Select>
-        )}
-      </Field>
+      {field.type === 'number' && rollupChoices(definition, entity).length ? (
+        <Field label="Value" hint={field.rollup ? 'Worked out whenever a record is saved. People and agents can\'t set it.' : undefined}>
+          {(id) => (
+            <Select id={id} value={rollupKey(field)} onChange={(e) => onChange(setRollup(definition, entity, index, e.target.value))}>
+              <option value="">Entered by people</option>
+              {rollupChoices(definition, entity).map((choice) => (
+                <option key={choice.key} value={choice.key}>
+                  {choice.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      ) : null}
+      {field.type === 'number' && field.rollup ? null : (
+        <Checkbox label={field.type === 'lines' ? 'Needs at least one line' : 'Required'} checked={field.required} onChange={(value) => set({ required: value })} />
+      )}
+      {field.type === 'lines' ? (
+        <>
+          <div className="grid gap-1">
+            <span className="text-sm text-muted">Each line is a</span>
+            <Button size="sm" className="justify-start" onClick={() => props.onOpenEntity(field.entity)}>
+              {definition.entities[field.entity]?.label ?? field.entity}: edit the fields of each line
+            </Button>
+          </div>
+          <Field label="Most lines">{(id) => <TextInput id={id} type="number" min={1} max={500} value={field.max} onChange={(e) => set({ max: num(e.target.value) ?? 100 })} />}</Field>
+        </>
+      ) : (
+        <Field label="Classification" hint="PII is masked for app roles unless a role unmasks it.">
+          {(id) => (
+            <Select id={id} value={field.classification} onChange={(e) => set({ classification: e.target.value })}>
+              <option value="internal">Internal</option>
+              <option value="confidential">Confidential</option>
+              <option value="pii">Personal data (PII)</option>
+            </Select>
+          )}
+        </Field>
+      )}
 
       {field.type === 'text' ? (
         <>
@@ -286,7 +348,7 @@ function FieldPanel(props: { definition: Definition; entity: string; index: numb
           <Field label="Most">{(id) => <TextInput id={id} type="number" value={field.max ?? ''} onChange={(e) => set({ max: num(e.target.value) })} />}</Field>
         </div>
       ) : null}
-      {field.type === 'text' || field.type === 'email' || field.type === 'number' ? (
+      {(field.type === 'text' || field.type === 'email' || (field.type === 'number' && !field.rollup)) && !lineOwner(definition, entity) ? (
         <Checkbox label="No two records may share a value" checked={field.unique} onChange={(value) => set({ unique: value })} />
       ) : null}
       {field.type === 'choice' ? <ChoiceOptions options={field.options} multiple={field.multiple} onChange={set} /> : null}
@@ -294,7 +356,9 @@ function FieldPanel(props: { definition: Definition; entity: string; index: numb
         <Field label="Links to">
           {(id) => (
             <Select id={id} value={field.entity} onChange={(e) => set({ entity: e.target.value })}>
-              {Object.entries(definition.entities).map(([name, e]) => (
+              {Object.entries(definition.entities)
+                .filter(([name]) => !lineOwner(definition, name))
+                .map(([name, e]) => (
                 <option key={name} value={name}>
                   {e.label}
                 </option>

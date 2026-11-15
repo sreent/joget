@@ -40,6 +40,20 @@
 .approval-source.document { color: var(--outside); }
 .approval-source.agent { color: var(--agent-tone); }
 .approval-source.person { color: var(--text); font-weight: 600; }
+.approval-lines { display: grid; gap: var(--space-2); }
+.approval-lines h2 { margin: 0; color: var(--muted); font-size: var(--text-sm); font-weight: 600; }
+.approval-table-wrap { overflow-x: auto; }
+.approval-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.approval-table th { padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--line-strong); color: var(--muted); font-weight: 500; text-align: left; white-space: nowrap; }
+.approval-table td { padding: var(--space-2); border-bottom: 1px solid var(--line); vertical-align: top; }
+.approval-table td.number, .approval-table th.number { text-align: right; }
+.approval-line-edit { display: grid; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
+.approval-line-edit legend { margin-bottom: var(--space-2); padding: 0; color: var(--muted); font-size: var(--text-sm); font-weight: 600; }
+.approval-line { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.approval-line.new { border-style: dashed; }
+.approval-line-title { margin: 0; font-weight: 600; }
+.approval-line-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: var(--space-2); }
+.approval-line-fields .ambit-input { width: 100%; min-width: 0; box-sizing: border-box; }
 .approval-edit summary { color: var(--accent); font-weight: 500; cursor: pointer; }
 .approval-edit form { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
 .approval-actions { display: flex; gap: var(--space-2); }

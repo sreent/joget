@@ -48,21 +48,34 @@ export const FindingOut = z.object({
   severity: z.enum(['error', 'warning']),
   message: z.string(),
   fields: z.array(z.string()),
+  /** For a rule on lines: which line it is about. */
+  line: z.object({ field: z.string(), index: z.number().int() }).optional(),
+});
+
+const CardFieldOut = z.object({
+  name: z.string(),
+  label: z.string(),
+  type: z.string(),
+  value: z.unknown(),
+  display: z.string(),
+  source: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const CardOut = z.object({
   title: z.string(),
   findings: z.array(FindingOut),
-  fields: z.array(
-    z.object({
-      name: z.string(),
-      label: z.string(),
-      type: z.string(),
-      value: z.unknown(),
-      display: z.string(),
-      source: z.record(z.string(), z.unknown()).optional(),
-    }),
-  ),
+  fields: z.array(CardFieldOut),
+  /** Lines, as tables: one row per line, with its ID once it has one. */
+  tables: z
+    .array(
+      z.object({
+        field: z.string(),
+        label: z.string(),
+        columns: z.array(z.object({ name: z.string(), label: z.string(), type: z.string() })),
+        rows: z.array(z.object({ id: z.string().nullable(), cells: z.array(CardFieldOut) })),
+      }),
+    )
+    .optional(),
   responses: z.array(z.string()),
 });
 

@@ -21,6 +21,7 @@ interface Locator {
   waitFor(options?: { state?: 'visible' | 'hidden'; timeout?: number }): Promise<void>;
   getByLabel(text: string, options?: { exact?: boolean }): Locator;
   getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
+  first(): Locator;
 }
 interface Page extends Locator {
   goto(url: string): Promise<unknown>;
@@ -107,6 +108,17 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await hidden(page.getByText('Unsaved changes.'));
   });
 
+  it('shows lines under the record they belong to, and works out the total', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/data`);
+    await page.getByRole('button', { name: /^Total \(SGD\)/ }).click();
+    expect(await panel(page, 'Field').getByLabel('Value').inputValue()).toBe('sum:lines.amount');
+    await page.getByRole('button', { name: /^Receipts/ }).click();
+    await page.getByRole('button', { name: 'Receipt: edit the fields of each line' }).click();
+    await visible(page.getByText('These are the lines of'));
+    await shot(page, '2b-lines');
+  });
+
   it('lays out the form', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/forms`);
@@ -116,18 +128,28 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(page, '4-form-designer');
   });
 
-  it('submits a claim through the generated form, and shows its history', async () => {
+  it('submits a claim with its receipts through the generated form, and shows its history', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}`);
     await page.getByRole('link', { name: '+ Claim an expense' }).click();
-    await page.getByLabel('Title').fill('Taxi to the airport');
+    await page.getByLabel('Title').fill('Singapore trip');
     await page.getByLabel('Journey').fill('Singapore');
-    await page.getByLabel('Category').selectOption('travel');
-    await page.getByLabel('Amount (SGD)').fill('32.40');
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-02');
+    await page.getByLabel('Receipt 1, Merchant').fill('Comfort taxi');
+    await page.getByLabel('Receipt 1, Category').selectOption('travel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('32.40');
+    await page.getByRole('button', { name: 'Add a line' }).click();
+    await page.getByLabel('Receipt 2, Date').fill('2026-11-03');
+    await page.getByLabel('Receipt 2, Merchant').fill('Marina Bay Sands');
+    await page.getByLabel('Receipt 2, Category').selectOption('hotel');
+    await page.getByLabel('Receipt 2, Amount (SGD)').fill('270');
+    // The total is worked out as people type, the way the platform will work it out.
+    await visible(page.getByText('302.40'));
     await shot(page, '5-form');
     await page.getByRole('button', { name: 'Submit an expense claim' }).click();
-    await visible(page.getByRole('heading', { name: 'Taxi to the airport' }));
+    await visible(page.getByRole('heading', { name: 'Singapore trip' }));
     await visible(page.getByText('Submitted', { exact: true }));
+    await visible(page.getByRole('cell', { name: 'Marina Bay Sands' }));
     await visible(page.getByText('Created by Alice'));
 
     // Pick the approver by name, not by ID.
@@ -139,6 +161,31 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.getByText('Changed by Alice'));
     await visible(page.getByText('Approver: — → Bob'));
     await shot(page, '6-record');
+  });
+
+  it('lets the person correct a line an agent proposed, on the review page, and approve it', async () => {
+    const token = await t.app.inject({ method: 'POST', url: '/v1/me/tokens', cookies: alice.cookies, payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } });
+    const run = await t.app.inject({
+      method: 'POST',
+      url: `/v1/apps/${appId}/actions/submit_claim/run`,
+      headers: { authorization: `Bearer ${token.json().token}` },
+      payload: {
+        values: { title: 'Penang trip', journey: 'Penang', lines: [{ date: '2026-11-09', merchant: 'Eastern & Oriental', category: 'hotel', amount: 280 }] },
+        provenance: { 'lines[0].amount': { source: 'document', document: 'receipt.jpg' } },
+      },
+    });
+    expect(run.statusCode, run.body).toBe(202);
+    const page = await open(alice);
+    await page.goto(run.json().proposal.reviewUrl);
+    await visible(page.getByText('Line 1: Hotel is above the SGD 250 nightly cap'));
+    await page.getByText('Edit the values').click();
+    await page.getByLabel('Amount (SGD)').first().fill('240');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await visible(page.getByText('Edited by you'));
+    await hidden(page.getByText('nightly cap'));
+    await page.getByRole('button', { name: 'Approve and submit' }).click();
+    await visible(page.getByText('Approved and submitted'));
+    await shot(page, '9-review-approved');
   });
 
   it("shows a colleague only what their role allows, in dark mode too", async () => {

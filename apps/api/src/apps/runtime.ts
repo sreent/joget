@@ -5,9 +5,11 @@ import {
   canonicalValue,
   checkActionInput,
   checkInput,
+  completeLines,
   conditionRecord,
   cursorOf,
   deleteRecord,
+  diffLines,
   diffRecords,
   entityFields,
   evaluateRules,
@@ -16,19 +18,32 @@ import {
   grantsFor,
   insertHistory,
   insertRecord,
+  linesFieldsOf,
+  linesWritten,
+  parseLines,
   parseRecord,
   Provenance,
   recordValues,
+  rollupValues,
   selectHistory,
+  selectLines,
   selectRecords,
   updateRecord,
   writeGrant,
+  writeLines,
   type CardData,
   type FieldValue,
   type Finding,
+  type HistoryChange,
+  type LineInput,
+  type LinesChange,
+  type LineValues,
   type RecordValues,
   type StoredEntity,
+  type StoredLine,
+  type StoredLinesField,
   type StoredRecord,
+  type ValueIssue,
   type ValueKind,
 } from '@platform/app-model';
 import { proposals, users } from '@platform/db';
@@ -45,7 +60,13 @@ import { capabilityResource, recordResource } from './resources.js';
 import { pgError } from './pg-errors.js';
 import { withAppTransaction, type AppTransaction } from './transaction.js';
 
-/** A record as the API returns it. Fields the caller can't see are left out; masked ones are listed. */
+/** A line as the API returns it: its ID, and the values of the fields of it the caller may see. */
+export type LineOut = { readonly id: string } & Readonly<Record<string, FieldValue>>;
+
+/**
+ * A record as the API returns it. Fields the caller can't see are left out; masked ones are
+ * listed, fields of lines as `lines.amount`. A lines field's value is its lines, in order.
+ */
 export interface RecordOut {
   readonly id: string;
   readonly version: number;
@@ -54,18 +75,30 @@ export interface RecordOut {
   readonly createdBy: string;
   readonly updatedAt: string;
   readonly updatedBy: string;
-  readonly values: Record<string, FieldValue>;
+  readonly values: Record<string, FieldValue | LineOut[]>;
   readonly masked: string[];
 }
+
+/** Lines read for some records: by lines field, then by record ID. */
+type LinesRead = ReadonlyMap<string, ReadonlyMap<string, readonly StoredLine[]>>;
 
 export interface Page {
   readonly records: RecordOut[];
   readonly nextCursor: string | null;
 }
 
+/** How a record's lines changed, as the caller may see it: fields by name, masked ones listed. */
+export interface LinesChangeOut {
+  readonly added: Array<{ id: string; values: Record<string, FieldValue>; masked?: string[]; sources?: Record<string, unknown> }>;
+  readonly removed: Array<{ id: string; values: Record<string, FieldValue>; masked?: string[] }>;
+  readonly changed: Array<{ id: string; changes: Array<{ field: string; before?: FieldValue; after?: FieldValue; masked?: true; source?: unknown }> }>;
+  readonly reordered: boolean;
+}
+
 /** One field's change in a record's history, as the caller may see it. */
 export type HistoryChangeOut =
   | { readonly field: string; readonly before: FieldValue; readonly after: FieldValue; readonly source?: unknown }
+  | { readonly field: string; readonly lines: LinesChangeOut }
   | { readonly field: string; readonly masked: true }
   | { readonly field: string; readonly removed: true };
 
@@ -93,12 +126,19 @@ export interface ProposalOut {
 
 const ProvenanceMap = z.record(z.string(), Provenance);
 
+/** A line as callers send it and proposals keep it: its ID, if it has one, and its values. */
+type LineWire = Readonly<Record<string, FieldValue>> & { readonly id?: string };
+
 interface SealedEffect {
-  /** The action's inputs as the caller gave them, canonical. Kept so a person can revise them. */
-  readonly input: Record<string, FieldValue>;
+  /** The action's inputs as the caller gave them, canonical, lines with their IDs. Kept so a person can revise them. */
+  readonly input: Record<string, FieldValue | LineWire[]>;
   /** Exactly what the action writes: every value for a create, the changed ones for an update. */
   readonly values: Record<string, FieldValue>;
+  /** The lines it writes, complete, by lines field. New lines have their IDs already, so a revision can follow them. */
+  readonly lines?: Record<string, StoredLine[]>;
 }
+
+const toWire = (lines: readonly LineValues[]): LineWire[] => lines.map((line) => ({ ...line.values, ...(line.id ? { id: line.id } : {}) }));
 
 function decodeCursor(cursor: string, kinds: readonly ValueKind[]): FieldValue[] {
   let values: unknown;
@@ -193,19 +233,44 @@ export class AppRuntime {
     return decision.allowed ? (decision as AllowedQuery) : null;
   }
 
-  /** A record as the caller may see it, given the read grants that apply to it. */
-  project(entity: StoredEntity, record: StoredRecord, grants: readonly QueryGrant[], fields?: readonly string[]): RecordOut {
-    const values: Record<string, FieldValue> = {};
+  /**
+   * A record as the caller may see it, given the read grants that apply to it. Its lines come with
+   * it if they were read, each showing only the fields of lines the grants show.
+   */
+  project(loaded: LoadedApp, entity: StoredEntity, record: StoredRecord, grants: readonly QueryGrant[], fields?: readonly string[], lines?: LinesRead): RecordOut {
+    const values: Record<string, FieldValue | LineOut[]> = {};
     const masked: string[] = [];
     const held = grants.map((grant) => grant.grant);
     for (const field of entity.fields) {
       if (fields && !fields.includes(field.name)) continue;
       const access = fieldAccess(held, field.name);
+      if (field.type === 'lines') {
+        const stored = lines?.get(field.name);
+        if (access === 'masked') masked.push(field.name);
+        if (access !== 'full' || !stored) continue;
+        const lineFields = loaded.definition.entities[field.entity]!.fields;
+        const shown = lineFields.filter((f) => fieldAccess(held, `${field.name}.${f.name}`) === 'full');
+        masked.push(...lineFields.filter((f) => fieldAccess(held, `${field.name}.${f.name}`) === 'masked').map((f) => `${field.name}.${f.name}`));
+        values[field.name] = (stored.get(record.id) ?? []).map((line) => ({ id: line.id, ...Object.fromEntries(shown.map((f) => [f.name, line.values[f.name] ?? null])) }));
+        continue;
+      }
       if (access === 'full') values[field.name] = record.values[field.name] ?? null;
       else if (access === 'masked') masked.push(field.name);
     }
     const { id, version, owner, createdAt, createdBy, updatedAt, updatedBy } = record;
     return { id, version, owner, createdAt, createdBy, updatedAt, updatedBy, values, masked };
+  }
+
+  /** The lines of some records, by lines field and record, read in the transaction given. */
+  async #readLines(tx: AppTransaction, loaded: LoadedApp, parentIds: readonly string[], fields: readonly StoredLinesField[]): Promise<Map<string, Map<string, StoredLine[]>>> {
+    const read = new Map<string, Map<string, StoredLine[]>>();
+    if (!parentIds.length) return read;
+    for (const field of fields) {
+      const lineEntity = loaded.definition.entities[field.entity]!;
+      const query = selectLines(this.#names(loaded), lineEntity, parentIds);
+      read.set(field.name, parseLines(lineEntity, (await tx.query(query.text, query.values)).rows));
+    }
+    return read;
   }
 
   /** Fields may only steer a list when every applicable grant shows them in full: otherwise their order or a filter would leak them. */
@@ -258,9 +323,15 @@ export class AppRuntime {
     const shape = selectRecords(base);
     const after = options.cursor ? decodeCursor(options.cursor, shape.sortKeys.map((key) => key.info.kind)) : undefined;
     const query = after ? selectRecords({ ...base, after }) : shape;
-    const rows = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
+    // Lines are read with their records, in the same snapshot, when anyone here may see them.
+    const linesWanted = linesFieldsOf(entity).filter(
+      (field) => (!options.fields || options.fields.includes(field.name)) && decision.grants.some((grant) => fieldAccess([grant.grant], field.name) === 'full'),
+    );
+    const { rows, lines } = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
-      return (await tx.query(query.text, query.values)).rows;
+      const rows = (await tx.query(query.text, query.values)).rows.slice(0, options.limit + 1);
+      const ids = rows.slice(0, options.limit).map((row) => row['id'] as string);
+      return { rows, lines: await this.#readLines(tx, loaded, ids, linesWanted) };
     });
     const parsed = rows.slice(0, options.limit).map((row) => parseRecord(entity, row, query.flagGrants.length));
     const records = parsed.map(({ record, flags }) => {
@@ -268,7 +339,7 @@ export class AppRuntime {
         const flag = query.flagGrants.indexOf(index);
         return flag === -1 ? grant.filter === true : flags[flag];
       });
-      return this.project(entity, record, applicable, options.fields);
+      return this.project(loaded, entity, record, applicable, options.fields, lines);
     });
     const last = parsed.at(-1)?.record;
     return { records, nextCursor: rows.length > options.limit && last ? encodeCursor(cursorOf(last, query.sortKeys)) : null };
@@ -288,11 +359,19 @@ export class AppRuntime {
     return row ? parseRecord(entity, row).record : null;
   }
 
-  async #checkPeople(entity: StoredEntity, values: RecordValues, explicitOwner: boolean): Promise<void> {
+  async #checkPeople(loaded: LoadedApp, entity: StoredEntity, values: RecordValues, explicitOwner: boolean, lines: Readonly<Record<string, readonly LineValues[]>> = {}): Promise<void> {
     const ids = new Set<string>();
     for (const field of entity.fields) {
       const value = values[field.name];
       if (field.type === 'user' && typeof value === 'string') ids.add(value);
+      if (field.type !== 'lines') continue;
+      const people = loaded.definition.entities[field.entity]!.fields.filter((f) => f.type === 'user');
+      for (const line of lines[field.name] ?? []) {
+        for (const person of people) {
+          const id = line.values[person.name];
+          if (typeof id === 'string') ids.add(id);
+        }
+      }
     }
     if (explicitOwner && typeof values['owner'] === 'string') ids.add(values['owner']);
     if (ids.size === 0) return;
@@ -312,11 +391,53 @@ export class AppRuntime {
     }
   }
 
-  #rules(loaded: LoadedApp, entityName: string, auth: AuthContext, values: RecordValues): Finding[] {
-    const findings = evaluateRules(loaded.definition, entityName, values, { principal: principalEnv(auth) });
+  #rules(loaded: LoadedApp, entityName: string, auth: AuthContext, values: RecordValues, lines: Readonly<Record<string, readonly LineValues[]>> = {}): Finding[] {
+    const findings = evaluateRules(loaded.definition, entityName, values, { principal: principalEnv(auth) }, lines);
     const errors = findings.filter((finding) => finding.severity === 'error');
     if (errors.length) throw unprocessable('rule_failed', errors.map((e) => e.message).join('; '), { findings });
     return findings;
+  }
+
+  /**
+   * The lines a write leaves a record with: what the caller sent, completed against the lines the
+   * record has (`base`); the rollups worked out from them; the fields of lines the write changes
+   * compared with `current`, for the permission check; and which lines fields change at all.
+   * With `all`, every lines field is completed, as for a new record.
+   */
+  prepareLinesFor(
+    loaded: LoadedApp,
+    entityName: string,
+    input: Readonly<Record<string, readonly LineInput[]>>,
+    base: Readonly<Record<string, readonly LineValues[]>>,
+    current: Readonly<Record<string, readonly StoredLine[]>>,
+    all: boolean,
+  ): { lines: Record<string, LineValues[]>; rollups: Record<string, FieldValue>; paths: string[]; changed: string[] } {
+    const entity = this.entity(loaded, entityName);
+    const lines: Record<string, LineValues[]> = {};
+    const issues: ValueIssue[] = [];
+    const paths: string[] = [];
+    const changed: string[] = [];
+    for (const field of linesFieldsOf(entity)) {
+      if (!(field.name in input) && !all) continue;
+      const lineEntity = loaded.definition.entities[field.entity]!;
+      const result = completeLines(lineEntity, field, input[field.name] ?? [], base[field.name] ?? []);
+      issues.push(...result.issues);
+      lines[field.name] = result.lines;
+      const written = linesWritten(lineEntity, field.name, current[field.name] ?? [], result.lines);
+      paths.push(...written);
+      if (written.length) changed.push(field.name);
+    }
+    if (issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues });
+    const rollups = rollupValues(loaded.definition, entityName, lines);
+    if (rollups.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: rollups.issues });
+    return { lines, rollups: rollups.values, paths, changed };
+  }
+
+  /** A record's lines now, for the lines fields named, read under the record's lock. */
+  async #currentLines(tx: AppTransaction, loaded: LoadedApp, entity: StoredEntity, id: string, names: readonly string[]): Promise<Record<string, StoredLine[]>> {
+    const fields = linesFieldsOf(entity).filter((field) => names.includes(field.name));
+    const read = await this.#readLines(tx, loaded, [id], fields);
+    return Object.fromEntries(fields.map((field) => [field.name, read.get(field.name)?.get(id) ?? []]));
   }
 
   async #writeRecord(
@@ -332,6 +453,8 @@ export class AppRuntime {
       readonly owner?: string;
       readonly provenance?: Readonly<Record<string, Provenance>>;
       readonly reason?: Record<string, unknown>;
+      /** The lines fields this write changes: the lines each will have, and the lines it has now. */
+      readonly lines?: Readonly<Record<string, { readonly next: readonly LineValues[]; readonly current: readonly StoredLine[] }>>;
     },
   ): Promise<StoredRecord | null> {
     const ctx = this.#ctx;
@@ -362,8 +485,20 @@ export class AppRuntime {
       throw error;
     }
     const before = write.before ? recordValues(write.before) : null;
-    const changes = diffRecords(entity, before, after ? recordValues(after) : null, write.provenance ?? {});
+    const changes: Record<string, HistoryChange> = diffRecords(entity, before, after ? recordValues(after) : null, write.provenance ?? {});
     const record = (after ?? write.before)!;
+    for (const [name, { next, current }] of Object.entries(write.lines ?? {})) {
+      const field = entity.fields.find((f): f is StoredLinesField => f.name === name && f.type === 'lines')!;
+      const lineEntity = loaded.definition.entities[field.entity]!;
+      // New lines get their IDs now, unless a proposal gave them theirs already.
+      const lines = next.map((line) => ({ id: line.id ?? uuidv7(now.getTime()), values: line.values }));
+      // A deleted record's lines went with it; its history still says which they were.
+      if (write.operation !== 'delete') {
+        for (const statement of writeLines(names, lineEntity, record.id, current, lines)) await tx.query(statement.text, statement.values);
+      }
+      const change = diffLines(lineEntity, current, lines, lineSources(write.provenance, name));
+      if (change) changes[field.id] = { name, lines: change };
+    }
     const event = await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
       action: `record.${write.operation}`,
       target: { type: 'record', id: record.id, name: write.entityName },
@@ -397,7 +532,11 @@ export class AppRuntime {
   async #respond(auth: AuthContext, loaded: LoadedApp, entityName: string, record: StoredRecord, inside = false): Promise<RecordOut | { id: string; version: number }> {
     const read = await this.#readGrants(auth, loaded, entityName, inside);
     const grants = read ? grantsFor(read.grants, recordValues(record)) : [];
-    return grants.length ? this.project(this.entity(loaded, entityName), record, grants) : { id: record.id, version: record.version };
+    if (!grants.length) return { id: record.id, version: record.version };
+    const entity = this.entity(loaded, entityName);
+    const wanted = linesFieldsOf(entity).filter((field) => fieldAccess(grants.map((g) => g.grant), field.name) === 'full');
+    const lines = wanted.length ? await withAppTransaction(this.#ctx.pool, loaded.env, 'records', (tx) => this.#readLines(tx, loaded, [record.id], wanted)) : undefined;
+    return this.project(loaded, entity, record, grants, undefined, lines);
   }
 
   async create(
@@ -409,21 +548,25 @@ export class AppRuntime {
     decision?: AllowedQuery,
   ): Promise<RecordOut | { id: string; version: number }> {
     const entity = this.entity(loaded, entityName);
-    const provenance = this.#provenance(input.provenance, Object.keys(input.values));
-    const check = checkInput(entity, input.values, { mode: 'create' });
+    const check = checkInput(loaded.definition, entityName, input.values, { mode: 'create' });
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
+    const provenance = this.#provenance(input.provenance, Object.keys(input.values), check.lines);
+    const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true);
     const permission = decision ?? (await this.decide(request, auth, loaded, 'record.create', entityName));
     const owner = (check.values['owner'] as string | undefined) ?? auth.actor.id;
-    const after = { ...check.values, owner };
-    if (!writeGrant(permission.grants, { fields: Object.keys(input.values), after })) {
+    const values = { ...check.values, ...prepared.rollups };
+    const after = { ...values, owner };
+    const fields = [...Object.keys(input.values).filter((name) => !(name in check.lines)), ...prepared.paths];
+    if (!writeGrant(permission.grants, { fields, after })) {
       throw forbidden('not_allowed', 'You may not create this record: a field or a value is outside what your role allows');
     }
     this.#blockedBy(permission, after);
-    this.#rules(loaded, entityName, auth, after);
-    await this.#checkPeople(entity, after, 'owner' in input.values);
+    this.#rules(loaded, entityName, auth, after, prepared.lines);
+    await this.#checkPeople(loaded, entity, after, 'owner' in input.values, prepared.lines);
     const record = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
-      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'create', before: null, values: check.values, owner, provenance }))!;
+      const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
+      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines }))!;
     });
     return this.#respond(auth, loaded, entityName, record);
   }
@@ -438,19 +581,25 @@ export class AppRuntime {
     decision?: AllowedQuery,
   ): Promise<RecordOut | { id: string; version: number }> {
     const entity = this.entity(loaded, entityName);
-    const provenance = this.#provenance(input.provenance, Object.keys(input.values));
-    const check = checkInput(entity, input.values, { mode: 'update' });
+    const check = checkInput(loaded.definition, entityName, input.values, { mode: 'update' });
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
+    const provenance = this.#provenance(input.provenance, Object.keys(input.values), check.lines);
     const permission = decision ?? (await this.decide(request, auth, loaded, 'record.update', entityName));
     const read = await this.#readGrants(auth, loaded, entityName);
     const record = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
       const before = await this.#lock(tx, loaded, entity, id);
       if (!before) throw notFound('Record');
+      // Lines change only under their record's lock, so these are the lines as they are.
+      const current = await this.#currentLines(tx, loaded, entity, before.id, Object.keys(check.lines));
+      const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false);
       const beforeValues = recordValues(before);
-      const changed = Object.fromEntries(Object.entries(check.values).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)));
+      const changed = Object.fromEntries(
+        Object.entries({ ...check.values, ...prepared.rollups }).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)),
+      );
       const afterValues = { ...beforeValues, ...changed };
-      if (!writeGrant(permission.grants, { fields: Object.keys(changed), before: beforeValues, after: afterValues })) {
+      const fields = [...Object.keys(changed).filter((name) => !(name in prepared.rollups)), ...prepared.paths];
+      if (!writeGrant(permission.grants, { fields, before: beforeValues, after: afterValues })) {
         const readable = read ? grantsFor(read.grants, beforeValues).length > 0 : false;
         if (!readable) throw notFound('Record');
         throw forbidden('not_allowed', 'You may not make this change: the record, a field or a value is outside what your role allows');
@@ -459,10 +608,11 @@ export class AppRuntime {
         throw conflict('version_conflict', `The record is at version ${before.version}, not ${input.version}. Reload it and try again.`);
       }
       this.#blockedBy(permission, beforeValues, afterValues);
-      this.#rules(loaded, entityName, auth, afterValues);
-      if (Object.keys(changed).length === 0) return before;
-      await this.#checkPeople(entity, changed, 'owner' in changed);
-      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'update', before, values: changed, provenance }))!;
+      this.#rules(loaded, entityName, auth, afterValues, prepared.lines);
+      if (Object.keys(changed).length === 0 && prepared.changed.length === 0) return before;
+      const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: current[name] ?? [] }]));
+      await this.#checkPeople(loaded, entity, changed, 'owner' in changed, Object.fromEntries(prepared.changed.map((name) => [name, prepared.lines[name]!])));
+      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'update', before, values: changed, provenance, lines }))!;
     });
     return this.#respond(auth, loaded, entityName, record);
   }
@@ -482,7 +632,9 @@ export class AppRuntime {
         throw forbidden('not_allowed', 'You may not delete this record');
       }
       this.#blockedBy(permission, values);
-      await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'delete', before, values: {} });
+      const current = await this.#currentLines(tx, loaded, entity, before.id, linesFieldsOf(entity).map((f) => f.name));
+      const lines = Object.fromEntries(Object.entries(current).filter(([, list]) => list.length).map(([name, list]) => [name, { next: [], current: list }]));
+      await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'delete', before, values: {}, lines });
     });
   }
 
@@ -503,7 +655,7 @@ export class AppRuntime {
       return index >= 0 ? index : fieldId === 'owner' ? entity.fields.length : entity.fields.length + 1;
     };
     return rows.map((row) => {
-      const changes = row['changes'] as Record<string, { name: string; before: FieldValue; after: FieldValue; source?: unknown }>;
+      const changes = row['changes'] as Record<string, HistoryChange>;
       return {
         version: row['version'] as number,
         operation: row['operation'] as 'create' | 'update' | 'delete',
@@ -518,23 +670,69 @@ export class AppRuntime {
         changes: Object.entries(changes)
           .sort(([a], [b]) => position(a) - position(b))
           .flatMap(([fieldId, change]): HistoryChangeOut[] => {
-            if (fieldId === 'owner') return [{ field: 'owner', before: change.before, after: change.after }];
+            if (fieldId === 'owner' && 'before' in change) return [{ field: 'owner', before: change.before, after: change.after }];
             const field = entity.fields.find((f) => f.id === fieldId);
-            if (!field) return [{ field: change.name, removed: true }];
+            // A field deleted since, or one whose type changed between lines and a single value.
+            if (!field || ('lines' in change) !== (field.type === 'lines')) return [{ field: change.name, removed: true }];
             const access = fieldAccess(read, field.name);
             if (access === 'hidden') return [];
             if (access === 'masked') return [{ field: field.name, masked: true }];
+            if ('lines' in change) return [{ field: field.name, lines: this.#linesHistory(loaded, field as StoredLinesField, change.lines, read) }];
             return [{ field: field.name, before: change.before, after: change.after, ...(change.source ? { source: change.source } : {}) }];
           }),
       };
     });
   }
 
-  #provenance(raw: unknown, allowed: readonly string[]): Record<string, Provenance> {
+  /**
+   * Where the values being set came from, by field; for a line's value, by its place in the lines
+   * sent, as `lines[2].amount`. Only fields being set may have one.
+   */
+  /** A change to lines as the caller may see it: fields by today's names, those hidden from them left out, masked ones listed. */
+  #linesHistory(loaded: LoadedApp, field: StoredLinesField, change: LinesChange, read: Parameters<typeof fieldAccess>[0]): LinesChangeOut {
+    const fields = new Map(
+      loaded.definition.entities[field.entity]!.fields.map((f) => [f.id, { name: f.name, access: fieldAccess(read, `${field.name}.${f.name}`) }]),
+    );
+    const shown = (byId: Readonly<Record<string, unknown>>) => {
+      const values: Record<string, FieldValue> = {};
+      const masked: string[] = [];
+      for (const [id, value] of Object.entries(byId)) {
+        const f = fields.get(id);
+        if (f?.access === 'full') values[f.name] = value as FieldValue;
+        else if (f?.access === 'masked') masked.push(f.name);
+      }
+      return { values, ...(masked.length ? { masked } : {}) };
+    };
+    const sources = (byId: Readonly<Record<string, unknown>> | undefined) => {
+      const named = Object.fromEntries(Object.entries(byId ?? {}).flatMap(([id, source]) => (fields.get(id)?.access === 'full' ? [[fields.get(id)!.name, source]] : [])));
+      return Object.keys(named).length ? { sources: named } : {};
+    };
+    return {
+      added: change.added.map((line) => ({ id: line.id, ...shown(line.values), ...sources(line.sources) })),
+      removed: change.removed.map((line) => ({ id: line.id, ...shown(line.values) })),
+      changed: change.changed
+        .map((line) => ({
+          id: line.id,
+          changes: Object.entries(line.changes).flatMap(([id, c]): LinesChangeOut['changed'][number]['changes'] => {
+            const f = fields.get(id);
+            if (!f || f.access === 'hidden') return [];
+            return f.access === 'masked' ? [{ field: f.name, masked: true as const }] : [{ field: f.name, before: c.before, after: c.after, ...(c.source ? { source: c.source } : {}) }];
+          }),
+        }))
+        .filter((line) => line.changes.length),
+      reordered: change.reordered,
+    };
+  }
+
+  #provenance(raw: unknown, allowed: readonly string[], lines: Readonly<Record<string, readonly unknown[]>> = {}): Record<string, Provenance> {
     if (raw === undefined || raw === null) return {};
     const parsed = ProvenanceMap.safeParse(raw);
     if (!parsed.success) throw unprocessable('invalid_provenance', 'Provenance must say, for each field, where its value came from');
-    const unknown = Object.keys(parsed.data).filter((field) => !allowed.includes(field));
+    const unknown = Object.keys(parsed.data).filter((field) => {
+      if (allowed.includes(field)) return false;
+      const match = LINE_KEY.exec(field);
+      return !(match && allowed.includes(match[1]!) && Number(match[2]) < (lines[match[1]!]?.length ?? 0));
+    });
     if (unknown.length) throw unprocessable('invalid_provenance', `Provenance names fields that aren't being set: ${unknown.join(', ')}`);
     return parsed.data;
   }
@@ -601,35 +799,44 @@ export class AppRuntime {
     const action = loaded.definition.actions[name];
     if (!action) throw notFound('Action');
     const entity = this.entity(loaded, action.entity);
-    const provenance = this.#provenance(input.provenance, action.input);
     const check = checkActionInput(loaded.definition, name, input.values);
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
+    const provenance = this.#provenance(input.provenance, action.input, check.lines);
     if (action.operation === 'update' && !input.recordId) throw unprocessable('record_required', `${name} changes an existing record: give its ID`);
     const permission = await this.decide(request, auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity, { inside: true });
     // Revising a proposal is the person's own edit: it waits for their approval again, through the same review.
     const needsConfirmation = action.confirm !== 'none' && (auth.credential.kind === 'token' || options.revises !== undefined);
     const written = [...new Set([...Object.keys(input.values), ...Object.keys(action.set)])];
-    const sealedInput = Object.fromEntries(Object.entries(check.values).filter(([field]) => action.input.includes(field)));
+    const scalarWritten = written.filter((field) => !(field in check.lines));
     const commit = !input.dryRun && !needsConfirmation;
+    // A revision edits the proposal's lines, which may include new lines with the IDs it gave them.
+    const proposed = (options.revises?.effect as unknown as SealedEffect | undefined)?.lines ?? {};
 
     return withAppTransaction(ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
       let before: StoredRecord | null = null;
       let values: Record<string, FieldValue>;
       let after: Record<string, FieldValue>;
+      let current: Record<string, StoredLine[]> = {};
+      let prepared: ReturnType<AppRuntime['prepareLinesFor']>;
       if (action.operation === 'create') {
-        values = check.values;
-        after = { ...check.values, owner: (check.values['owner'] as string | undefined) ?? auth.actor.id };
-        if (!writeGrant(permission.grants, { fields: written, after })) {
+        prepared = this.prepareLinesFor(loaded, action.entity, check.lines, proposed, {}, true);
+        values = { ...check.values, ...prepared.rollups };
+        after = { ...values, owner: (check.values['owner'] as string | undefined) ?? auth.actor.id };
+        if (!writeGrant(permission.grants, { fields: [...scalarWritten, ...prepared.paths], after })) {
           throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a field or a value is outside what your role allows`);
         }
       } else {
         before = await this.#lock(tx, loaded, entity, input.recordId!);
         if (!before) throw notFound('Record');
+        current = await this.#currentLines(tx, loaded, entity, before.id, Object.keys(check.lines));
+        prepared = this.prepareLinesFor(loaded, action.entity, check.lines, { ...current, ...proposed }, current, false);
         const beforeValues = recordValues(before);
-        values = Object.fromEntries(Object.entries(check.values).filter(([field, value]) => JSON.stringify(beforeValues[field] ?? null) !== JSON.stringify(value)));
+        values = Object.fromEntries(
+          Object.entries({ ...check.values, ...prepared.rollups }).filter(([field, value]) => JSON.stringify(beforeValues[field] ?? null) !== JSON.stringify(value)),
+        );
         after = { ...beforeValues, ...values };
-        if (!writeGrant(permission.grants, { fields: written, before: beforeValues, after })) {
+        if (!writeGrant(permission.grants, { fields: [...scalarWritten, ...prepared.paths], before: beforeValues, after })) {
           const read = await this.#readGrants(auth, loaded, action.entity, true);
           if (!(read && grantsFor(read.grants, beforeValues).length)) throw notFound('Record');
           throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()} for this record`);
@@ -645,8 +852,12 @@ export class AppRuntime {
         this.#blockedBy(permission, beforeValues);
       }
       this.#blockedBy(permission, after);
-      const findings = this.#rules(loaded, action.entity, auth, after);
-      await this.#checkPeople(entity, values, 'owner' in values);
+      // A proposal gives new lines their IDs now, so the person's revisions can follow each line.
+      const lines: Record<string, LineValues[]> = Object.fromEntries(
+        Object.entries(prepared.lines).map(([field, list]) => [field, commit || input.dryRun ? list : list.map((line) => ({ id: line.id ?? uuidv7(ctx.now().getTime()), values: line.values }))]),
+      );
+      const findings = this.#rules(loaded, action.entity, auth, after, lines);
+      await this.#checkPeople(loaded, entity, values, 'owner' in values, lines);
       const card = buildCard({
         definition: loaded.definition,
         entity: action.entity,
@@ -654,16 +865,21 @@ export class AppRuntime {
         title: action.label,
         show: written,
         values: after,
+        lines,
         findings,
         provenance,
       });
       if (input.dryRun) return { status: 'preview' as const, needsConfirmation, findings, card };
       if (!commit) {
+        const sealedInput: SealedEffect['input'] = Object.fromEntries(
+          Object.entries({ ...check.values, ...Object.fromEntries(Object.keys(check.lines).map((field) => [field, toWire(lines[field]!)])) }).filter(([field]) => action.input.includes(field)),
+        );
+        const sealedLines = Object.fromEntries(prepared.changed.map((field) => [field, lines[field]!.map((line) => ({ id: line.id!, values: line.values }))]));
         const proposal = await this.#propose(request, auth, loaded, tx, {
           action: name,
           recordId: before?.id ?? null,
           baseVersion: before?.version ?? null,
-          effect: { input: sealedInput, values },
+          effect: { input: sealedInput, values, ...(Object.keys(sealedLines).length ? { lines: sealedLines } : {}) },
           findings,
           provenance,
           card,
@@ -679,6 +895,7 @@ export class AppRuntime {
         ...(action.operation === 'create' ? { owner: after['owner'] as string } : {}),
         provenance,
         reason: { action: name },
+        lines: Object.fromEntries(prepared.changed.map((field) => [field, { next: lines[field]!, current: current[field] ?? [] }])),
       });
       return { status: 'done' as const, record: { id: record!.id, version: record!.version } };
     }).then(async (result) => {
@@ -742,7 +959,16 @@ export class AppRuntime {
       throw forbidden('person_required', 'Proposals are made for a person. Service accounts act for people from phase 3.');
     }
     const digest = sha256Hex(
-      canonicalJson({ appId: loaded.app.id, revision: loaded.app.currentRevision, action: proposal.action, recordId: proposal.recordId, baseVersion: proposal.baseVersion, values: proposal.effect.values, onBehalfOf }),
+      canonicalJson({
+        appId: loaded.app.id,
+        revision: loaded.app.currentRevision,
+        action: proposal.action,
+        recordId: proposal.recordId,
+        baseVersion: proposal.baseVersion,
+        values: proposal.effect.values,
+        ...(proposal.effect.lines ? { lines: proposal.effect.lines } : {}),
+        onBehalfOf,
+      }),
     );
     const [row] = await tx.db
       .insert(proposals)
@@ -779,7 +1005,7 @@ export class AppRuntime {
       appId: loaded.app.id,
       env: loaded.env.kind,
       reason: { action: proposal.action, digest, onBehalfOf, ...(proposal.revises ? { revises: proposal.revises.id } : {}) },
-      changes: { fields: Object.keys(proposal.effect.values) },
+      changes: { fields: [...Object.keys(proposal.effect.values), ...Object.keys(proposal.effect.lines ?? {})] },
     });
     return this.toProposalOut({ ...row!, findings: proposal.findings as never });
   }
@@ -823,7 +1049,8 @@ export class AppRuntime {
     const entity = this.entity(loaded, action.entity);
     const permission = await this.decide(request, auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity);
     const effect = proposal.effect as unknown as SealedEffect;
-    const written = [...new Set([...Object.keys(effect.input), ...Object.keys(action.set)])];
+    const sealedLines = effect.lines ?? {};
+    const written = [...new Set([...Object.keys(effect.input), ...Object.keys(action.set)])].filter((field) => !(field in sealedLines));
     const now = ctx.now();
 
     const stored = await withAppTransaction(ctx.pool, loaded.env, 'records', async (tx) => {
@@ -839,20 +1066,27 @@ export class AppRuntime {
       }
       let before: StoredRecord | null = null;
       let after: Record<string, FieldValue>;
+      let current: Record<string, StoredLine[]> = {};
+      const linePaths = () =>
+        Object.entries(sealedLines).flatMap(([field, lines]) => {
+          const declared = entity.fields.find((f): f is StoredLinesField => f.name === field && f.type === 'lines');
+          return declared ? linesWritten(loaded.definition.entities[declared.entity]!, field, current[field] ?? [], lines) : [];
+        });
       if (action.operation === 'create') {
         after = { ...effect.values, owner: (effect.values['owner'] as string | undefined) ?? auth.actor.id };
-        if (!writeGrant(permission.grants, { fields: written, after })) throw forbidden('not_allowed', 'You may no longer make this change');
+        if (!writeGrant(permission.grants, { fields: [...written, ...linePaths()], after })) throw forbidden('not_allowed', 'You may no longer make this change');
       } else {
         before = await this.#lock(tx, loaded, entity, locked!.recordId!);
         if (!before) throw notFound('Record');
         if (before.version !== locked!.baseVersion) throw conflict('record_changed', 'The record changed since this was proposed. Ask for a new proposal.');
+        current = await this.#currentLines(tx, loaded, entity, before.id, Object.keys(sealedLines));
         const beforeValues = recordValues(before);
         after = { ...beforeValues, ...effect.values };
-        if (!writeGrant(permission.grants, { fields: written, before: beforeValues, after })) throw forbidden('not_allowed', 'You may no longer make this change');
+        if (!writeGrant(permission.grants, { fields: [...written, ...linePaths()], before: beforeValues, after })) throw forbidden('not_allowed', 'You may no longer make this change');
         this.#blockedBy(permission, beforeValues);
       }
       this.#blockedBy(permission, after);
-      this.#rules(loaded, action.entity, auth, after);
+      this.#rules(loaded, action.entity, auth, after, sealedLines);
       const record = await this.#writeRecord(request, auth, loaded, tx, {
         entityName: action.entity,
         operation: action.operation,
@@ -861,6 +1095,7 @@ export class AppRuntime {
         ...(action.operation === 'create' ? { owner: after['owner'] as string } : {}),
         provenance: locked!.provenance as unknown as Record<string, Provenance>,
         reason: { action: proposal.action, proposal: id, digest, proposedBy: { type: locked!.proposedByType, id: locked!.proposedBy } },
+        lines: Object.fromEntries(Object.entries(sealedLines).map(([field, lines]) => [field, { next: lines, current: current[field] ?? [] }])),
       });
       await tx.db.update(proposals).set({ status: 'approved', decidedAt: now, resultRecordId: record!.id }).where(eq(proposals.id, id));
       await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
@@ -903,9 +1138,33 @@ export class AppRuntime {
     const effect = proposal.effect as unknown as SealedEffect;
     const action = loaded.definition.actions[proposal.action];
     if (!action) throw conflict('definition_changed', 'The app changed since this was proposed. Ask for a new proposal.');
-    const changed = Object.keys(edits).filter((field) => JSON.stringify(effect.input[field] ?? null) !== JSON.stringify(canonical(loaded, action.entity, field, edits[field])));
-    const provenance = { ...(proposal.provenance as Record<string, Provenance>) };
+    const entity = this.entity(loaded, action.entity);
+    const linesFields = new Set(linesFieldsOf(entity).map((f) => f.name));
+    const changed = Object.keys(edits).filter(
+      (field) => !linesFields.has(field) && JSON.stringify(effect.input[field] ?? null) !== JSON.stringify(canonical(loaded, action.entity, field, edits[field])),
+    );
+    const before = proposal.provenance as Record<string, Provenance>;
+    const provenance: Record<string, Provenance> = Object.fromEntries(Object.entries(before).filter(([key]) => !LINE_KEY.test(key) || !(LINE_KEY.exec(key)![1]! in edits)));
     for (const field of changed) provenance[field] = { source: 'person' };
+    // A line's values keep where they came from, unless the person changed them: follow each line by its ID.
+    for (const linesField of linesFieldsOf(entity)) {
+      const field = linesField.name;
+      if (!(field in edits)) continue;
+      const lineEntity = loaded.definition.entities[linesField.entity]!;
+      const previous = (effect.input[field] as LineWire[] | undefined) ?? [];
+      const edited = Array.isArray(edits[field]) ? (edits[field] as Array<Record<string, unknown>>) : [];
+      edited.forEach((line, index) => {
+        const was = typeof line['id'] === 'string' ? previous.findIndex((p) => p.id === line['id']) : -1;
+        for (const declared of lineEntity.fields) {
+          const key = `${field}[${index}].${declared.name}`;
+          const given = declared.name in line;
+          const same = was >= 0 && (!given || JSON.stringify(previous[was]![declared.name] ?? null) === JSON.stringify(canonical(loaded, linesField.entity, declared.name, line[declared.name])));
+          const source = was >= 0 ? before[`${field}[${was}].${declared.name}`] : undefined;
+          if (same && source) provenance[key] = source;
+          else if (!same && given) provenance[key] = { source: 'person' };
+        }
+      });
+    }
     return this.runAction(
       request,
       auth,
@@ -939,3 +1198,15 @@ function canonical(loaded: LoadedApp, entity: string, field: string, value: unkn
   return result?.ok ? result.value : (value as FieldValue);
 }
 
+/** A key for a line's value in provenance: `lines[2].amount`. */
+const LINE_KEY = /^([a-z][a-z0-9_]{0,62})\[(\d{1,4})\]\.([a-z][a-z0-9_]{0,62})$/;
+
+/** The provenance of one lines field's values, by line position and field: `2.amount`. */
+function lineSources(provenance: Readonly<Record<string, Provenance>> | undefined, field: string): Record<string, Provenance> {
+  return Object.fromEntries(
+    Object.entries(provenance ?? {}).flatMap(([key, source]) => {
+      const match = LINE_KEY.exec(key);
+      return match && match[1] === field ? [[`${Number(match[2])}.${match[3]}`, source]] : [];
+    }),
+  );
+}

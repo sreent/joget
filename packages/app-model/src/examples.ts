@@ -5,8 +5,9 @@ const me = { ref: 'principal.id' } as const;
 const status = { ref: 'record.status' } as const;
 
 /**
- * A small expense-claim app: one entity, two rules, two actions, a query, a review card and two
- * roles. It's the running example in the design doc (§6.2) and in the tests.
+ * A small expense-claim app: a claim with one line per receipt and a total worked out from them,
+ * rules on each line, two actions, a query, a review card with the lines as a table, a form and
+ * two roles. It's the running example in the design doc (§6.2) and in the tests.
  */
 export const EXPENSE_APP = {
   entities: {
@@ -17,12 +18,8 @@ export const EXPENSE_APP = {
       fields: [
         { name: 'title', label: 'Title', type: 'text', required: true, maxLength: 200 },
         { name: 'trip', label: 'Trip', type: 'text' },
-        { name: 'category', label: 'Category', type: 'choice', required: true, options: [
-          { value: 'travel', label: 'Travel' },
-          { value: 'hotel', label: 'Hotel' },
-          { value: 'meals', label: 'Meals' },
-        ] },
-        { name: 'amount', label: 'Amount (SGD)', type: 'number', decimals: 2, min: 0, required: true },
+        { name: 'lines', label: 'Receipts', type: 'lines', entity: 'expense_line', required: true, max: 50 },
+        { name: 'total', label: 'Total (SGD)', type: 'number', decimals: 2, rollup: { sum: 'lines.amount' } },
         { name: 'status', label: 'Status', type: 'choice', default: 'draft', options: [
           { value: 'draft', label: 'Draft' },
           { value: 'submitted', label: 'Submitted' },
@@ -32,10 +29,25 @@ export const EXPENSE_APP = {
         { name: 'approver', label: 'Approver', type: 'user' },
       ],
     },
+    expense_line: {
+      label: 'Receipt',
+      pluralLabel: 'Receipts',
+      titleField: 'merchant',
+      fields: [
+        { name: 'date', label: 'Date', type: 'date', required: true },
+        { name: 'merchant', label: 'Merchant', type: 'text', required: true, maxLength: 200 },
+        { name: 'category', label: 'Category', type: 'choice', required: true, options: [
+          { value: 'travel', label: 'Travel' },
+          { value: 'hotel', label: 'Hotel' },
+          { value: 'meals', label: 'Meals' },
+        ] },
+        { name: 'amount', label: 'Amount (SGD)', type: 'number', decimals: 2, min: 0, required: true },
+      ],
+    },
   },
   rules: {
     hotel_cap: {
-      entity: 'expense_claim',
+      entity: 'expense_line',
       when: { eq: [{ ref: 'record.category' }, 'hotel'] },
       assert: { lte: [{ ref: 'record.amount' }, 250] },
       severity: 'warning',
@@ -43,7 +55,7 @@ export const EXPENSE_APP = {
       fields: ['amount'],
     },
     positive_amount: {
-      entity: 'expense_claim',
+      entity: 'expense_line',
       assert: { gt: [{ ref: 'record.amount' }, 0] },
       message: 'The amount must be more than zero',
       fields: ['amount'],
@@ -52,10 +64,10 @@ export const EXPENSE_APP = {
   actions: {
     submit_claim: {
       label: 'Submit an expense claim',
-      description: 'File an expense claim for the person you act for. Use it once they have checked the claim.',
+      description: 'File an expense claim for the person you act for, with one line per receipt. Use it once they have checked the claim.',
       entity: 'expense_claim',
       operation: 'create',
-      input: ['title', 'trip', 'category', 'amount', 'iban'],
+      input: ['title', 'trip', 'lines', 'iban'],
       set: { status: 'submitted' },
       confirm: 'review',
       card: 'claim_review',
@@ -76,13 +88,18 @@ export const EXPENSE_APP = {
       label: 'My expense claims',
       description: 'The expense claims of the person you act for, newest first.',
       entity: 'expense_claim',
-      fields: ['title', 'category', 'amount', 'status', 'created_at'],
+      fields: ['title', 'total', 'status', 'created_at'],
       filter: { eq: [owner, me] },
       sort: [{ field: 'created_at', direction: 'desc' }],
     },
   },
   cards: {
-    claim_review: { entity: 'expense_claim', title: '{{title}}: SGD {{amount}}', show: ['trip', 'category', 'amount', 'iban'] },
+    claim_review: {
+      entity: 'expense_claim',
+      title: '{{title}}: SGD {{total}}',
+      show: ['trip', 'total', 'iban'],
+      table: { of: 'lines', columns: ['date', 'merchant', 'category', 'amount'] },
+    },
   },
   forms: {
     claim_form: {
@@ -90,8 +107,9 @@ export const EXPENSE_APP = {
       entity: 'expense_claim',
       action: 'submit_claim',
       sections: [
-        { title: 'What it was', fields: [{ field: 'title' }, { field: 'trip', width: 'half' }, { field: 'category', width: 'half' }] },
-        { title: 'Paying you back', fields: [{ field: 'amount', width: 'half' }, { field: 'iban', width: 'half', help: 'Where we send the money' }] },
+        { title: 'What it was', fields: [{ field: 'title' }, { field: 'trip' }] },
+        { title: 'Receipts', fields: [{ field: 'lines', help: 'One line per receipt' }, { field: 'total', width: 'half', readOnly: true }] },
+        { title: 'Paying you back', fields: [{ field: 'iban', width: 'half', help: 'Where we send the money' }] },
       ],
     },
   },

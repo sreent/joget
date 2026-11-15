@@ -1,4 +1,4 @@
-import { columnName, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
+import { columnName, lineOwners, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
 import { NAME_PATTERN } from './schema.js';
 import { ident } from './sql.js';
 
@@ -18,6 +18,7 @@ export type MigrationStep = { readonly destructive: boolean; readonly descriptio
   | { readonly kind: 'create_entity'; readonly entity: string }
   | { readonly kind: 'drop_entity'; readonly entity: string }
   | { readonly kind: 'rename_entity'; readonly from: string; readonly to: string }
+  | { readonly kind: 'reshape_entity'; readonly entity: string }
   | { readonly kind: 'add_field'; readonly entity: string; readonly field: string }
   | { readonly kind: 'drop_field'; readonly entity: string; readonly field: string }
   | { readonly kind: 'rename_field'; readonly entity: string; readonly from: string; readonly to: string }
@@ -25,6 +26,7 @@ export type MigrationStep = { readonly destructive: boolean; readonly descriptio
   | { readonly kind: 'add_unique'; readonly entity: string; readonly field: string }
   | { readonly kind: 'drop_unique'; readonly entity: string; readonly field: string }
   | { readonly kind: 'require_field'; readonly entity: string; readonly field: string }
+  | { readonly kind: 'compute_field'; readonly entity: string; readonly field: string }
 );
 
 export interface MigrationPlan {
@@ -37,8 +39,11 @@ export interface MigrationPlan {
   readonly impact: ReadonlyArray<{ readonly step: number; readonly sql: string }>;
 }
 
-/** The column type a field needs. Fields with the same physical type can change without touching data. */
-export function physicalType(field: StoredField, entities: Readonly<Record<string, StoredEntity>>): string {
+/**
+ * The column type a field needs, or null for a lines field, whose lines have a table of their own.
+ * Fields with the same physical type can change without touching data.
+ */
+export function physicalType(field: StoredField, entities: Readonly<Record<string, StoredEntity>>): string | null {
   switch (field.type) {
     case 'text':
     case 'email':
@@ -57,6 +62,8 @@ export function physicalType(field: StoredField, entities: Readonly<Record<strin
       return 'uuid';
     case 'reference':
       return `uuid references ${tableName(entities[field.entity]!.id)}`;
+    case 'lines':
+      return null;
   }
 }
 
@@ -68,30 +75,58 @@ function nameLiteral(name: string): string {
   return `'${name}'`;
 }
 
+/** What a table looks like: a record table, or the lines of a record table (by the parent entity's ID). */
+function shapeOf(definition: StoredDefinition | undefined, name: string): string | null {
+  if (!definition) return null;
+  const owner = lineOwners(definition).get(name);
+  return owner ? definition.entities[owner.parent]!.id : null;
+}
+
+/** What a rollup depends on, by stable IDs: when this changes, the stored values must be worked out again. */
+function rollupSignature(definition: StoredDefinition, entity: StoredEntity, field: StoredField): string | null {
+  const rollup = rollupOf(field);
+  if (!rollup) return null;
+  const [op, path] = Object.entries(rollup)[0] as [string, string];
+  const [linesName, sub] = path.split('.');
+  const lines = entity.fields.find((f) => f.name === linesName);
+  if (lines?.type !== 'lines') return null;
+  const lineEntity = definition.entities[lines.entity]!;
+  const source = sub ? lineEntity.fields.find((f) => f.name === sub) : undefined;
+  return JSON.stringify([op, lines.id, lineEntity.id, source?.id ?? null, source ? physicalType(source, definition.entities) : null]);
+}
+
 /**
  * The steps that turn `previous` into `next`, and the DDL that makes them so.
  *
  * Entities and fields are matched by stable ID, so renames touch no data. A changed column type
- * is dropped and added again, which loses the column's values and so counts as destructive.
+ * is dropped and added again, which loses the column's values and so counts as destructive. So
+ * does turning an entity into the lines of another, or back: its table is made again.
  */
 export function planMigration(previous: StoredDefinition | undefined, next: StoredDefinition, names: EnvironmentNames): MigrationPlan {
   const schema = ident(names.schema);
   const role = ident(names.role);
-  const table = (entity: StoredEntity) => `${schema}.${ident(tableName(entity.id))}`;
+  const tableOf = (id: string) => `${schema}.${ident(tableName(id))}`;
+  const table = (entity: StoredEntity) => tableOf(entity.id);
   const column = (field: StoredField) => ident(columnName(field.id));
   const index = (entity: StoredEntity, field: StoredField, suffix: string) => ident(`${tableName(entity.id)}_${columnName(field.id)}_${suffix}`);
 
   const before = new Map(Object.entries(previous?.entities ?? {}).map(([name, entity]) => [entity.id, { name, entity }]));
   const after = new Map(Object.entries(next.entities).map(([name, entity]) => [entity.id, { name, entity }]));
+  const ownersAfter = lineOwners(next);
 
   const steps: MigrationStep[] = [];
   const impact: Array<{ step: number; sql: string }> = [];
-  const creates: string[] = [];
+  const dropTables: string[] = [];
   const drops: string[] = [];
+  const creates: string[] = [];
+  const lineCreates: string[] = [];
   const adds: string[] = [];
   const references: string[] = [];
   const indexes: string[] = [];
   const comments: string[] = [];
+  const computes: string[] = [];
+  /** Entities whose tables start empty in this migration. */
+  const fresh = new Set<string>();
   const step = (s: MigrationStep, impactSql?: string) => {
     if (impactSql) impact.push({ step: steps.length, sql: impactSql });
     steps.push(s);
@@ -99,8 +134,9 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
 
   const addColumn = (entity: StoredEntity, field: StoredField) => {
     const type = physicalType(field, next.entities);
+    if (type === null) return;
     if (field.type === 'reference') {
-      const target = `${schema}.${ident(tableName(next.entities[field.entity]!.id))}`;
+      const target = tableOf(next.entities[field.entity]!.id);
       references.push(`alter table ${table(entity)} add column ${column(field)} uuid references ${target} (id) on delete restrict`);
       references.push(`create index ${index(entity, field, 'idx')} on ${table(entity)} (${column(field)})`);
     } else {
@@ -110,18 +146,48 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
     comments.push(`comment on column ${table(entity)}.${column(field)} is ${nameLiteral(field.name)}`);
   };
 
-  for (const [id, { name, entity }] of after) {
-    const old = before.get(id);
-    if (!old) {
-      step({ kind: 'create_entity', entity: name, destructive: false, description: `Create ${name}` });
+  const createTable = (name: string, entity: StoredEntity) => {
+    const parent = shapeOf(next, name);
+    fresh.add(entity.id);
+    if (parent === null) {
       creates.push(
         `create table ${table(entity)} (id uuid primary key, version integer not null default 1, owner uuid not null, ` +
           'created_at timestamptz not null, created_by uuid not null, updated_at timestamptz not null, updated_by uuid not null)',
         `create index ${ident(`${tableName(entity.id)}_owner_idx`)} on ${table(entity)} (owner)`,
         `grant select, insert, update, delete on ${table(entity)} to ${role}`,
       );
-      comments.push(`comment on table ${table(entity)} is ${nameLiteral(name)}`);
-      for (const field of entity.fields) addColumn(entity, field);
+    } else {
+      // Lines belong to their record: they go when it goes, and keep their order.
+      lineCreates.push(
+        `create table ${table(entity)} (id uuid primary key, parent_id uuid not null references ${tableOf(parent)} (id) on delete cascade, position integer not null)`,
+        `create index ${ident(`${tableName(entity.id)}_parent_idx`)} on ${table(entity)} (parent_id, position)`,
+        `grant select, insert, update, delete on ${table(entity)} to ${role}`,
+      );
+    }
+    comments.push(`comment on table ${table(entity)} is ${nameLiteral(name)}`);
+    for (const field of entity.fields) addColumn(entity, field);
+  };
+
+  const describeShape = (name: string) => {
+    const owner = ownersAfter.get(name);
+    return owner ? `the lines of ${owner.parent}.${owner.field}` : 'records of its own';
+  };
+
+  for (const [id, { name, entity }] of after) {
+    const old = before.get(id);
+    if (!old) {
+      const owner = ownersAfter.get(name);
+      step({ kind: 'create_entity', entity: name, destructive: false, description: owner ? `Create ${name}, the lines of ${owner.parent}.${owner.field}` : `Create ${name}` });
+      createTable(name, entity);
+      continue;
+    }
+    if (shapeOf(previous, old.name) !== shapeOf(next, name)) {
+      step(
+        { kind: 'reshape_entity', entity: name, destructive: true, description: `Make ${name} ${describeShape(name)}, which deletes its records` },
+        `select count(*)::int as n from ${table(old.entity)}`,
+      );
+      dropTables.push(table(old.entity));
+      createTable(name, entity);
       continue;
     }
     if (old.name !== name) {
@@ -132,6 +198,11 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
     const newFields = new Map(entity.fields.map((field) => [field.id, field]));
     for (const [fieldId, field] of oldFields) {
       if (newFields.has(fieldId)) continue;
+      if (field.type === 'lines') {
+        // The lines themselves go with their entity, whose own step says so.
+        step({ kind: 'drop_field', entity: name, field: field.name, destructive: false, description: `Remove the lines field ${name}.${field.name}` });
+        continue;
+      }
       step(
         { kind: 'drop_field', entity: name, field: field.name, destructive: true, description: `Delete ${name}.${field.name} and its values` },
         `select count(*)::int as n from ${table(entity)} where ${column(field)} is not null`,
@@ -143,7 +214,7 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
       if (!oldField) {
         step({ kind: 'add_field', entity: name, field: field.name, destructive: false, description: `Add ${name}.${field.name}` });
         addColumn(entity, field);
-        if (field.required) {
+        if (field.required && field.type !== 'lines') {
           step(
             { kind: 'require_field', entity: name, field: field.name, destructive: false, description: `Existing ${name} records have no ${field.name} yet` },
             `select count(*)::int as n from ${table(entity)}`,
@@ -153,15 +224,24 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
       }
       if (oldField.name !== field.name) {
         step({ kind: 'rename_field', entity: name, from: oldField.name, to: field.name, destructive: false, description: `Rename ${name}.${oldField.name} to ${field.name}; no data changes` });
-        comments.push(`comment on column ${table(entity)}.${column(field)} is ${nameLiteral(field.name)}`);
+        if (field.type !== 'lines') comments.push(`comment on column ${table(entity)}.${column(field)} is ${nameLiteral(field.name)}`);
       }
       // A reference's type names its target table, so pointing it at another entity counts as a new type.
-      if (physicalType(oldField, previous!.entities) !== physicalType(field, next.entities)) {
+      const [oldType, newType] = [physicalType(oldField, previous!.entities), physicalType(field, next.entities)];
+      if (oldType !== newType) {
         step(
-          { kind: 'retype_field', entity: name, field: field.name, from: oldField.type, to: field.type, destructive: true, description: `Change ${name}.${field.name} from ${oldField.type} to ${field.type}, which deletes its values` },
-          `select count(*)::int as n from ${table(entity)} where ${column(oldField)} is not null`,
+          {
+            kind: 'retype_field',
+            entity: name,
+            field: field.name,
+            from: oldField.type,
+            to: field.type,
+            destructive: oldType !== null,
+            description: `Change ${name}.${field.name} from ${oldField.type} to ${field.type}${oldType !== null ? ', which deletes its values' : ''}`,
+          },
+          oldType !== null ? `select count(*)::int as n from ${table(entity)} where ${column(oldField)} is not null` : undefined,
         );
-        drops.push(`alter table ${table(entity)} drop column ${column(oldField)}`);
+        if (oldType !== null) drops.push(`alter table ${table(entity)} drop column ${column(oldField)}`);
         addColumn(entity, field);
         continue;
       }
@@ -176,24 +256,58 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
         indexes.push(`drop index ${schema}.${index(entity, field, 'key')}`);
       }
       if (field.required && !oldField.required) {
-        step(
-          { kind: 'require_field', entity: name, field: field.name, destructive: false, description: `Make ${name}.${field.name} required; existing records without a value keep working until edited` },
-          `select count(*)::int as n from ${table(entity)} where ${column(field)} is null`,
-        );
+        if (field.type === 'lines') {
+          const lines = next.entities[field.entity]!;
+          step(
+            { kind: 'require_field', entity: name, field: field.name, destructive: false, description: `Make ${name}.${field.name} need at least one line; records without any keep working until edited` },
+            `select count(*)::int as n from ${table(entity)} r where not exists (select from ${table(lines)} l where l.parent_id = r.id)`,
+          );
+        } else {
+          step(
+            { kind: 'require_field', entity: name, field: field.name, destructive: false, description: `Make ${name}.${field.name} required; existing records without a value keep working until edited` },
+            `select count(*)::int as n from ${table(entity)} where ${column(field)} is null`,
+          );
+        }
       }
     }
   }
+
+  // Rollups are stored, so existing records need them worked out when what they depend on changes.
+  for (const [id, { name, entity }] of after) {
+    if (fresh.has(id)) continue;
+    const old = before.get(id)!;
+    for (const field of entity.fields) {
+      const signature = rollupSignature(next, entity, field);
+      if (signature === null) continue;
+      const oldField = old.entity.fields.find((f) => f.id === field.id);
+      const lines = entity.fields.find((f) => f.type === 'lines' && f.name === Object.values(rollupOf(field)!)[0]!.split('.')[0]);
+      const lineEntity = next.entities[(lines as { entity: string }).entity]!;
+      const unchanged = oldField && rollupSignature(previous!, old.entity, oldField) === signature && !fresh.has(lineEntity.id);
+      if (unchanged) continue;
+      const [op, path] = Object.entries(rollupOf(field)!)[0] as [string, string];
+      const source = lineEntity.fields.find((f) => f.name === path.split('.')[1]);
+      const aggregate =
+        op === 'count' ? 'count(*)' : op === 'sum' ? `coalesce(sum(l.${column(source!)}), 0)` : `${op}(l.${column(source!)})`;
+      step(
+        { kind: 'compute_field', entity: name, field: field.name, destructive: false, description: `Work out ${name}.${field.name} for existing records` },
+        `select count(*)::int as n from ${table(entity)}`,
+      );
+      computes.push(`update ${table(entity)} as r set ${column(field)} = (select ${aggregate} from ${table(lineEntity)} l where l.parent_id = r.id)`);
+    }
+  }
+
   const dropped = [...before].filter(([id]) => !after.has(id));
   for (const [, { name, entity }] of dropped) {
     step({ kind: 'drop_entity', entity: name, destructive: true, description: `Delete ${name} and all its records` }, `select count(*)::int as n from ${table(entity)}`);
+    dropTables.push(table(entity));
   }
   // Drop the tables together, so references between them don't get in the way.
-  if (dropped.length) drops.push(`drop table ${dropped.map(([, { entity }]) => table(entity)).join(', ')}`);
+  if (dropTables.length) drops.unshift(`drop table ${dropTables.join(', ')}`);
 
   return {
     steps,
     destructive: steps.some((s) => s.destructive),
-    statements: [...drops, ...creates, ...adds, ...references, ...indexes, ...comments],
+    statements: [...drops, ...creates, ...lineCreates, ...adds, ...references, ...indexes, ...comments, ...computes],
     impact,
   };
 }

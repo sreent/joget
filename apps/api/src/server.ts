@@ -62,6 +62,9 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   // Over plain http (local development only: production requires https), don't ask browsers to upgrade requests.
   await app.register(helmet, {
     contentSecurityPolicy: { directives: { upgradeInsecureRequests: ctx.config.PUBLIC_BASE_URL.startsWith('https://') ? [] : null } },
+    // Not no-referrer: under it, browsers send `Origin: null` with a form's POST, and the review
+    // page's own buttons would fail the cross-site check. same-origin still sends nothing elsewhere.
+    referrerPolicy: { policy: 'same-origin' },
   });
   await app.register(swagger, {
     openapi: {

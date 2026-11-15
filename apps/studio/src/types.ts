@@ -78,6 +78,12 @@ export interface UiField {
   decimals?: number;
   maxLength?: number;
   multiline?: boolean;
+  /** A number worked out from lines: shown, never entered. */
+  computed?: boolean;
+  /** How it is worked out, such as `{ sum: 'lines.amount' }`. */
+  rollup?: Record<string, string>;
+  /** For a lines field: the most lines, what a line is called and named by, and the fields of each line. */
+  lines?: { max: number; label: string; titleField: string | null; fields: UiField[] };
   read: 'full' | 'masked' | null;
   create: boolean;
   update: boolean;
@@ -117,6 +123,12 @@ export interface UiManifest {
 
 export type Value = string | number | boolean | string[] | null;
 
+/** A line of a record: its ID once it's saved, and its values. */
+export type Line = { id?: string } & { [field: string]: Value | undefined };
+
+/** A value of a record: a single value, or a lines field's lines. */
+export type RecordValue = Value | Line[];
+
 export interface RecordOut {
   id: string;
   version: number;
@@ -125,7 +137,8 @@ export interface RecordOut {
   createdBy?: string;
   updatedAt?: string;
   updatedBy?: string;
-  values?: Record<string, Value>;
+  values?: Record<string, RecordValue>;
+  /** Fields shown masked; fields of lines as `lines.amount`. */
   masked?: string[];
 }
 
@@ -140,6 +153,16 @@ export interface Person {
   active: boolean;
 }
 
+export type Source = { source: string; [key: string]: unknown };
+
+/** How a record's lines changed: fields by name, those masked from the person listed. */
+export interface LinesChange {
+  added: Array<{ id: string; values: Record<string, Value>; masked?: string[]; sources?: Record<string, Source> }>;
+  removed: Array<{ id: string; values: Record<string, Value>; masked?: string[] }>;
+  changed: Array<{ id: string; changes: Array<{ field: string; before?: Value; after?: Value; masked?: true; source?: Source }> }>;
+  reordered: boolean;
+}
+
 export interface HistoryEntry {
   version: number;
   operation: 'create' | 'update' | 'delete';
@@ -147,5 +170,5 @@ export interface HistoryEntry {
   /** Who made the change. When an agent did, `onBehalfOf` is the person it acted for. */
   actor: { type: string; id: string | null; onBehalfOf: string | null };
   via: string;
-  changes: Array<{ field: string; before?: Value; after?: Value; masked?: true; removed?: true; source?: { source: string; [key: string]: unknown } }>;
+  changes: Array<{ field: string; before?: Value; after?: Value; lines?: LinesChange; masked?: true; removed?: true; source?: Source }>;
 }

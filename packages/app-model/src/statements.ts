@@ -78,9 +78,13 @@ export function selectRecords(query: SelectRecords): RecordSelect {
   };
   const condition = (c: true | Condition) => (c === true ? 'TRUE' : compileCondition(c, fields, sql));
 
+  const lines = new Set(query.entity.fields.filter((f) => f.type === 'lines').map((f) => f.name));
   const select = [
     ...SYSTEM_COLUMNS.map((column) => `${selectExpression(field(column))} as ${ident(column)}`),
-    ...query.fields.filter((name) => !(SYSTEM_COLUMNS as readonly string[]).includes(name)).map((name) => `${selectExpression(field(name))} as ${ident(field(name).column)}`),
+    // Lines live in tables of their own: selectLines reads them.
+    ...query.fields
+      .filter((name) => !(SYSTEM_COLUMNS as readonly string[]).includes(name) && !lines.has(name))
+      .map((name) => `${selectExpression(field(name))} as ${ident(field(name).column)}`),
   ];
   const flagGrants: number[] = [];
   query.grants.forEach((grant, index) => {
@@ -114,8 +118,8 @@ export function parseRecord(entity: StoredEntity, row: Readonly<Record<string, u
   const fields = entityFields(entity);
   const values: Record<string, FieldValue> = {};
   for (const field of entity.fields) {
-    const info = fields.get(field.name)!;
-    if (info.column in row) values[field.name] = fromDatabase(info, row[info.column]);
+    const info = fields.get(field.name);
+    if (info && info.column in row) values[field.name] = fromDatabase(info, row[info.column]);
   }
   const system = (name: (typeof SYSTEM_COLUMNS)[number]) => fromDatabase(fields.get(name)!, row[name]);
   return {
@@ -194,13 +198,137 @@ export function deleteRecord(names: EnvironmentNames, entity: StoredEntity, id: 
   return { text: `delete from ${tableOf(names, entity)} as r where r.id = $1::uuid`, values: [id] };
 }
 
-/** One field's change in a record's history, under the field's stable ID so renames keep their history. */
-export interface HistoryChange {
-  readonly name: string;
-  readonly before: FieldValue;
-  readonly after: FieldValue;
-  readonly source?: unknown;
+/** A line as stored: its ID and its values. Its place is its position in the record's list. */
+export interface StoredLine {
+  readonly id: string;
+  readonly values: Readonly<Record<string, FieldValue>>;
 }
+
+/**
+ * Read the lines of some records of the entity whose lines these are, in each record's order.
+ * One query serves a whole page of records. Only the fields named come back.
+ */
+export function selectLines(names: EnvironmentNames, lineEntity: StoredEntity, parentIds: readonly string[], fields?: readonly string[]): SqlQuery {
+  const infos = [...entityFields(lineEntity, { line: true }).values()].filter((info) => !info.system && (!fields || fields.includes(info.name)));
+  const select = ['l.id', 'l.parent_id', ...infos.map((info) => `${selectExpression(info, 'l')} as ${ident(info.column)}`)];
+  return {
+    text: `select ${select.join(', ')} from ${tableOf(names, lineEntity)} l where l.parent_id = any($1::uuid[]) order by l.parent_id, l.position`,
+    values: [parentIds],
+  };
+}
+
+/** Rows from selectLines, as each record's lines, by record ID. */
+export function parseLines(lineEntity: StoredEntity, rows: ReadonlyArray<Readonly<Record<string, unknown>>>): Map<string, StoredLine[]> {
+  const infos = [...entityFields(lineEntity, { line: true }).values()].filter((info) => !info.system);
+  const byParent = new Map<string, StoredLine[]>();
+  for (const row of rows) {
+    const values: Record<string, FieldValue> = {};
+    for (const info of infos) if (info.column in row) values[info.name] = fromDatabase(info, row[info.column]);
+    const parent = row['parent_id'] as string;
+    byParent.set(parent, [...(byParent.get(parent) ?? []), { id: row['id'] as string, values }]);
+  }
+  return byParent;
+}
+
+/**
+ * Make a record's lines what they should be, in this order: delete those left out, change those
+ * kept where they differ, and add the new ones. Every line in `next` has its ID: new lines get
+ * theirs before they are written.
+ */
+export function writeLines(
+  names: EnvironmentNames,
+  lineEntity: StoredEntity,
+  parentId: string,
+  current: readonly StoredLine[],
+  next: readonly StoredLine[],
+): SqlQuery[] {
+  const table = tableOf(names, lineEntity);
+  const infos = [...entityFields(lineEntity, { line: true }).values()].filter((info) => !info.system);
+  const same = (a: FieldValue | undefined, b: FieldValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const statements: SqlQuery[] = [];
+  const kept = new Set(next.map((line) => line.id));
+  if (current.some((line) => !kept.has(line.id))) {
+    statements.push({ text: `delete from ${table} where parent_id = $1::uuid and not (id = any($2::uuid[]))`, values: [parentId, [...kept]] });
+  }
+  const before = new Map(current.map((line, position) => [line.id, { line, position }]));
+  const added: Array<{ line: StoredLine; position: number }> = [];
+  next.forEach((line, position) => {
+    const old = before.get(line.id);
+    if (!old) return void added.push({ line, position });
+    const changed = infos.filter((info) => !same(old.line.values[info.name], line.values[info.name]));
+    if (!changed.length && old.position === position) return;
+    const sql = new SqlBuilder();
+    const sets = [`position = ${sql.param(position, 'int')}`, ...changed.map((info) => `${ident(info.column)} = ${toDatabase(sql, info, line.values[info.name] ?? null)}`)];
+    statements.push({ text: `update ${table} set ${sets.join(', ')} where id = ${sql.param(line.id, 'uuid')} and parent_id = ${sql.param(parentId, 'uuid')}`, values: sql.values });
+  });
+  if (added.length) {
+    const sql = new SqlBuilder();
+    const rows = added.map(
+      ({ line, position }) =>
+        `(${[sql.param(line.id, 'uuid'), sql.param(parentId, 'uuid'), sql.param(position, 'int'), ...infos.map((info) => toDatabase(sql, info, line.values[info.name] ?? null))].join(', ')})`,
+    );
+    const columns = ['id', 'parent_id', 'position', ...infos.map((info) => ident(info.column))];
+    statements.push({ text: `insert into ${table} (${columns.join(', ')}) values ${rows.join(', ')}`, values: sql.values });
+  }
+  return statements;
+}
+
+/** How a record's lines changed, with each line's values under its fields' stable IDs. */
+export interface LinesChange {
+  readonly added: ReadonlyArray<{ readonly id: string; readonly values: Readonly<Record<string, FieldValue>>; readonly sources?: Readonly<Record<string, unknown>> }>;
+  readonly removed: ReadonlyArray<{ readonly id: string; readonly values: Readonly<Record<string, FieldValue>> }>;
+  readonly changed: ReadonlyArray<{
+    readonly id: string;
+    readonly changes: Readonly<Record<string, { readonly before: FieldValue; readonly after: FieldValue; readonly source?: unknown }>>;
+  }>;
+  /** True if the lines that stayed are in a different order. */
+  readonly reordered: boolean;
+}
+
+/**
+ * The changes between a record's lines before and after a write, or null if there are none.
+ * `sources` gives where values came from, by the line's position and field name: `2.amount`.
+ */
+export function diffLines(
+  lineEntity: StoredEntity,
+  before: readonly StoredLine[],
+  after: readonly StoredLine[],
+  sources: Readonly<Record<string, unknown>> = {},
+): LinesChange | null {
+  const same = (a: FieldValue | undefined, b: FieldValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const byId = (line: StoredLine) => Object.fromEntries(lineEntity.fields.map((f) => [f.id, line.values[f.name] ?? null]));
+  const old = new Map(before.map((line) => [line.id, line]));
+  const now = new Set(after.map((line) => line.id));
+  const added: Array<LinesChange['added'][number]> = [];
+  const changed: Array<LinesChange['changed'][number]> = [];
+  after.forEach((line, position) => {
+    const was = old.get(line.id);
+    const sourceOf = (field: string) => sources[`${position}.${field}`];
+    if (!was) {
+      const lineSources = Object.fromEntries(lineEntity.fields.flatMap((f) => (sourceOf(f.name) ? [[f.id, sourceOf(f.name)]] : [])));
+      added.push({ id: line.id, values: byId(line), ...(Object.keys(lineSources).length ? { sources: lineSources } : {}) });
+      return;
+    }
+    const changes = Object.fromEntries(
+      lineEntity.fields.flatMap((f) => {
+        const [b, a] = [was.values[f.name] ?? null, line.values[f.name] ?? null];
+        return same(b, a) ? [] : [[f.id, { before: b, after: a, ...(sourceOf(f.name) ? { source: sourceOf(f.name) } : {}) }]];
+      }),
+    );
+    if (Object.keys(changes).length) changed.push({ id: line.id, changes });
+  });
+  const removed = before.filter((line) => !now.has(line.id)).map((line) => ({ id: line.id, values: byId(line) }));
+  const keptBefore = before.filter((line) => now.has(line.id)).map((line) => line.id);
+  const keptAfter = after.filter((line) => old.has(line.id)).map((line) => line.id);
+  const reordered = keptBefore.some((id, index) => keptAfter[index] !== id);
+  if (!added.length && !removed.length && !changed.length && !reordered) return null;
+  return { added, removed, changed, reordered };
+}
+
+/** One field's change in a record's history, under the field's stable ID so renames keep their history. */
+export type HistoryChange =
+  | { readonly name: string; readonly before: FieldValue; readonly after: FieldValue; readonly source?: unknown }
+  | { readonly name: string; readonly lines: LinesChange };
 
 export interface HistoryEntry {
   readonly id: string;

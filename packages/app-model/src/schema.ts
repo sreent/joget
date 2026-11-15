@@ -39,6 +39,25 @@ const fieldCommon = {
 export const MAX_TEXT_LENGTH = 10_000;
 /** Numbers are stored exactly, and must stay within what JSON numbers represent exactly. */
 export const MAX_NUMBER_MAGNITUDE = 1e15;
+/** The most lines a record can have in one lines field. */
+export const MAX_LINES = 500;
+
+/** A field of the lines in a lines field, such as `lines.amount`. */
+export const LINE_PATH_PATTERN = /^([a-z][a-z0-9_]{0,62})\.([a-z][a-z0-9_]{0,62})$/;
+const LinePath = z.string().regex(LINE_PATH_PATTERN, 'Name a lines field and a field of its lines, such as lines.amount');
+
+/**
+ * A number the platform works out from a lines field whenever a record is written: the sum,
+ * smallest or largest of a number field of the lines, or how many lines there are. It is stored
+ * like any number, so conditions, rules, roles and queries can use it, for example a claim's total.
+ */
+export const Rollup = z.union([
+  z.strictObject({ sum: LinePath }),
+  z.strictObject({ min: LinePath }),
+  z.strictObject({ max: LinePath }),
+  z.strictObject({ count: Name }),
+]);
+export type Rollup = z.infer<typeof Rollup>;
 
 const TextField = z.strictObject({
   ...fieldCommon,
@@ -64,6 +83,8 @@ const NumberField = z.strictObject({
   max: z.number().min(-MAX_NUMBER_MAGNITUDE).max(MAX_NUMBER_MAGNITUDE).optional(),
   unique: z.boolean().default(false),
   default: z.number().optional(),
+  /** Work the value out from a lines field. People and agents can't set it. */
+  rollup: Rollup.optional(),
 });
 
 const BooleanField = z.strictObject({ ...fieldCommon, type: z.literal('boolean'), default: z.boolean().optional() });
@@ -84,6 +105,20 @@ const ReferenceField = z.strictObject({ ...fieldCommon, type: z.literal('referen
 /** A person in the directory, for example who a request is assigned to. */
 const UserField = z.strictObject({ ...fieldCommon, type: z.literal('user') });
 
+/**
+ * Line items: records of another entity that belong to each record of this one, such as one line
+ * per receipt on an expense claim. That entity becomes part of this one: its records exist only
+ * inside a record here, are read and written with it, in order, and share its permissions and
+ * its history. `required` means at least one line.
+ */
+const LinesField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('lines'),
+  entity: Name,
+  /** The most lines a record may have. */
+  max: z.int().min(1).max(MAX_LINES).default(100),
+});
+
 export const Field = z.discriminatedUnion('type', [
   TextField,
   EmailField,
@@ -94,6 +129,7 @@ export const Field = z.discriminatedUnion('type', [
   ChoiceField,
   ReferenceField,
   UserField,
+  LinesField,
 ]);
 export type Field = z.infer<typeof Field>;
 export type FieldType = Field['type'];
@@ -179,6 +215,8 @@ export const Card = z.strictObject({
   title: z.string().trim().min(1).max(200),
   /** The fields shown, in order. Rule findings always come first. */
   show: z.array(Name).min(1).max(50),
+  /** A lines field shown as a table, with these columns. */
+  table: z.strictObject({ of: Name, columns: z.array(Name).min(1).max(20) }).optional(),
 });
 export type Card = z.infer<typeof Card>;
 
@@ -208,18 +246,21 @@ export const Form = z.strictObject({
 });
 export type Form = z.infer<typeof Form>;
 
+/** A field, or a field of lines as `lines.amount`. */
+const FieldPath = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a field, or a field of lines such as lines.amount');
+
 const FieldSelection = z.union([
-  z.strictObject({ include: z.array(Name).max(MAX_FIELDS) }),
-  z.strictObject({ exclude: z.array(Name).max(MAX_FIELDS) }),
+  z.strictObject({ include: z.array(FieldPath).max(MAX_FIELDS * 2) }),
+  z.strictObject({ exclude: z.array(FieldPath).max(MAX_FIELDS * 2) }),
 ]);
 
 const ReadAccess = z.strictObject({
   where: ConditionSchema.optional(),
   fields: FieldSelection.optional(),
   /** Fields shown masked. */
-  mask: z.array(Name).max(MAX_FIELDS).optional(),
+  mask: z.array(FieldPath).max(MAX_FIELDS * 2).optional(),
   /** `pii` fields this role may see unmasked. */
-  unmask: z.array(Name).max(MAX_FIELDS).optional(),
+  unmask: z.array(FieldPath).max(MAX_FIELDS * 2).optional(),
 });
 const CreateAccess = z.strictObject({ check: ConditionSchema.optional(), fields: FieldSelection.optional() });
 const UpdateAccess = z.strictObject({

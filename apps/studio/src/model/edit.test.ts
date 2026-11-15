@@ -8,9 +8,13 @@ import {
   emptyDefinition,
   moveField,
   placeField,
+  lineOwner,
+  removeEntity,
   removeField,
   removeSection,
   renameEntity,
+  rollupChoices,
+  setRollup,
   toName,
   unplaced,
   updateField,
@@ -87,5 +91,35 @@ describe('editing a draft', () => {
     definition = removeSection(definition, name, 1);
     expect(unplaced(definition, name)).toEqual(['new_number']);
     expect(removeSection(definition, name, 0)).toBe(definition);
+  });
+
+  it('makes an entity for new lines, and takes it away with them', () => {
+    const { definition, entity } = start();
+    const { definition: withLines, index } = addField(definition, entity, 'lines');
+    const lines = withLines.entities[entity]!.fields[index]!;
+    expect(lines).toMatchObject({ type: 'lines', entity: 'expense_claim_line', max: 100 });
+    expect(withLines.entities['expense_claim_line']!.fields.map((f) => f.name)).toEqual(['description']);
+    expect(lineOwner(withLines, 'expense_claim_line')).toEqual({ parent: entity, field: lines.name });
+    expect(removeField(withLines, entity, index).entities).not.toHaveProperty('expense_claim_line');
+    expect(changeFieldType(withLines, entity, index, 'text').entities).not.toHaveProperty('expense_claim_line');
+    // Deleting the lines' entity takes its lines field off the parent too, and deleting the parent takes the lines.
+    expect(removeEntity(withLines, 'expense_claim_line').entities[entity]!.fields.map((f) => f.type)).not.toContain('lines');
+    expect(Object.keys(removeEntity(withLines, entity).entities)).toEqual([]);
+  });
+
+  it('works a number out from lines, and keeps the rollup when lines are renamed', () => {
+    const { definition, entity } = start();
+    let { definition: d, index } = addField(definition, entity, 'lines');
+    d = addField(d, 'expense_claim_line', 'number').definition;
+    d = updateField(d, 'expense_claim_line', 1, { name: 'amount', label: 'Amount', decimals: 2 });
+    expect(rollupChoices(d, entity).map((c) => c.key)).toEqual(['count:new_lines', 'sum:new_lines.amount', 'min:new_lines.amount', 'max:new_lines.amount']);
+    d = addForm(d, entity).definition;
+    d = setRollup(d, entity, 1, 'sum:new_lines.amount');
+    expect(d.entities[entity]!.fields[1]).toMatchObject({ rollup: { sum: 'new_lines.amount' }, decimals: 2, required: false });
+    expect(d.forms['expense_claim_form']!.sections[0]!.fields[1]).toMatchObject({ field: 'new_number', readOnly: true });
+    d = updateField(d, entity, index, { name: 'receipts' });
+    d = updateField(d, 'expense_claim_line', 1, { name: 'value' });
+    expect(d.entities[entity]!.fields[1]).toMatchObject({ rollup: { sum: 'receipts.value' } });
+    expect(setRollup(d, entity, 1, '').entities[entity]!.fields[1]).not.toHaveProperty('rollup');
   });
 });

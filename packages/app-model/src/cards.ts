@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { entityFields, type StoredDefinition } from './fields.js';
 import type { Finding } from './rules.js';
 import type { FieldType } from './schema.js';
-import type { FieldValue, RecordValues } from './values.js';
+import type { FieldValue, RecordLines, RecordValues } from './values.js';
 
 /** Where a value came from (design §6.2). Without it, review turns into rubber-stamping. */
 export const Provenance = z.discriminatedUnion('source', [
@@ -34,6 +34,15 @@ export interface CardField {
   readonly source?: Provenance;
 }
 
+/** A lines field on a card: one row per line, with the columns the card names. */
+export interface CardTable {
+  readonly field: string;
+  readonly label: string;
+  readonly columns: Array<{ readonly name: string; readonly label: string; readonly type: FieldType }>;
+  /** Each line's cells, in the columns' order. New lines have no ID yet. */
+  readonly rows: Array<{ readonly id: string | null; readonly cells: CardField[] }>;
+}
+
 /**
  * A review card in a neutral form that any channel can draw: a Teams or Slack adapter, an MCP
  * client, or the platform's own review page (design §6.4). It is built from the exact values a
@@ -44,6 +53,8 @@ export interface CardData {
   /** Rule findings come first: they are what a person most needs to look at. */
   readonly findings: Finding[];
   readonly fields: CardField[];
+  /** Lines, as tables. Cards made before line items have none. */
+  readonly tables?: CardTable[];
   readonly responses: Array<'approve' | 'edit' | 'reject'>;
 }
 
@@ -70,7 +81,10 @@ export function buildCard(input: {
   readonly title?: string;
   readonly show?: readonly string[];
   readonly values: RecordValues;
+  /** The record's lines, by lines field, as they will be. */
+  readonly lines?: RecordLines;
   readonly findings: readonly Finding[];
+  /** Where values came from, by field; for a line's value, as `lines[2].amount`. */
   readonly provenance?: Readonly<Record<string, Provenance>>;
 }): CardData {
   const { definition, entity, values } = input;
@@ -78,9 +92,37 @@ export function buildCard(input: {
   const fields = entityFields(definition.entities[entity]!);
   const show = card?.show ?? input.show ?? Object.keys(values);
   const titleTemplate = card?.title ?? input.title ?? definition.entities[entity]!.label;
+  const linesFields = definition.entities[entity]!.fields.flatMap((f) => (f.type === 'lines' ? [f] : []));
+  // A card's table names its lines and columns; without one, any lines field it shows gets every column.
+  const shown = card?.table
+    ? [{ of: card.table.of, columns: card.table.columns }]
+    : show.flatMap((name) => {
+        const lines = linesFields.find((f) => f.name === name);
+        return lines ? [{ of: name, columns: definition.entities[lines.entity]!.fields.map((f) => f.name) }] : [];
+      });
+  const tables = shown.flatMap(({ of, columns }): CardTable[] => {
+    const lines = linesFields.find((f) => f.name === of);
+    if (!lines || !input.lines?.[of]) return [];
+    const lineEntity = definition.entities[lines.entity]!;
+    const declared = columns.flatMap((name) => lineEntity.fields.filter((f) => f.name === name));
+    return [{
+      field: of,
+      label: lines.label,
+      columns: declared.map((f) => ({ name: f.name, label: f.label, type: f.type })),
+      rows: input.lines[of]!.map((line, index) => ({
+        id: line.id,
+        cells: declared.map((f) => {
+          const value = line.values[f.name] ?? null;
+          const source = input.provenance?.[`${of}[${index}].${f.name}`];
+          return { name: f.name, label: f.label, type: f.type, value, display: displayValue(definition, lines.entity, f.name, value), ...(source ? { source } : {}) };
+        }),
+      })),
+    }];
+  });
   return {
     title: titleTemplate.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g, (_, name: string) => displayValue(definition, entity, name, values[name] ?? null)),
     findings: [...input.findings],
+    ...(tables.length ? { tables } : {}),
     fields: show.flatMap((name) => {
       const info = fields.get(name);
       if (!info) return [];

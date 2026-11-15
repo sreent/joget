@@ -1,4 +1,5 @@
-import { covers, fieldAccess, type FieldAccess, type StoredField } from '@platform/app-model';
+import { covers, fieldAccess, lineOwners, rollupOf, type FieldAccess, type StoredDefinition, type StoredField } from '@platform/app-model';
+import type { PermissionGrant } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
 import type { AppContext, AuthContext } from '../context.js';
 import type { LoadedApp } from './catalog.js';
@@ -18,13 +19,19 @@ export interface UiField {
   readonly decimals?: number;
   readonly maxLength?: number;
   readonly multiline?: boolean;
+  /** True for a number worked out from lines: shown, never entered. */
+  readonly computed?: boolean;
+  /** How it is worked out, such as `{ sum: 'lines.amount' }`, so screens can show it while people type. */
+  readonly rollup?: Readonly<Record<string, string>>;
+  /** For a lines field: the most lines, what a line is called and named by, and its fields, with what the caller may do with them. */
+  readonly lines?: { readonly max: number; readonly label: string; readonly titleField: string | null; readonly fields: UiField[] };
   /** How the caller sees it at best: some records may show less. */
   readonly read: Exclude<FieldAccess, 'hidden'> | null;
   readonly create: boolean;
   readonly update: boolean;
 }
 
-function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'update'> {
+function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'update' | 'lines'> {
   return {
     name: field.name,
     label: field.label,
@@ -32,10 +39,36 @@ function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'u
     required: field.required,
     ...(field.description ? { description: field.description } : {}),
     ...(field.type === 'choice' ? { options: field.options, multiple: field.multiple } : {}),
-    ...(field.type === 'reference' ? { entity: field.entity } : {}),
-    ...(field.type === 'number' ? { decimals: field.decimals } : {}),
+    ...(field.type === 'reference' || field.type === 'lines' ? { entity: field.entity } : {}),
+    ...(field.type === 'number' ? { decimals: field.decimals, ...(field.rollup ? { computed: true, rollup: field.rollup as Record<string, string> } : {}) } : {}),
     ...(field.type === 'text' ? { maxLength: field.maxLength, multiline: field.multiline } : {}),
   };
+}
+
+type Grants = { readonly read: PermissionGrant[]; readonly create: PermissionGrant[]; readonly update: PermissionGrant[] };
+
+/**
+ * A field with what the caller may do with it, given their grants, or null if it's nothing to
+ * them. A field worked out from lines is never entered; a lines field carries its lines' fields,
+ * which grants name as `lines.amount`.
+ */
+function uiField(definition: StoredDefinition, field: StoredField, grants: Grants, path = field.name): UiField | null {
+  const access = fieldAccess(grants.read, path);
+  const computed = Boolean(rollupOf(field));
+  const canCreate = !computed && grants.create.some((grant) => covers(grant, path));
+  const canUpdate = !computed && grants.update.some((grant) => covers(grant, path));
+  if (access === 'hidden' && !canCreate) return null;
+  let lines: UiField['lines'];
+  if (field.type === 'lines') {
+    const lineEntity = definition.entities[field.entity]!;
+    lines = {
+      max: field.max,
+      label: lineEntity.label,
+      titleField: lineEntity.titleField ?? null,
+      fields: lineEntity.fields.flatMap((f) => uiField(definition, f, grants, `${field.name}.${f.name}`) ?? []),
+    };
+  }
+  return { ...describeField(field), ...(lines ? { lines } : {}), read: access === 'hidden' ? null : access, create: canCreate, update: canUpdate };
 }
 
 /**
@@ -51,17 +84,15 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
 
   const entities: Record<string, unknown> = {};
   const visibleFields = new Map<string, Set<string>>();
+  const owners = lineOwners(loaded.definition);
   for (const [name, entity] of Object.entries(loaded.definition.entities)) {
+    // Lines are shown with their records, never as records of their own.
+    if (owners.has(name)) continue;
     const [read, create, update, remove] = await Promise.all(['record.read', 'record.create', 'record.update', 'record.delete'].map((action) => decide(action, name)));
     if (!read!.allowed && !create!.allowed) continue;
     const grantsOf = (decision: typeof read) => (decision!.allowed ? decision!.grants.map((g) => g.grant) : []);
-    const fields: UiField[] = entity.fields.flatMap((field) => {
-      const access = fieldAccess(grantsOf(read), field.name);
-      const canCreate = grantsOf(create).some((grant) => covers(grant, field.name));
-      const canUpdate = grantsOf(update).some((grant) => covers(grant, field.name));
-      if (access === 'hidden' && !canCreate) return [];
-      return [{ ...describeField(field), read: access === 'hidden' ? null : access, create: canCreate, update: canUpdate }];
-    });
+    const grants = { read: grantsOf(read), create: grantsOf(create), update: grantsOf(update) };
+    const fields: UiField[] = entity.fields.flatMap((field) => uiField(loaded.definition, field, grants) ?? []);
     visibleFields.set(name, new Set(fields.map((f) => f.name)));
     entities[name] = {
       label: entity.label,

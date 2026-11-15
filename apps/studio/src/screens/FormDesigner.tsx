@@ -159,6 +159,7 @@ function FormCanvas(props: { definition: Definition; name: string; slot: Slot | 
               title={section.title ?? ''}
               fields={section.fields}
               label={label}
+              isLines={(field) => definition.entities[form.entity]?.fields.find((f) => f.name === field)?.type === 'lines'}
               selected={props.slot?.section === s ? props.slot.index : null}
               onSelect={(index) => props.onSlot({ section: s, index })}
               onTitle={(title) => onChange(updateSection(definition, name, s, title))}
@@ -187,6 +188,7 @@ function SectionBox(props: {
   title: string;
   fields: FormField[];
   label: (field: string) => string;
+  isLines: (field: string) => boolean;
   selected: number | null;
   onSelect: (index: number) => void;
   onTitle: (title: string) => void;
@@ -206,7 +208,7 @@ function SectionBox(props: {
       <SortableContext items={props.fields.map((f) => itemId(f.field))} strategy={rectSortingStrategy}>
         <div className="grid min-h-12 grid-cols-2 gap-2">
           {props.fields.map((item, index) => (
-            <FormItem key={item.field} item={item} label={item.label ?? props.label(item.field)} selected={props.selected === index} onSelect={() => props.onSelect(index)} />
+            <FormItem key={item.field} item={item} label={item.label ?? props.label(item.field)} isLines={props.isLines(item.field)} selected={props.selected === index} onSelect={() => props.onSelect(index)} />
           ))}
           {props.fields.length === 0 ? <p className="col-span-2 m-0 self-center text-center text-sm text-faint">Drag fields here</p> : null}
         </div>
@@ -215,19 +217,20 @@ function SectionBox(props: {
   );
 }
 
-function FormItem({ item, label, selected, onSelect }: { item: FormField; label: string; selected: boolean; onSelect: () => void }) {
+function FormItem({ item, label, isLines, selected, onSelect }: { item: FormField; label: string; isLines: boolean; selected: boolean; onSelect: () => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: itemId(item.field) });
   return (
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cx('flex items-center gap-2 rounded-md border bg-surface px-2 py-2', item.width === 'full' ? 'col-span-2' : 'col-span-1', selected ? 'border-accent' : 'border-line', isDragging && 'opacity-40')}
+      className={cx('flex items-center gap-2 rounded-md border bg-surface px-2 py-2', item.width === 'full' || isLines ? 'col-span-2' : 'col-span-1', selected ? 'border-accent' : 'border-line', isDragging && 'opacity-40')}
     >
       <button type="button" aria-label={`Move ${label}`} className="cursor-grab rounded px-1 text-faint hover:text-text" {...attributes} {...listeners}>
         ⠿
       </button>
       <button type="button" className="flex flex-1 items-center gap-2 text-left" onClick={onSelect}>
         <span className="font-medium">{label}</span>
+        {isLines ? <Badge>table of lines</Badge> : null}
         {item.readOnly ? <Badge>read-only</Badge> : null}
       </button>
     </div>
@@ -278,15 +281,23 @@ function FormSide({ definition, name, slot, onSlot, onChange }: { definition: De
         {(id) => <TextInput id={id} value={item.label ?? ''} placeholder={field?.label} onChange={(e) => set({ label: e.target.value || undefined })} />}
       </Field>
       <Field label="Help text">{(id) => <TextInput id={id} value={item.help ?? ''} onChange={(e) => set({ help: e.target.value || undefined })} />}</Field>
-      <Field label="Width">
-        {(id) => (
-          <Select id={id} value={item.width} onChange={(e) => set({ width: e.target.value as 'full' | 'half' })}>
-            <option value="full">Full width</option>
-            <option value="half">Half width</option>
-          </Select>
-        )}
-      </Field>
-      <Checkbox label="Read-only on this form" checked={item.readOnly} onChange={(value) => set({ readOnly: value })} />
+      {field?.type === 'lines' ? (
+        <p className="m-0 text-sm text-muted">Lines show as a table, across the whole form.</p>
+      ) : (
+        <Field label="Width">
+          {(id) => (
+            <Select id={id} value={item.width} onChange={(e) => set({ width: e.target.value as 'full' | 'half' })}>
+              <option value="full">Full width</option>
+              <option value="half">Half width</option>
+            </Select>
+          )}
+        </Field>
+      )}
+      {field?.type === 'number' && field.rollup ? (
+        <p className="m-0 text-sm text-muted">Worked out from lines, so it's shown, never filled in.</p>
+      ) : (
+        <Checkbox label="Read-only on this form" checked={item.readOnly} onChange={(value) => set({ readOnly: value })} />
+      )}
       <div className="border-t border-line pt-3">
         <Button size="sm" variant="danger" onClick={() => (onChange(removeFormField(definition, name, slot)), onSlot(null))}>
           Take off the form

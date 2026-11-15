@@ -43,7 +43,8 @@ type JsonRpcId = string | number;
 
 const rpcError = (id: JsonRpcId | null, code: number, message: string) => ({ jsonrpc: '2.0' as const, id, error: { code, message } });
 
-function fieldSchema(field: StoredField): Record<string, unknown> {
+/** The JSON Schema of a field's value, as an agent sends it. Line fields are required only on new records. */
+function fieldSchema(field: StoredField, definition: StoredDefinition, operation: 'create' | 'update'): Record<string, unknown> {
   const about = { title: field.label, ...(field.description ? { description: field.description } : {}) };
   switch (field.type) {
     case 'text':
@@ -74,13 +75,34 @@ function fieldSchema(field: StoredField): Record<string, unknown> {
       return { ...about, type: 'string', format: 'uuid', description: `The ID of a ${field.entity} record` };
     case 'user':
       return { ...about, type: 'string', format: 'uuid', description: "A person's ID" };
+    case 'lines': {
+      const lineEntity = definition.entities[field.entity]!;
+      const properties: Record<string, unknown> = {
+        id: { type: 'string', format: 'uuid', description: 'Leave it out for a new line. To change a line the record has, give its ID and the values to change.' },
+      };
+      const required: string[] = [];
+      for (const f of lineEntity.fields) {
+        properties[f.name] = fieldSchema(f, definition, operation);
+        if (operation === 'create' && f.required && !('default' in f && f.default !== undefined)) required.push(f.name);
+      }
+      return {
+        ...about,
+        type: 'array',
+        description: `${field.description ? `${field.description} ` : ''}${lineEntity.pluralLabel ?? lineEntity.label}, one item per line, in order.${
+          operation === 'update' ? ' Send every line the record should have: lines left out are removed.' : ''
+        }`,
+        ...(field.required ? { minItems: 1 } : {}),
+        maxItems: field.max,
+        items: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false },
+      };
+    }
   }
 }
 
 const PROVENANCE_SCHEMA = {
   type: 'object',
   description:
-    'Where each value came from, by field name. Say it for every value you did not get from the person: it is shown to them and to approvers.',
+    'Where each value came from, by field name; for a value in a line, by its place, such as lines[0].amount. Say it for every value you did not get from the person: it is shown to them and to approvers.',
   additionalProperties: {
     oneOf: [
       { type: 'object', properties: { source: { const: 'document' }, document: { type: 'string' }, location: { type: 'string' } }, required: ['source'], additionalProperties: false },
@@ -151,7 +173,7 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
       continue;
     }
     const field = entity.fields.find((f) => f.name === input)!;
-    properties[input] = fieldSchema(field);
+    properties[input] = fieldSchema(field, loaded.definition, action.operation);
     if (field.required && !('default' in field && field.default !== undefined) && !(input in action.set)) required.push(input);
   }
   const confirm =

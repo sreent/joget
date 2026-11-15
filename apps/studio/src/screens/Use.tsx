@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, ApiError } from '../api.js';
-import { PersonName, PersonPicker } from '../components/people.js';
-import { Badge, Button, Card, Checkbox, cx, EmptyState, Notice, Select, TextInput } from '../components/ui.js';
+import { filledLines, LinesChangeView, LinesEditor, LinesTable, rollupValue } from '../components/lines.js';
+import { PersonName } from '../components/people.js';
+import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
+import { asLines, display, ValueInput, ValueView } from '../components/values.js';
 import { Link, navigate } from '../router.js';
-import type { HistoryEntry, RecordOut, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
+import type { HistoryEntry, Line, RecordOut, RecordValue, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
 /** An app's screens, generated from what the signed-in person may use: their entities, fields, forms and actions. */
 export function Use({ appId, page, recordId }: { appId: string; page?: string; recordId?: string }) {
@@ -68,25 +70,6 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
   );
 }
 
-function display(field: UiField | undefined, value: Value | undefined): string {
-  if (value === null || value === undefined || value === '') return '—';
-  if (!field) return String(value);
-  if (field.type === 'choice') {
-    const label = (v: string) => field.options?.find((o) => o.value === v)?.label ?? v;
-    return Array.isArray(value) ? value.map(label).join(', ') : label(String(value));
-  }
-  if (field.type === 'boolean') return value ? 'Yes' : 'No';
-  if (field.type === 'number' && typeof value === 'number') return value.toLocaleString(undefined, { minimumFractionDigits: field.decimals ?? 0, maximumFractionDigits: field.decimals ?? 0 });
-  if (field.type === 'datetime' && typeof value === 'string') return new Date(value).toLocaleString();
-  return Array.isArray(value) ? value.join(', ') : String(value);
-}
-
-/** A value as people read it: names for people, labels for choices. */
-function ValueView({ field, value }: { field: UiField | undefined; value: Value | undefined }) {
-  if (field?.type === 'user' && typeof value === 'string' && value) return <PersonName id={value} />;
-  return <>{display(field, value)}</>;
-}
-
 function Cell({ field, record }: { field: UiField; record: RecordOut }) {
   if (record.masked?.includes(field.name)) return <span className="text-faint" title="Masked for your role">••••</span>;
   return <ValueView field={field} value={record.values?.[field.name]} />;
@@ -98,7 +81,7 @@ const OWNER: UiField = { name: 'owner', label: 'Owner', type: 'user', required: 
 function RecordList({ appId, manifest, entityName }: { appId: string; manifest: UiManifest; entityName: string }) {
   const entity = manifest.entities[entityName]!;
   const records = useQuery({ queryKey: ['records', appId, entityName], queryFn: () => api.records(appId, entityName) });
-  const columns = entity.fields.filter((f) => f.read).slice(0, 6);
+  const columns = entity.fields.filter((f) => f.read && f.type !== 'lines').slice(0, 6);
   const form = Object.entries(manifest.forms).find(([, f]) => f.entity === entityName);
   return (
     <div className="grid gap-4">
@@ -154,58 +137,6 @@ function RecordList({ appId, manifest, entityName }: { appId: string; manifest: 
 }
 
 /** A control for one field's value, by type. */
-function ValueInput({ field, value, onChange, id }: { field: UiField; value: Value | undefined; onChange: (value: Value) => void; id: string }) {
-  switch (field.type) {
-    case 'user':
-      return <PersonPicker id={id} value={typeof value === 'string' ? value : null} onChange={onChange} />;
-    case 'boolean':
-      return <Checkbox label={field.label} checked={value === true} onChange={onChange} />;
-    case 'choice':
-      return field.multiple ? (
-        <div className="flex flex-wrap gap-3">
-          {field.options?.map((o) => (
-            <Checkbox
-              key={o.value}
-              label={o.label}
-              checked={Array.isArray(value) && value.includes(o.value)}
-              onChange={(on) => onChange([...(Array.isArray(value) ? value : []).filter((v) => v !== o.value), ...(on ? [o.value] : [])])}
-            />
-          ))}
-        </div>
-      ) : (
-        <Select id={id} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value || null)}>
-          <option value="">—</option>
-          {field.options?.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </Select>
-      );
-    case 'number':
-      return <TextInput id={id} type="number" step={field.decimals ? 1 / 10 ** field.decimals : 1} value={typeof value === 'number' ? value : ''} onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))} />;
-    case 'date':
-      return <TextInput id={id} type="date" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value || null)} />;
-    case 'datetime':
-      return (
-        <TextInput
-          id={id}
-          type="datetime-local"
-          value={typeof value === 'string' ? value.slice(0, 16) : ''}
-          onChange={(e) => onChange(e.target.value ? new Date(e.target.value).toISOString() : null)}
-        />
-      );
-    case 'text':
-      return field.multiline ? (
-        <textarea id={id} className="min-h-24 w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5" maxLength={field.maxLength} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />
-      ) : (
-        <TextInput id={id} maxLength={field.maxLength} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />
-      );
-    default:
-      return <TextInput id={id} type={field.type === 'email' ? 'email' : 'text'} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value || null)} />;
-  }
-}
-
 function problemsOf(error: unknown): { fields: Record<string, string>; message: string | null } {
   if (!(error instanceof ApiError)) return { fields: {}, message: error ? 'Something went wrong' : null };
   const details = error.details as { issues?: Array<{ field: string; message: string }>; findings?: Array<{ message: string }> } | undefined;
@@ -216,10 +147,17 @@ function problemsOf(error: unknown): { fields: Record<string, string>; message: 
 function FormRunner({ appId, manifest, name, form }: { appId: string; manifest: UiManifest; name: string; form: UiForm }) {
   const client = useQueryClient();
   const entity = manifest.entities[form.entity]!;
-  const [values, setValues] = useState<Record<string, Value>>({});
+  // Each lines field on the form starts with one empty line to fill in.
+  const [values, setValues] = useState<Record<string, RecordValue>>(() =>
+    Object.fromEntries(form.sections.flatMap((s) => s.fields).flatMap((item) => (entity.fields.find((f) => f.name === item.field)?.type === 'lines' && !item.readOnly ? [[item.field, [{}]]] : []))),
+  );
   const submit = useMutation({
     mutationFn: async () => {
-      const editable = Object.fromEntries(Object.entries(values).filter(([field]) => form.sections.some((s) => s.fields.some((f) => f.field === field && !f.readOnly))));
+      const editable = Object.fromEntries(
+        Object.entries(values)
+          .filter(([field]) => form.sections.some((s) => s.fields.some((f) => f.field === field && !f.readOnly)))
+          .map(([field, value]) => [field, Array.isArray(value) && entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]),
+      );
       if (form.action) return api.runAction(appId, form.action, { values: editable });
       return { status: 'done' as const, record: await api.createRecord(appId, form.entity, editable) };
     },
@@ -250,15 +188,28 @@ function FormRunner({ appId, manifest, name, form }: { appId: string; manifest: 
                 const field = entity.fields.find((f) => f.name === item.field);
                 if (!field) return null;
                 const id = `field-${item.field}`;
+                const lines = field.type === 'lines';
                 return (
-                  <div key={item.field} className={cx('grid content-start gap-1', item.width === 'full' && 'sm:col-span-2')}>
+                  <div key={item.field} className={cx('grid content-start gap-1', (item.width === 'full' || lines) && 'sm:col-span-2')}>
                     {field.type !== 'boolean' ? (
                       <label htmlFor={id} className="text-sm text-muted">
                         {item.label ?? field.label}
-                        {field.required ? <span className="text-bad"> *</span> : null}
+                        {field.required && !field.computed ? <span className="text-bad"> *</span> : null}
                       </label>
                     ) : null}
-                    {item.readOnly ? <p className="m-0"><ValueView field={field} value={values[field.name]} /></p> : <ValueInput id={id} field={field} value={values[field.name]} onChange={(value) => setValues({ ...values, [field.name]: value })} />}
+                    {field.computed ? (
+                      <p className="m-0 tabular-nums" id={id}>
+                        <ValueView field={field} value={rollupValue(field, values)} />
+                      </p>
+                    ) : lines && !item.readOnly ? (
+                      <LinesEditor id={id} field={field} value={asLines(values[field.name])} onChange={(next) => setValues({ ...values, [field.name]: next })} mode="create" problems={problems.fields} />
+                    ) : item.readOnly ? (
+                      <p className="m-0">
+                        <ValueView field={field} value={values[field.name]} />
+                      </p>
+                    ) : (
+                      <ValueInput id={id} field={field} value={values[field.name] as Value | undefined} onChange={(value) => setValues({ ...values, [field.name]: value })} />
+                    )}
                     {item.help ? <p className="m-0 text-xs text-faint">{item.help}</p> : null}
                     {problems.fields[field.name] ? <p className="m-0 text-xs text-bad">{problems.fields[field.name]}</p> : null}
                   </div>
@@ -287,12 +238,14 @@ function RecordView({ appId, manifest, entityName, recordId }: { appId: string; 
   const entity: UiEntity = manifest.entities[entityName]!;
   const record = useQuery({ queryKey: ['record', appId, entityName, recordId], queryFn: () => api.record(appId, entityName, recordId) });
   const history = useQuery({ queryKey: ['history', appId, entityName, recordId], queryFn: () => api.history(appId, entityName, recordId) });
-  const [edits, setEdits] = useState<Record<string, Value> | null>(null);
+  const [edits, setEdits] = useState<Record<string, RecordValue> | null>(null);
   const refresh = () => Promise.all(['record', 'records', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, appId] })));
-  const save = useMutation({ mutationFn: () => api.updateRecord(appId, entityName, recordId, edits ?? {}, record.data!.version), onSuccess: async () => (setEdits(null), await refresh()) });
+  // Lines are sent whole, with their IDs, so the platform knows which changed; empty new rows are dropped.
+  const changes = () => Object.fromEntries(Object.entries(edits ?? {}).map(([field, value]) => [field, entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]));
+  const save = useMutation({ mutationFn: () => api.updateRecord(appId, entityName, recordId, changes(), record.data!.version), onSuccess: async () => (setEdits(null), await refresh()) });
   const run = useMutation({ mutationFn: (action: string) => api.runAction(appId, action, { values: {}, recordId, version: record.data!.version }), onSuccess: refresh });
   const actions = Object.entries(manifest.actions).filter(([, a]) => a.entity === entityName && a.operation === 'update' && a.input.length === 0);
-  const editable = entity.fields.filter((f) => f.update && !record.data?.masked?.includes(f.name));
+  const editable = entity.fields.filter((f) => f.update && !f.computed && !record.data?.masked?.includes(f.name));
 
   if (record.isError) return <Notice tone="bad">This record doesn't exist, or you can't see it.</Notice>;
   if (!record.data) return <p className="text-muted">Loading…</p>;
@@ -311,19 +264,32 @@ function RecordView({ appId, manifest, entityName, recordId }: { appId: string; 
         <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
           {entity.fields
             .filter((f) => f.read)
-            .map((field) => (
+            .map((field) => {
+              const editing = edits !== null && editable.includes(field);
+              const current = edits && field.name in edits ? edits[field.name] : (record.data.values?.[field.name] ?? null);
+              const lines = field.type === 'lines';
+              return (
               <div key={field.name} className="contents">
-                <dt className="text-muted">{edits && editable.includes(field) ? <label htmlFor={`edit-${field.name}`}>{field.label}</label> : field.label}</dt>
-                <dd className="m-0">
-                  {edits && editable.includes(field) ? (
-                    <ValueInput id={`edit-${field.name}`} field={field} value={field.name in edits ? edits[field.name] : (record.data.values?.[field.name] ?? null)} onChange={(value) => setEdits({ ...edits, [field.name]: value })} />
+                <dt className={cx('text-muted', lines && 'sm:col-span-2')}>{editing ? <label htmlFor={`edit-${field.name}`}>{field.label}</label> : field.label}</dt>
+                <dd className={cx('m-0', lines && 'sm:col-span-2')}>
+                  {editing && lines ? (
+                    <LinesEditor id={`edit-${field.name}`} field={field} value={asLines(current)} onChange={(next) => setEdits({ ...edits, [field.name]: next })} mode="update" problems={problems.fields} />
+                  ) : editing ? (
+                    <ValueInput id={`edit-${field.name}`} field={field} value={current as Value} onChange={(value) => setEdits({ ...edits, [field.name]: value })} />
+                  ) : lines ? (
+                    <LinesTable field={field} value={record.data.values?.[field.name]} masked={record.data.masked ?? []} />
+                  ) : field.computed && edits ? (
+                    <span className="tabular-nums">
+                      <ValueView field={field} value={rollupValue(field, { ...record.data.values, ...edits })} />
+                    </span>
                   ) : (
                     <Cell field={field} record={record.data} />
                   )}
-                  {problems.fields[field.name] ? <span className="block text-xs text-bad">{problems.fields[field.name]}</span> : null}
+                  {problems.fields[field.name] && !lines ? <span className="block text-xs text-bad">{problems.fields[field.name]}</span> : null}
                 </dd>
               </div>
-            ))}
+              );
+            })}
           {record.data.owner ? (
             <>
               <dt className="text-muted">{OWNER.label}</dt>
@@ -361,7 +327,7 @@ function RecordView({ appId, manifest, entityName, recordId }: { appId: string; 
             .slice()
             .reverse()
             .map((entry) => (
-              <HistoryItem key={`${entry.version}-${entry.at}`} entry={entry} entity={entity} />
+              <HistoryItem key={`${entry.version}-${entry.at}`} entry={entry} entity={entity} record={record.data!} />
             ))}
         </ol>
       </Card>
@@ -369,7 +335,7 @@ function RecordView({ appId, manifest, entityName, recordId }: { appId: string; 
   );
 }
 
-function HistoryItem({ entry, entity }: { entry: HistoryEntry; entity: UiEntity }) {
+function HistoryItem({ entry, entity, record }: { entry: HistoryEntry; entity: UiEntity; record: RecordOut }) {
   const verb = { create: 'Created', update: 'Changed', delete: 'Deleted' }[entry.operation];
   const { actor } = entry;
   return (
@@ -399,6 +365,14 @@ function HistoryItem({ entry, entity }: { entry: HistoryEntry; entity: UiEntity 
           const label = field?.label ?? change.field;
           if (change.masked) return <li key={i} className="text-muted">{label}: changed (masked)</li>;
           if (change.removed) return <li key={i} className="text-faint">{label}: a field that no longer exists</li>;
+          if (change.lines && field) {
+            return (
+              <li key={i}>
+                <span className="text-muted">{label}:</span>
+                <LinesChangeView field={field} change={change.lines} current={asLines(record.values?.[field.name]) as Line[]} />
+              </li>
+            );
+          }
           return (
             <li key={i}>
               <span className="text-muted">{label}:</span>{' '}

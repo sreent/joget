@@ -1,9 +1,33 @@
-import { entityFields, isWritable, type FieldInfo, type StoredEntity } from './fields.js';
+import {
+  entityFields,
+  isWritable,
+  lineOwners,
+  rollupOf,
+  type FieldInfo,
+  type StoredDefinition,
+  type StoredEntity,
+  type StoredLinesField,
+} from './fields.js';
 import { MAX_NUMBER_MAGNITUDE } from './schema.js';
 
 /** A record value in its canonical JSON form (see ValueKind). `null` is an empty value. */
 export type FieldValue = string | number | boolean | readonly string[] | null;
 export type RecordValues = Readonly<Record<string, FieldValue>>;
+
+/** A line as a caller sends it: with the ID of a line to keep or change, or without one for a new line. */
+export interface LineInput {
+  readonly id?: string;
+  readonly values: Readonly<Record<string, FieldValue>>;
+}
+
+/** A line as it is stored, or as it will be: new lines have no ID until they are written. */
+export interface LineValues {
+  readonly id: string | null;
+  readonly values: RecordValues;
+}
+
+/** A record's lines, by lines field. */
+export type RecordLines = Readonly<Record<string, readonly LineValues[]>>;
 
 export interface ValueIssue {
   readonly field: string;
@@ -115,25 +139,164 @@ export function canonicalValue(info: FieldInfo, value: unknown): Result {
     case 'reference':
     case 'user':
       return uuid(value);
+    case 'lines':
+      return fail('invalid_type', 'Lines are checked as a list');
   }
 }
 
 export interface InputCheck {
   /** The canonical values of the fields given (or defaulted, for creates). */
   readonly values: Record<string, FieldValue>;
+  /** The lines given, by lines field, each line's values canonical. Complete them with completeLines. */
+  readonly lines: Record<string, LineInput[]>;
   readonly issues: ValueIssue[];
 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Check the lines a caller sends for one lines field: each line's ID and values, not yet whether they're complete. */
+function checkLines(lineEntity: StoredEntity, field: StoredLinesField, raw: unknown, issues: ValueIssue[]): LineInput[] {
+  if (raw === null) return [];
+  if (!Array.isArray(raw)) {
+    issues.push({ field: field.name, code: 'invalid_type', message: 'Expected a list of lines' });
+    return [];
+  }
+  if (raw.length > field.max) issues.push({ field: field.name, code: 'too_big', message: `At most ${field.max} lines` });
+  const fields = entityFields(lineEntity, { line: true });
+  const seen = new Set<string>();
+  const lines: LineInput[] = [];
+  raw.slice(0, field.max).forEach((item, index) => {
+    const at = `${field.name}[${index}]`;
+    if (!isPlainObject(item)) {
+      issues.push({ field: at, code: 'invalid_type', message: 'Expected a line: an object of its values' });
+      return;
+    }
+    const values: Record<string, FieldValue> = {};
+    let id: string | undefined;
+    for (const [name, value] of Object.entries(item)) {
+      if (name === 'id') {
+        const result = value === undefined || value === null ? undefined : uuid(value);
+        if (result && !result.ok) issues.push({ field: `${at}.id`, ...result.issue });
+        else if (result?.ok) {
+          id = result.value as string;
+          if (seen.has(id)) issues.push({ field: `${at}.id`, code: 'invalid_type', message: 'This line is listed twice' });
+          seen.add(id);
+        }
+        continue;
+      }
+      const info = fields.get(name);
+      if (!info) {
+        issues.push({ field: `${at}.${name}`, code: 'unknown_field', message: `${lineEntity.label} has no field ${name}` });
+        continue;
+      }
+      if (!isWritable(info)) {
+        issues.push({ field: `${at}.${name}`, code: 'not_writable', message: `${name} can't be set here` });
+        continue;
+      }
+      const result = canonicalValue(info, value);
+      if (!result.ok) issues.push({ field: `${at}.${name}`, ...result.issue });
+      else values[name] = result.value;
+    }
+    lines.push(id ? { id, values } : { values });
+  });
+  return lines;
+}
+
 /**
- * Check what a caller wants to write.
+ * Turn the lines a caller sent into the lines a record will have, given the lines it has now:
+ * a line with an ID changes that line, keeping what isn't given; a line without one is new, with
+ * the field defaults. Lines left out are removed. Required fields are checked on the result.
+ */
+export function completeLines(
+  lineEntity: StoredEntity,
+  field: StoredLinesField,
+  input: readonly LineInput[],
+  current: readonly LineValues[],
+): { readonly lines: LineValues[]; readonly issues: ValueIssue[] } {
+  const issues: ValueIssue[] = [];
+  const fields = entityFields(lineEntity, { line: true });
+  const byId = new Map(current.flatMap((line) => (line.id ? [[line.id, line] as const] : [])));
+  const lines: LineValues[] = [];
+  input.forEach((line, index) => {
+    const at = `${field.name}[${index}]`;
+    const base = line.id ? byId.get(line.id) : undefined;
+    if (line.id && !base) {
+      issues.push({ field: `${at}.id`, code: 'invalid_uuid', message: 'This record has no such line' });
+      return;
+    }
+    const values: Record<string, FieldValue> = {};
+    for (const declared of lineEntity.fields) {
+      if (declared.name in line.values) values[declared.name] = line.values[declared.name]!;
+      else if (base) values[declared.name] = base.values[declared.name] ?? null;
+      else if ('default' in declared && declared.default !== undefined) {
+        const result = canonicalValue(fields.get(declared.name)!, declared.default);
+        values[declared.name] = result.ok ? result.value : null;
+      } else values[declared.name] = null;
+      if (declared.required && values[declared.name] === null) {
+        issues.push({ field: `${at}.${declared.name}`, code: 'required', message: `${declared.label} is required` });
+      }
+    }
+    lines.push({ id: line.id ?? null, values });
+  });
+  if (field.required && lines.length === 0 && input.length === 0) {
+    issues.push({ field: field.name, code: 'required', message: `${field.label}: add at least one line` });
+  }
+  return { lines, issues };
+}
+
+/**
+ * The values of an entity's rollups, worked out from its lines. Only rollups over the lines fields
+ * given are worked out. Sums are exact: values have at most their field's decimal places, so they
+ * add up as whole numbers of the smallest unit.
+ */
+export function rollupValues(
+  definition: StoredDefinition,
+  entityName: string,
+  lines: RecordLines,
+): { readonly values: Record<string, FieldValue>; readonly issues: ValueIssue[] } {
+  const entity = definition.entities[entityName]!;
+  const fields = entityFields(entity);
+  const values: Record<string, FieldValue> = {};
+  const issues: ValueIssue[] = [];
+  for (const field of entity.fields) {
+    const rollup = rollupOf(field);
+    if (!rollup) continue;
+    const [op, path] = Object.entries(rollup)[0] as ['sum' | 'min' | 'max' | 'count', string];
+    const [linesName, sub] = path.split('.') as [string, string | undefined];
+    const current = lines[linesName];
+    if (!current) continue;
+    let value: FieldValue;
+    if (op === 'count') value = current.length;
+    else {
+      const linesField = entity.fields.find((f) => f.name === linesName);
+      const source = linesField?.type === 'lines' ? definition.entities[linesField.entity]?.fields.find((f) => f.name === sub) : undefined;
+      const decimals = source?.type === 'number' ? source.decimals : 0;
+      const numbers = current.map((line) => line.values[sub!]).filter((v): v is number => typeof v === 'number');
+      if (op === 'sum') {
+        const scale = 10 ** decimals;
+        value = Number((numbers.reduce((total, n) => total + Math.round(n * scale), 0) / scale).toFixed(decimals));
+      } else value = numbers.length ? (op === 'min' ? Math.min(...numbers) : Math.max(...numbers)) : null;
+    }
+    const result = canonicalValue(fields.get(field.name)!, value);
+    if (result.ok) values[field.name] = result.value;
+    else issues.push({ field: field.name, ...result.issue, message: `${field.label}: ${result.issue.message}` });
+  }
+  return { values, issues };
+}
+
+/**
+ * Check what a caller wants to write to a record of an entity.
  *
  * - `create` fills in field defaults and requires every required field.
  * - `update` checks only the fields given, and refuses to empty a required one.
  *
- * `allowed`, if given, limits which fields may be written at all, for example to an action's inputs.
+ * Lines come back separately, checked line by line; completeLines finishes them once the record's
+ * current lines are known. `allowed`, if given, limits which fields may be written at all, for
+ * example to an action's inputs.
  */
 export function checkInput(
-  entity: StoredEntity,
+  definition: StoredDefinition,
+  entityName: string,
   input: Readonly<Record<string, unknown>>,
   options: {
     readonly mode: 'create' | 'update';
@@ -142,10 +305,18 @@ export function checkInput(
     readonly fixed?: Readonly<Record<string, unknown>>;
   },
 ): InputCheck {
-  const fields = entityFields(entity);
+  const entity = definition.entities[entityName]!;
+  const fields = entityFields(entity, { line: lineOwners(definition).has(entityName) });
   const values: Record<string, FieldValue> = {};
+  const lines: Record<string, LineInput[]> = {};
   const issues: ValueIssue[] = [];
   for (const [name, raw] of Object.entries(input)) {
+    const linesField = entity.fields.find((f): f is StoredLinesField => f.name === name && f.type === 'lines');
+    if (linesField) {
+      if (options.allowed && !options.allowed.has(name)) issues.push({ field: name, code: 'not_writable', message: `${name} can't be set here` });
+      else lines[name] = checkLines(definition.entities[linesField.entity]!, linesField, raw, issues);
+      continue;
+    }
     const info = fields.get(name);
     if (!info) {
       issues.push({ field: name, code: 'unknown_field', message: `${entity.label} has no field ${name}` });
@@ -165,6 +336,8 @@ export function checkInput(
     if (result?.ok) values[name] = result.value;
   }
   for (const field of entity.fields) {
+    // Lines are complete only once the record's current lines are known; rollups are worked out from them.
+    if (field.type === 'lines' || rollupOf(field)) continue;
     if (options.mode === 'create' && !(field.name in values) && 'default' in field && field.default !== undefined) {
       const result = canonicalValue(fields.get(field.name)!, field.default);
       if (result.ok) values[field.name] = result.value;
@@ -177,7 +350,7 @@ export function checkInput(
       issues.push({ field: field.name, code: 'required', message: `${field.label} is required` });
     }
   }
-  return { values, issues };
+  return { values, lines, issues };
 }
 
 /** A record as conditions see it: empty values are left out, so they count as missing. */

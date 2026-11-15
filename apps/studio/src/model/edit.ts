@@ -18,7 +18,40 @@ export const FIELD_TYPES: ReadonlyArray<{ type: FieldType; label: string; hint: 
   { type: 'email', label: 'Email', hint: 'An email address' },
   { type: 'user', label: 'Person', hint: 'Someone in your organization' },
   { type: 'reference', label: 'Link', hint: 'A record of another entity' },
+  { type: 'lines', label: 'Lines', hint: 'A table in each record, such as one line per receipt' },
 ];
+
+/** Where a line entity belongs: the entity and lines field whose lines it holds. */
+export function lineOwner(definition: Definition, entity: string): { parent: string; field: string } | null {
+  for (const [parent, e] of Object.entries(definition.entities)) {
+    const field = e.fields.find((f) => f.type === 'lines' && f.entity === entity);
+    if (field) return { parent, field: field.name };
+  }
+  return null;
+}
+
+/** A number field's rollup as a path, `sum:lines.amount`, or '' if people enter it. */
+export function rollupKey(field: Field): string {
+  if (field.type !== 'number' || !field.rollup) return '';
+  const [op, path] = Object.entries(field.rollup)[0] as [string, string];
+  return `${op}:${path}`;
+}
+
+/** The rollups a number field of an entity could be: a count of each lines field, and the sum, least and most of their numbers. */
+export function rollupChoices(definition: Definition, entity: string): Array<{ key: string; label: string }> {
+  return definition.entities[entity]!.fields.flatMap((lines) => {
+    if (lines.type !== 'lines') return [];
+    const numbers = definition.entities[lines.entity]?.fields.filter((f) => f.type === 'number') ?? [];
+    return [
+      { key: `count:${lines.name}`, label: `How many ${lines.label}` },
+      ...numbers.flatMap((n) => [
+        { key: `sum:${lines.name}.${n.name}`, label: `Sum of ${lines.label}: ${n.label}` },
+        { key: `min:${lines.name}.${n.name}`, label: `Smallest of ${lines.label}: ${n.label}` },
+        { key: `max:${lines.name}.${n.name}`, label: `Largest of ${lines.label}: ${n.label}` },
+      ]),
+    ];
+  });
+}
 
 export function typeLabel(type: FieldType): string {
   return FIELD_TYPES.find((t) => t.type === type)?.label ?? type;
@@ -69,7 +102,7 @@ export function renameEntity(definition: Definition, from: string, to: string): 
   const next = clone(definition);
   next.entities = renameKey(next.entities, from, to);
   for (const entity of Object.values(next.entities)) {
-    for (const field of entity.fields) if (field.type === 'reference' && field.entity === from) field.entity = to;
+    for (const field of entity.fields) if ((field.type === 'reference' || field.type === 'lines') && field.entity === from) field.entity = to;
   }
   for (const form of Object.values(next.forms)) if (form.entity === from) form.entity = to;
   return next;
@@ -85,12 +118,31 @@ export function updateEntity(definition: Definition, name: string, patch: Partia
   return next;
 }
 
-/** Remove an entity, and the forms that lay it out. Other references are reported when the draft is checked. */
+/**
+ * Remove an entity, and the forms that lay it out. Its lines go with it; if it is itself lines, so
+ * does the lines field that holds them. Other references are reported when the draft is checked.
+ */
 export function removeEntity(definition: Definition, name: string): Definition {
-  const next = clone(definition);
+  let next = clone(definition);
+  const owner = lineOwner(next, name);
+  if (owner) next = removeField(next, owner.parent, next.entities[owner.parent]!.fields.findIndex((f) => f.name === owner.field), false);
+  for (const field of next.entities[name]?.fields ?? []) if (field.type === 'lines') delete next.entities[field.entity];
   delete next.entities[name];
   for (const [formName, form] of Object.entries(next.forms)) if (form.entity === name) delete next.forms[formName];
   return next;
+}
+
+/** A new entity for the lines of a lines field, with one field to start from. */
+function addLineEntity(definition: Definition, parent: string): string {
+  const name = toName(`${parent}_line`, Object.keys(definition.entities));
+  const label = `${definition.entities[parent]!.label} line`;
+  definition.entities[name] = {
+    label,
+    history: true,
+    fields: [{ name: 'description', label: 'Description', type: 'text', required: true, classification: 'internal', maxLength: 200, multiline: false, unique: false }],
+    titleField: 'description',
+  } as Entity;
+  return name;
 }
 
 function fieldOfType(base: Pick<Field, 'name' | 'label'> & Partial<Field>, type: FieldType, definition: Definition, entity: string): Field {
@@ -112,9 +164,11 @@ function fieldOfType(base: Pick<Field, 'name' | 'label'> & Partial<Field>, type:
     case 'choice':
       return { ...common, type, multiple: false, options: [{ value: 'option_1', label: 'Option 1' }, { value: 'option_2', label: 'Option 2' }] };
     case 'reference': {
-      const target = Object.keys(definition.entities).find((name) => name !== entity) ?? entity;
+      const target = Object.keys(definition.entities).find((name) => name !== entity && !lineOwner(definition, name)) ?? entity;
       return { ...common, type, entity: target };
     }
+    case 'lines':
+      return { ...common, classification: 'internal', type, entity: base.type === 'lines' && base.entity ? base.entity : '', max: 100 };
     case 'boolean':
     case 'date':
     case 'datetime':
@@ -128,7 +182,10 @@ export function addField(definition: Definition, entity: string, type: FieldType
   const fields = next.entities[entity]!.fields;
   const label = `New ${typeLabel(type).toLowerCase()}`;
   const name = toName(label, fields.map((f) => f.name));
-  fields.push(fieldOfType({ name, label }, type, next, entity));
+  const field = fieldOfType({ name, label }, type, next, entity);
+  // Lines need an entity of their own: one is made for them, to design next.
+  if (field.type === 'lines') field.entity = addLineEntity(next, entity);
+  fields.push(field);
   return { definition: next, index: fields.length - 1 };
 }
 
@@ -149,15 +206,61 @@ export function updateField(definition: Definition, entity: string, index: numbe
     }
     const entityDef = next.entities[entity]!;
     if (entityDef.titleField === before.name) entityDef.titleField = name;
+    // Rollups name lines fields, and the fields of their lines: they follow the rename too.
+    const owner = lineOwner(next, entity);
+    const renamePath = (path: string, lines: string) => {
+      const [head, tail] = path.split('.');
+      if (!owner && head === before.name) return tail ? `${name}.${tail}` : name;
+      if (owner && head === lines && tail === before.name) return `${head}.${name}`;
+      return path;
+    };
+    const parent = owner ? next.entities[owner.parent]! : entityDef;
+    for (const f of parent.fields) {
+      if (f.type !== 'number' || !f.rollup) continue;
+      const [op, path] = Object.entries(f.rollup)[0] as [string, string];
+      f.rollup = { [op]: renamePath(path, owner?.field ?? '') } as typeof f.rollup;
+    }
   }
   return next;
 }
 
-/** Change a field's type. Properties that belong to the old type are dropped. */
+/** Make a number field worked out from lines (`sum:lines.amount`), or entered by people again (''). */
+export function setRollup(definition: Definition, entity: string, index: number, key: string): Definition {
+  const next = clone(definition);
+  const field = next.entities[entity]!.fields[index]!;
+  if (field.type !== 'number') return definition;
+  if (!key) delete field.rollup;
+  else {
+    const [op, path] = key.split(':') as [string, string];
+    field.rollup = { [op]: path } as typeof field.rollup;
+    field.required = false;
+    field.unique = false;
+    delete field.default;
+    // A sum needs the decimals of what it adds up.
+    const [lines, sub] = path.split('.');
+    const linesField = next.entities[entity]!.fields.find((f) => f.name === lines);
+    const source = linesField?.type === 'lines' ? next.entities[linesField.entity]?.fields.find((f) => f.name === sub) : undefined;
+    if (source?.type === 'number' && op !== 'count') field.decimals = Math.max(field.decimals, source.decimals);
+    if (op === 'count') field.decimals = 0;
+  }
+  // A worked-out field is shown, never filled in.
+  for (const form of Object.values(next.forms)) {
+    if (form.entity !== entity) continue;
+    for (const section of form.sections) for (const item of section.fields) if (item.field === field.name && key) item.readOnly = true;
+  }
+  return next;
+}
+
+/** Change a field's type. Properties that belong to the old type are dropped, and so are the lines of a lines field. */
 export function changeFieldType(definition: Definition, entity: string, index: number, type: FieldType): Definition {
   const next = clone(definition);
   const fields = next.entities[entity]!.fields;
-  fields[index] = fieldOfType(fields[index]!, type, next, entity);
+  const before = fields[index]!;
+  if (before.type === type) return definition;
+  if (before.type === 'lines') delete next.entities[before.entity];
+  const field = fieldOfType(before, type, next, entity);
+  if (field.type === 'lines') field.entity = addLineEntity(next, entity);
+  fields[index] = field;
   return next;
 }
 
@@ -170,11 +273,12 @@ export function moveField(definition: Definition, entity: string, from: number, 
   return next;
 }
 
-/** Remove a field, and take it off the entity's forms. */
-export function removeField(definition: Definition, entity: string, index: number): Definition {
+/** Remove a field, and take it off the entity's forms. A lines field takes its lines with it. */
+export function removeField(definition: Definition, entity: string, index: number, withLines = true): Definition {
   const next = clone(definition);
   const entityDef = next.entities[entity]!;
   const [removed] = entityDef.fields.splice(index, 1);
+  if (withLines && removed?.type === 'lines') delete next.entities[removed.entity];
   if (entityDef.titleField === removed!.name) delete entityDef.titleField;
   for (const form of Object.values(next.forms)) {
     if (form.entity !== entity) continue;
@@ -198,7 +302,7 @@ export function addForm(definition: Definition, entity: string): { definition: D
   next.forms[name] = {
     label: entityDef.label,
     entity,
-    sections: [{ fields: entityDef.fields.map((field) => ({ field: field.name, width: 'full', readOnly: false })) }],
+    sections: [{ fields: entityDef.fields.map((field) => ({ field: field.name, width: 'full', readOnly: Boolean(field.type === 'number' && field.rollup) })) }],
   } as Form;
   return { definition: next, name };
 }
@@ -253,7 +357,8 @@ export function unplaced(definition: Definition, form: string): string[] {
 export function placeField(definition: Definition, form: string, field: string, at: Slot): Definition {
   const next = clone(definition);
   const sections = next.forms[form]!.sections;
-  let item: FormField = { field, width: 'full', readOnly: false };
+  const declared = next.entities[next.forms[form]!.entity]?.fields.find((f) => f.name === field);
+  let item: FormField = { field, width: 'full', readOnly: Boolean(declared?.type === 'number' && declared.rollup) };
   let target = { ...at };
   sections.forEach((section, s) => {
     const index = section.fields.findIndex((f) => f.field === field);

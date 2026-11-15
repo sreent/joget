@@ -1,7 +1,7 @@
 import type { PermissionGrant, PermissionSet, QueryExclusion, QueryGrant, Role } from '@platform/authz';
 import { evaluateCondition } from '@platform/authz';
-import type { StoredDefinition } from './fields.js';
-import { conditionRecord, type RecordValues } from './values.js';
+import type { StoredDefinition, StoredEntity } from './fields.js';
+import { conditionRecord, type LineValues, type RecordValues } from './values.js';
 
 /** The policy ID of an app role. App roles are bound at environment scope. */
 export const appRoleId = (appId: string, role: string): string => `app:${appId}:${role}`;
@@ -19,7 +19,10 @@ export function appRoleName(appId: string, id: string): string | null {
  * - `app.run` for every role, so its holders can use the app;
  * - `action.run` and `query.run` for the role's actions and queries;
  * - `record.*` grants per entity, with record conditions, field selections and masks. Fields
- *   classified as PII are masked unless the role unmasks them.
+ *   classified as PII are masked unless the role unmasks them, the fields of lines too.
+ *
+ * Line entities get no grants of their own: their lines are part of a record, so the record's
+ * grants cover them, and name their fields as `lines.amount`.
  */
 export function compileAppPolicy(appId: string, definition: StoredDefinition): { permissionSets: PermissionSet[]; roles: Role[] } {
   const permissionSets: PermissionSet[] = [];
@@ -32,7 +35,11 @@ export function compileAppPolicy(appId: string, definition: StoredDefinition): {
     for (const [entityName, permissions] of Object.entries(role.entities)) {
       const entity = definition.entities[entityName];
       if (!entity) continue;
-      const pii = entity.fields.filter((field) => field.classification === 'pii').map((field) => field.name);
+      const pii = entity.fields.flatMap((field) => {
+        if (field.type !== 'lines') return field.classification === 'pii' ? [field.name] : [];
+        const lines = definition.entities[field.entity];
+        return (lines?.fields ?? []).filter((f) => f.classification === 'pii').map((f) => `${field.name}.${f.name}`);
+      });
       const { read, create, update, delete: remove } = permissions;
       if (read) {
         const access = read === true ? {} : read;
@@ -79,18 +86,40 @@ export function compileAppPolicy(appId: string, definition: StoredDefinition): {
 
 export type FieldAccess = 'full' | 'masked' | 'hidden';
 
-/** True if a grant's field selection covers a field. A grant without one covers every field. */
-export function covers(grant: PermissionGrant, field: string): boolean {
-  if (!grant.fields) return true;
-  return 'include' in grant.fields ? grant.fields.include.includes(field) : !grant.fields.exclude.includes(field);
+/** A field of lines, `lines.amount`, as its lines field and its own name; or a plain field. */
+function splitPath(field: string): [string, string | undefined] {
+  const dot = field.indexOf('.');
+  return dot === -1 ? [field, undefined] : [field.slice(0, dot), field.slice(dot + 1)];
 }
 
-/** How a field shows to someone who holds these read grants for a record: the best any grant allows. */
+/**
+ * True if a grant's field selection covers a field. A grant without one covers every field.
+ *
+ * Fields of lines are named `lines.amount`. Including `lines` includes all of its fields;
+ * including only `lines.amount` includes the lines with that one field. Excluding `lines`
+ * excludes them all; excluding `lines.amount`, just that field.
+ */
+export function covers(grant: PermissionGrant, field: string): boolean {
+  if (!grant.fields) return true;
+  const [lines, sub] = splitPath(field);
+  if ('include' in grant.fields) {
+    const include = grant.fields.include;
+    return sub === undefined ? include.includes(field) || include.some((name) => name.startsWith(`${field}.`)) : include.includes(lines) || include.includes(field);
+  }
+  const exclude = grant.fields.exclude;
+  return !exclude.includes(field) && !(sub !== undefined && exclude.includes(lines));
+}
+
+/**
+ * How a field shows to someone who holds these read grants for a record: the best any grant
+ * allows. A field of lines is masked if it or its lines field is.
+ */
 export function fieldAccess(grants: readonly PermissionGrant[], field: string): FieldAccess {
+  const [lines, sub] = splitPath(field);
   let best: FieldAccess = 'hidden';
   for (const grant of grants) {
     if (!covers(grant, field)) continue;
-    if (!grant.mask?.includes(field)) return 'full';
+    if (!grant.mask?.includes(field) && !(sub !== undefined && grant.mask?.includes(lines))) return 'full';
     best = 'masked';
   }
   return best;
@@ -106,6 +135,19 @@ export function grantsFor(grants: readonly QueryGrant[], values: RecordValues): 
 export function excludedBy(exclusions: readonly QueryExclusion[], values: RecordValues): QueryExclusion | undefined {
   const record = conditionRecord(values);
   return exclusions.find((exclusion) => evaluateCondition(exclusion.when, { record }));
+}
+
+/**
+ * The fields of lines a change writes, for writeGrant. Adding, removing or reordering lines writes
+ * the lines field and every field of its lines; changing lines writes just the fields that change.
+ */
+export function linesWritten(lineEntity: StoredEntity, field: string, before: readonly LineValues[], after: readonly LineValues[]): string[] {
+  const all = [field, ...lineEntity.fields.map((f) => `${field}.${f.name}`)];
+  const old = new Map(before.flatMap((line) => (line.id ? [[line.id, line] as const] : [])));
+  const kept = after.map((line) => (line.id ? old.get(line.id) : undefined));
+  if (kept.some((line) => !line) || before.length !== after.length || before.some((line, i) => line.id !== after[i]!.id)) return all;
+  const changed = lineEntity.fields.filter((f) => after.some((line, i) => JSON.stringify(line.values[f.name] ?? null) !== JSON.stringify(kept[i]!.values[f.name] ?? null)));
+  return changed.map((f) => `${field}.${f.name}`);
 }
 
 /**

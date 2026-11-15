@@ -113,7 +113,10 @@ describe('acting for one named person', () => {
     expect(tools).toEqual(['expenses__my_claims', 'expenses__submit_claim']);
     const call = await rpc(delegated, 'tools/call', {
       name: 'expenses__submit_claim',
-      arguments: { values: { title: 'Team dinner', category: 'meals', amount: 86 }, provenance: { amount: { source: 'document', document: 'receipt.pdf' } } },
+      arguments: {
+        values: { title: 'Team dinner', lines: [{ date: '2026-11-12', merchant: 'Jumbo', category: 'meals', amount: 86 }] },
+        provenance: { 'lines[0].amount': { source: 'document', document: 'receipt.pdf' } },
+      },
     });
     const proposalId = call.result.structuredContent.proposal.id;
     const [row] = await t.ctx.db.select().from(proposals).where(eq(proposals.id, proposalId));

@@ -1,4 +1,4 @@
-import { entityFields, type CardData, type StoredDefinition } from '@platform/app-model';
+import { entityFields, type CardData, type StoredDefinition, type StoredField } from '@platform/app-model';
 import { serviceAccounts } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -54,19 +54,79 @@ function formControl(definition: StoredDefinition, entity: string, name: string,
   return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escape(name)}" value="${escape(value ?? '')}"></div>`;
 }
 
-/** Form fields back to typed values, using the entity's field types. */
+/** One labelled control for a field of a line. */
+function lineFieldControl(field: StoredField, name: string, id: string, value: unknown): string {
+  const label = `<label for="${id}">${escape(field.label)}</label>`;
+  if (field.type === 'boolean') {
+    return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escape(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
+  }
+  if (field.type === 'choice') {
+    const chosen = new Set(Array.isArray(value) ? value : [value]);
+    const options = field.options.map((o) => `<option value="${escape(o.value)}"${chosen.has(o.value) ? ' selected' : ''}>${escape(o.label)}</option>`).join('');
+    return `<div class="ambit-field">${label}<select class="ambit-input" id="${id}" name="${escape(name)}"${field.multiple ? ' multiple' : ''}>${field.multiple ? '' : '<option value=""></option>'}${options}</select></div>`;
+  }
+  const type = field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : field.type === 'email' ? 'email' : 'text';
+  const step = field.type === 'number' ? ` step="${field.decimals ? (1 / 10 ** field.decimals).toFixed(field.decimals) : '1'}"` : '';
+  return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escape(name)}" value="${escape(value ?? '')}"></div>`;
+}
+
+/**
+ * A lines field in the edit form: each line as a small block of its fields, carrying its ID so the
+ * platform knows which line changed, with a box to remove it; then an empty one to add a line.
+ * Blocks rather than a table, so it fits a phone.
+ */
+function linesControl(definition: StoredDefinition, field: Extract<StoredField, { type: 'lines' }>, lines: ReadonlyArray<Record<string, unknown>>): string {
+  const lineEntity = definition.entities[field.entity]!;
+  const block = (line: Record<string, unknown> | null, index: number) => {
+    const at = (f: string) => `${field.name}[${index}][${f}]`;
+    const id = (f: string) => `f-${escape(field.name)}-${index}-${escape(f)}`;
+    const title = line ? `${lineEntity.label} ${index + 1}` : `Add a ${lineEntity.label.toLowerCase()} (optional)`;
+    const fields = lineEntity.fields.map((f) => lineFieldControl(f, at(f.name), id(f.name), line?.[f.name] ?? null)).join('');
+    const keep = line && typeof line['id'] === 'string' ? `<input type="hidden" name="${at('id')}" value="${escape(line['id'])}">` : '';
+    const remove = line ? `<div class="ambit-check"><input type="checkbox" id="${id('remove')}" name="${at('remove')}"><label for="${id('remove')}">Remove this ${escape(lineEntity.label.toLowerCase())}</label></div>` : '';
+    return `<div class="approval-line${line ? '' : ' new'}"><p class="approval-line-title">${escape(title)}</p>${keep}<div class="approval-line-fields">${fields}</div>${remove}</div>`;
+  };
+  return `<fieldset class="approval-line-edit"><legend>${escape(field.label)}</legend>${[...lines.map(block), block(null, lines.length)].join('')}</fieldset>`;
+}
+
+/** A form value as a typed value, using its field's type. */
+function typed(field: StoredField | undefined, raw: string | string[] | undefined): unknown {
+  const one = Array.isArray(raw) ? raw[0] : raw;
+  if (field?.type === 'boolean') return raw !== undefined;
+  if (field?.type === 'choice' && field.multiple) return raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  if (one === undefined || one === '') return null;
+  return field?.type === 'number' ? Number(one) : one;
+}
+
+/** Form fields back to typed values, using the entity's field types. Lines come back as rows, without those removed or left empty. */
 function fromForm(definition: StoredDefinition, entity: string, names: readonly string[], form: FormBody): Record<string, unknown> {
-  const fields = entityFields(definition.entities[entity]!);
+  const declared = definition.entities[entity]!;
+  const fields = entityFields(declared);
   const values: Record<string, unknown> = {};
   for (const name of names) {
-    const field = fields.get(name)?.field;
-    const raw = form[name];
-    const one = Array.isArray(raw) ? raw[0] : raw;
-    if (field?.type === 'boolean') values[name] = raw !== undefined;
-    else if (field?.type === 'choice' && field.multiple) values[name] = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
-    else if (one === undefined || one === '') values[name] = null;
-    else if (field?.type === 'number') values[name] = Number(one);
-    else values[name] = one;
+    const linesField = declared.fields.find((f) => f.name === name && f.type === 'lines');
+    if (linesField?.type !== 'lines') {
+      values[name] = typed(fields.get(name)?.field, form[name]);
+      continue;
+    }
+    const lineFields = definition.entities[linesField.entity]!.fields;
+    const rows = new Map<number, Record<string, string | string[]>>();
+    for (const [key, raw] of Object.entries(form)) {
+      const match = /^([a-z][a-z0-9_]*)\[(\d{1,4})\]\[([a-z][a-z0-9_]*)\]$/.exec(key);
+      if (match?.[1] !== name) continue;
+      const index = Number(match[2]);
+      rows.set(index, { ...(rows.get(index) ?? {}), [match[3]!]: raw });
+    }
+    values[name] = [...rows.entries()]
+      .sort(([a], [b]) => a - b)
+      .flatMap(([, row]) => {
+        if (row['remove'] !== undefined) return [];
+        const line: Record<string, unknown> = Object.fromEntries(lineFields.map((f) => [f.name, typed(f, row[f.name])]));
+        const id = typeof row['id'] === 'string' && row['id'] ? row['id'] : undefined;
+        // An empty row the person didn't fill in isn't a line.
+        if (!id && lineFields.every((f) => line[f.name] === null || line[f.name] === false || (Array.isArray(line[f.name]) && !(line[f.name] as unknown[]).length))) return [];
+        return [id ? { id, ...line } : line];
+      });
   }
   return values;
 }
@@ -99,17 +159,43 @@ function page(input: {
     : '<p class="approval-from person">Revised by you</p>';
   const findings = card.findings.length
     ? `<ul class="approval-findings">${card.findings
-        .map((f) => `<li class="approval-finding${f.severity === 'error' ? ' error' : ''}"><strong>${f.severity === 'error' ? 'Blocked' : 'Check'}:</strong> ${escape(f.message)}</li>`)
+        .map(
+          (f) =>
+            `<li class="approval-finding${f.severity === 'error' ? ' error' : ''}"><strong>${f.severity === 'error' ? 'Blocked' : 'Check'}:</strong> ${
+              f.line ? `Line ${f.line.index + 1}: ` : ''
+            }${escape(f.message)}</li>`,
+        )
         .join('')}</ul>`
     : '<p class="approval-clear">The app\'s rules found nothing to check.</p>';
   const fields = card.fields
     .map((f) => `<div class="pair"><dt>${escape(f.label)}</dt><dd>${escape(f.display)}${sourceTag(f.source as Record<string, unknown> | undefined)}</dd></div>`)
     .join('');
+  const tables = (card.tables ?? [])
+    .map(
+      (table) =>
+        `<section class="approval-lines"><h2>${escape(table.label)}</h2><div class="approval-table-wrap"><table class="approval-table"><thead><tr>${table.columns
+          .map((c) => `<th${c.type === 'number' ? ' class="number"' : ''}>${escape(c.label)}</th>`)
+          .join('')}</tr></thead><tbody>${table.rows
+          .map(
+            (row) =>
+              `<tr>${row.cells
+                .map((cell) => `<td${cell.type === 'number' ? ' class="number"' : ''}>${escape(cell.display)}${sourceTag(cell.source as Record<string, unknown> | undefined)}</td>`)
+                .join('')}</tr>`,
+          )
+          .join('')}</tbody></table></div></section>`,
+    )
+    .join('');
   const effect = (proposal.effect as { input?: Record<string, unknown> }).input ?? {};
+  const control = (name: string) => {
+    const field = input.definition!.entities[input.entity!]!.fields.find((f) => f.name === name);
+    return field?.type === 'lines'
+      ? linesControl(input.definition!, field, (effect[name] as Array<Record<string, unknown>> | undefined) ?? [])
+      : formControl(input.definition!, input.entity!, name, effect[name]);
+  };
   const edit =
     pending && input.definition && input.entity && input.inputs.length
       ? `<details class="approval-edit"><summary>Edit the values</summary><form method="post" action="/review/${proposal.id}/revise">${input.inputs
-          .map((name) => formControl(input.definition!, input.entity!, name, effect[name]))
+          .map(control)
           .join('')}<button type="submit" class="ambit-button">Save changes</button></form></details>`
       : '';
   const actions = pending
@@ -131,6 +217,7 @@ ${from}
 <h1 class="approval-title" id="approval-title">${escape(card.title)}</h1>
 ${findings}
 <dl class="approval-changes">${fields}</dl>
+${tables}
 ${edit}
 ${actions}
 <p class="approval-signed">You are approving exactly this change, sealed as <code>${escape(proposal.digest.slice(0, 16))}</code>…. Expires ${escape(proposal.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.</p>
