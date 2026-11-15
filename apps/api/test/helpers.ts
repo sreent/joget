@@ -5,7 +5,7 @@ import { createTestDatabase } from '@platform/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { expect } from 'vitest';
 import { createAppContext } from '../src/app.js';
-import type { OidcIdentity, OidcProvider } from '../src/auth/oidc.js';
+import { IdpUnavailableError, InvalidSubjectTokenError, type OidcIdentity, type OidcProvider } from '../src/auth/oidc.js';
 import { loadConfig } from '../src/config.js';
 import type { AppContext } from '../src/context.js';
 import { buildServer, type Server } from '../src/server.js';
@@ -28,8 +28,11 @@ export function identity(subject: string, overrides: Partial<OidcIdentity> = {})
 /** A stand-in identity provider: the authorization code is simply the user's subject. */
 export class FakeIdp implements OidcProvider {
   readonly identities = new Map<string, OidcIdentity>();
+  /** Set to false to simulate an outage: the provider then fails the way the real one does. */
+  reachable = true;
 
   async startLogin({ redirectUri }: { redirectUri: string }) {
+    if (!this.reachable) throw new IdpUnavailableError(new Error('connect ECONNREFUSED'));
     const state = randomUUID();
     return {
       url: `https://idp.test/authorize?state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`,
@@ -39,7 +42,16 @@ export class FakeIdp implements OidcProvider {
     };
   }
 
+  /** A fake IdP token is `idtoken:<subject>`: it names that person, as a signed ID token would. */
+  async verifyToken(token: string) {
+    if (!this.reachable) throw new IdpUnavailableError(new Error('connect ECONNREFUSED'));
+    const subject = /^idtoken:([a-z0-9-]+)$/.exec(token)?.[1];
+    if (!subject) throw new InvalidSubjectTokenError('signature verification failed');
+    return this.identities.get(subject) ?? identity(subject);
+  }
+
   async completeLogin({ callbackUrl, state }: { callbackUrl: URL; state: string }) {
+    if (!this.reachable) throw new IdpUnavailableError(new Error('connect ECONNREFUSED'));
     if (callbackUrl.searchParams.get('state') !== state) throw new Error('state mismatch');
     const found = this.identities.get(callbackUrl.searchParams.get('code') ?? '');
     if (!found) throw new Error('invalid authorization code');
@@ -89,6 +101,7 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
   const ctx = await createAppContext({
     config,
     db: handle.db,
+    pool: handle.pool,
     oidc: idp,
     auditSigningKeyPem: generateEd25519KeyPair().privateKeyPem,
     now: () => new Date(Date.now() + clock.offsetMs),

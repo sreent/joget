@@ -18,6 +18,7 @@
     "audit:keygen": "tsx --conditions=source src/keygen.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1161.0",
     "@fastify/cookie": "^11.1.5",
     "@fastify/helmet": "^13.2.0",
     "@fastify/swagger": "^9.9.4",
@@ -30,12 +31,16 @@
     "@opentelemetry/instrumentation-undici": "^0.35.1",
     "@opentelemetry/sdk-metrics": "^3.1.1",
     "@opentelemetry/sdk-node": "^0.301.2",
+    "@platform/app-model": "workspace:*",
     "@platform/audit": "workspace:*",
     "@platform/authz": "workspace:*",
     "@platform/db": "workspace:*",
+    "@platform/design": "workspace:*",
+    "@platform/studio": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.8",
     "fastify-type-provider-zod": "^7.0.0",
+    "jose": "6.2.17",
     "openid-client": "^6.9.0",
     "pg": "^8.23.1",
     "zod": "^4.6.7"

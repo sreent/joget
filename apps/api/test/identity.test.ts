@@ -1,5 +1,13 @@
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
-import { identityFromClaims, mfaTimestamp } from '../src/auth/oidc.js';
+import {
+  createResilientOidcProvider,
+  createTokenVerifier,
+  IdpUnavailableError,
+  identityFromClaims,
+  InvalidSubjectTokenError,
+  mfaTimestamp,
+} from '../src/auth/oidc.js';
 import { loadConfig } from '../src/config.js';
 
 const base = {
@@ -68,6 +76,50 @@ describe('mfaTimestamp reads MFA evidence the way it is configured', () => {
   it('uses acr assurance levels', () => {
     expect(mfaTimestamp(identity, loadConfig({ ...base, MFA_EVIDENCE: 'acr', MFA_ACR_VALUES: 'urn:acme:loa:2' }), now)).toEqual(new Date(1_000_000));
     expect(mfaTimestamp(identity, loadConfig({ ...base, MFA_EVIDENCE: 'acr', MFA_ACR_VALUES: 'urn:acme:loa:3' }), now)).toBeNull();
+  });
+});
+
+describe('createResilientOidcProvider', () => {
+  it('reports an unreachable IdP instead of failing at startup, and keeps retrying', async () => {
+    const errors: unknown[] = [];
+    // Nothing listens on port 9 here, so discovery fails fast.
+    const provider = createResilientOidcProvider(loadConfig({ ...base, OIDC_ISSUER: 'http://127.0.0.1:9', OIDC_ALLOW_HTTP: 'true' }), (e) => errors.push(e));
+    expect(await provider.warmUp()).toBe(false);
+    await expect(provider.startLogin({ redirectUri: 'https://platform.example.com/auth/callback' })).rejects.toBeInstanceOf(IdpUnavailableError);
+    expect(errors).toHaveLength(2);
+  });
+});
+
+describe('createTokenVerifier, for token exchange', () => {
+  const issuer = 'https://login.example.com/tenant/v2.0';
+  const setup = async () => {
+    const { publicKey, privateKey } = await generateKeyPair('RS256');
+    const other = await generateKeyPair('RS256');
+    const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' };
+    const verify = createTokenVerifier({ issuer, audiences: ['ambit', 'agentos'], keys: createLocalJWKSet({ keys: [jwk] }), groupsClaim: 'groups', subjectClaim: 'oid' });
+    const sign = (claims: Record<string, unknown>, options: { audience?: string; expires?: string; key?: Parameters<SignJWT['sign']>[0] } = {}) =>
+      new SignJWT({ oid: 'person-1', email: 'Bob@Example.com', groups: ['finance'], ...claims })
+        .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+        .setIssuer(issuer)
+        .setSubject('pairwise-for-this-app')
+        .setAudience(options.audience ?? 'agentos')
+        .setIssuedAt()
+        .setExpirationTime(options.expires ?? '5m')
+        .sign(options.key ?? privateKey);
+    return { verify, sign, otherKey: other.privateKey };
+  };
+
+  it('names the person by the configured claim, from a token issued for an accepted audience', async () => {
+    const { verify, sign } = await setup();
+    expect(await verify(await sign({}))).toMatchObject({ issuer, subject: 'person-1', email: 'bob@example.com', groups: ['finance'] });
+  });
+
+  it('refuses other audiences, expired tokens, other keys and unsigned tokens', async () => {
+    const { verify, sign, otherKey } = await setup();
+    const unsigned = `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')}.${Buffer.from(JSON.stringify({ iss: issuer, aud: 'ambit', oid: 'x', exp: 9999999999 })).toString('base64url')}.`;
+    for (const token of [await sign({}, { audience: 'someone-else' }), await sign({}, { expires: '-5m' }), await sign({}, { key: otherKey }), unsigned]) {
+      await expect(verify(token)).rejects.toBeInstanceOf(InvalidSubjectTokenError);
+    }
   });
 });
 

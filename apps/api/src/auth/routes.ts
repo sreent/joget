@@ -6,10 +6,12 @@ import { requireAuth, requireSession } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import { badRequest, HttpError, unauthorized } from '../errors.js';
-import { mfaTimestamp } from './oidc.js';
+import { IdpUnavailableError, mfaTimestamp } from './oidc.js';
 import { provisionUser } from './provisioning.js';
 
 const LOGIN_COOKIE = 'platform_login';
+const idpUnavailable = () =>
+  new HttpError(503, 'idp_unavailable', 'The identity provider cannot be reached right now. Try again shortly.');
 const LoginState = z.object({ state: z.string(), nonce: z.string(), codeVerifier: z.string(), returnTo: z.string().nullable() });
 
 /** Only same-site relative paths, so the login flow cannot be used as an open redirect. */
@@ -38,10 +40,12 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
       },
       async (request, reply) => {
         const stepUp = request.query.stepUp === 'true';
-        const start = await ctx.oidc.startLogin({
-          redirectUri,
-          ...(stepUp ? { forceReauthentication: true, acrValues: ctx.config.MFA_ACR_VALUES } : {}),
-        });
+        const start = await ctx.oidc
+          .startLogin({ redirectUri, ...(stepUp ? { forceReauthentication: true, acrValues: ctx.config.MFA_ACR_VALUES } : {}) })
+          .catch((error: unknown) => {
+            if (error instanceof IdpUnavailableError) throw idpUnavailable();
+            throw error;
+          });
         const state: z.infer<typeof LoginState> = {
           state: start.state,
           nonce: start.nonce,
@@ -92,6 +96,7 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
             outcome: 'error',
             reason: { error: error instanceof Error ? error.message.slice(0, 300) : 'unknown' },
           });
+          if (error instanceof IdpUnavailableError) throw idpUnavailable();
           throw unauthorized('Sign-in failed at the identity provider');
         }
 
@@ -175,6 +180,8 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
                 tokenId: z.uuid().nullable(),
                 scopes: z.array(z.string()).nullable(),
               }),
+              /** Set when an agent acts for this person, through a token from a token exchange. */
+              agent: z.object({ id: z.uuid(), name: z.string() }).nullable(),
             }),
           },
         },
@@ -195,6 +202,7 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
             personalSpaceId: null,
             groups: [],
             credential,
+            agent: null,
           };
         }
         const memberships = await ctx.db
@@ -215,6 +223,7 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
           personalSpaceId: personal?.id ?? null,
           groups: memberships,
           credential,
+          agent: auth.agent ?? null,
         };
       },
     );

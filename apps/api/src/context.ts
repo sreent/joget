@@ -1,21 +1,29 @@
 import type { SignatureVerifier, Signer } from '@platform/audit';
 import type { Principal } from '@platform/authz';
 import type { Database } from '@platform/db';
+import type pg from 'pg';
+import type { AppCatalog } from './apps/catalog.js';
 import type { PolicyService } from './access/policy-service.js';
 import type { OidcProvider } from './auth/oidc.js';
 import type { SessionService } from './auth/sessions.js';
 import type { Config } from './config.js';
+import type { FileService } from './files/service.js';
 import type { TokenService } from './tokens/service.js';
 
 /** Everything the API needs, created once at startup and passed explicitly. */
 export interface AppContext {
   readonly config: Config;
   readonly db: Database;
+  /** The same database as `db`, for transactions that switch to an app's own role (design §6.8). */
+  readonly pool: pg.Pool;
+  readonly apps: AppCatalog;
   readonly org: { readonly id: string; readonly name: string };
   readonly oidc: OidcProvider;
   readonly policy: PolicyService;
   readonly sessions: SessionService;
   readonly tokens: TokenService;
+  /** Files people upload, such as receipts: where they're kept, and how they're checked. */
+  readonly files: FileService;
   readonly auditSigner: Signer;
   readonly auditVerifier: SignatureVerifier;
   /** The clock. Injectable so tests can move time. */
@@ -37,7 +45,10 @@ export type Credential =
 
 /** The authenticated caller behind a request. */
 export interface AuthContext {
+  /** Who the request is for. For an agent acting for a person, the person. */
   readonly actor: Actor;
+  /** Set when an agent acts for the person in `actor`, through a token from a token exchange. */
+  readonly agent?: { readonly id: string; readonly name: string };
   /** What the policy decision point sees; token scopes are already applied. */
   readonly principal: Principal;
   readonly credential: Credential;

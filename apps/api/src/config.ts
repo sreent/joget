@@ -37,6 +37,19 @@ export const ConfigSchema = z
     OIDC_SCOPES: z.string().default('openid profile email'),
     /** The ID-token claim that carries group names or IDs. */
     OIDC_GROUPS_CLAIM: z.string().default('groups'),
+    /**
+     * The claim that identifies a person. `sub` is standard, but some IdPs make it different for
+     * each application: Entra ID does, so set `oid` there, the ID that's the same everywhere in a
+     * tenant. Agents' tokens then name the same person as sign-ins do. Set it before the first sign-in.
+     */
+    OIDC_SUBJECT_CLAIM: z.string().min(1).default('sub'),
+    /**
+     * Audiences accepted on a person's token in a token exchange (comma-separated): Ambit's own
+     * client ID, and those of agents that exchange the tokens they were given. Defaults to Ambit's.
+     */
+    TOKEN_EXCHANGE_AUDIENCES: list(),
+    /** How long a token for an agent acting for a person lives. Agents exchange again when it runs out. */
+    DELEGATED_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
     /** Allow an http:// issuer. For local development only. */
     OIDC_ALLOW_HTTP: bool.default(false),
     /**
@@ -57,8 +70,40 @@ export const ConfigSchema = z
 
     /** The longest a personal access token may live. */
     PAT_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
+    /** Personal spaces stay small (design §3): at most this many apps, each shared with at most this many people. */
+    PERSONAL_SPACE_MAX_APPS: z.coerce.number().int().min(1).default(20),
+    PERSONAL_APP_MAX_SHARES: z.coerce.number().int().min(1).default(10),
+    /** How long an agent's proposal waits for the person before it expires. */
+    PROPOSAL_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(72),
     /** The longest a service-account token may live. */
     SERVICE_ACCOUNT_TOKEN_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
+
+    /**
+     * Where files people upload are kept: `postgres` keeps them in each app environment's own schema,
+     * with its records; `s3` keeps them in any S3-compatible object store (S3, MinIO, Ceph, R2).
+     */
+    FILE_STORE: z.enum(['postgres', 's3']).default('postgres'),
+    S3_BUCKET: z.string().min(1).optional(),
+    S3_REGION: z.string().min(1).default('us-east-1'),
+    /** For stores other than AWS, such as https://minio.example.com */
+    S3_ENDPOINT: z.url().optional(),
+    S3_FORCE_PATH_STYLE: bool.default(false),
+    /** Optional: without them, the AWS SDK's own chain is used, such as a pod's workload identity. */
+    S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+    S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    /** The largest file anyone may upload. */
+    FILE_MAX_BYTES: z.coerce.number().int().min(1024).max(50 * 1024 * 1024).default(10 * 1024 * 1024),
+    /**
+     * How uploads are checked for malware before anyone can use them: `clamav` asks a clamd server.
+     * With `none`, files are marked as not scanned; in production, uploads are then refused.
+     */
+    FILE_SCANNER: z.enum(['none', 'clamav']).default('none'),
+    CLAMAV_HOST: z.string().min(1).default('localhost'),
+    CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).default(3310),
+    /** How long an upload waits to be attached to a record. At least as long as a proposal waits. */
+    FILE_UNATTACHED_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 90).default(24 * 7),
+    /** How often expired uploads are removed. 0 turns it off, for example when a worker does it. */
+    FILE_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(3600),
 
     /** Ed25519 private key (PKCS#8 PEM) that signs audit seals. Required in production. */
     AUDIT_SIGNING_KEY_PEM: z.string().min(1).optional(),
@@ -93,6 +138,15 @@ export const ConfigSchema = z
     ];
     for (const [broken, path, message] of rules) {
       if (broken) ctx.addIssue({ code: 'custom', message, path: [path] });
+    }
+  })
+  .superRefine((config, ctx) => {
+    if (config.FILE_STORE === 's3' && !config.S3_BUCKET) ctx.addIssue({ code: 'custom', message: 'FILE_STORE=s3 needs S3_BUCKET', path: ['S3_BUCKET'] });
+    if (Boolean(config.S3_ACCESS_KEY_ID) !== Boolean(config.S3_SECRET_ACCESS_KEY)) {
+      ctx.addIssue({ code: 'custom', message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither', path: ['S3_ACCESS_KEY_ID'] });
+    }
+    if (config.FILE_UNATTACHED_TTL_HOURS < config.PROPOSAL_TTL_HOURS) {
+      ctx.addIssue({ code: 'custom', message: 'FILE_UNATTACHED_TTL_HOURS must be at least PROPOSAL_TTL_HOURS, so files outlive the proposals that name them', path: ['FILE_UNATTACHED_TTL_HOURS'] });
     }
   });
 

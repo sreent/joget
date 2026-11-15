@@ -45,7 +45,7 @@ const TokenOut = z.object({
 /** Returned once, at creation: the only time the token itself is ever shown. */
 const CreatedTokenOut = TokenOut.extend({ token: z.string() });
 
-const ServiceAccountOut = z.object({
+export const ServiceAccountOut = z.object({
   id: z.uuid(),
   spaceId: z.uuid(),
   name: z.string(),
@@ -54,6 +54,8 @@ const ServiceAccountOut = z.object({
   createdBy: z.uuid(),
   createdAt: z.string(),
   disabledAt: z.string().nullable(),
+  /** Set when a Security admin approved it to act for people: the most it may do for anyone. */
+  agent: z.object({ scopes: z.array(z.string()), approvedAt: z.string(), approvedBy: z.uuid() }).nullable(),
 });
 
 function toTokenOut(row: TokenRow): z.infer<typeof TokenOut> {
@@ -71,7 +73,7 @@ function toTokenOut(row: TokenRow): z.infer<typeof TokenOut> {
   };
 }
 
-function toServiceAccountOut(row: typeof serviceAccounts.$inferSelect): z.infer<typeof ServiceAccountOut> {
+export function toServiceAccountOut(row: typeof serviceAccounts.$inferSelect): z.infer<typeof ServiceAccountOut> {
   return {
     id: row.id,
     spaceId: row.spaceId,
@@ -81,6 +83,9 @@ function toServiceAccountOut(row: typeof serviceAccounts.$inferSelect): z.infer<
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
     disabledAt: row.disabledAt?.toISOString() ?? null,
+    agent: row.agentScopes && row.agentApprovedAt && row.agentApprovedBy
+      ? { scopes: row.agentScopes, approvedAt: row.agentApprovedAt.toISOString(), approvedBy: row.agentApprovedBy }
+      : null,
   };
 }
 

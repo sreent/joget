@@ -1,0 +1,47 @@
+@import "tailwindcss";
+@import "@platform/design/ocean.css";
+
+/*
+ * Tailwind, drawn in Ocean. Each colour is one of Ocean's meanings, so `bg-surface` or
+ * `text-muted` follow light and dark like every other Ambit page. Ocean's type, radii and font
+ * sizes already use the names Tailwind reads (--font-sans, --radius-md, --text-sm, ...).
+ */
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-focus: var(--focus);
+  --color-agent: var(--agent-tone);
+  --color-agent-soft: var(--agent-tone-soft);
+  --color-outside: var(--outside);
+  --color-outside-bg: var(--outside-bg);
+  --color-changes: var(--changes);
+  --color-changes-bg: var(--changes-bg);
+  --color-writes: var(--writes);
+  --color-writes-bg: var(--writes-bg);
+  --color-good: var(--good);
+  --color-good-bg: var(--good-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-bad: var(--bad);
+  --color-bad-bg: var(--bad-bg);
+  --color-idle: var(--idle);
+  --color-idle-bg: var(--idle-bg);
+  --shadow-card: var(--shadow);
+  --shadow-raised: var(--shadow-raised);
+}
+
+html, body, #root { min-height: 100%; }
+body { margin: 0; background: var(--page); color: var(--text); font: var(--text-base)/1.5 var(--font-sans); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+code, .mono { font-family: var(--font-mono); }
+dialog::backdrop { background: rgb(10 23 36 / 0.45); }

@@ -13,10 +13,21 @@ import {
 import { installAccessControl, requireAccessRules, type RouteAccess } from './access/enforce.js';
 import { accessRoutes } from './access/routes.js';
 import { auditRoutes } from './audit/routes.js';
+import { agentRoutes } from './agents/routes.js';
+import { AppBuilder } from './apps/builder.js';
+import { mcpRoutes } from './apps/mcp.js';
+import { proposalRoutes } from './apps/proposal-routes.js';
+import { appRoutes } from './apps/routes.js';
+import { AppRuntime } from './apps/runtime.js';
+import { runtimeRoutes } from './apps/runtime-routes.js';
 import { authRoutes } from './auth/routes.js';
+import { designRoutes } from './design/routes.js';
+import { studioRoutes } from './studio/routes.js';
 import type { AppContext } from './context.js';
 import { HttpError } from './errors.js';
 import { healthRoutes } from './health/routes.js';
+import { peopleRoutes } from './people/routes.js';
+import { fileRoutes } from './files/routes.js';
 import { spaceRoutes } from './spaces/routes.js';
 import { tokenRoutes } from './tokens/routes.js';
 
@@ -49,10 +60,16 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   // before sessions are authenticated.
   const routes = requireAccessRules(app);
   await app.register(cookie, { secret: ctx.config.COOKIE_SECRET });
-  await app.register(helmet);
+  // Over plain http (local development only: production requires https), don't ask browsers to upgrade requests.
+  await app.register(helmet, {
+    contentSecurityPolicy: { directives: { upgradeInsecureRequests: ctx.config.PUBLIC_BASE_URL.startsWith('https://') ? [] : null } },
+    // Not no-referrer: under it, browsers send `Origin: null` with a form's POST, and the review
+    // page's own buttons would fail the cross-site check. same-origin still sends nothing elsewhere.
+    referrerPolicy: { policy: 'same-origin' },
+  });
   await app.register(swagger, {
     openapi: {
-      info: { title: 'Platform API', version: '0.1.0', description: 'Governance kernel: identity, spaces, roles and permission sets, audit.' },
+      info: { title: 'Ambit API', version: '0.1.0', description: 'Governance kernel and capability core: identity, spaces, roles and permission sets, apps, records, actions, queries, proposals, audit.' },
       components: {
         securitySchemes: {
           session: { type: 'apiKey', in: 'cookie', name: ctx.config.SESSION_COOKIE_NAME },
@@ -66,6 +83,11 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   installAccessControl(app, ctx);
 
   app.setErrorHandler((error, request, reply) => {
+    // People who open a review link or the studio before signing in are sent to sign in, and then back.
+    const page = request.url.startsWith('/review/') || request.url === '/studio' || request.url.startsWith('/studio/');
+    if (error instanceof HttpError && error.statusCode === 401 && request.method === 'GET' && page) {
+      return reply.redirect(`/auth/login?returnTo=${encodeURIComponent(request.url)}`);
+    }
     if (error instanceof HttpError) {
       return reply.status(error.statusCode).send({
         error: error.code,
@@ -99,6 +121,17 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(accessRoutes(ctx));
   await app.register(auditRoutes(ctx));
   await app.register(tokenRoutes(ctx));
+  const builder = new AppBuilder(ctx);
+  const runtime = new AppRuntime(ctx);
+  await app.register(appRoutes(ctx, builder, runtime));
+  await app.register(runtimeRoutes(ctx, runtime));
+  await app.register(proposalRoutes(ctx, runtime));
+  await app.register(mcpRoutes(ctx, builder, runtime));
+  await app.register(designRoutes());
+  await app.register(agentRoutes(ctx));
+  await app.register(peopleRoutes(ctx));
+  await app.register(fileRoutes(ctx, runtime));
+  await app.register(studioRoutes());
   app.get(
     '/openapi.json',
     { config: { access: { kind: 'authenticated' } }, schema: { hide: true } },

@@ -24,6 +24,7 @@ export const PLATFORM_PERMISSIONS = {
   'access.token.read': 'See every API token in the organization (never the secrets)',
   'access.token.revoke': 'Revoke any API token in the organization',
   'token.personal.create': 'Create personal access tokens for yourself',
+  'access.agent.approve': 'Let a service account act for people as an agent, and cap what it may do',
 
   'space.create': 'Create team spaces',
   'space.read': 'See a space and its members',
@@ -40,6 +41,9 @@ export const PLATFORM_PERMISSIONS = {
   'app.share': 'Share a personal app with named users',
   'app.export': 'Export app definitions',
   'app.delete': 'Delete apps',
+  'app.run': "Use an app's capabilities, screens and review pages",
+  'action.run': "Run an app's action, under your record permissions",
+  'query.run': "Run an app's query, under your record permissions",
 
   'change.open': 'Open change requests',
   'change.review': 'Review change requests',

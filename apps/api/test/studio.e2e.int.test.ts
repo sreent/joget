@@ -1,0 +1,211 @@
+import { createRequire } from 'node:module';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startTestApp, type Session, type TestApp } from './helpers.js';
+
+/**
+ * The studio in a real browser, end to end: build an app from the example, rename a field, save,
+ * submit a claim through the generated form, and see a colleague's limited view.
+ *
+ * Opt-in, because it needs Chromium and a built studio:
+ *   pnpm --filter @platform/studio build
+ *   STUDIO_E2E=1 SCREENSHOT_DIR=/tmp/shots pnpm --filter @platform/api test:integration -- studio
+ */
+
+/** Playwright is installed with the environment's browser, not as a dependency: the little of it used here. */
+interface Locator {
+  click(): Promise<void>;
+  fill(value: string): Promise<void>;
+  blur(): Promise<void>;
+  selectOption(value: string): Promise<unknown>;
+  inputValue(): Promise<string>;
+  waitFor(options?: { state?: 'visible' | 'hidden'; timeout?: number }): Promise<void>;
+  getByLabel(text: string, options?: { exact?: boolean }): Locator;
+  getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
+  first(): Locator;
+  setInputFiles(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
+}
+interface Page extends Locator {
+  goto(url: string): Promise<unknown>;
+  url(): string;
+  waitForURL(url: RegExp): Promise<void>;
+  getByText(text: string, options?: { exact?: boolean }): Locator;
+  locator(selector: string, options?: { has?: Locator }): Locator;
+  screenshot(options: { path: string; fullPage?: boolean }): Promise<unknown>;
+  on(event: 'pageerror', listener: (error: Error) => void): void;
+}
+interface Browser {
+  newContext(options: { viewport: { width: number; height: number }; colorScheme: 'light' | 'dark' }): Promise<{
+    addCookies(cookies: Array<{ name: string; value: string; url: string }>): Promise<void>;
+    newPage(): Promise<Page>;
+  }>;
+  close(): Promise<void>;
+}
+const visible = (locator: Locator) => locator.waitFor({ state: 'visible', timeout: 10_000 });
+const hidden = (locator: Locator) => locator.waitFor({ state: 'hidden', timeout: 10_000 });
+
+const enabled = process.env['STUDIO_E2E'] === '1';
+const SHOTS = process.env['SCREENSHOT_DIR'];
+const PORT = 3917;
+const BASE = `http://127.0.0.1:${PORT}`;
+
+describe.skipIf(!enabled)('the studio, in a browser', () => {
+  let t: TestApp;
+  let alice: Session;
+  let bob: Session;
+  let browser: Browser;
+  let appId: string;
+
+  beforeAll(async () => {
+    t = await startTestApp({ PUBLIC_BASE_URL: BASE });
+    await t.app.listen({ host: '127.0.0.1', port: PORT });
+    [alice, bob] = [await t.login('alice'), await t.login('bob')];
+    const { chromium } = createRequire(import.meta.url)('playwright') as { chromium: { launch(): Promise<Browser> } };
+    browser = await chromium.launch();
+  }, 60_000);
+
+  afterAll(async () => {
+    await browser?.close();
+    await t?.close();
+  });
+
+  const open = async (session: Session, colorScheme: 'light' | 'dark' = 'light'): Promise<Page> => {
+    const context = await browser.newContext({ viewport: { width: 1360, height: 860 }, colorScheme });
+    await context.addCookies([{ name: 'platform_session', value: session.cookies['platform_session']!, url: BASE }]);
+    const page = await context.newPage();
+    page.on('pageerror', (error) => {
+      throw error;
+    });
+    return page;
+  };
+  const shot = async (page: Page, name: string) => {
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
+  };
+  const panel = (page: Page, heading: string): Locator => page.locator('section', { has: page.getByRole('heading', { name: heading, exact: true }) });
+
+  it('builds an app from the example, renames a field and saves it', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await visible(page.getByRole('heading', { name: 'Your apps' }));
+    await page.getByLabel('Name').fill('Expenses');
+    await page.getByLabel('Start from').selectOption('example');
+    await shot(page, '1-home');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    appId = page.url().split('/apps/')[1]!.split('/')[0]!;
+
+    await page.getByRole('button', { name: /^Trip/ }).click();
+    const field = panel(page, 'Field');
+    await field.getByLabel('Label', { exact: true }).fill('Journey');
+    await field.getByLabel('Name', { exact: true }).fill('journey');
+    await field.getByLabel('Name', { exact: true }).blur();
+    await visible(page.getByText('Unsaved changes.'));
+    await shot(page, '2-data-designer');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await visible(page.getByText('Rename expense_claim.trip to journey; no data changes'));
+    await shot(page, '3-save-plan');
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await visible(page.getByText('revision 2'));
+    await hidden(page.getByText('Unsaved changes.'));
+  });
+
+  it('shows lines under the record they belong to, and works out the total', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/data`);
+    await page.getByRole('button', { name: /^Total \(SGD\)/ }).click();
+    expect(await panel(page, 'Field').getByLabel('Value').inputValue()).toBe('sum:lines.amount');
+    await page.getByRole('button', { name: /^Receipts/ }).click();
+    await page.getByRole('button', { name: 'Receipt: edit the fields of each line' }).click();
+    await visible(page.getByText('These are the lines of'));
+    await shot(page, '2b-lines');
+  });
+
+  it('lays out the form', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/forms`);
+    expect(await page.getByLabel('Title', { exact: true }).inputValue()).toBe('Claim an expense');
+    // The renamed field kept its place on the form.
+    await visible(page.getByRole('button', { name: 'Journey', exact: true }));
+    await shot(page, '4-form-designer');
+  });
+
+  it('submits a claim with its receipts through the generated form, and shows its history', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: '+ Claim an expense' }).click();
+    await page.getByLabel('Title').fill('Singapore trip');
+    await page.getByLabel('Journey').fill('Singapore');
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-02');
+    await page.getByLabel('Receipt 1, Merchant').fill('Comfort taxi');
+    await page.getByLabel('Receipt 1, Category').selectOption('travel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('32.40');
+    // The receipt uploads as soon as it's picked, and shows as a link to it.
+    await page.getByLabel('Receipt 1, Receipt').setInputFiles({ name: 'taxi.jpg', mimeType: 'image/jpeg', buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(2048, 9)]) });
+    await visible(page.getByRole('link', { name: /taxi\.jpg/ }));
+    await page.getByRole('button', { name: 'Add a line' }).click();
+    await page.getByLabel('Receipt 2, Date').fill('2026-11-03');
+    await page.getByLabel('Receipt 2, Merchant').fill('Marina Bay Sands');
+    await page.getByLabel('Receipt 2, Category').selectOption('hotel');
+    await page.getByLabel('Receipt 2, Amount (SGD)').fill('270');
+    // The total is worked out as people type, the way the platform will work it out.
+    await visible(page.getByText('302.40'));
+    await shot(page, '5-form');
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByRole('heading', { name: 'Singapore trip' }));
+    await visible(page.getByText('Submitted', { exact: true }));
+    await visible(page.getByRole('cell', { name: 'Marina Bay Sands' }));
+    await visible(page.getByRole('link', { name: /taxi\.jpg/ }));
+    await visible(page.getByText('Created by Alice'));
+
+    // Pick the approver by name, not by ID.
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.getByLabel('Approver').fill('bo');
+    await page.getByRole('option', { name: /Bob/ }).click();
+    expect(await page.getByLabel('Approver').inputValue()).toBe('Bob');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await visible(page.getByText('Changed by Alice'));
+    await visible(page.getByText('Approver: — → Bob'));
+    await shot(page, '6-record');
+  });
+
+  it('lets the person correct a line an agent proposed, on the review page, and approve it', async () => {
+    const token = await t.app.inject({ method: 'POST', url: '/v1/me/tokens', cookies: alice.cookies, payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } });
+    const run = await t.app.inject({
+      method: 'POST',
+      url: `/v1/apps/${appId}/actions/submit_claim/run`,
+      headers: { authorization: `Bearer ${token.json().token}` },
+      payload: {
+        values: { title: 'Penang trip', journey: 'Penang', lines: [{ date: '2026-11-09', merchant: 'Eastern & Oriental', category: 'hotel', amount: 280 }] },
+        provenance: { 'lines[0].amount': { source: 'document', document: 'receipt.jpg' } },
+      },
+    });
+    expect(run.statusCode, run.body).toBe(202);
+    const page = await open(alice);
+    await page.goto(run.json().proposal.reviewUrl);
+    await visible(page.getByText('Line 1: Hotel is above the SGD 250 nightly cap'));
+    await page.getByText('Edit the values').click();
+    await page.getByLabel('Amount (SGD)').first().fill('240');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await visible(page.getByText('Edited by you'));
+    await hidden(page.getByText('nightly cap'));
+    await page.getByRole('button', { name: 'Approve and submit' }).click();
+    await visible(page.getByText('Approved and submitted'));
+    await shot(page, '9-review-approved');
+  });
+
+  it("shows a colleague only what their role allows, in dark mode too", async () => {
+    const share = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'requester' } });
+    expect(share.statusCode, share.body).toBe(201);
+    const page = await open(bob, 'dark');
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await visible(page.getByText('requester'));
+    await visible(page.getByText('No expense claims you can see'));
+    await hidden(page.getByText('Build this app'));
+    await shot(page, '7-shared-dark');
+
+    const builder = await open(alice, 'dark');
+    await builder.goto(`${BASE}/studio/apps/${appId}/build/data`);
+    await builder.getByRole('button', { name: /^Bank account/ }).click();
+    await shot(builder, '8-data-designer-dark');
+  });
+});

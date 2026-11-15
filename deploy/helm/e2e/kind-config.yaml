@@ -1,0 +1,8 @@
+# The e2e test cluster. Some sandboxed hosts cannot lower OOM scores below 0, so containerd is told
+# to clamp them instead of failing (the setting kind uses for rootless hosts). Harmless elsewhere.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri"]
+      restrict_oom_score_adj = true

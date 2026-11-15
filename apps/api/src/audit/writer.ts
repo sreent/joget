@@ -17,6 +17,9 @@ export interface AuditEntry {
   readonly outcome?: AuditOutcome;
   readonly target?: AuditTarget;
   readonly spaceId?: string | null;
+  readonly appId?: string | null;
+  /** The environment kind, for example `sandbox` or `prod`. */
+  readonly env?: string | null;
   readonly reason?: Record<string, unknown>;
   readonly changes?: Record<string, unknown>;
   /** Overrides the actor taken from the request, for example the platform itself. */
@@ -35,14 +38,14 @@ export const SYSTEM_ACTOR: AuditActor = { type: 'system', id: 'platform', via: '
 
 export function auditScopeFor(request: FastifyRequest, orgId: string, now: Date): AuditScope {
   const auth = request.auth;
-  const actor: AuditActor = auth
-    ? {
-        type: auth.actor.type,
-        id: auth.actor.id,
-        via: 'api',
-        ...(auth.credential.kind === 'session' ? { sessionId: auth.credential.sessionId } : { tokenId: auth.credential.tokenId }),
-      }
-    : { type: 'anonymous', id: 'anonymous', via: 'api' };
+  const via = request.url.startsWith('/mcp') ? 'mcp' : 'api';
+  const credential = auth ? (auth.credential.kind === 'session' ? { sessionId: auth.credential.sessionId } : { tokenId: auth.credential.tokenId }) : {};
+  // An agent acting for a person is the actor, on the person's behalf: the log names both.
+  const actor: AuditActor = !auth
+    ? { type: 'anonymous', id: 'anonymous', via }
+    : auth.agent
+      ? { type: 'service_account', id: auth.agent.id, via, ...credential, onBehalfOf: auth.actor.id }
+      : { type: auth.actor.type, id: auth.actor.id, via, ...credential };
   const traceId = trace.getActiveSpan()?.spanContext().traceId;
   const userAgent = request.headers['user-agent'];
   return {
@@ -73,8 +76,8 @@ export async function recordAudit(executor: Executor, scope: AuditScope, entry: 
     occurredAt: scope.now,
     orgId: scope.orgId,
     spaceId: entry.spaceId ?? null,
-    appId: null,
-    env: null,
+    appId: entry.appId ?? null,
+    env: entry.env ?? null,
     actor: json(entry.actor ?? scope.actor)!,
     action: entry.action,
     target: json(entry.target),
@@ -88,8 +91,8 @@ export async function recordAudit(executor: Executor, scope: AuditScope, entry: 
     occurredAt: event.occurredAt,
     orgId: event.orgId,
     spaceId: event.spaceId ?? null,
-    appId: null,
-    env: null,
+    appId: event.appId ?? null,
+    env: event.env ?? null,
     actor: event.actor as unknown as Record<string, unknown>,
     action: event.action,
     target: (event.target ?? null) as Record<string, unknown> | null,
@@ -105,4 +108,10 @@ export async function recordAudit(executor: Executor, scope: AuditScope, entry: 
 /** The space a resource sits in, if any. */
 export function spaceIdOf(resource: Resource): string | null {
   return resource.scopes.find((scope) => scope.type === 'space')?.id ?? null;
+}
+
+/** The app a resource belongs to, if any, and its environment kind. */
+export function appOf(resource: Resource): { appId: string | null; env: string | null } {
+  const env = resource.attributes?.['env'];
+  return { appId: resource.scopes.find((scope) => scope.type === 'app')?.id ?? null, env: typeof env === 'string' ? env : null };
 }

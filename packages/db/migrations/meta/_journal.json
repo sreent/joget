@@ -22,6 +22,20 @@
       "when": 1794681246920,
       "tag": "0002_service_accounts_and_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794747683591,
+      "tag": "0003_apps_and_proposals",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794750050247,
+      "tag": "0004_agents",
+      "breakpoints": true
     }
   ]
 }

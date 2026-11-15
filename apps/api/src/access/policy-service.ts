@@ -1,5 +1,6 @@
 import {
   authorize,
+  authorizeQuery,
   createPolicy,
   isCondition,
   type Binding,
@@ -8,6 +9,7 @@ import {
   type PermissionSet,
   type Policy,
   type Principal,
+  type QueryDecision,
   type Resource,
   type Role,
 } from '@platform/authz';
@@ -36,7 +38,8 @@ export function toBinding(row: BindingRow): Binding {
     id: row.id,
     principalType: row.principalType,
     principalId: row.principalId,
-    ...(row.roleId ? { roleId: row.roleId } : {}),
+    // App roles are roles too: the app's policy defines them (see mergePolicies).
+    ...(row.roleId || row.appRoleId ? { roleId: (row.roleId ?? row.appRoleId)! } : {}),
     ...(row.permissionSetId ? { permissionSetId: row.permissionSetId } : {}),
     scope: { type: row.scopeType, id: row.scopeId },
     ...(row.expiresAt ? { expiresAt: row.expiresAt } : {}),
@@ -144,9 +147,10 @@ export class PolicyService {
     action: string,
     resource: Resource,
     context?: Record<string, unknown>,
+    policy?: Policy,
   ): Promise<Decision> {
-    const [policy, candidateBindings] = await Promise.all([this.policy(), this.bindingsFor(principal)]);
-    const decision = authorize(policy, {
+    const [effective, candidateBindings] = await Promise.all([policy ?? this.policy(), this.bindingsFor(principal)]);
+    const decision = authorize(effective, {
       principal,
       action,
       resource,
@@ -154,12 +158,36 @@ export class PolicyService {
       now: this.#now(),
       ...(context ? { context } : {}),
     });
-    decisions.add(1, { decision: decision.allowed ? 'allow' : 'deny', action });
+    this.#observe(action, resource, decision.allowed);
+    return decision;
+  }
+
+  /** Decide an action over many records: see authorizeQuery. */
+  async query(
+    principal: Principal,
+    action: string,
+    resource: Resource,
+    options: { readonly policy?: Policy; readonly context?: Record<string, unknown> } = {},
+  ): Promise<QueryDecision> {
+    const [effective, candidateBindings] = await Promise.all([options.policy ?? this.policy(), this.bindingsFor(principal)]);
+    const decision = authorizeQuery(effective, {
+      principal,
+      action,
+      resource,
+      bindings: candidateBindings,
+      now: this.#now(),
+      ...(options.context ? { context: options.context } : {}),
+    });
+    this.#observe(action, resource, decision.allowed);
+    return decision;
+  }
+
+  #observe(action: string, resource: Resource, allowed: boolean): void {
+    decisions.add(1, { decision: allowed ? 'allow' : 'deny', action });
     trace.getActiveSpan()?.setAttributes({
       'platform.authz.action': action,
-      'platform.authz.allowed': decision.allowed,
+      'platform.authz.allowed': allowed,
       'platform.resource.type': resource.type,
     });
-    return decision;
   }
 }
