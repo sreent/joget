@@ -127,6 +127,13 @@ export const serviceAccounts = pgTable(
       .references(() => users.id),
     createdAt: createdAt(),
     disabledAt: timestamp('disabled_at', tz),
+    /**
+     * Set when a Security admin has approved the account to act for people as an agent: the most
+     * an agent's token may ever do, whoever it acts for. Null for a plain service account.
+     */
+    agentScopes: text('agent_scopes').array(),
+    agentApprovedAt: timestamp('agent_approved_at', tz),
+    agentApprovedBy: uuid('agent_approved_by'),
   },
   (t) => [uniqueIndex('service_accounts_space_name_uq').on(t.spaceId, t.name)],
 );
@@ -144,6 +151,8 @@ export const apiTokens = pgTable(
       .references(() => orgs.id),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     serviceAccountId: uuid('service_account_id').references(() => serviceAccounts.id, { onDelete: 'cascade' }),
+    /** For a delegated token: the agent that acts, for the person in user_id (RFC 8693 token exchange). */
+    actorServiceAccountId: uuid('actor_service_account_id').references(() => serviceAccounts.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     /** The start of the token, so people can recognize it. Never enough to use it. */
     displayPrefix: text('display_prefix').notNull(),
@@ -164,6 +173,8 @@ export const apiTokens = pgTable(
     uniqueIndex('api_tokens_secret_hash_uq').on(t.secretHash),
     index('api_tokens_user_idx').on(t.userId),
     index('api_tokens_service_account_idx').on(t.serviceAccountId),
+    index('api_tokens_actor_idx').on(t.actorServiceAccountId),
+    check('api_tokens_delegated_to_people', sql`${t.actorServiceAccountId} is null or ${t.userId} is not null`),
     check('api_tokens_one_owner', sql`(${t.userId} is null) <> (${t.serviceAccountId} is null)`),
   ],
 );

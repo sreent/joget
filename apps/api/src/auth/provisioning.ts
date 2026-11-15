@@ -19,7 +19,18 @@ export interface ProvisionedUser {
  */
 export async function provisionUser(
   tx: Transaction,
-  input: { orgId: string; config: Config; identity: OidcIdentity; audit: AuditScope },
+  input: {
+    orgId: string;
+    config: Config;
+    identity: OidcIdentity;
+    audit: AuditScope;
+    /**
+     * `login` (the default) refreshes the profile and the IdP groups. `exchange` is for a token an
+     * agent presents: it may carry fewer claims than a sign-in, so it changes nothing for someone
+     * Ambit already knows, and provisions a newcomer as a first sign-in would.
+     */
+    mode?: 'login' | 'exchange';
+  },
 ): Promise<ProvisionedUser> {
   const { orgId, config, identity, audit } = input;
   const now = audit.now;
@@ -31,6 +42,10 @@ export async function provisionUser(
     .where(and(eq(users.issuer, identity.issuer), eq(users.subject, identity.subject)));
   if (existing && existing.status !== 'active') {
     throw forbidden('account_deprovisioned', 'This account has been deprovisioned');
+  }
+  if (existing && input.mode === 'exchange') {
+    const [personal] = await tx.select({ id: spaces.id }).from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, existing.id)));
+    return { userId: existing.id, personalSpaceId: personal!.id, created: false };
   }
 
   const profile = {

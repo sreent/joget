@@ -41,6 +41,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'access.review.run',
     'access.token.read',
     'access.token.revoke',
+    'access.agent.approve',
   ]),
   permissionSet('ps.org.audit', 'Audit (read-only)', 'org', [
     'org.settings.read',
@@ -156,6 +157,7 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
       'access.breakglass.activate',
       'token.personal.create',
       'space.service_account.manage',
+      'access.agent.approve',
     ],
     effect: 'step_up',
     maxMfaAgeSeconds: 900,

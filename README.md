@@ -33,7 +33,7 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
 | Authorization | One policy decision point (`@platform/authz`): permissions, permission sets, roles, scoped bindings with expiry, the personal-space boundary, guardrails (deny and fresh-MFA rules), separation of duties, privilege-escalation checks and explained decisions. Every route must declare an access rule, or the server refuses to start |
 | API tokens | Personal access tokens and service accounts owned by team spaces. Tokens are scoped, expire (90 days at most by default), are stored only as hashes, and can only be created from an interactive session with fresh MFA. Service accounts start with no access and gain it only through bindings. Admins can list and revoke any token, and every step is audited |
 | Apps (built-in store) | Apps live in personal spaces, defined as entities, rules, actions, queries, review cards and roles:<ul><li>Each app environment gets its own database schema and NOLOGIN role, and every query switches to that role.</li><li>Definitions are versioned. Entities and fields have stable IDs, so a rename is free and carries through to every reference. Changes apply live, but anything that deletes data waits for confirmation.</li><li>Record- and field-level permissions are compiled to SQL filters, and PII is masked by default.</li><li>Every record keeps a field-level history, with where each value came from.</li><li>Apps can be shared with named colleagues, each in one of the app's roles.</li></ul> |
-| Agents | Every action and query a person may run is an MCP tool (`/mcp`), and AI clients such as Claude can build apps through a second MCP server (`/mcp/build`). When an API token runs an action that needs confirmation, the action becomes a proposal sealed with a digest. Only the person, signed in, can approve exactly that change, on a review page where they can also edit it |
+| Agents | Every action and query a person may run is an MCP tool (`/mcp`), and AI clients such as Claude can build apps through a second MCP server (`/mcp/build`). An agent that serves many people, such as agentos or a Copilot Studio bot, is approved by a Security admin, then exchanges a person's IdP token for a 10-minute Ambit token that acts for that one person (RFC 8693). Agents work through errands only, never on raw records, and the audit log names both the agent and the person. When an API token runs an action that needs confirmation, the action becomes a proposal sealed with a digest. Only the person, signed in, can approve exactly that change, on a review page where they can also edit it |
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
 | Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
@@ -148,6 +148,22 @@ Then share it, or point an agent at it:
 - **Build with Claude:** add `http://localhost:3000/mcp/build`, with a token scoped to `app.create`, `app.read` and `app.edit`.
 
 When an agent submits a claim, the person gets a review link: they check the card, edit what's wrong, and approve.
+
+### Connecting an agent that serves many people
+
+1. Create a service account for the agent in a team space (`POST /v1/spaces/{spaceId}/service-accounts`), and give it a token (`POST /v1/service-accounts/{id}/tokens`).
+2. A Security admin approves it as an agent, choosing what it may do for people (`PUT /v1/service-accounts/{id}/agent`, with scopes from `app.run`, `action.run`, `query.run` and `record.read`).
+3. For each person, the agent exchanges the token the IdP gave it for that person:
+
+   ```bash
+   curl -X POST http://localhost:3000/v1/oauth/token -H 'authorization: Bearer plt_sat_...' \
+     -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+     -d subject_token_type=urn:ietf:params:oauth:token-type:id_token -d subject_token=<the person's ID token>
+   ```
+
+4. It calls `/mcp` with the token it gets back (`plt_dlg_...`), which lasts 10 minutes.
+
+The person's token must be issued for an audience Ambit accepts: its own client ID, or the agent's, listed in `TOKEN_EXCHANGE_AUDIENCES`. With Entra ID, set `OIDC_SUBJECT_CLAIM=oid` before anyone signs in, so agents and sign-ins name people the same way.
 
 ## Deploying to Kubernetes
 

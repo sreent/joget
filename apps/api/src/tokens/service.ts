@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { sha256Hex, uuidv7 } from '@platform/audit';
 import { apiTokens, serviceAccounts, users, type Database, type Executor } from '@platform/db';
 import { eq } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { FastifyRequest } from 'fastify';
 import type { PolicyService } from '../access/policy-service.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
@@ -12,15 +13,18 @@ export type TokenRow = typeof apiTokens.$inferSelect;
 export type TokenOwner = { readonly type: 'user'; readonly id: string } | { readonly type: 'service_account'; readonly id: string };
 
 /**
- * Tokens look like `plt_pat_<32 chars>` (personal) or `plt_sat_<32 chars>` (service account): 192
- * random bits behind a fixed, recognizable prefix that secret scanners can be taught to find.
+ * Tokens look like `plt_pat_<32 chars>` (personal), `plt_sat_<32 chars>` (service account) or
+ * `plt_dlg_<32 chars>` (an agent acting for a person): 192 random bits behind a fixed,
+ * recognizable prefix that secret scanners can be taught to find.
  */
-const TOKEN_FORMAT = /^plt_(pat|sat)_[A-Za-z0-9_-]{32}$/;
+const TOKEN_FORMAT = /^plt_(pat|sat|dlg)_[A-Za-z0-9_-]{32}$/;
+const agents = alias(serviceAccounts, 'agents');
 /** Record last use at most this often, so authentication doesn't write on every request. */
 const LAST_USED_RESOLUTION_MS = 5 * 60_000;
 
-export function newToken(owner: TokenOwner): { token: string; secretHash: string; displayPrefix: string } {
-  const token = `plt_${owner.type === 'user' ? 'pat' : 'sat'}_${randomBytes(24).toString('base64url')}`;
+export function newToken(owner: TokenOwner, delegated = false): { token: string; secretHash: string; displayPrefix: string } {
+  const kind = delegated ? 'dlg' : owner.type === 'user' ? 'pat' : 'sat';
+  const token = `plt_${kind}_${randomBytes(24).toString('base64url')}`;
   return { token, secretHash: sha256Hex(token), displayPrefix: token.slice(0, 16) };
 }
 
@@ -62,6 +66,35 @@ export class TokenService {
   }
 
   /**
+   * Issue a token for an agent acting for a person (RFC 8693 token exchange). It lives briefly,
+   * carries at most the agent's approved scopes, and dies with the agent's approval.
+   */
+  async issueDelegated(
+    executor: Executor,
+    input: { userId: string; agentId: string; agentName: string; scopes: readonly string[]; expiresAt: Date },
+  ): Promise<{ token: string; row: TokenRow }> {
+    const { token, secretHash, displayPrefix } = newToken({ type: 'user', id: input.userId }, true);
+    const [row] = await executor
+      .insert(apiTokens)
+      .values({
+        id: uuidv7(this.#now().getTime()),
+        orgId: this.#orgId,
+        userId: input.userId,
+        actorServiceAccountId: input.agentId,
+        name: `${input.agentName}, acting for this person`,
+        displayPrefix,
+        secretHash,
+        scopes: [...input.scopes],
+        expiresAt: input.expiresAt,
+        // Issued for the person, by the exchange: no one created it in a session.
+        createdBy: input.userId,
+        createdAt: this.#now(),
+      })
+      .returning();
+    return { token, row: row! };
+  }
+
+  /**
    * Authenticate an `Authorization: Bearer` header. Returns null when there is none. A malformed,
    * unknown, expired or revoked token is an error, never a reason to fall back to the cookie.
    */
@@ -72,10 +105,11 @@ export class TokenService {
     if (!match?.[1] || !TOKEN_FORMAT.test(match[1])) throw unauthorized('Send a platform API token as "Authorization: Bearer plt_..."');
 
     const [row] = await this.#db
-      .select({ token: apiTokens, user: users, serviceAccount: serviceAccounts })
+      .select({ token: apiTokens, user: users, serviceAccount: serviceAccounts, agent: agents })
       .from(apiTokens)
       .leftJoin(users, eq(users.id, apiTokens.userId))
       .leftJoin(serviceAccounts, eq(serviceAccounts.id, apiTokens.serviceAccountId))
+      .leftJoin(agents, eq(agents.id, apiTokens.actorServiceAccountId))
       .where(eq(apiTokens.secretHash, sha256Hex(match[1])));
     if (!row || row.token.orgId !== this.#orgId) throw unauthorized('Unknown API token');
 
@@ -88,7 +122,9 @@ export class TokenService {
           ? 'owner_deprovisioned'
           : row.serviceAccount && row.serviceAccount.status !== 'active'
             ? 'service_account_disabled'
-            : null;
+            : row.token.actorServiceAccountId && (row.agent?.status !== 'active' || !row.agent.agentScopes)
+              ? 'agent_not_approved'
+              : null;
     if (problem) {
       await recordAudit(this.#db, auditScopeFor(request, this.#orgId, now), {
         action: 'auth.token.rejected',
@@ -103,8 +139,18 @@ export class TokenService {
       await this.#db.update(apiTokens).set({ lastUsedAt: now }).where(eq(apiTokens.id, row.token.id));
     }
 
-    const scopes = row.token.scopes;
+    // A delegated token never does more than the agent is approved for now, even if that shrank.
+    const scopes = row.agent ? row.token.scopes.filter((scope) => row.agent!.agentScopes!.includes(scope)) : row.token.scopes;
     const credential = { kind: 'token', tokenId: row.token.id, scopes } as const;
+    if (row.user && row.agent) {
+      const principal = await this.#policy.userPrincipal(row.user.id);
+      return {
+        actor: { type: 'user', id: row.user.id, name: row.user.displayName, email: row.user.email },
+        agent: { id: row.agent.id, name: row.agent.name },
+        principal: { ...principal, tokenScopes: scopes },
+        credential,
+      };
+    }
     if (row.user) {
       const principal = await this.#policy.userPrincipal(row.user.id);
       return {

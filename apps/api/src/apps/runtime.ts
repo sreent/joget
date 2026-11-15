@@ -168,13 +168,28 @@ export class AppRuntime {
     }
   }
 
-  async decide(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, action: string, entity: string): Promise<AllowedQuery> {
-    return checkQuery(this.#ctx, request, auth, action, recordResource(this.#ctx.org.id, loaded, entity), { policy: await this.policy(loaded) });
+  /**
+   * Decide a record permission. `inside` marks a check made inside an action or a query the caller
+   * was already allowed to run: a token's scopes decide which operations it may enter, and inside
+   * one the person's own record permissions apply. So an agent scoped to `action.run` can submit a
+   * claim through its action, but can't write records directly.
+   */
+  async decide(
+    request: FastifyRequest,
+    auth: AuthContext,
+    loaded: LoadedApp,
+    action: string,
+    entity: string,
+    options: { readonly inside?: boolean } = {},
+  ): Promise<AllowedQuery> {
+    const caller = options.inside ? { ...auth, principal: withoutScopes(auth) } : auth;
+    return checkQuery(this.#ctx, request, caller, action, recordResource(this.#ctx.org.id, loaded, entity), { policy: await this.policy(loaded) });
   }
 
   /** The read grants of a decision, or none if reading isn't allowed at all. */
-  async #readGrants(auth: AuthContext, loaded: LoadedApp, entity: string): Promise<AllowedQuery | null> {
-    const decision = await this.#ctx.policy.query(auth.principal, 'record.read', recordResource(this.#ctx.org.id, loaded, entity), { policy: await this.policy(loaded) });
+  async #readGrants(auth: AuthContext, loaded: LoadedApp, entity: string, inside = false): Promise<AllowedQuery | null> {
+    const principal = inside ? withoutScopes(auth) : auth.principal;
+    const decision = await this.#ctx.policy.query(principal, 'record.read', recordResource(this.#ctx.org.id, loaded, entity), { policy: await this.policy(loaded) });
     return decision.allowed ? (decision as AllowedQuery) : null;
   }
 
@@ -367,9 +382,9 @@ export class AppRuntime {
         version: after?.version ?? write.before!.version,
         operation: write.operation,
         changes,
-        actorType: auth.actor.type,
-        actorId: auth.actor.id,
-        onBehalfOf: null,
+        actorType: auth.agent ? 'service_account' : auth.actor.type,
+        actorId: auth.agent?.id ?? auth.actor.id,
+        onBehalfOf: auth.agent ? auth.actor.id : null,
         via: event.actor.via ?? 'api',
         at,
         auditEventId: event.id,
@@ -379,8 +394,8 @@ export class AppRuntime {
     return after;
   }
 
-  async #respond(auth: AuthContext, loaded: LoadedApp, entityName: string, record: StoredRecord): Promise<RecordOut | { id: string; version: number }> {
-    const read = await this.#readGrants(auth, loaded, entityName);
+  async #respond(auth: AuthContext, loaded: LoadedApp, entityName: string, record: StoredRecord, inside = false): Promise<RecordOut | { id: string; version: number }> {
+    const read = await this.#readGrants(auth, loaded, entityName, inside);
     const grants = read ? grantsFor(read.grants, recordValues(record)) : [];
     return grants.length ? this.project(this.entity(loaded, entityName), record, grants) : { id: record.id, version: record.version };
   }
@@ -537,7 +552,7 @@ export class AppRuntime {
     if (unknown.length) issues.push(`Unknown parameters: ${unknown.join(', ')}`);
     if (issues.length) throw unprocessable('invalid_parameters', issues.join('; '));
 
-    const decision = await this.decide(request, auth, loaded, 'record.read', query.entity);
+    const decision = await this.decide(request, auth, loaded, 'record.read', query.entity, { inside: true });
     const where = query.filter ? partialEvaluate(query.filter, { principal: principalEnv(auth), input: parameters, context: {} }, ['record']) : true;
     if (where === false) return { records: [], nextCursor: null };
     const userFields = query.fields.filter((field) => this.entity(loaded, query.entity).fields.some((f) => f.name === field));
@@ -578,7 +593,7 @@ export class AppRuntime {
     const check = checkActionInput(loaded.definition, name, input.values);
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
     if (action.operation === 'update' && !input.recordId) throw unprocessable('record_required', `${name} changes an existing record: give its ID`);
-    const permission = await this.decide(request, auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity);
+    const permission = await this.decide(request, auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity, { inside: true });
     // Revising a proposal is the person's own edit: it waits for their approval again, through the same review.
     const needsConfirmation = action.confirm !== 'none' && (auth.credential.kind === 'token' || options.revises !== undefined);
     const written = [...new Set([...Object.keys(input.values), ...Object.keys(action.set)])];
@@ -603,7 +618,7 @@ export class AppRuntime {
         values = Object.fromEntries(Object.entries(check.values).filter(([field, value]) => JSON.stringify(beforeValues[field] ?? null) !== JSON.stringify(value)));
         after = { ...beforeValues, ...values };
         if (!writeGrant(permission.grants, { fields: written, before: beforeValues, after })) {
-          const read = await this.#readGrants(auth, loaded, action.entity);
+          const read = await this.#readGrants(auth, loaded, action.entity, true);
           if (!(read && grantsFor(read.grants, beforeValues).length)) throw notFound('Record');
           throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()} for this record`);
         }
@@ -658,7 +673,7 @@ export class AppRuntime {
       if (result.status !== 'done') return result;
       // The response shows the record as the caller may read it, decided after the write.
       const stored = await this.#readBack(loaded, entity, result.record.id);
-      return { status: 'done' as const, record: stored ? await this.#respond(auth, loaded, action.entity, stored) : result.record };
+      return { status: 'done' as const, record: stored ? await this.#respond(auth, loaded, action.entity, stored, true) : result.record };
     });
   }
 
@@ -733,8 +748,8 @@ export class AppRuntime {
         provenance: proposal.provenance as unknown as Record<string, unknown>,
         card: proposal.card as unknown as Record<string, unknown>,
         digest,
-        proposedByType: auth.actor.type,
-        proposedBy: auth.actor.id,
+        proposedByType: auth.agent ? 'service_account' : auth.actor.type,
+        proposedBy: auth.agent?.id ?? auth.actor.id,
         proposedWithToken: auth.credential.kind === 'token' ? auth.credential.tokenId : null,
         onBehalfOf,
         revises: proposal.revises?.id ?? null,
@@ -898,6 +913,12 @@ export class AppRuntime {
   capability(loaded: LoadedApp, kind: 'action' | 'query', name: string) {
     return capabilityResource(this.#ctx.org.id, loaded, kind, name);
   }
+}
+
+/** The caller's principal without its token scopes: their own grants, for checks inside an operation. */
+function withoutScopes(auth: AuthContext) {
+  const { tokenScopes: _scopes, ...principal } = auth.principal;
+  return principal;
 }
 
 function canonical(loaded: LoadedApp, entity: string, field: string, value: unknown): FieldValue {

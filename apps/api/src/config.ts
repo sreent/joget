@@ -37,6 +37,19 @@ export const ConfigSchema = z
     OIDC_SCOPES: z.string().default('openid profile email'),
     /** The ID-token claim that carries group names or IDs. */
     OIDC_GROUPS_CLAIM: z.string().default('groups'),
+    /**
+     * The claim that identifies a person. `sub` is standard, but some IdPs make it different for
+     * each application: Entra ID does, so set `oid` there, the ID that's the same everywhere in a
+     * tenant. Agents' tokens then name the same person as sign-ins do. Set it before the first sign-in.
+     */
+    OIDC_SUBJECT_CLAIM: z.string().min(1).default('sub'),
+    /**
+     * Audiences accepted on a person's token in a token exchange (comma-separated): Ambit's own
+     * client ID, and those of agents that exchange the tokens they were given. Defaults to Ambit's.
+     */
+    TOKEN_EXCHANGE_AUDIENCES: list(),
+    /** How long a token for an agent acting for a person lives. Agents exchange again when it runs out. */
+    DELEGATED_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
     /** Allow an http:// issuer. For local development only. */
     OIDC_ALLOW_HTTP: bool.default(false),
     /**

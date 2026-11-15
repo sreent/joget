@@ -1,4 +1,6 @@
 import { entityFields, type CardData, type StoredDefinition } from '@platform/app-model';
+import { serviceAccounts } from '@platform/db';
+import { eq } from 'drizzle-orm';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -78,14 +80,22 @@ const STATUS: Record<ProposalRow['status'], { text: string; tone: 'warn' | 'good
 };
 
 /** The review page, drawn in Ocean (packages/design): one approval card, built from the stored proposal. */
-function page(input: { proposal: ProposalRow; card: CardData; definition: StoredDefinition | null; entity: string | null; inputs: readonly string[]; error?: string }): string {
+function page(input: {
+  proposal: ProposalRow;
+  card: CardData;
+  definition: StoredDefinition | null;
+  entity: string | null;
+  inputs: readonly string[];
+  agentName: string | null;
+  error?: string;
+}): string {
   const { proposal, card } = input;
   const pending = proposal.status === 'pending';
   const status = STATUS[proposal.status];
   // Agents are drawn in the agent tone, and people never are.
   const byAgent = proposal.proposedWithToken !== null || proposal.proposedByType !== 'user' || proposal.proposedBy !== proposal.onBehalfOf;
   const from = byAgent
-    ? '<p class="approval-from">Prepared by an agent acting for you</p>'
+    ? `<p class="approval-from">Prepared by ${input.agentName ? escape(input.agentName) : 'an agent'}, acting for you</p>`
     : '<p class="approval-from person">Revised by you</p>';
   const findings = card.findings.length
     ? `<ul class="approval-findings">${card.findings
@@ -212,6 +222,10 @@ export function proposalRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlu
       const proposal = await runtime.proposalFor(auth, id);
       const loaded = await ctx.apps.load(proposal.appId).catch(() => null);
       const action = loaded?.definition.actions[proposal.action];
+      const [agent] =
+        proposal.proposedByType === 'service_account' && proposal.proposedBy
+          ? await ctx.db.select({ name: serviceAccounts.name }).from(serviceAccounts).where(eq(serviceAccounts.id, proposal.proposedBy))
+          : [];
       reply.header('cache-control', 'no-store').type('text/html; charset=utf-8').status(error?.statusCode ?? 200);
       return page({
         proposal,
@@ -219,6 +233,7 @@ export function proposalRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlu
         definition: loaded?.definition ?? null,
         entity: action?.entity ?? null,
         inputs: action?.input ?? [],
+        agentName: agent?.name ?? null,
         ...(error ? { error: error.message } : {}),
       });
     };

@@ -1,3 +1,4 @@
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import * as client from 'openid-client';
 import type { Config } from '../config.js';
 
@@ -32,6 +33,11 @@ export interface OidcProvider {
     nonce: string;
     codeVerifier: string;
   }): Promise<OidcIdentity>;
+  /**
+   * Check a token the IdP issued for a person, such as the ID token an agent received when the
+   * person signed in to it, and return who it names. Used for token exchange (RFC 8693).
+   */
+  verifyToken(token: string): Promise<OidcIdentity>;
 }
 
 const MAX_GROUPS = 500;
@@ -41,10 +47,11 @@ function stringArray(value: unknown): string[] {
 }
 
 /** Map ID-token claims to an identity. `groupsClaim` is configurable because IdPs name it differently. */
-export function identityFromClaims(claims: Record<string, unknown>, groupsClaim: string): OidcIdentity {
-  const { iss, sub } = claims;
+export function identityFromClaims(claims: Record<string, unknown>, groupsClaim: string, subjectClaim = 'sub'): OidcIdentity {
+  const { iss } = claims;
+  const sub = claims[subjectClaim];
   if (typeof iss !== 'string' || typeof sub !== 'string' || !iss || !sub) {
-    throw new Error('The ID token has no issuer or subject');
+    throw new Error(`The token has no issuer or no ${subjectClaim} claim`);
   }
   const name = [claims['name'], claims['preferred_username']].find((v): v is string => typeof v === 'string' && v.length > 0);
   return {
@@ -103,6 +110,38 @@ export function createResilientOidcProvider(
     warmUp: () => provider().then(() => true, () => false),
     startLogin: async (options) => (await provider()).startLogin(options),
     completeLogin: async (options) => (await provider()).completeLogin(options),
+    verifyToken: async (token) => (await provider()).verifyToken(token),
+  };
+}
+
+/** The token was not issued by the IdP for an audience Ambit accepts, or is no longer valid. */
+export class InvalidSubjectTokenError extends Error {
+  override readonly name = 'InvalidSubjectTokenError';
+}
+
+/**
+ * Verify a JWT the IdP issued for a person: its signature against the IdP's published keys, its
+ * issuer, one of the accepted audiences, and its expiry.
+ */
+export function createTokenVerifier(options: {
+  readonly issuer: string;
+  readonly audiences: readonly string[];
+  readonly keys: JWTVerifyGetKey;
+  readonly groupsClaim: string;
+  readonly subjectClaim: string;
+}): (token: string) => Promise<OidcIdentity> {
+  return async (token) => {
+    try {
+      const { payload } = await jwtVerify(token, options.keys, {
+        issuer: options.issuer,
+        audience: [...options.audiences],
+        clockTolerance: 30,
+        requiredClaims: ['exp'],
+      });
+      return identityFromClaims(payload as Record<string, unknown>, options.groupsClaim, options.subjectClaim);
+    } catch (error) {
+      throw new InvalidSubjectTokenError(error instanceof Error ? error.message : 'Invalid token', { cause: error });
+    }
   };
 }
 
@@ -145,7 +184,19 @@ export async function createOpenIdProvider(config: Config): Promise<OidcProvider
       });
       const claims = tokens.claims();
       if (!claims) throw new Error('The IdP did not return an ID token');
-      return identityFromClaims(claims as Record<string, unknown>, config.OIDC_GROUPS_CLAIM);
+      return identityFromClaims(claims as Record<string, unknown>, config.OIDC_GROUPS_CLAIM, config.OIDC_SUBJECT_CLAIM);
     },
+
+    verifyToken: (() => {
+      const metadata = configuration.serverMetadata();
+      if (!metadata.jwks_uri) return async () => Promise.reject(new InvalidSubjectTokenError('The IdP publishes no signing keys'));
+      return createTokenVerifier({
+        issuer: metadata.issuer,
+        audiences: config.TOKEN_EXCHANGE_AUDIENCES.length ? config.TOKEN_EXCHANGE_AUDIENCES : [config.OIDC_CLIENT_ID],
+        keys: createRemoteJWKSet(new URL(metadata.jwks_uri)),
+        groupsClaim: config.OIDC_GROUPS_CLAIM,
+        subjectClaim: config.OIDC_SUBJECT_CLAIM,
+      });
+    })(),
   };
 }

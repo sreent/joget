@@ -173,7 +173,11 @@ describe('agents propose, people approve', () => {
   let proposalId: string;
 
   it('publishes what the person may do as MCP tools', async () => {
-    agentToken = await mintPat(bob, ['app.run', 'action.run', 'query.run', 'record.read', 'record.create']);
+    // Errands, not raw tables: the agent can run actions and queries, and touch records only through them.
+    agentToken = await mintPat(bob, ['app.run', 'action.run', 'query.run']);
+    const direct = await inject({ method: 'POST', url: records(), ...bearer(agentToken), payload: { values: { title: 'Sneaky', category: 'meals', amount: 5 } } }, 403);
+    expect(direct.json().details.reasons).toEqual([{ kind: 'outside_token_scope' }]);
+    await inject({ method: 'GET', url: records(), ...bearer(agentToken) }, 403);
     const init = await rpc(agentToken, '/mcp', 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
     expect(init.result).toMatchObject({ protocolVersion: '2025-06-18', capabilities: { tools: {} } });
     const tools = (await rpc(agentToken, '/mcp', 'tools/list')).result.tools as Array<{ name: string; inputSchema: any }>;
@@ -221,7 +225,7 @@ describe('agents propose, people approve', () => {
 
     const review = await inject({ method: 'GET', url: `/review/${proposalId}`, ...as(bob) }, 200);
     expect(review.body).toContain('<link rel="stylesheet" href="/assets/ocean.css">');
-    expect(review.body).toContain('Prepared by an agent acting for you');
+    expect(review.body).toContain('Prepared by an agent, acting for you');
     expect(review.body).toContain('Marina Bay hotel: SGD 270.00');
     expect(review.body).toContain('Hotel is above the SGD 250 nightly cap');
     expect(review.body).toContain('Read from receipt.jpg');

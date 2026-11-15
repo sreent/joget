@@ -5,7 +5,7 @@ import { createTestDatabase } from '@platform/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { expect } from 'vitest';
 import { createAppContext } from '../src/app.js';
-import { IdpUnavailableError, type OidcIdentity, type OidcProvider } from '../src/auth/oidc.js';
+import { IdpUnavailableError, InvalidSubjectTokenError, type OidcIdentity, type OidcProvider } from '../src/auth/oidc.js';
 import { loadConfig } from '../src/config.js';
 import type { AppContext } from '../src/context.js';
 import { buildServer, type Server } from '../src/server.js';
@@ -40,6 +40,14 @@ export class FakeIdp implements OidcProvider {
       nonce: randomUUID(),
       codeVerifier: randomUUID(),
     };
+  }
+
+  /** A fake IdP token is `idtoken:<subject>`: it names that person, as a signed ID token would. */
+  async verifyToken(token: string) {
+    if (!this.reachable) throw new IdpUnavailableError(new Error('connect ECONNREFUSED'));
+    const subject = /^idtoken:([a-z0-9-]+)$/.exec(token)?.[1];
+    if (!subject) throw new InvalidSubjectTokenError('signature verification failed');
+    return this.identities.get(subject) ?? identity(subject);
   }
 
   async completeLogin({ callbackUrl, state }: { callbackUrl: URL; state: string }) {

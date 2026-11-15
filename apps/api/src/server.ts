@@ -13,6 +13,7 @@ import {
 import { installAccessControl, requireAccessRules, type RouteAccess } from './access/enforce.js';
 import { accessRoutes } from './access/routes.js';
 import { auditRoutes } from './audit/routes.js';
+import { agentRoutes } from './agents/routes.js';
 import { AppBuilder } from './apps/builder.js';
 import { mcpRoutes } from './apps/mcp.js';
 import { proposalRoutes } from './apps/proposal-routes.js';
@@ -117,6 +118,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(proposalRoutes(ctx, runtime));
   await app.register(mcpRoutes(ctx, builder, runtime));
   await app.register(designRoutes());
+  await app.register(agentRoutes(ctx));
   app.get(
     '/openapi.json',
     { config: { access: { kind: 'authenticated' } }, schema: { hide: true } },

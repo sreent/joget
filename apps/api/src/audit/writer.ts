@@ -38,14 +38,14 @@ export const SYSTEM_ACTOR: AuditActor = { type: 'system', id: 'platform', via: '
 
 export function auditScopeFor(request: FastifyRequest, orgId: string, now: Date): AuditScope {
   const auth = request.auth;
-  const actor: AuditActor = auth
-    ? {
-        type: auth.actor.type,
-        id: auth.actor.id,
-        via: 'api',
-        ...(auth.credential.kind === 'session' ? { sessionId: auth.credential.sessionId } : { tokenId: auth.credential.tokenId }),
-      }
-    : { type: 'anonymous', id: 'anonymous', via: 'api' };
+  const via = request.url.startsWith('/mcp') ? 'mcp' : 'api';
+  const credential = auth ? (auth.credential.kind === 'session' ? { sessionId: auth.credential.sessionId } : { tokenId: auth.credential.tokenId }) : {};
+  // An agent acting for a person is the actor, on the person's behalf: the log names both.
+  const actor: AuditActor = !auth
+    ? { type: 'anonymous', id: 'anonymous', via }
+    : auth.agent
+      ? { type: 'service_account', id: auth.agent.id, via, ...credential, onBehalfOf: auth.actor.id }
+      : { type: auth.actor.type, id: auth.actor.id, via, ...credential };
   const traceId = trace.getActiveSpan()?.spanContext().traceId;
   const userAgent = request.headers['user-agent'];
   return {

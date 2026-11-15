@@ -180,6 +180,8 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
                 tokenId: z.uuid().nullable(),
                 scopes: z.array(z.string()).nullable(),
               }),
+              /** Set when an agent acts for this person, through a token from a token exchange. */
+              agent: z.object({ id: z.uuid(), name: z.string() }).nullable(),
             }),
           },
         },
@@ -200,6 +202,7 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
             personalSpaceId: null,
             groups: [],
             credential,
+            agent: null,
           };
         }
         const memberships = await ctx.db
@@ -220,6 +223,7 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
           personalSpaceId: personal?.id ?? null,
           groups: memberships,
           credential,
+          agent: auth.agent ?? null,
         };
       },
     );

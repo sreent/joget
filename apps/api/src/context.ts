@@ -42,7 +42,10 @@ export type Credential =
 
 /** The authenticated caller behind a request. */
 export interface AuthContext {
+  /** Who the request is for. For an agent acting for a person, the person. */
   readonly actor: Actor;
+  /** Set when an agent acts for the person in `actor`, through a token from a token exchange. */
+  readonly agent?: { readonly id: string; readonly name: string };
   /** What the policy decision point sees; token scopes are already applied. */
   readonly principal: Principal;
   readonly credential: Credential;

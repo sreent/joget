@@ -6,7 +6,7 @@ export type AuditOutcome = 'success' | 'denied' | 'error';
 export interface AuditActor {
   readonly type: 'user' | 'service_account' | 'system' | 'anonymous';
   readonly id: string;
-  readonly via?: 'ui' | 'api' | 'cli' | 'system';
+  readonly via?: 'ui' | 'api' | 'mcp' | 'cli' | 'system';
   readonly sessionId?: string;
   readonly tokenId?: string;
   /** Set during impersonation: the user whose identity is being used. */
