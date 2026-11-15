@@ -9,10 +9,11 @@
 
 - **Decided:**
   - 2026-11-14: one company; cloud-agnostic and IdP-agnostic; TypeScript; ISO 27001:2022; no data-residency constraint.
-  - 2026-11-15: people ask for outcomes and builders publish capabilities; the agent is a separate project; the first processes keep their data on the platform; people build with an AI copilot.
+  - 2026-11-15: people ask for outcomes and builders publish capabilities; the agent is a separate project; the first processes keep their data on the platform; it stays a low-code platform like Joget and Mendix, with visual designers next to an AI copilot.
 
   Production is separated from everything else (§7.3), and §15 maps the design to ISO 27001 controls.
 - **People ask for outcomes; builders publish capabilities.** For the person doing the work, the app disappears: they ask an agent for an outcome, in Teams, Slack, Matrix, Signal or the web, then check a review card and confirm. For builders and governance, the app remains as the package that capabilities ship in: owned, versioned, reviewed, released and audited (§6).
+- **A low-code platform, like Joget and Mendix.** Builders design data, forms, pages and logic visually in the studio. An AI copilot and code (YAML in Git) edit the same definitions. The screens they design, and the tools agents call, are two ways to use the same app (§6.5).
 - **A capability is a contract the platform enforces.**
   - Actions change something; queries answer something.
   - Each has typed inputs, rules checked on the server, an effect, a confirmation level, a review card and a list of who may use it.
@@ -81,8 +82,10 @@ Surpassing Joget on governance is worthless if builders can't deliver what they 
 
 | Capability | Phase (§13) |
 |---|---|
+| Visual designers in the studio: the data model, and drag-and-drop forms with conditional visibility and multi-page layouts | 1 |
+| Visual designers for pages, navigation and dashboards, and for logic flows: what an action does, step by step, like Mendix microflows or an n8n workflow | 2 |
 | Rich data: typed fields, lookups and relations, line items (child records), file and image upload, calculated fields, validation rules | 1 |
-| Generated screens: review cards, review pages, and list and detail pages, with layout adjustments, conditional visibility and multi-page forms | 1–2 |
+| Screens: generated from entities and actions as a starting point, refined in the designers. Review cards and review pages for confirming what agents prepare | 1–2 |
 | Lists with filters, sorting and bulk actions, and export (CSV, Excel, PDF) governed by `record.export` | 1–2 |
 | Dashboards, themes and branding, with a responsive UI | 2–3 |
 | Internationalization: UI translations, right-to-left layouts, per-app message bundles, time zones | 2 |
@@ -96,7 +99,7 @@ Surpassing Joget on governance is worthless if builders can't deliver what they 
 | An installable PWA with offline drafts | 5 |
 | A marketplace of signed templates and plugins | 5 |
 
-Joget's drag-and-drop designers are not on the list. Generated screens that builders can adjust, and an AI copilot that drafts definitions, take their place. A full visual designer stays an option for later.
+The designers are the core of a low-code platform, as in Joget and Mendix, and they edit the same definitions as the AI copilot and the builder MCP. A builder can start from a description, from generated screens, or from a blank canvas, and switch between them freely.
 
 ### Enterprise readiness targets
 
@@ -116,7 +119,7 @@ These are initial targets, to validate with load tests and pilot teams:
 
 ### Non-goals for the MVP (phases 0–2)
 
-Marketplace, native mobile apps, drag-and-drop form and page designers, real-time co-editing, and a BI/reporting suite. Several of these arrive in later phases (§13), but none of them should shape the kernel.
+Marketplace, native mobile apps, real-time co-editing, and a BI/reporting suite. Several of these arrive in later phases (§13), but none of them should shape the kernel.
 
 The agent itself is out of scope for the platform: its conversations, model orchestration and chat adapters are a separate project that uses the platform (§6.4).
 
@@ -450,7 +453,7 @@ The rule of thumb is **language for intent, UI for verification**. So the platfo
 - **People ask for outcomes.** For example: "Claim last week's Singapore trip." An agent picks the capabilities that get it done, prepares the work and shows a review card. The person checks it and confirms.
 - **Builders publish capabilities, and apps package them.** The app is what's owned, versioned, reviewed, released and audited: its capabilities, their data, rules and review cards, and its roles.
 
-Not everything is a task. Exploring data, comparing options and monitoring a process still need screens that stay put, so generated list and detail pages, and later dashboards, remain. The task model fits transactional work best: claims, leave, bookings, purchase requests.
+Not everything is a task. Exploring data, comparing options and monitoring a process still need screens that stay put, so the platform remains a full low-code platform: builders design pages, forms, lists and dashboards in the studio, like Joget and Mendix. The task model fits transactional work best: claims, leave, bookings, purchase requests.
 
 ### 6.1 What an app is made of
 
@@ -458,14 +461,14 @@ Not everything is a task. Exploring data, comparing options and monitoring a pro
 |---|---|---|
 | Entity | A data model: typed fields, relations, line items (child records), files, classification tags (`PII`, `Confidential`) | A form and its `app_fd_*` table |
 | Rule | A check the server runs for every write, whatever the path: form, API, agent or automation. An error blocks the write. A warning travels with the record to the approver | Form validators |
-| Action | A business operation that changes something: create or update records, or start a process. It has typed inputs, fixed effects, a confirmation level and a review card | Form submission and process start |
+| Action | A business operation that changes something: create or update records, or start a process. It has typed inputs, a confirmation level and a review card. Its effect starts simple (set these values) and grows into a flow of steps, designed visually, like a Mendix microflow or an n8n workflow | Form submission and process start |
 | Query | A named, parameterized read, such as "my open claims" or "status of a claim" | Datalist |
 | Review card | What a person checks before confirming an action. The app's owner designs it, and the platform fills it from the exact data the action will write | None |
 | Process | A BPMN-style model (start, human and service tasks, gateways, timers, end), run durably on Temporal | Process (XPDL) |
 | Automation | Steps triggered by record events, schedules or webhooks | Process tools, plugins |
 | Connection | A configured connector: the built-in store, a REST API, a database or email. Secrets are held by reference | Plugins, API connectors |
 | App roles | Permission sets over the app's capabilities and entities (§5.5) | Userview and form permission plugins, participant mappings |
-| Forms and pages | Generated from entities and actions by default. Builders can adjust the layout | Form, Userview |
+| Forms and pages | Designed in the studio's form and page designers, starting from generated defaults | Form, Userview |
 | Settings and translations | Values set per environment, and message bundles | Environment variables, message bundles |
 
 **Data is reached through connections.** As in n8n, every system a capability reads or writes is a connection, and capabilities don't care where the data lives. The platform ships a **built-in store** as the first connector, for two reasons. The first processes have no existing system of record (§14). And some guarantees only hold where the platform controls the data:
@@ -571,9 +574,10 @@ sequenceDiagram
   Each adapter draws it natively, for example as an Adaptive Card in Teams or with Block Kit in Slack, and the platform's own review page draws the full version. Standards for agent interfaces, such as MCP Apps and Google's A2UI, are still settling, and the card format should map onto them.
 - **Some channels can't prove who clicked.** Where an adapter can't verify the person's identity strongly enough for an approval, it hands off to the review page, behind single sign-on.
 
-### 6.5 Building with an AI copilot
+### 6.5 Building: the studio, an AI copilot, or code
 
-- **People build, with a copilot.** Builders work in their personal space with an AI copilot. It drafts entities, rules, actions and cards from a description, for example "employees claim travel expenses with receipts, and hotels are capped at SGD 250 a night".
+- **The studio is a visual low-code builder,** like Joget and Mendix. It has designers for the data model, forms, pages and navigation, and, from phase 2, logic flows. Builders work in their personal space, where every change applies at once to their sandbox.
+- **An AI copilot works alongside the designers.** It drafts entities, rules, actions and cards from a description, for example "employees claim travel expenses with receipts, and hotels are capped at SGD 250 a night". The builder then refines the draft visually.
 - **The builder API is also an MCP server.** Any AI client can build through it with the builder's permissions: Claude Code, Claude Desktop or the studio's own copilot. Through it, a client can:
   - list apps and read their definitions;
   - validate a change, and see its migration plan and permission diff;
@@ -939,7 +943,7 @@ Within that, **TypeScript end to end** is the chosen stack (decided 2026-11-14).
 | Repository | A pnpm workspaces + Turborepo monorepo | Shared packages with enforced boundaries, and fast incremental builds |
 | Definition schemas | Zod schemas, exported as JSON Schema | Definitions validate identically in the browser, on the server and in the CLI |
 | Frontend | React 19, Vite, TanStack Router and Query, and Tailwind CSS with shadcn/ui (Radix primitives) | Accessible components for the studio, the review pages and the generated screens |
-| Builders | Generated screens with layout adjustments, an AI copilot, and React Flow (xyflow) for the process designer | No drag-and-drop canvases to build and maintain in the MVP |
+| Builders | The studio's visual designers: dnd-kit for the form and page canvases, React Flow (xyflow) for logic flows and processes. An AI copilot drafts into the same definitions | MIT-licensed building blocks for our own designers |
 | Agents | MCP (the Streamable HTTP transport, with MCP's OAuth-based authorization) for agents and AI builders; OpenAPI for everything else | One open protocol that Claude, Copilot and our own agent all speak |
 | Agent identity | OAuth 2.0 Token Exchange (RFC 8693) for an agent acting on a person's behalf | Standard delegation, with the agent recorded as the actor |
 | Backend | Fastify 5 with Zod schemas, organized as a modular monolith | Every route must declare its access rule, and the server refuses to start if one is missing. No decorator metadata. OpenAPI is generated from the schemas |
@@ -973,8 +977,8 @@ Check each component's licence as you adopt it. Prefer Apache-2.0 and MIT, and r
 | Phase | Scope | Exit criterion |
 |---|---|---|
 | **0. Governance kernel** (done) | Orgs, personal and team spaces, membership · OIDC login, directory, service accounts, tokens · the PDP with permission sets, roles, bindings and expiry · scope-based isolation · the audit pipeline (same-transaction writes, sealing) · OpenTelemetry conventions · CI/CD, Helm chart, Compose file | An admin creates a team space and assigns roles, and every action appears in a verifiable audit log. Proven on a real Kubernetes cluster |
-| **1. Capability core** | The built-in store: entities with relations, line items and files, and record- and field-level permissions and history · rules · actions and queries · review cards and the review page · proposals and confirmation · provenance · MCP endpoints for capabilities and for building · sharing personal apps | In a personal space, a builder creates an expense app, with Claude drafting through the builder MCP. An agent acting for a colleague prepares a claim from a receipt. The colleague edits a line on the review page and confirms. The claim is stored with where every value came from, and the audit log shows who did what, for whom |
-| **2. Governed delivery** | Working copies in personal spaces · change requests with checks, permission and capability diffs, and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · app templates, import and export | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
+| **1. Capability core and the first studio** | The built-in store: entities with relations, line items and files, and record- and field-level permissions and history · rules · actions and queries · review cards and the review page · proposals and confirmation · provenance · MCP endpoints for capabilities and for building · sharing personal apps · the studio's data-model and form designers, with generated pages | In a personal space, a builder designs an expense app in the studio, with Claude drafting through the builder MCP. An agent acting for a colleague prepares a claim from a receipt. The colleague edits a line on the review page and confirms. The claim is stored with where every value came from, and the audit log shows who did what, for whom |
+| **2. Governed delivery and the full studio** | Working copies in personal spaces · change requests with checks, permission and capability diffs, and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · app templates, import and export · the page, navigation and dashboard designers, and logic flows for actions | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
 | **3. Approvals and the shared agent** | Processes on Temporal with human tasks, org-chart routing, timers and SLAs · universal inbox · agents registered to act for people (token exchange, approval by a Security admin) · a reference Teams bot and chat adapters, in the separate agent project · notifications · document generation | An employee claims expenses in Teams, the approver approves in Teams, and SLA alerts and the audit trail are complete |
 | **4. Connectors and enterprise hardening** | Connectors that publish other systems' operations as capabilities (REST and OpenAPI first) · automations · guardrail editor, SoD, JIT elevation, access reviews · plugin registry, sandboxed scripts · SIEM streaming, quotas and metering · the production plane in its own cloud account · DR drills, ASVS verification and a penetration test | Passes an internal audit against ISO 27001:2022 using the §15 mapping, and meets the readiness targets in §1 |
 | **5. Earned autonomy and beyond** | Confirmation levels that step down once a capability has earned trust, per person or team, within guardrails · AI that drafts whole apps from a description into change requests · a signed marketplace of templates and plugins · an installable PWA with offline drafts · a BI connector (read replica, governed exports) | A routine claim type moves from review to preview on measured trust, and a business user ships a new capability that an AI drafted, through the normal approval flow |
@@ -1002,10 +1006,11 @@ Phases 0–3 are the MVP: the point where an employee can claim expenses through
 
 | Decision | Outcome | Consequence |
 |---|---|---|
-| What the platform is | People ask for outcomes, builders publish capabilities, and apps are the packages that capabilities ship in | §6. Screens are mostly generated, and drag-and-drop designers leave the MVP |
+| What the platform is | People ask for outcomes, builders publish capabilities, and apps are the packages that capabilities ship in | §6. One definition is used in two ways: as screens and as agent tools |
+| Low-code | A low-code platform like Joget and Mendix. Visual designers for data, forms, pages and logic sit next to an AI copilot and code | The studio is core: the data-model and form designers in phase 1, and pages, dashboards and logic flows in phase 2 (§6.5) |
 | The agent | A separate project: the agent runtime and its chat adapters for Teams, Slack, Matrix and Signal. It calls the platform through MCP and the API | The platform depends on no single chat app. Any agent can use the same capabilities: Copilot, Claude or our own (§6.4) |
 | Systems of record | The first processes, expenses included, have no existing system. Their data lives in the platform's built-in store, which is reached like any other connector | Phase 1 builds the built-in store behind the connector interface. Connectors to other systems follow in phase 4 (§6.1) |
-| Who builds | People, with an AI copilot. AI clients such as Claude can also build through the builder MCP and API, with the builder's permissions | The builder MCP arrives in phase 1, and AI changes pass the same checks and reviews (§6.5) |
+| Who builds | People, in the studio and with an AI copilot. AI clients such as Claude can also build through the builder MCP and API, with the builder's permissions | The builder MCP arrives in phase 1, and AI changes pass the same checks and reviews (§6.5) |
 
 **Still open:**
 

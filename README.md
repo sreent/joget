@@ -20,7 +20,7 @@ The goal is not to clone Joget DX but to surpass it: match its builder breadth, 
   - people ask for outcomes and builders publish capabilities, with apps as the packages they ship in;
   - the agent and its chat adapters are a separate project that calls the platform;
   - data lives in the platform's built-in store, which is reached like any other connector;
-  - people build with an AI copilot, and AI clients such as Claude can build through an MCP server.
+  - it stays a low-code platform like Joget and Mendix: visual designers, an AI copilot and code edit the same definitions, and AI clients such as Claude can build through an MCP server.
 - **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), the product name, and which chat platforms can carry an approval.
 - **Built so far:** phase 0, the governance kernel (below), proven on a real Kubernetes cluster. The first piece of phase 1 is also built: the policy engine turns record-level conditions into database filters.
 
