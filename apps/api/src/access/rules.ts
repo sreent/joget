@@ -21,7 +21,8 @@ export type AccessRule =
   | ({ readonly kind: 'query' } & PermissionCheck);
 
 interface PermissionCheck {
-  readonly action: string | ((request: FastifyRequest) => Promise<string>);
+  /** One action, or several of which any one will do: for example `app.read` for builders, `app.run` for users. */
+  readonly action: string | readonly string[] | ((request: FastifyRequest) => Promise<string>);
   readonly resource: (request: FastifyRequest) => Promise<Resource>;
   readonly context?: (request: FastifyRequest) => Promise<Record<string, unknown>>;
   /** The policy to decide with, when it's more than the platform's: for example with an app's own roles. */

@@ -29,7 +29,9 @@
         "MFA_EVIDENCE": { "enum": ["amr", "acr"] },
         "FILE_STORE": { "enum": ["postgres", "s3"] },
         "FILE_SCANNER": { "enum": ["clamav"], "description": "Production refuses uploads without a malware scanner." },
-        "S3_ENDPOINT": { "type": "string", "pattern": "^https://" }
+        "S3_ENDPOINT": { "type": "string", "pattern": "^https://" },
+        "CHANGE_APPROVALS": { "type": "string", "pattern": "^[1-5]$" },
+        "DEPLOY_PROD_APPROVALS": { "type": "string", "pattern": "^[1-5]$" }
       },
       "not": {
         "anyOf": [

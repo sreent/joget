@@ -73,9 +73,9 @@ export function findEscalation(
     : target.permissionSetId
       ? [target.permissionSetId]
       : [];
-  const held = effectiveGrants(policy, granter, scopes, granterBindings, now).filter(
-    (grant) => !grant.outsidePersonalBoundary && grant.grant.condition === undefined,
-  );
+  const held = effectiveGrants(policy, granter, scopes, granterBindings, now).filter((grant) => !grant.outsidePersonalBoundary);
+  // A conditional grant covers only the same condition: granting what you hold only in previews stays in previews.
+  const sameCondition = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   const missing = new Set<string>();
   for (const setId of setIds) {
     const set = policy.permissionSets.get(setId);
@@ -85,7 +85,10 @@ export function findEscalation(
     }
     for (const wanted of set.grants) {
       const covered = held.some(
-        (h) => patternCovers(h.grant.permission, wanted.permission) && selectorCovers(h.grant.resource, wanted.resource),
+        (h) =>
+          patternCovers(h.grant.permission, wanted.permission) &&
+          selectorCovers(h.grant.resource, wanted.resource) &&
+          (h.grant.condition === undefined || sameCondition(h.grant.condition, wanted.condition)),
       );
       if (!covered) missing.add(wanted.permission);
     }

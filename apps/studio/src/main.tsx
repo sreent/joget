@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { api } from './api.js';
 import { Link, useRoute } from './router.js';
 import { Builder } from './screens/Builder.js';
+import { ChangeRequestPage } from './screens/Delivery.js';
 import { Home } from './screens/Home.js';
 import { Use } from './screens/Use.js';
 import './styles.css';
@@ -32,8 +33,15 @@ function App() {
           <Home me={me.data} />
         ) : route.name === 'build' ? (
           <Builder appId={route.appId} tab={route.tab} />
+        ) : route.name === 'change' ? (
+          <ChangeRequestPage id={route.changeRequestId} me={me.data} />
         ) : (
-          <Use appId={route.appId} {...(route.page ? { page: route.page } : {})} {...(route.recordId ? { recordId: route.recordId } : {})} />
+          <Use
+            appId={route.appId}
+            {...(route.env ? { env: route.env } : {})}
+            {...(route.page ? { page: route.page } : {})}
+            {...(route.recordId ? { recordId: route.recordId } : {})}
+          />
         )}
       </main>
     </div>

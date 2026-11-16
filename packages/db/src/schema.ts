@@ -12,6 +12,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 type Json = Record<string, unknown>;
@@ -300,7 +301,15 @@ export const apps = pgTable(
     status: text('status', { enum: ['active', 'deleted'] })
       .notNull()
       .default('active'),
+    /** The newest revision of the main line. A team app's environments run releases of it. */
     currentRevision: integer('current_revision').notNull(),
+    /**
+     * Set on a working copy: a personal app in which one builder changes a team app (design §3).
+     * Changes go back to the team app through change requests.
+     */
+    workingCopyOf: uuid('working_copy_of').references((): AnyPgColumn => apps.id),
+    /** For a working copy: the team app's main-line revision that the copy last took in. */
+    baseRevision: integer('base_revision'),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
@@ -311,6 +320,10 @@ export const apps = pgTable(
   (t) => [
     index('apps_space_idx').on(t.spaceId),
     uniqueIndex('apps_space_handle_uq').on(t.spaceId, t.handle).where(sql`${t.status} = 'active'`),
+    uniqueIndex('apps_one_working_copy_uq')
+      .on(t.workingCopyOf, t.ownerUserId)
+      .where(sql`${t.status} = 'active' and ${t.workingCopyOf} is not null`),
+    check('apps_working_copy_has_base', sql`(${t.workingCopyOf} is null) = (${t.baseRevision} is null)`),
   ],
 );
 
@@ -327,6 +340,11 @@ export const appRevisions = pgTable(
     digest: text('digest').notNull(),
     /** The migration steps and notes of the save that made this revision. */
     summary: jsonb('summary').$type<Json>(),
+    /**
+     * Set on the head of a change request: a revision off the main line, which the request's
+     * preview runs. Main-line revisions have none.
+     */
+    changeRequestId: uuid('change_request_id'),
     createdByType: text('created_by_type', { enum: actorTypes }).notNull(),
     createdBy: uuid('created_by'),
     createdAt: createdAt(),
@@ -336,7 +354,8 @@ export const appRevisions = pgTable(
 
 /**
  * Where an app runs. Each environment has its own database schema and NOLOGIN role (design §6.8).
- * A personal app has one: its sandbox.
+ * A personal app has one: its sandbox. A team app has Prod, optionally Staging, and a preview for
+ * each open change request.
  */
 export const appEnvironments = pgTable(
   'app_environments',
@@ -345,11 +364,21 @@ export const appEnvironments = pgTable(
     appId: uuid('app_id')
       .notNull()
       .references(() => apps.id),
-    kind: text('kind', { enum: ['sandbox', 'staging', 'prod'] }).notNull(),
+    kind: text('kind', { enum: ['sandbox', 'preview', 'staging', 'prod'] }).notNull(),
     schemaName: text('schema_name').notNull(),
     dbRole: text('db_role').notNull(),
     /** The definition revision whose data model the schema has. */
     appliedRevision: integer('applied_revision').notNull(),
+    /**
+     * The revision whose definition the environment runs. After a rollback it is behind
+     * applied_revision: the schema keeps the newer tables and columns, which the older
+     * definition ignores (expand and contract, design §7.1).
+     */
+    activeRevision: integer('active_revision').notNull(),
+    /** Staging and Prod: the release that is live. */
+    activeReleaseId: uuid('active_release_id').references((): AnyPgColumn => releases.id),
+    /** A preview: the change request it shows. */
+    changeRequestId: uuid('change_request_id').references((): AnyPgColumn => changeRequests.id),
     status: text('status', { enum: ['active', 'deleted'] })
       .notNull()
       .default('active'),
@@ -357,8 +386,186 @@ export const appEnvironments = pgTable(
   },
   (t) => [
     uniqueIndex('app_environments_schema_uq').on(t.schemaName),
-    uniqueIndex('app_environments_app_kind_uq').on(t.appId, t.kind).where(sql`${t.status} = 'active'`),
+    uniqueIndex('app_environments_app_kind_uq')
+      .on(t.appId, t.kind)
+      .where(sql`${t.status} = 'active' and ${t.kind} <> 'preview'`),
+    uniqueIndex('app_environments_preview_uq').on(t.changeRequestId).where(sql`${t.status} = 'active'`),
+    check('app_environments_previews_show_changes', sql`(${t.kind} = 'preview') = (${t.changeRequestId} is not null)`),
   ],
+);
+
+/**
+ * A change to a team app, from a builder's working copy (design §6.7). The head is a revision off
+ * the main line; merging makes it (or its merge with newer main-line changes) the next main-line
+ * revision.
+ */
+export const changeRequests = pgTable(
+  'change_requests',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    /** Numbered per app: change request #3. */
+    number: integer('number').notNull(),
+    workingCopyId: uuid('working_copy_id').references(() => apps.id),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status', { enum: ['open', 'merged', 'closed'] })
+      .notNull()
+      .default('open'),
+    /** The main-line revision the change starts from. */
+    baseRevision: integer('base_revision').notNull(),
+    headRevision: integer('head_revision').notNull(),
+    /** SHA-256 of the head definition. Reviews name it, so an approval covers exactly what was seen. */
+    headDigest: text('head_digest').notNull(),
+    /** The automatic checks of the head: validation, migration plan, permission and capability diffs, lint. */
+    checks: jsonb('checks').$type<Json>().notNull(),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    mergedRevision: integer('merged_revision'),
+    mergedAt: timestamp('merged_at', tz),
+    mergedByType: text('merged_by_type', { enum: actorTypes }),
+    mergedBy: uuid('merged_by'),
+    closedAt: timestamp('closed_at', tz),
+    closedByType: text('closed_by_type', { enum: actorTypes }),
+    closedBy: uuid('closed_by'),
+  },
+  (t) => [
+    uniqueIndex('change_requests_app_number_uq').on(t.appId, t.number),
+    uniqueIndex('change_requests_one_open_per_copy_uq').on(t.workingCopyId).where(sql`${t.status} = 'open'`),
+    index('change_requests_space_idx').on(t.spaceId, t.status),
+  ],
+);
+
+/** Reviews of a change request. Each names the head it reviewed, so a new head needs new approvals. */
+export const changeReviews = pgTable(
+  'change_reviews',
+  {
+    id: uuid('id').primaryKey(),
+    changeRequestId: uuid('change_request_id')
+      .notNull()
+      .references(() => changeRequests.id),
+    reviewerId: uuid('reviewer_id')
+      .notNull()
+      .references(() => users.id),
+    verdict: text('verdict', { enum: ['approve', 'request_changes', 'comment'] }).notNull(),
+    headDigest: text('head_digest').notNull(),
+    comment: text('comment'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('change_reviews_request_idx').on(t.changeRequestId, t.createdAt)],
+);
+
+/**
+ * Releases of a team app: one main-line revision, hashed and signed. Immutable: a trigger rejects
+ * UPDATE and DELETE. Rolling back re-activates an earlier release (design §7.1).
+ */
+export const releases = pgTable(
+  'releases',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    /** Numbered per app: release 4. */
+    number: integer('number').notNull(),
+    revision: integer('revision').notNull(),
+    /** SHA-256 of the definition. */
+    digest: text('digest').notNull(),
+    previousReleaseId: uuid('previous_release_id').references((): AnyPgColumn => releases.id),
+    /** True if the step from the previous release deletes data. Such a release holds one change only. */
+    destructive: boolean('destructive').notNull(),
+    /** The migration steps from the previous release, and the change requests the release holds. */
+    contents: jsonb('contents').$type<Json>().notNull(),
+    notes: text('notes'),
+    /** SHA-256 of the release's canonical manifest, and the platform's signature over it. */
+    manifestDigest: text('manifest_digest').notNull(),
+    keyId: text('key_id').notNull(),
+    signature: text('signature').notNull(),
+    createdByType: text('created_by_type', { enum: actorTypes }).notNull(),
+    createdBy: uuid('created_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('releases_app_number_uq').on(t.appId, t.number), uniqueIndex('releases_app_revision_uq').on(t.appId, t.revision)],
+);
+
+/**
+ * Deploying a release to Staging or Prod, or rolling back to an earlier one: planned, approved as
+ * the environment requires, then executed (design §7.1).
+ */
+export const deployments = pgTable(
+  'deployments',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentKind: text('environment_kind', { enum: ['staging', 'prod'] }).notNull(),
+    /** Set once the environment exists: the first deployment to it creates it. */
+    environmentId: uuid('environment_id').references(() => appEnvironments.id),
+    kind: text('kind', { enum: ['deploy', 'rollback'] }).notNull(),
+    releaseId: uuid('release_id')
+      .notNull()
+      .references(() => releases.id),
+    /** The release that was live when the deployment was planned. None for the first one. */
+    fromReleaseId: uuid('from_release_id').references(() => releases.id),
+    status: text('status', { enum: ['awaiting_approval', 'approved', 'succeeded', 'failed', 'cancelled'] }).notNull(),
+    /** The migration steps, and what the plan was made against: it is checked again before executing. */
+    plan: jsonb('plan').$type<Json>().notNull(),
+    destructive: boolean('destructive').notNull(),
+    approvalsRequired: integer('approvals_required').notNull(),
+    requestedByType: text('requested_by_type', { enum: actorTypes }).notNull(),
+    requestedBy: uuid('requested_by'),
+    requestedAt: timestamp('requested_at', tz).notNull(),
+    executedByType: text('executed_by_type', { enum: actorTypes }),
+    executedBy: uuid('executed_by'),
+    startedAt: timestamp('started_at', tz),
+    finishedAt: timestamp('finished_at', tz),
+    error: text('error'),
+  },
+  (t) => [
+    index('deployments_app_idx').on(t.appId, t.requestedAt),
+    uniqueIndex('deployments_one_open_per_env_uq')
+      .on(t.appId, t.environmentKind)
+      .where(sql`${t.status} in ('awaiting_approval', 'approved')`),
+  ],
+);
+
+/** People who approved a deployment. Someone who authored a change in it cannot (design §5.7). */
+export const deploymentApprovals = pgTable(
+  'deployment_approvals',
+  {
+    deploymentId: uuid('deployment_id')
+      .notNull()
+      .references(() => deployments.id),
+    approverId: uuid('approver_id')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.deploymentId, t.approverId] })],
 );
 
 /**

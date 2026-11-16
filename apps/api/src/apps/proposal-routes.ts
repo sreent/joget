@@ -333,7 +333,7 @@ export function proposalRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlu
     const render = async (request: FastifyRequest, reply: FastifyReply, id: string, error?: HttpError) => {
       const auth = requireAuth(request);
       const proposal = await runtime.proposalFor(auth, id);
-      const loaded = await ctx.apps.load(proposal.appId).catch(() => null);
+      const loaded = await ctx.apps.load(proposal.appId, { id: proposal.environmentId }).catch(() => null);
       const action = loaded?.definition.actions[proposal.action];
       const [agent] =
         proposal.proposedByType === 'service_account' && proposal.proposedBy
@@ -395,7 +395,7 @@ export function proposalRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlu
         attempt(request, reply, request.params.proposalId, async () => {
           const auth = requireSession(request);
           const proposal = await runtime.proposalFor(auth, request.params.proposalId);
-          const loaded = await ctx.apps.load(proposal.appId);
+          const loaded = await ctx.apps.load(proposal.appId, { id: proposal.environmentId });
           const action = loaded.definition.actions[proposal.action];
           if (!action) throw new HttpError(409, 'definition_changed', 'The app changed since this was proposed.');
           const result = await runtime.revise(request, auth, proposal.id, fromForm(loaded.definition, action.entity, action.input, request.body));

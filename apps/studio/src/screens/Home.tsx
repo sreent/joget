@@ -9,20 +9,27 @@ import type { Me } from '../types.js';
 export function Home({ me }: { me: Me }) {
   const client = useQueryClient();
   const apps = useQuery({ queryKey: ['apps'], queryFn: api.apps });
+  const spaces = useQuery({ queryKey: ['spaces'], queryFn: api.spaces });
+  const teamSpaces = spaces.data?.spaces.filter((space) => space.kind === 'team' && space.status === 'active') ?? [];
   const [name, setName] = useState('');
   const [start, setStart] = useState<'blank' | 'example'>('blank');
+  const [where, setWhere] = useState('mine');
+  const inTeam = where !== 'mine';
   const create = useMutation({
     mutationFn: async () => {
-      const definition = start === 'example' ? (await api.example()).example : undefined;
-      return api.createApp(me.personalSpaceId!, { name, ...(definition ? { definition } : {}) });
+      const definition = start === 'example' && !inTeam ? (await api.example()).example : undefined;
+      return api.createApp(inTeam ? where : me.personalSpaceId!, { name, ...(definition ? { definition } : {}) });
     },
     onSuccess: async ({ app }) => {
       await client.invalidateQueries({ queryKey: ['apps'] });
-      navigate({ name: 'build', appId: app.id, tab: 'data' });
+      navigate({ name: 'build', appId: app.id, tab: app.kind === 'team' ? 'changes' : 'data' });
     },
   });
-  const mine = apps.data?.apps.filter((app) => app.access.build) ?? [];
-  const shared = apps.data?.apps.filter((app) => !app.access.build) ?? [];
+  const all = apps.data?.apps ?? [];
+  const mine = all.filter((app) => app.kind === 'personal' && app.access.build && !app.workingCopyOf);
+  const copies = all.filter((app) => app.workingCopyOf);
+  const team = all.filter((app) => app.kind === 'team' && app.access.build);
+  const shared = all.filter((app) => !app.access.build);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
@@ -59,6 +66,65 @@ export function Home({ me }: { me: Me }) {
             </li>
           ))}
         </ul>
+        {team.length ? (
+          <div className="grid gap-3">
+            <h2 className="m-0 text-lg font-semibold">Team apps</h2>
+            <p className="m-0 -mt-2 text-sm text-muted">They change through reviewed change requests, and run released versions in Prod.</p>
+            <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2">
+              {team.map((app) => {
+                const prod = app.environments?.find((env) => env.kind === 'prod');
+                return (
+                  <li key={app.id}>
+                    <Card className="grid gap-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h3 className="m-0 text-lg font-semibold">{app.name}</h3>
+                          <p className="m-0 text-sm text-faint">
+                            <code>{app.handle}</code> · {prod?.release ? `release ${prod.release.number} in Prod` : 'not in Prod yet'}
+                          </p>
+                        </div>
+                        <Badge tone="accent">Team</Badge>
+                      </div>
+                      <div className="flex gap-2">
+                        <Link to={{ name: 'build', appId: app.id, tab: 'delivery' }} className="no-underline">
+                          <Button variant="primary" tabIndex={-1}>Delivery</Button>
+                        </Link>
+                        {prod ? (
+                          <Link to={{ name: 'use', appId: app.id }} className="no-underline">
+                            <Button tabIndex={-1}>Open</Button>
+                          </Link>
+                        ) : null}
+                      </div>
+                    </Card>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+        {copies.length ? (
+          <div className="grid gap-3">
+            <h2 className="m-0 text-lg font-semibold">Your working copies</h2>
+            <ul className="m-0 grid list-none gap-3 p-0 sm:grid-cols-2">
+              {copies.map((app) => (
+                <li key={app.id}>
+                  <Card className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="m-0 font-semibold">{app.name}</h3>
+                      <p className="m-0 text-sm text-muted">
+                        Changes to {app.workingCopyOf!.name}
+                        {app.workingCopyOf!.changeRequest ? ` · change request #${app.workingCopyOf!.changeRequest.number}` : ''}
+                      </p>
+                    </div>
+                    <Link to={{ name: 'build', appId: app.id, tab: 'data' }} className="no-underline">
+                      <Button tabIndex={-1}>Build</Button>
+                    </Link>
+                  </Card>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {shared.length ? (
           <div className="grid gap-3">
             <h2 className="m-0 text-lg font-semibold">Shared with you</h2>
@@ -91,14 +157,30 @@ export function Home({ me }: { me: Me }) {
           }}
         >
           <Field label="Name">{(id) => <TextInput id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="Expense claims" required maxLength={100} />}</Field>
-          <Field label="Start from">
-            {(id) => (
-              <Select id={id} value={start} onChange={(e) => setStart(e.target.value as 'blank' | 'example')}>
-                <option value="blank">A blank app</option>
-                <option value="example">The expense-claim example</option>
-              </Select>
-            )}
-          </Field>
+          {teamSpaces.length ? (
+            <Field label="Where" hint={inTeam ? 'A team app starts empty. Build it in your working copy, then submit it for review.' : 'Your personal space: you edit it live.'}>
+              {(id) => (
+                <Select id={id} value={where} onChange={(e) => setWhere(e.target.value)}>
+                  <option value="mine">My space</option>
+                  {teamSpaces.map((space) => (
+                    <option key={space.id} value={space.id}>
+                      {space.name} (team)
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          ) : null}
+          {!inTeam ? (
+            <Field label="Start from">
+              {(id) => (
+                <Select id={id} value={start} onChange={(e) => setStart(e.target.value as 'blank' | 'example')}>
+                  <option value="blank">A blank app</option>
+                  <option value="example">The expense-claim example</option>
+                </Select>
+              )}
+            </Field>
+          ) : null}
           {create.error ? <Notice tone="bad">{create.error instanceof ApiError ? create.error.message : 'Something went wrong'}</Notice> : null}
           <Button type="submit" variant="primary" disabled={!name.trim() || create.isPending || !me.personalSpaceId}>
             {create.isPending ? 'Creating…' : 'Create app'}

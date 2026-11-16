@@ -17,17 +17,133 @@ export interface Me {
   personalSpaceId: string | null;
 }
 
+/** Where an app runs: the sandbox of a personal app; Prod, Staging and previews of a team app. */
+export interface EnvironmentInfo {
+  id: string;
+  kind: 'sandbox' | 'preview' | 'staging' | 'prod';
+  revision: number;
+  release: { id: string; number: number } | null;
+  changeRequest: { id: string; number: number } | null;
+}
+
+/** The delivery steps the caller's roles allow on a team app. */
+export interface DeliveryAccess {
+  review: boolean;
+  approve: boolean;
+  merge: boolean;
+  release: boolean;
+  deploy: boolean;
+  approveDeploy: boolean;
+  execute: boolean;
+  rollback: boolean;
+  manageAccess: boolean;
+}
+
 export interface AppSummary {
   id: string;
   spaceId: string;
+  /** A personal app is edited live; a team app changes through change requests and runs releases. */
+  kind: 'personal' | 'team';
   handle: string;
   name: string;
   description: string | null;
   ownerUserId: string;
+  /** The newest revision of the main line. */
   revision: number;
   createdAt: string;
   updatedAt: string;
-  access: { build: boolean; run: boolean; share: boolean; roles: string[] };
+  environment: EnvironmentInfo | null;
+  environments?: EnvironmentInfo[];
+  workingCopyOf: { appId: string; name: string; baseRevision: number; behind: boolean; changeRequest: { id: string; number: number } | null } | null;
+  myWorkingCopyId?: string | null;
+  access: { build: boolean; run: boolean; share: boolean; edit: boolean; roles: string[]; delivery?: DeliveryAccess };
+}
+
+export interface Space {
+  id: string;
+  kind: 'personal' | 'team';
+  name: string;
+  status: string;
+}
+
+export interface PersonRef {
+  id: string;
+  name: string;
+}
+
+export interface ChangeRequestSummary {
+  id: string;
+  appId: string;
+  number: number;
+  title: string;
+  status: 'open' | 'merged' | 'closed';
+  author: PersonRef;
+  baseRevision: number;
+  headRevision: number;
+  mergedRevision: number | null;
+  destructive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChangeRequest extends ChangeRequestSummary {
+  description: string | null;
+  workingCopyId: string | null;
+  headDigest: string;
+  checks: {
+    validation: { ok: boolean; notes: string[] };
+    migration: { destructive: boolean; steps: PlanStep[] };
+    access: Array<{ role: string; kind: 'gains' | 'loses' | 'changes'; text: string; holders: number }>;
+    capabilities: Array<{ tool: string; change: 'added' | 'removed' | 'changed'; text: string }>;
+    lint: string[];
+  };
+  changes: Array<{ section: string; name: string; change: 'added' | 'removed' | 'changed'; from?: string; details: string[] }>;
+  behind: boolean;
+  conflicts: Array<{ section: string; name: string; ours: string; theirs: string }>;
+  reviews: Array<{ id: string; reviewer: PersonRef; verdict: 'approve' | 'request_changes' | 'comment'; comment: string | null; createdAt: string; current: boolean }>;
+  approvals: { required: number; approvedBy: PersonRef[]; changesRequestedBy: PersonRef[]; ready: boolean };
+  preview: { environmentId: string } | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+}
+
+export interface Release {
+  id: string;
+  appId: string;
+  number: number;
+  revision: number;
+  digest: string;
+  destructive: boolean;
+  notes: string | null;
+  changes: Array<{ id: string; number: number; title: string; author: PersonRef }>;
+  steps: PlanStep[];
+  createdBy: PersonRef | null;
+  createdAt: string;
+  manifestDigest: string;
+  keyId: string;
+  verified: boolean;
+  liveIn: Array<'staging' | 'prod'>;
+}
+
+export interface Deployment {
+  id: string;
+  appId: string;
+  environment: 'staging' | 'prod';
+  kind: 'deploy' | 'rollback';
+  status: 'awaiting_approval' | 'approved' | 'succeeded' | 'failed' | 'cancelled';
+  release: { id: string; number: number };
+  fromRelease: { id: string; number: number } | null;
+  destructive: boolean;
+  plan: { steps: PlanStep[]; notes: string[] };
+  approvals: { required: number; by: PersonRef[] };
+  authors: PersonRef[];
+  requestedBy: PersonRef | null;
+  requestedAt: string;
+  executedBy: PersonRef | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  error: string | null;
 }
 
 export interface PlanStep {

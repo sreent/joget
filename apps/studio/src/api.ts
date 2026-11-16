@@ -1,4 +1,22 @@
-import type { AppSummary, Definition, FileInfo, HistoryEntry, Me, Person, Plan, RecordOut, Revision, Share, UiManifest } from './types.js';
+import type {
+  AppSummary,
+  ChangeRequest,
+  ChangeRequestSummary,
+  Definition,
+  Deployment,
+  EnvironmentInfo,
+  FileInfo,
+  HistoryEntry,
+  Me,
+  Person,
+  Plan,
+  RecordOut,
+  Release,
+  Revision,
+  Share,
+  Space,
+  UiManifest,
+} from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -61,9 +79,22 @@ function peopleLoader() {
 
 const app = (id: string) => `/v1/apps/${encodeURIComponent(id)}`;
 
+/** An app in one of its environments: a team app's Prod (the default), Staging, or a preview by its environment ID. */
+export interface AppAt {
+  readonly id: string;
+  readonly env?: string | undefined;
+}
+const at = (target: string | AppAt): AppAt => (typeof target === 'string' ? { id: target } : target);
+/** The query string that names the environment, joined to any other parameters. */
+export const envParams = (target: string | AppAt, more: Record<string, string> = {}): string => {
+  const { env } = at(target);
+  const params = new URLSearchParams({ ...more, ...(env ? { env } : {}) }).toString();
+  return params ? `?${params}` : '';
+};
+
 /** Upload a file to an app, as its content: the platform reads its type from it, and checks it for malware. */
-export async function uploadFile(appId: string, file: File): Promise<FileInfo & { id: string }> {
-  const response = await fetch(`${app(appId)}/files?name=${encodeURIComponent(file.name)}`, {
+export async function uploadFile(target: string | AppAt, file: File): Promise<FileInfo & { id: string }> {
+  const response = await fetch(`${app(at(target).id)}/files${envParams(target, { name: file.name })}`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' },
@@ -73,7 +104,7 @@ export async function uploadFile(appId: string, file: File): Promise<FileInfo & 
   if (!response.ok) throw new ApiError(response.status, data.error ?? 'error', response.status === 413 ? 'The file is too big' : (data.message ?? response.statusText), data.details);
   return data;
 }
-const records = (id: string, entity: string) => `${app(id)}/entities/${encodeURIComponent(entity)}/records`;
+const records = (target: string | AppAt, entity: string) => `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/records`;
 
 export const api = {
   me: () => call<Me>('GET', '/v1/me'),
@@ -92,14 +123,56 @@ export const api = {
   shares: (id: string) => call<{ shares: Share[] }>('GET', `${app(id)}/shares`),
   share: (id: string, email: string, role: string) => call<Share>('POST', `${app(id)}/shares`, { email, role }),
   unshare: (id: string, shareId: string) => call<void>('DELETE', `${app(id)}/shares/${encodeURIComponent(shareId)}`),
-  ui: (id: string) => call<UiManifest>('GET', `${app(id)}/ui`),
-  records: (id: string, entity: string, cursor?: string) =>
-    call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(id, entity)}?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
-  record: (id: string, entity: string, recordId: string) => call<RecordOut>('GET', `${records(id, entity)}/${encodeURIComponent(recordId)}`),
-  createRecord: (id: string, entity: string, values: Record<string, unknown>) => call<RecordOut>('POST', records(id, entity), { values }),
-  updateRecord: (id: string, entity: string, recordId: string, values: Record<string, unknown>, version: number) =>
-    call<RecordOut>('PATCH', `${records(id, entity)}/${encodeURIComponent(recordId)}`, { values, version }),
-  history: (id: string, entity: string, recordId: string) => call<{ history: HistoryEntry[] }>('GET', `${records(id, entity)}/${encodeURIComponent(recordId)}/history`),
-  runAction: (id: string, action: string, body: { values: Record<string, unknown>; recordId?: string; version?: number }) =>
-    call<{ status: 'done'; record: RecordOut } | { status: 'needs_confirmation'; proposal: { reviewUrl: string } }>('POST', `${app(id)}/actions/${encodeURIComponent(action)}/run`, body),
+  ui: (target: string | AppAt) => call<UiManifest>('GET', `${app(at(target).id)}/ui${envParams(target)}`),
+  records: (target: string | AppAt, entity: string, cursor?: string) =>
+    call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`),
+  record: (target: string | AppAt, entity: string, recordId: string) => call<RecordOut>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`),
+  createRecord: (target: string | AppAt, entity: string, values: Record<string, unknown>) => call<RecordOut>('POST', `${records(target, entity)}${envParams(target)}`, { values }),
+  updateRecord: (target: string | AppAt, entity: string, recordId: string, values: Record<string, unknown>, version: number) =>
+    call<RecordOut>('PATCH', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`, { values, version }),
+  history: (target: string | AppAt, entity: string, recordId: string) =>
+    call<{ history: HistoryEntry[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/history${envParams(target)}`),
+  runAction: (target: string | AppAt, action: string, body: { values: Record<string, unknown>; recordId?: string; version?: number }) =>
+    call<{ status: 'done'; record: RecordOut } | { status: 'needs_confirmation'; proposal: { reviewUrl: string } }>(
+      'POST',
+      `${app(at(target).id)}/actions/${encodeURIComponent(action)}/run${envParams(target)}`,
+      body,
+    ),
+
+  // Governed delivery for team apps.
+  spaces: () => call<{ spaces: Space[] }>('GET', '/v1/spaces'),
+  workingCopy: (teamId: string) => call<{ app: AppSummary; created: boolean; sampleRecords: number }>('POST', `${app(teamId)}/working-copy`),
+  sync: (copyId: string, confirmDestructive: boolean) =>
+    call<{ plan: Plan | null; app: AppSummary }>('POST', `${app(copyId)}/sync${confirmDestructive ? '?confirmDestructive=true' : ''}`),
+  submit: (copyId: string, body: { title?: string; description?: string }) => call<ChangeRequest>('POST', `${app(copyId)}/submit`, body),
+  changeRequests: (teamId: string) => call<{ changeRequests: ChangeRequestSummary[] }>('GET', `${app(teamId)}/change-requests`),
+  changeRequest: (id: string) => call<ChangeRequest>('GET', `/v1/change-requests/${encodeURIComponent(id)}`),
+  review: (id: string, verdict: 'approve' | 'request_changes' | 'comment', comment?: string) =>
+    call<ChangeRequest>('POST', `/v1/change-requests/${encodeURIComponent(id)}/reviews`, { verdict, ...(comment ? { comment } : {}) }),
+  merge: (id: string) => call<ChangeRequest>('POST', `/v1/change-requests/${encodeURIComponent(id)}/merge`),
+  closeChange: (id: string) => call<ChangeRequest>('POST', `/v1/change-requests/${encodeURIComponent(id)}/close`),
+  releases: (teamId: string) => call<{ releases: Release[] }>('GET', `${app(teamId)}/releases`),
+  cutRelease: (teamId: string, body: { revision?: number; notes?: string }) => call<Release>('POST', `${app(teamId)}/releases`, body),
+  deployments: (teamId: string) => call<{ environments: EnvironmentInfo[]; deployments: Deployment[] }>('GET', `${app(teamId)}/deployments`),
+  requestDeployment: (teamId: string, body: { releaseId: string; env: 'staging' | 'prod'; confirmDestructive?: boolean; execute?: boolean }) =>
+    call<Deployment>('POST', `${app(teamId)}/deployments`, body),
+  approveDeployment: (id: string) => call<Deployment>('POST', `/v1/deployments/${encodeURIComponent(id)}/approve`),
+  executeDeployment: (id: string) => call<Deployment>('POST', `/v1/deployments/${encodeURIComponent(id)}/execute`),
+  cancelDeployment: (id: string) => call<Deployment>('POST', `/v1/deployments/${encodeURIComponent(id)}/cancel`),
+  rollback: (teamId: string, env: 'staging' | 'prod') => call<Deployment>('POST', `${app(teamId)}/environments/${env}/rollback`),
+  envShares: (target: AppAt) => call<{ shares: Share[] }>('GET', `${app(target.id)}/shares${envParams(target)}`),
+  envShare: (target: AppAt, email: string, role: string) => call<Share>('POST', `${app(target.id)}/shares${envParams(target)}`, { email, role }),
+  envUnshare: (target: AppAt, shareId: string) => call<void>('DELETE', `${app(target.id)}/shares/${encodeURIComponent(shareId)}${envParams(target)}`),
 };
+
+/** True if the API refused because the person must sign in again with MFA first. */
+export function needsStepUp(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 403) return false;
+  const reasons = (error.details as { reasons?: Array<{ kind: string }> } | undefined)?.reasons ?? [];
+  return reasons.some((reason) => reason.kind === 'step_up_required');
+}
+
+/** Sign in again with MFA, then come back to this page. */
+export function stepUp(): void {
+  window.location.assign(`/auth/login?stepUp=true&returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+}

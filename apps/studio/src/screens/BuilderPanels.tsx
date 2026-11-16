@@ -1,22 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { api, ApiError } from '../api.js';
+import { api, ApiError, type AppAt } from '../api.js';
 import { Badge, Button, Card, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
-import type { Definition } from '../types.js';
+import type { AppSummary, Definition } from '../types.js';
 
 const roleOf = (appRoleId: string | null) => appRoleId?.split(':').at(-1) ?? '';
 
-/** Who the app is shared with. Sharing applies at once: it isn't part of the draft. */
-export function SharePanel({ appId, definition }: { appId: string; definition: Definition }) {
+/**
+ * Who holds the app's roles. For a personal app, who it is shared with; for a team app, who may
+ * use one of its environments. Either applies at once: it isn't part of the draft.
+ */
+export function SharePanel({ at, definition, team = false }: { at: AppAt; definition: Definition; team?: boolean }) {
   const client = useQueryClient();
-  const shares = useQuery({ queryKey: ['shares', appId], queryFn: () => api.shares(appId) });
+  const shares = useQuery({ queryKey: ['shares', at.id, at.env], queryFn: () => api.envShares(at) });
   const roles = Object.entries(definition.roles);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState(roles[0]?.[0] ?? '');
-  const refresh = () => client.invalidateQueries({ queryKey: ['shares', appId] });
-  const share = useMutation({ mutationFn: () => api.share(appId, email.trim(), role), onSuccess: () => (setEmail(''), refresh()) });
-  const unshare = useMutation({ mutationFn: (id: string) => api.unshare(appId, id), onSuccess: refresh });
+  const refresh = () => client.invalidateQueries({ queryKey: ['shares', at.id] });
+  const share = useMutation({ mutationFn: () => api.envShare(at, email.trim(), role), onSuccess: () => (setEmail(''), refresh()) });
+  const unshare = useMutation({ mutationFn: (id: string) => api.envUnshare(at, id), onSuccess: refresh });
 
   if (roles.length === 0) {
     return <EmptyState title="This app has no roles yet">A role says what the people you share with may do. Add roles on the Roles tab, then share.</EmptyState>;
@@ -24,22 +27,22 @@ export function SharePanel({ appId, definition }: { appId: string; definition: D
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <Card className="grid content-start gap-3">
-        <h2 className="m-0 text-lg font-semibold">Shared with</h2>
-        {shares.data?.shares.length === 0 ? <p className="m-0 text-muted">Only you can use this app so far.</p> : null}
+        <h2 className="m-0 text-lg font-semibold">{team ? 'Who may use it here' : 'Shared with'}</h2>
+        {shares.data?.shares.length === 0 ? <p className="m-0 text-muted">{team ? 'Nobody holds a role here yet.' : 'Only you can use this app so far.'}</p> : null}
         <ul className="m-0 grid list-none gap-2 p-0">
           {shares.data?.shares.map((s) => (
             <li key={s.id} className="flex items-center gap-3 rounded-md border border-line px-3 py-2">
               <span className="flex-1 font-medium">{s.principal.name ?? s.principal.id}</span>
               <Badge tone="accent">{definition.roles[roleOf(s.appRoleId)]?.label ?? roleOf(s.appRoleId)}</Badge>
               <Button size="sm" variant="ghost" onClick={() => unshare.mutate(s.id)} disabled={unshare.isPending}>
-                Stop sharing
+                {team ? 'Take it away' : 'Stop sharing'}
               </Button>
             </li>
           ))}
         </ul>
       </Card>
       <Card className="grid content-start gap-3">
-        <h2 className="m-0 text-lg font-semibold">Share with a colleague</h2>
+        <h2 className="m-0 text-lg font-semibold">{team ? 'Give a colleague a role' : 'Share with a colleague'}</h2>
         <form
           className="grid gap-3"
           onSubmit={(event) => {
@@ -61,7 +64,7 @@ export function SharePanel({ appId, definition }: { appId: string; definition: D
           </Field>
           {share.error ? <Notice tone="bad">{share.error instanceof ApiError ? share.error.message : 'Something went wrong'}</Notice> : null}
           <Button type="submit" variant="primary" disabled={share.isPending || !email.trim()}>
-            Share
+            {team ? 'Give the role' : 'Share'}
           </Button>
         </form>
       </Card>
@@ -141,5 +144,29 @@ export function HistoryPanel({ appId }: { appId: string }) {
         ))}
       </ol>
     </Card>
+  );
+}
+
+/** Who may use a team app, environment by environment: space admins grant its roles to people (design §5.5). */
+export function AccessPanel({ app, definition }: { app: AppSummary; definition: Definition }) {
+  const live = (app.environments ?? []).filter((env) => env.kind === 'prod' || env.kind === 'staging');
+  const [kind, setKind] = useState<string>(live[0]?.kind ?? 'prod');
+  if (!live.length) return <EmptyState title="Not deployed yet">Once a release runs in Prod or Staging, give people its roles there.</EmptyState>;
+  if (!app.access.share) return <Notice tone="warn">Space admins decide who may use the app in each environment.</Notice>;
+  return (
+    <div className="grid gap-4">
+      <Field label="Environment">
+        {(id) => (
+          <Select id={id} className="w-56" value={kind} onChange={(e) => setKind(e.target.value)}>
+            {live.map((env) => (
+              <option key={env.kind} value={env.kind}>
+                {env.kind === 'prod' ? 'Prod' : 'Staging'} (release {env.release?.number})
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      <SharePanel key={kind} at={{ id: app.id, env: kind }} definition={definition} team />
+    </div>
   );
 }

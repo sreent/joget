@@ -6,7 +6,8 @@ import type { AppContext } from '../context.js';
 import { badRequest, notFound } from '../errors.js';
 import { recordResource } from './resources.js';
 import type { AppRuntime } from './runtime.js';
-import { ActionResultOut, AppParams, EntityParams, PageOut, ProvenanceIn, RecordOut, RecordParams } from './schemas.js';
+import { envOf } from './routes.js';
+import { ActionResultOut, AppParams, EntityParams, EnvQuery, PageOut, ProvenanceIn, RecordOut, RecordParams } from './schemas.js';
 
 /** `amount,-created_at` → ascending amount, then newest first. */
 function parseSort(sort: string | undefined) {
@@ -18,7 +19,8 @@ function parseSort(sort: string | undefined) {
 
 /** The records API, queries and actions: the runtime of the built-in store (design §6). */
 export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginAsyncZod {
-  const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId));
+  /** The app in the environment the request names: Prod by default for a team app, or Staging, or a preview. */
+  const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
   const policy = async (request: FastifyRequest) => runtime.policy(await theApp(request));
   const records = async (request: FastifyRequest) => {
     const loaded = await theApp(request);
@@ -44,7 +46,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           tags: ['records'],
           summary: 'Records you can see, newest first unless you sort them',
           params: EntityParams,
-          querystring: z.object({
+          querystring: EnvQuery.extend({
             limit: z.coerce.number().int().min(1).max(200).default(50),
             cursor: z.string().max(4000).optional(),
             sort: z.string().max(200).optional().describe('Comma-separated fields; prefix with - for descending'),
@@ -67,7 +69,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
       '/v1/apps/:appId/entities/:entity/records/:recordId',
       {
         config: { access: recordRule('record.read') },
-        schema: { tags: ['records'], summary: 'One record', params: RecordParams, response: { 200: RecordOut } },
+        schema: { tags: ['records'], summary: 'One record', params: RecordParams, querystring: EnvQuery, response: { 200: RecordOut } },
       },
       async (request) =>
         runtime.get(request, requireAuth(request), await theApp(request), request.params.entity, request.params.recordId, requireQueryDecision(request)),
@@ -81,6 +83,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           tags: ['records'],
           summary: 'Create a record. Rules run on the server, whatever the client',
           params: EntityParams,
+          querystring: EnvQuery,
           body: z.object({ values: z.record(z.string(), z.unknown()), provenance: ProvenanceIn }),
           response: { 201: RecordOut },
         },
@@ -99,6 +102,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           tags: ['records'],
           summary: 'Change some fields of a record. Give the version you read to avoid overwriting someone else',
           params: RecordParams,
+          querystring: EnvQuery,
           body: z.object({ values: z.record(z.string(), z.unknown()), version: z.number().int().positive().optional(), provenance: ProvenanceIn }),
           response: { 200: RecordOut },
         },
@@ -111,7 +115,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
       '/v1/apps/:appId/entities/:entity/records/:recordId',
       {
         config: { access: recordRule('record.delete') },
-        schema: { tags: ['records'], summary: 'Delete a record. Its history is kept', params: RecordParams },
+        schema: { tags: ['records'], summary: 'Delete a record. Its history is kept', params: RecordParams, querystring: EnvQuery },
       },
       async (request, reply) => {
         await runtime.remove(request, requireAuth(request), await theApp(request), request.params.entity, request.params.recordId, requireQueryDecision(request));
@@ -127,6 +131,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           tags: ['records'],
           summary: "A record's history: who changed which field, when, how, and where each value came from",
           params: RecordParams,
+          querystring: EnvQuery,
           response: {
             200: z.object({
               history: z.array(
@@ -156,6 +161,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           tags: ['capabilities'],
           summary: "Run one of the app's queries, under your record permissions",
           params: AppParams.extend({ name: z.string().min(1).max(63) }),
+          querystring: EnvQuery,
           body: z.object({
             parameters: z.record(z.string(), z.unknown()).default({}),
             limit: z.number().int().min(1).max(200).optional(),
@@ -180,6 +186,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           tags: ['capabilities'],
           summary: "Run one of the app's actions. From an API token, anything that needs confirmation becomes a proposal for the person to approve",
           params: AppParams.extend({ name: z.string().min(1).max(63) }),
+          querystring: EnvQuery,
           body: z.object({
             values: z.record(z.string(), z.unknown()).default({}),
             recordId: z.uuid().optional(),

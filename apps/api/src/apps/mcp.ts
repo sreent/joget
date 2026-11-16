@@ -9,10 +9,11 @@ import { spaceResource } from '../access/resources.js';
 import { requireAuth } from '../access/rules.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { HttpError, notFound } from '../errors.js';
-import type { AppBuilder } from './builder.js';
-import type { LoadedApp } from './catalog.js';
+import { changeRequestRequired, type AppBuilder } from './builder.js';
+import { isTeamApp, type LoadedApp } from './catalog.js';
+import type { Delivery } from '../delivery/service.js';
 import { appResource } from './resources.js';
-import { definitionJsonSchema, describeApp, visibleApps } from './routes.js';
+import { definitionJsonSchema, describeApp, isNotLive, visibleApps } from './routes.js';
 import type { AppRuntime } from './runtime.js';
 
 /**
@@ -135,7 +136,12 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
   const taken = new Set<string>();
   for (const summary of await visibleApps(ctx, runtime, auth)) {
     if (!summary.access.run) continue;
-    const loaded = await ctx.apps.load(summary.id);
+    // Agents use a team app in Prod. One that isn't live there yet offers no tools.
+    const loaded = await ctx.apps.load(summary.id).catch((error: unknown) => {
+      if (isNotLive(error)) return null;
+      throw error;
+    });
+    if (!loaded) continue;
     const policy = await runtime.policy(loaded);
     const allowed = async (kind: 'action' | 'query', name: string) =>
       (await ctx.policy.authorize(auth.principal, `${kind}.run`, runtime.capability(loaded, kind, name), undefined, policy)).allowed;
@@ -228,12 +234,18 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
 }
 
 /** Tools for AI clients that build apps, such as Claude: the builder API, as the builder. */
-function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext): Tool[] {
+function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, delivery: Delivery, request: FastifyRequest, auth: AuthContext): Tool[] {
   const app = async (args: Record<string, unknown>, action: string) => {
     if (typeof args['app_id'] !== 'string') throw new HttpError(400, 'invalid_arguments', 'app_id is required');
-    const loaded = await ctx.apps.load(args['app_id']);
-    await checkPermission(ctx, request, auth, action, appResource(ctx.org.id, loaded), { policy: await runtime.policy(loaded) });
-    return loaded;
+    const found = await ctx.apps.ref(args['app_id']);
+    await checkPermission(ctx, request, auth, action, appResource(ctx.org.id, found));
+    return found;
+  };
+  /** The sandbox a change applies to: of a personal app or a working copy. A team app changes through change requests. */
+  const sandbox = async (args: Record<string, unknown>) => {
+    const found = await app(args, 'app.edit');
+    if (isTeamApp(found)) throw changeRequestRequired(found);
+    return ctx.apps.load(found.app.id);
   };
   const appId = { app_id: { type: 'string', format: 'uuid' } };
   const definition = { definition: { type: 'object', description: 'A complete app definition. See describe_format.' } };
@@ -285,18 +297,19 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
           ...(typeof args['description'] === 'string' ? { description: args['description'] } : {}),
           ...(args['definition'] !== undefined ? { definition: args['definition'] } : {}),
         });
-        return { app: await describeApp(ctx, runtime, auth, await ctx.apps.load(appId)), plan };
+        return { app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(appId)), plan };
       },
     },
     {
       name: 'get_definition',
       title: "Read an app's definition",
-      description: "An app's current definition and revision. Edit it, then plan_change or apply_change.",
+      description:
+        "An app's current definition and revision. Edit it, then plan_change or apply_change. A team app's definition is its main line: change it in a working copy (start_working_copy), then submit_change.",
       inputSchema: { type: 'object', properties: appId, required: ['app_id'], additionalProperties: false },
       annotations: { readOnlyHint: true },
       run: async (args) => {
-        const loaded = await app(args, 'app.read');
-        return { revision: loaded.app.currentRevision, definition: loaded.definition as StoredDefinition };
+        const found = await app(args, 'app.read');
+        return { revision: found.app.currentRevision, definition: await ctx.apps.mainDefinition(found) };
       },
     },
     {
@@ -305,7 +318,7 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
       description: 'Validate a new definition and see what saving it would do (the migration steps, and how many records each destructive step touches), without saving.',
       inputSchema: { type: 'object', properties: { ...appId, ...definition }, required: ['app_id', 'definition'], additionalProperties: false },
       annotations: { readOnlyHint: true },
-      run: async (args) => ({ plan: (await builder.plan(await app(args, 'app.edit'), args['definition'])).plan }),
+      run: async (args) => ({ plan: (await builder.plan(await sandbox(args), args['definition'])).plan }),
     },
     {
       name: 'apply_change',
@@ -319,12 +332,48 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
         additionalProperties: false,
       },
       run: async (args) => {
-        const loaded = await app(args, 'app.edit');
+        const loaded = await sandbox(args);
         const plan = await builder.save(request, auth, loaded, args['definition'], {
           ...(typeof args['base_revision'] === 'number' ? { baseRevision: args['base_revision'] } : {}),
           confirmDestructive: false,
         });
         return { plan };
+      },
+    },
+    {
+      name: 'start_working_copy',
+      title: 'Edit a team app in your space',
+      description:
+        "A team app changes through change requests. This makes (or finds) the person's working copy of it in their personal space: change the copy with apply_change, then submit_change.",
+      inputSchema: { type: 'object', properties: appId, required: ['app_id'], additionalProperties: false },
+      run: async (args) => {
+        if (auth.actor.type !== 'user') throw new HttpError(403, 'person_required', 'Only people have personal spaces');
+        const team = await app(args, 'app.edit');
+        const { appId: copyId, created, samples } = await delivery.workingCopy(request, auth, team);
+        return { app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(copyId)), created, sampleRecords: samples };
+      },
+    },
+    {
+      name: 'submit_change',
+      title: 'Submit a change for review',
+      description:
+        "Submit the changes in a working copy: opens a change request in the team space, with automatic checks and a preview, or brings the open one up to date. Reviewers approve it; the person can't approve their own change.",
+      inputSchema: {
+        type: 'object',
+        properties: { ...appId, title: { type: 'string', description: 'What the change does, in a few words' }, description: { type: 'string' } },
+        required: ['app_id'],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        if (auth.actor.type !== 'user') throw new HttpError(403, 'person_required', 'Only people submit changes');
+        const copy = await app(args, 'app.edit');
+        if (!copy.app.workingCopyOf) throw new HttpError(422, 'not_a_working_copy', 'Submit from a working copy: see start_working_copy');
+        await checkPermission(ctx, request, auth, 'change.open', appResource(ctx.org.id, await ctx.apps.ref(copy.app.workingCopyOf)));
+        const cr = await delivery.submit(request, auth, await ctx.apps.load(copy.app.id), {
+          ...(typeof args['title'] === 'string' ? { title: args['title'] } : {}),
+          ...(typeof args['description'] === 'string' ? { description: args['description'] } : {}),
+        });
+        return { changeRequest: { id: cr.id, number: cr.number, title: cr.title, status: cr.status, checks: cr.checks } };
       },
     },
   ];
@@ -406,7 +455,7 @@ function serve(
   };
 }
 
-export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime): FastifyPluginAsyncZod {
+export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, delivery: Delivery): FastifyPluginAsyncZod {
   return async (app) => {
     await app.register(
       serve(
@@ -427,9 +476,9 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         {
           name: 'ambit-builder',
           instructions:
-            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change. Changes apply at once to the person's sandbox; anything that deletes data waits for them.",
+            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change. Changes apply at once to the person's sandbox; anything that deletes data waits for them. A team app changes through change requests: start_working_copy, change the copy, then submit_change for review.",
         },
-        async (request, auth) => builderTools(ctx, builder, runtime, request, auth),
+        async (request, auth) => builderTools(ctx, builder, runtime, delivery, request, auth),
       ),
     );
   };

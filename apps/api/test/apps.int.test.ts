@@ -59,10 +59,12 @@ describe('building an app in a personal space', () => {
     ]);
   });
 
-  it('refuses team spaces for now, and other people\'s personal spaces', async () => {
+  it('starts team apps empty, and refuses other people\'s personal spaces', async () => {
     const team = await inject({ method: 'POST', url: '/v1/spaces', ...as(alice), payload: { name: 'Finance', coOwnerUserIds: [carol.userId] } }, 201);
-    const refused = await inject({ method: 'POST', url: `/v1/spaces/${team.json().id}/apps`, ...as(alice), payload: { name: 'Team app' } }, 422);
-    expect(refused.json().error).toBe('team_space_apps_later');
+    const refused = await inject({ method: 'POST', url: `/v1/spaces/${team.json().id}/apps`, ...as(alice), payload: { name: 'Team app', definition: EXPENSE_APP } }, 422);
+    expect(refused.json().error).toBe('team_app_starts_empty');
+    const created = await inject({ method: 'POST', url: `/v1/spaces/${team.json().id}/apps`, ...as(alice), payload: { name: 'Team app' } }, 201);
+    expect(created.json().app).toMatchObject({ kind: 'team', revision: 1, environment: null, environments: [], access: { build: true, run: false } });
     await inject({ method: 'POST', url: `/v1/spaces/${bob.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Sneaky' } }, 403);
   });
 
@@ -125,7 +127,7 @@ describe('sharing with colleagues', () => {
 
   it('lets colleagues use the app, but not build or reshare it', async () => {
     const listed = (await inject({ method: 'GET', url: '/v1/apps', ...as(bob) }, 200)).json().apps;
-    expect(listed).toEqual([expect.objectContaining({ id: appId, access: { build: false, run: true, share: false, roles: ['requester'] } })]);
+    expect(listed).toEqual([expect.objectContaining({ id: appId, access: { build: false, run: true, share: false, edit: false, roles: ['requester'] } })]);
     await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(bob) }, 403);
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(bob), payload: { email: 'carol@example.com', role: 'requester' } }, 403);
   });
@@ -426,7 +428,7 @@ describe('building with an AI client', () => {
     expect(format.schema).toHaveProperty('properties.entities');
     expect(format.example).toEqual(EXPENSE_APP);
     const apps = (await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'list_apps', arguments: {} })).result.structuredContent.apps;
-    expect(apps.map((a: { name: string }) => a.name)).toEqual(['Expenses']);
+    expect(apps.map((a: { name: string }) => a.name)).toEqual(['Expenses', 'Team app']);
   });
 
   it('applies changes live, but leaves changes that delete data to the person', async () => {

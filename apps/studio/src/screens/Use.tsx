@@ -1,17 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError } from '../api.js';
+import { api, ApiError, type AppAt } from '../api.js';
 import { FilesProvider } from '../components/files.js';
 import { filledLines, LinesChangeView, LinesEditor, LinesTable, rollupValue } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
 import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
 import { asLines, display, ValueInput, ValueView } from '../components/values.js';
-import { Link, navigate } from '../router.js';
+import { atRoute, Link, navigate } from '../router.js';
 import type { HistoryEntry, Line, RecordOut, RecordValue, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
 /** An app's screens, generated from what the signed-in person may use: their entities, fields, forms and actions. */
-export function Use({ appId, page, recordId }: { appId: string; page?: string; recordId?: string }) {
-  const ui = useQuery({ queryKey: ['ui', appId], queryFn: () => api.ui(appId) });
+export function Use({ appId, env, page, recordId }: { appId: string; env?: string; page?: string; recordId?: string }) {
+  const at: AppAt = { id: appId, ...(env ? { env } : {}) };
+  const ui = useQuery({ queryKey: ['ui', appId, env], queryFn: () => api.ui(at) });
   if (ui.isError) return <Notice tone="bad">{ui.error instanceof ApiError && ui.error.status === 403 ? "This app isn't shared with you." : "This app can't be opened."}</Notice>;
   if (!ui.data) return <p className="text-muted">Loading…</p>;
   const manifest = ui.data;
@@ -20,14 +21,15 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
   const current = page ?? entities[0]?.[0];
 
   return (
-    <FilesProvider appId={appId}>
+    <FilesProvider at={at}>
     <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
       <nav aria-label={manifest.app.name} className="grid content-start gap-4">
         <div>
           <h1 className="m-0 text-xl font-semibold tracking-tight">{manifest.app.name}</h1>
+          <EnvironmentBadge app={manifest.app} />
           {manifest.app.access.build ? (
-            <Link to={{ name: 'build', appId, tab: 'data' }} className="text-sm">
-              Build this app
+            <Link to={{ name: 'build', appId, tab: manifest.app.kind === 'team' ? 'delivery' : 'data' }} className="text-sm">
+              {manifest.app.kind === 'team' ? 'Delivery' : 'Build this app'}
             </Link>
           ) : (
             <div className="mt-1 flex flex-wrap gap-1">{manifest.app.access.roles.map((role) => <Badge key={role}>{role}</Badge>)}</div>
@@ -37,7 +39,7 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
           <ul className="m-0 grid list-none gap-1 p-0">
             {forms.map(([name, form]) => (
               <li key={name}>
-                <Link to={{ name: 'use', appId, page: 'new', recordId: name }} className={cx('block rounded-md px-2.5 py-1.5 font-medium no-underline', page === 'new' && recordId === name ? 'bg-accent text-accent-text' : 'bg-accent-soft text-accent')}>
+                <Link to={{ name: 'use', ...atRoute(at), page: 'new', recordId: name }} className={cx('block rounded-md px-2.5 py-1.5 font-medium no-underline', page === 'new' && recordId === name ? 'bg-accent text-accent-text' : 'bg-accent-soft text-accent')}>
                   + {form.label}
                 </Link>
               </li>
@@ -47,7 +49,7 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
         <ul className="m-0 grid list-none gap-1 p-0">
           {entities.map(([name, entity]) => (
             <li key={name}>
-              <Link to={{ name: 'use', appId, page: name }} aria-current={current === name && page !== 'new' ? 'page' : undefined} className={cx('block rounded-md px-2.5 py-1.5 no-underline', current === name && page !== 'new' ? 'bg-sunken text-text' : 'text-muted hover:text-text')}>
+              <Link to={{ name: 'use', ...atRoute(at), page: name }} aria-current={current === name && page !== 'new' ? 'page' : undefined} className={cx('block rounded-md px-2.5 py-1.5 no-underline', current === name && page !== 'new' ? 'bg-sunken text-text' : 'text-muted hover:text-text')}>
                 {entity.pluralLabel}
               </Link>
             </li>
@@ -57,12 +59,12 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
 
       <div className="min-w-0">
         {page === 'new' && recordId && manifest.forms[recordId] ? (
-          <FormRunner appId={appId} manifest={manifest} name={recordId} form={manifest.forms[recordId]} />
+          <FormRunner at={at} manifest={manifest} name={recordId} form={manifest.forms[recordId]} />
         ) : current && manifest.entities[current] ? (
           recordId ? (
-            <RecordView appId={appId} manifest={manifest} entityName={current} recordId={recordId} />
+            <RecordView at={at} manifest={manifest} entityName={current} recordId={recordId} />
           ) : (
-            <RecordList appId={appId} manifest={manifest} entityName={current} />
+            <RecordList at={at} manifest={manifest} entityName={current} />
           )
         ) : (
           <EmptyState title="Nothing to see here yet">This app has nothing you can read.</EmptyState>
@@ -70,6 +72,35 @@ export function Use({ appId, page, recordId }: { appId: string; page?: string; r
       </div>
     </div>
     </FilesProvider>
+  );
+}
+
+/** Which environment of a team app this is, with a way to the others the person may use. */
+function EnvironmentBadge({ app }: { app: UiManifest['app'] }) {
+  const env = app.environment;
+  if (app.kind !== 'team' || !env) return null;
+  const others = (app.environments ?? []).filter((e) => e.id !== env.id && (e.kind === 'prod' || e.kind === 'staging'));
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-sm">
+      {env.kind === 'preview' ? (
+        <Badge tone="warn">Preview of change #{env.changeRequest?.number}</Badge>
+      ) : (
+        <Badge tone={env.kind === 'prod' ? 'good' : 'accent'}>
+          {env.kind === 'prod' ? 'Prod' : 'Staging'}
+          {env.release ? ` · release ${env.release.number}` : ''}
+        </Badge>
+      )}
+      {others.map((e) => (
+        <Link key={e.id} to={{ name: 'use', appId: app.id, ...(e.kind === 'staging' ? { env: 'staging' } : {}) }} className="text-muted">
+          {e.kind === 'prod' ? 'Prod' : 'Staging'}
+        </Link>
+      ))}
+      {env.kind === 'preview' && env.changeRequest ? (
+        <Link to={{ name: 'change', changeRequestId: env.changeRequest.id }} className="text-muted">
+          Back to the change
+        </Link>
+      ) : null}
+    </div>
   );
 }
 
@@ -81,9 +112,9 @@ function Cell({ field, record }: { field: UiField; record: RecordOut }) {
 /** Every record has an owner, though it isn't one of the entity's fields. */
 const OWNER: UiField = { name: 'owner', label: 'Owner', type: 'user', required: true, read: 'full', create: false, update: false };
 
-function RecordList({ appId, manifest, entityName }: { appId: string; manifest: UiManifest; entityName: string }) {
+function RecordList({ at, manifest, entityName }: { at: AppAt; manifest: UiManifest; entityName: string }) {
   const entity = manifest.entities[entityName]!;
-  const records = useQuery({ queryKey: ['records', appId, entityName], queryFn: () => api.records(appId, entityName) });
+  const records = useQuery({ queryKey: ['records', at.id, at.env, entityName], queryFn: () => api.records(at, entityName) });
   const columns = entity.fields.filter((f) => f.read && f.type !== 'lines').slice(0, 6);
   const form = Object.entries(manifest.forms).find(([, f]) => f.entity === entityName);
   return (
@@ -91,7 +122,7 @@ function RecordList({ appId, manifest, entityName }: { appId: string; manifest: 
       <div className="flex items-center justify-between gap-3">
         <h2 className="m-0 text-2xl font-semibold tracking-tight">{entity.pluralLabel}</h2>
         {form ? (
-          <Link to={{ name: 'use', appId, page: 'new', recordId: form[0] }} className="no-underline">
+          <Link to={{ name: 'use', ...atRoute(at), page: 'new', recordId: form[0] }} className="no-underline">
             <Button variant="primary" tabIndex={-1}>
               {form[1].label}
             </Button>
@@ -100,7 +131,7 @@ function RecordList({ appId, manifest, entityName }: { appId: string; manifest: 
       </div>
       {records.data?.records.length === 0 ? <EmptyState title={`No ${entity.pluralLabel.toLowerCase()} you can see`} /> : null}
       {records.data?.records.length ? (
-        <FilesProvider appId={appId} known={Object.assign({}, ...records.data.records.map((r) => r.files ?? {}))}>
+        <FilesProvider at={at} known={Object.assign({}, ...records.data.records.map((r) => r.files ?? {}))}>
         <Card className="overflow-x-auto p-0">
           <table className="w-full border-collapse text-sm">
             <thead>
@@ -117,11 +148,11 @@ function RecordList({ appId, manifest, entityName }: { appId: string; manifest: 
             </thead>
             <tbody>
               {records.data.records.map((record) => (
-                <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate({ name: 'use', appId, page: entityName, recordId: record.id })}>
+                <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate({ name: 'use', ...atRoute(at), page: entityName, recordId: record.id })}>
                   {columns.map((f, i) => (
                     <td key={f.name} className="px-4 py-2.5">
                       {i === 0 ? (
-                        <Link to={{ name: 'use', appId, page: entityName, recordId: record.id }} className="font-medium" onClick={(e) => e.stopPropagation()}>
+                        <Link to={{ name: 'use', ...atRoute(at), page: entityName, recordId: record.id }} className="font-medium" onClick={(e) => e.stopPropagation()}>
                           <Cell field={f} record={record} />
                         </Link>
                       ) : (
@@ -149,7 +180,7 @@ function problemsOf(error: unknown): { fields: Record<string, string>; message: 
   return { fields, message: details?.issues?.length ? 'Some values need fixing.' : error.message };
 }
 
-function FormRunner({ appId, manifest, name, form }: { appId: string; manifest: UiManifest; name: string; form: UiForm }) {
+function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManifest; name: string; form: UiForm }) {
   const client = useQueryClient();
   const entity = manifest.entities[form.entity]!;
   // Each lines field on the form starts with one empty line to fill in.
@@ -163,13 +194,13 @@ function FormRunner({ appId, manifest, name, form }: { appId: string; manifest: 
           .filter(([field]) => form.sections.some((s) => s.fields.some((f) => f.field === field && !f.readOnly)))
           .map(([field, value]) => [field, Array.isArray(value) && entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]),
       );
-      if (form.action) return api.runAction(appId, form.action, { values: editable });
-      return { status: 'done' as const, record: await api.createRecord(appId, form.entity, editable) };
+      if (form.action) return api.runAction(at, form.action, { values: editable });
+      return { status: 'done' as const, record: await api.createRecord(at, form.entity, editable) };
     },
     onSuccess: async (result) => {
-      await client.invalidateQueries({ queryKey: ['records', appId] });
-      if (result.status === 'done' && result.record.values) navigate({ name: 'use', appId, page: form.entity, recordId: result.record.id });
-      else if (result.status === 'done') navigate({ name: 'use', appId, page: form.entity });
+      await client.invalidateQueries({ queryKey: ['records', at.id] });
+      if (result.status === 'done' && result.record.values) navigate({ name: 'use', ...atRoute(at), page: form.entity, recordId: result.record.id });
+      else if (result.status === 'done') navigate({ name: 'use', ...atRoute(at), page: form.entity });
       else window.location.assign(result.proposal.reviewUrl);
     },
   });
@@ -238,17 +269,17 @@ function FormRunner({ appId, manifest, name, form }: { appId: string; manifest: 
   );
 }
 
-function RecordView({ appId, manifest, entityName, recordId }: { appId: string; manifest: UiManifest; entityName: string; recordId: string }) {
+function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifest: UiManifest; entityName: string; recordId: string }) {
   const client = useQueryClient();
   const entity: UiEntity = manifest.entities[entityName]!;
-  const record = useQuery({ queryKey: ['record', appId, entityName, recordId], queryFn: () => api.record(appId, entityName, recordId) });
-  const history = useQuery({ queryKey: ['history', appId, entityName, recordId], queryFn: () => api.history(appId, entityName, recordId) });
+  const record = useQuery({ queryKey: ['record', at.id, at.env, entityName, recordId], queryFn: () => api.record(at, entityName, recordId) });
+  const history = useQuery({ queryKey: ['history', at.id, at.env, entityName, recordId], queryFn: () => api.history(at, entityName, recordId) });
   const [edits, setEdits] = useState<Record<string, RecordValue> | null>(null);
-  const refresh = () => Promise.all(['record', 'records', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, appId] })));
+  const refresh = () => Promise.all(['record', 'records', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] })));
   // Lines are sent whole, with their IDs, so the platform knows which changed; empty new rows are dropped.
   const changes = () => Object.fromEntries(Object.entries(edits ?? {}).map(([field, value]) => [field, entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]));
-  const save = useMutation({ mutationFn: () => api.updateRecord(appId, entityName, recordId, changes(), record.data!.version), onSuccess: async () => (setEdits(null), await refresh()) });
-  const run = useMutation({ mutationFn: (action: string) => api.runAction(appId, action, { values: {}, recordId, version: record.data!.version }), onSuccess: refresh });
+  const save = useMutation({ mutationFn: () => api.updateRecord(at, entityName, recordId, changes(), record.data!.version), onSuccess: async () => (setEdits(null), await refresh()) });
+  const run = useMutation({ mutationFn: (action: string) => api.runAction(at, action, { values: {}, recordId, version: record.data!.version }), onSuccess: refresh });
   const actions = Object.entries(manifest.actions).filter(([, a]) => a.entity === entityName && a.operation === 'update' && a.input.length === 0);
   const editable = entity.fields.filter((f) => f.update && !f.computed && !record.data?.masked?.includes(f.name));
 
@@ -258,12 +289,12 @@ function RecordView({ appId, manifest, entityName, recordId }: { appId: string; 
   const problems = problemsOf(save.error ?? run.error);
 
   return (
-    <FilesProvider appId={appId} known={record.data.files ?? {}}>
+    <FilesProvider at={at} known={record.data.files ?? {}}>
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
       <Card className="grid content-start gap-4">
         <div>
           <p className="m-0 text-sm text-muted">
-            <Link to={{ name: 'use', appId, page: entityName }}>{entity.pluralLabel}</Link>
+            <Link to={{ name: 'use', ...atRoute(at), page: entityName }}>{entity.pluralLabel}</Link>
           </p>
           <h2 className="m-0 text-2xl font-semibold tracking-tight">{title}</h2>
         </div>

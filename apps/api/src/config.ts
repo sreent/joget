@@ -73,6 +73,10 @@ export const ConfigSchema = z
     /** Personal spaces stay small (design §3): at most this many apps, each shared with at most this many people. */
     PERSONAL_SPACE_MAX_APPS: z.coerce.number().int().min(1).default(20),
     PERSONAL_APP_MAX_SHARES: z.coerce.number().int().min(1).default(10),
+    /** Approvals a change request needs before it can merge, from people other than its author (design §6.7). */
+    CHANGE_APPROVALS: z.coerce.number().int().min(1).max(5).default(1),
+    /** Approvals a Prod deployment needs, from people who authored none of its changes (design §7.1). */
+    DEPLOY_PROD_APPROVALS: z.coerce.number().int().min(1).max(5).default(1),
     /** How long an agent's proposal waits for the person before it expires. */
     PROPOSAL_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(72),
     /** The longest a service-account token may live. */

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../context.js';
 import { forbidden, unauthorized } from '../errors.js';
-import { checkPermission, checkQuery } from './check.js';
+import { checkAnyPermission, checkQuery } from './check.js';
 import { requireAuth, type AccessRule } from './rules.js';
 
 export interface RouteAccess {
@@ -27,7 +27,9 @@ export function requireAccessRules(app: FastifyInstance, registry: RouteAccess[]
         method,
         url: route.url,
         kind: access.kind,
-        ...((access.kind === 'permission' || access.kind === 'query') && typeof access.action === 'string' ? { action: access.action } : {}),
+        ...((access.kind === 'permission' || access.kind === 'query') && typeof access.action !== 'function'
+          ? { action: typeof access.action === 'string' ? access.action : access.action.join('|') }
+          : {}),
       });
     }
   });
@@ -64,11 +66,15 @@ export function installAccessControl(app: FastifyInstance, ctx: AppContext): voi
     if (access?.kind !== 'permission' && access?.kind !== 'query') return;
     const auth = requireAuth(request);
     const resource = await access.resource(request);
-    const action = typeof access.action === 'string' ? access.action : await access.action(request);
+    const action = typeof access.action === 'function' ? await access.action(request) : access.action;
     const context = access.context ? await access.context(request) : undefined;
     const policy = access.policy ? await access.policy(request) : undefined;
     const options = { ...(context ? { context } : {}), ...(policy ? { policy } : {}) };
-    if (access.kind === 'query') request.queryDecision = await checkQuery(ctx, request, auth, action, resource, options);
-    else request.decision = await checkPermission(ctx, request, auth, action, resource, options);
+    if (access.kind === 'query') {
+      if (typeof action !== 'string') throw new Error('A query access rule names exactly one action');
+      request.queryDecision = await checkQuery(ctx, request, auth, action, resource, options);
+    } else {
+      request.decision = await checkAnyPermission(ctx, request, auth, typeof action === 'string' ? [action] : action, resource, options);
+    }
   });
 }

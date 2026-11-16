@@ -214,6 +214,14 @@ Team spaces have no permanent Dev environment, because each builder's personal s
 
 Several builders can work on the same app at once, each in their own working copy. Conflicts are detected when changes are merged (§6.7). Teams that test against other systems' test instances, such as an ERP sandbox, can enable a persistent **Staging** environment between the release and Prod.
 
+**As built (phase 2):**
+
+- A team app starts empty. Its content arrives through change requests, so nothing reaches Prod unreviewed, the first version included.
+- A working copy keeps the main line's stable IDs, so its changes map cleanly onto Prod's tables. It starts with three sample records for each entity, made through the app's own rules.
+- The working copy stays after a merge, and continues from the merged revision. A builder whose copy is older selects **Take in newer changes**: a three-way merge, as in §6.7.
+- A preview is an environment of the team app. Builders, reviewers and release managers may do anything in a preview, and nothing with Prod's data, through the managed permission set *Try changes in previews*. That set applies only where the resource's environment is a preview. Business testers get one of the app's roles in Staging from a space admin.
+- Staging and Prod are made by the first deployment to them.
+
 ### Promotion: personal → team
 
 1. The owner chooses **Promote** and picks a target team space where they hold `change.open`.
@@ -669,6 +677,20 @@ Rolling back means re-activating the previous release in that environment (§7.1
 
 **Concurrency.** Each builder has their own working copy. Artifacts carry versions for optimistic locking, merges are three-way at the artifact level, and conflicts are shown in the UI. Real-time co-editing can come later.
 
+**As built (phase 2):**
+
+- The checks run when a change is submitted, and are kept with it:
+  - validation of the whole definition;
+  - the migration Prod would need from the change's base, with the steps that delete data flagged;
+  - the permission diff, worked out from the compiled roles, so it means exactly what the policy engine will do, with how many people and groups hold each role in Staging and Prod now;
+  - the capability diff;
+  - lint, for example "No role can read Expense claim".
+  Guardrails apply when people act on the change.
+- A review names the digest of the version it reviewed. A new version needs approval again. The author can't approve (the guardrail `gr.sod.author-cannot-approve`), and a merge needs `CHANGE_APPROVALS` approvals, one by default.
+- When the main line moved on, the merge is three-way at the artifact level. An entity, rule, action, query, card, form or role that changed on one side only takes that side. One that changed differently on both sides conflicts, and the merge is refused. The merged definition is validated again.
+- A release is signed with the platform's Ed25519 key, over a manifest of the app, its number, revision, definition digest, previous release and contents. A database trigger refuses any change to it. Listing releases checks each signature and each definition's digest.
+- A change that deletes data goes in a release of its own. A release that would delete data and hold more than one change is refused, with the revision to release first.
+
 ### 6.8 Data-model migrations
 
 In the built-in store, app data lives in **typed tables, in a separate schema for each app and environment** (for example `app_7f3c_prod`). Nothing is shared implicitly between apps: one app reaches another's data only through declared, permissioned references.
@@ -706,6 +728,14 @@ Deploying release *R* to environment *E* runs these steps:
 6. **Roll back** by re-activating the previous release. The expand/contract discipline keeps the previous release compatible with the data.
 
 Target: deploys and rollbacks that touch only metadata finish in under 30 seconds.
+
+**As built (phase 2):**
+
+- **Plan.** The migration from the environment's current data model to the release, with how many records each step that deletes data touches. A deployment that deletes data needs a person's confirmation in an interactive session, and can't skip an earlier release that deletes data.
+- **Approve.** Staging needs no approval. Prod needs `DEPLOY_PROD_APPROVALS` approvals (one by default) from people who authored none of the changes it carries, each with fresh MFA. Executing it needs fresh MFA too.
+- **Execute and activate** happen in one transaction: the migration, a smoke check that every table answers to the environment's own database role, and the switch of the active-release pointer. A failure changes nothing, and is recorded.
+- **Roll back** makes the release that ran before live again, without touching the schema: the newer tables and columns stay, and the older release ignores them. A rollback across a deployment that deleted data is refused. Going forward again works out the stored rollups afresh. In the tests a rollback takes milliseconds.
+- **Verify**, watching error rates after a deployment, is not built yet. It needs the per-app metrics of phase 4.
 
 **Across installations**, such as an isolated Prod cluster, export a signed release bundle and import it through the API or CLI. The target verifies the signature and the approval record. Alternatively, it can pull releases GitOps-style.
 
@@ -1000,7 +1030,7 @@ Check each component's licence as you adopt it. Prefer Apache-2.0 and MIT, and r
 |---|---|---|
 | **0. Governance kernel** (done) | Orgs, personal and team spaces, membership · OIDC login, directory, service accounts, tokens · the PDP with permission sets, roles, bindings and expiry · scope-based isolation · the audit pipeline (same-transaction writes, sealing) · OpenTelemetry conventions · CI/CD, Helm chart, Compose file | An admin creates a team space and assigns roles, and every action appears in a verifiable audit log. Proven on a real Kubernetes cluster |
 | **1. Capability core and the first studio** (built: Ambit's side of the exit criterion; the agent's side is the agent project's) | The built-in store: entities with relations, line items and files, and record- and field-level permissions and history · rules · actions and queries · review cards and the review page · proposals and confirmation · provenance · MCP endpoints for capabilities and for building · agents acting for one named person (approval by a Security admin, RFC 8693 token exchange) · sharing personal apps · the studio's data-model and form designers, with generated pages | In a personal space, a builder designs an expense app in the studio, with Claude drafting through the builder MCP. An agent acting for a colleague prepares a claim from a receipt. The colleague edits a line on the review page and confirms. The claim is stored with where every value came from, and the audit log shows who did what, for whom |
-| **2. Governed delivery and the full studio** | Working copies in personal spaces · change requests with checks, permission and capability diffs, and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · app templates, import and export · designers for rules, actions, queries, review cards and roles (built) · the page, navigation and dashboard designers, with queries that total and group · steps for actions, calling a7c skills for automation across systems | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
+| **2. Governed delivery and the full studio** (in progress) | Working copies in personal spaces · change requests with checks, permission and capability diffs, and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback and the API (built) · a CLI · promotion from personal to team · app templates, import and export · designers for rules, actions, queries, review cards and roles (built) · the page, navigation and dashboard designers, with queries that total and group · steps for actions, calling a7c skills for automation across systems | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
 | **3. Approvals and the shared agent** | Processes on Temporal with human tasks, org-chart routing, timers and SLAs · universal inbox · approving in chat, where the channel can prove who pressed Approve · agentos calling Ambit from Teams, in the separate agent project · notifications, including telling an agent when a proposal is decided · document generation | An employee claims expenses in Teams, the approver approves in Teams, and SLA alerts and the audit trail are complete |
 | **4. Connectors and enterprise hardening** | Connectors that publish other systems' operations as capabilities (REST and OpenAPI first) · automations · guardrail editor, SoD, JIT elevation, access reviews · plugin registry, sandboxed scripts · SIEM streaming, quotas and metering · the production plane in its own cloud account · DR drills, ASVS verification and a penetration test | Passes an internal audit against ISO 27001:2022 using the §15 mapping, and meets the readiness targets in §1 |
 | **5. Earned autonomy and beyond** | Confirmation levels that step down once a capability has earned trust, per person or team, within guardrails · predictions in apps: predicted fields, anomaly flags and forecasts, with the model recorded as each value's source · AI that drafts whole apps from a description into change requests · a signed marketplace of templates and plugins · an installable PWA with offline drafts · a BI connector (read replica, governed exports) | A routine claim type moves from review to preview on measured trust, and a business user ships a new capability that an AI drafted, through the normal approval flow |
@@ -1036,6 +1066,15 @@ Phases 0–3 are the MVP: the point where an employee can claim expenses through
 | Ambit and autonomic | Split by job: Ambit for data apps and the errands agents run, autonomic (a7c) for automation. Ambit still does predictive analytics and ML where they serve an app | Predictions are app artifacts (§6.1) and record the model behind each value. A model can live in Ambit or come from autonomic through a connection |
 | Name | Ambit (a3t) | It sits beside autonomic (a7c) and agentos (a5s). What Ambit lets people get done are called errands |
 | Who builds | People, in the studio and with an AI copilot. AI clients such as Claude can also build through the builder MCP and API, with the builder's permissions | The builder MCP arrives in phase 1, and AI changes pass the same checks and reviews (§6.5) |
+
+**Decided while building governed delivery (2026-11-16):**
+
+| Decision | Outcome | Consequence |
+|---|---|---|
+| A new team app | Starts empty, and changes only through change requests from working copies | Nothing reaches Prod unreviewed, the first version included (§3) |
+| Previews | Environments of the team app, where builders, reviewers and release managers may do anything, with test data only | Reviewers click through every screen of the change; Prod's data stays out of their reach (§3) |
+| Approvals | One for a change and one for a Prod deployment by default, from people who wrote none of it; both configurable | A small team can deliver, and a larger one raises the counts (§6.7, §7.1) |
+| Rollback | Re-activates the previous release and keeps the newer data model (expand and contract). Refused across a release that deleted data | Rollbacks take milliseconds, and changes that delete data go out on their own (§7.1) |
 
 **Still open:**
 

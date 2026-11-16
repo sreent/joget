@@ -1,21 +1,86 @@
 import { z } from 'zod';
 
 export const AppParams = z.object({ appId: z.uuid() });
+
+/**
+ * Which environment of a team app to use: `prod` (the default), `staging`, or a change request's
+ * preview by its environment ID. A personal app has only its sandbox.
+ */
+export const EnvQuery = z.object({
+  env: z
+    .union([z.enum(['prod', 'staging']), z.uuid()])
+    .optional()
+    .describe('A team app\'s environment: prod (the default), staging, or a preview\'s environment ID'),
+});
 export const EntityParams = AppParams.extend({ entity: z.string().min(1).max(63) });
 export const RecordParams = EntityParams.extend({ recordId: z.uuid() });
+
+export const EnvironmentOut = z.object({
+  id: z.uuid(),
+  kind: z.enum(['sandbox', 'preview', 'staging', 'prod']),
+  /** The revision the environment runs. */
+  revision: z.number().int(),
+  /** Staging and Prod: the release that is live. */
+  release: z.object({ id: z.uuid(), number: z.number().int() }).nullable(),
+  /** A preview: the change request it shows. */
+  changeRequest: z.object({ id: z.uuid(), number: z.number().int() }).nullable(),
+});
 
 export const AppOut = z.object({
   id: z.uuid(),
   spaceId: z.uuid(),
+  /** A personal app is edited live. A team app changes through change requests and runs releases. */
+  kind: z.enum(['personal', 'team']),
   handle: z.string(),
   name: z.string(),
   description: z.string().nullable(),
   ownerUserId: z.uuid(),
+  /** The newest revision of the main line. */
   revision: z.number().int(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** The environment this description is about, when it has one: the sandbox, Prod, Staging or a preview. */
+  environment: EnvironmentOut.nullable(),
+  /** A team app's environments, without previews. */
+  environments: z.array(EnvironmentOut).optional(),
+  /** Set on a working copy: the team app it changes, and how it stands. */
+  workingCopyOf: z
+    .object({
+      appId: z.uuid(),
+      name: z.string(),
+      /** The team app's main-line revision this copy last took in. */
+      baseRevision: z.number().int(),
+      /** True when the team app's main line has moved on since. */
+      behind: z.boolean(),
+      /** The change request this copy has open, if any. */
+      changeRequest: z.object({ id: z.uuid(), number: z.number().int() }).nullable(),
+    })
+    .nullable(),
+  /** On a team app: the caller's own working copy of it, if they have one. */
+  myWorkingCopyId: z.uuid().nullable().optional(),
   /** What the caller may do with the app. */
-  access: z.object({ build: z.boolean(), run: z.boolean(), share: z.boolean(), roles: z.array(z.string()) }),
+  access: z.object({
+    build: z.boolean(),
+    run: z.boolean(),
+    share: z.boolean(),
+    /** Change the definition: for a team app, make a working copy and submit changes. */
+    edit: z.boolean(),
+    roles: z.array(z.string()),
+    /** On a team app: the delivery steps the caller's roles allow. Separation of duties is checked when they act. */
+    delivery: z
+      .object({
+        review: z.boolean(),
+        approve: z.boolean(),
+        merge: z.boolean(),
+        release: z.boolean(),
+        deploy: z.boolean(),
+        approveDeploy: z.boolean(),
+        execute: z.boolean(),
+        rollback: z.boolean(),
+        manageAccess: z.boolean(),
+      })
+      .optional(),
+  }),
 });
 
 export const PlanOut = z.object({

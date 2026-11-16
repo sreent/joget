@@ -1,5 +1,6 @@
 export * from './actions.js';
 export * from './cards.js';
+export * from './delivery.js';
 export * from './fields.js';
 export * from './migrations.js';
 export * from './roles.js';

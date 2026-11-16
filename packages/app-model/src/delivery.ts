@@ -1,0 +1,353 @@
+import type { PermissionGrant } from '@platform/authz';
+import type { StoredDefinition, StoredEntity } from './fields.js';
+import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles.js';
+import type { Action, ConfirmationLevel, Query } from './schema.js';
+
+/*
+ * What a change request shows its reviewers (design §6.7): what changed, who gains or loses
+ * access, which agent tools change, and what looks wrong. Also the three-way merge, for when the
+ * main line moved on while a builder worked.
+ */
+
+/** JSON with sorted keys: two values are equal exactly when this is. */
+function stable(value: unknown): string {
+  return (
+    JSON.stringify(value, (_key, inner: unknown) =>
+      inner !== null && typeof inner === 'object' && !Array.isArray(inner)
+        ? Object.fromEntries(Object.entries(inner as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+        : inner,
+    ) ?? 'undefined'
+  );
+}
+const same = (a: unknown, b: unknown): boolean => stable(a) === stable(b);
+
+/** The parts of a definition, each a map of named artifacts. */
+export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles'] as const;
+export type DefinitionSection = (typeof DEFINITION_SECTIONS)[number];
+
+export interface DefinitionChange {
+  readonly section: DefinitionSection;
+  /** The artifact's name in the head, or in the base if the change removes it. */
+  readonly name: string;
+  readonly change: 'added' | 'removed' | 'changed';
+  /** A renamed entity's name in the base. */
+  readonly from?: string;
+  /** For an entity: what changed in it. */
+  readonly details: readonly string[];
+}
+
+/** What a change does to a definition, artifact by artifact. Entities match by ID, so a rename is one change. */
+export function diffDefinitions(base: StoredDefinition, head: StoredDefinition): DefinitionChange[] {
+  const changes: DefinitionChange[] = [];
+  const baseById = new Map(Object.entries(base.entities).map(([name, entity]) => [entity.id, { name, entity }]));
+  const headIds = new Set(Object.values(head.entities).map((entity) => entity.id));
+  for (const [name, entity] of Object.entries(head.entities)) {
+    const before = baseById.get(entity.id);
+    if (!before) {
+      changes.push({ section: 'entities', name, change: 'added', details: entity.fields.map((field) => `Field ${field.name} (${field.type})`) });
+      continue;
+    }
+    const details = entityChanges(before.entity, entity);
+    if (before.name !== name) details.unshift(`Renamed from ${before.name}`);
+    if (details.length) changes.push({ section: 'entities', name, change: 'changed', ...(before.name !== name ? { from: before.name } : {}), details });
+  }
+  for (const [id, { name }] of baseById) {
+    if (!headIds.has(id)) changes.push({ section: 'entities', name, change: 'removed', details: [] });
+  }
+  for (const section of DEFINITION_SECTIONS) {
+    if (section === 'entities') continue;
+    const before: Readonly<Record<string, unknown>> = base[section];
+    const after: Readonly<Record<string, unknown>> = head[section];
+    for (const name of Object.keys(after)) {
+      if (!(name in before)) changes.push({ section, name, change: 'added', details: [] });
+      else if (!same(before[name], after[name])) changes.push({ section, name, change: 'changed', details: [] });
+    }
+    for (const name of Object.keys(before)) {
+      if (!(name in after)) changes.push({ section, name, change: 'removed', details: [] });
+    }
+  }
+  return changes;
+}
+
+function entityChanges(before: StoredEntity, after: StoredEntity): string[] {
+  const details: string[] = [];
+  const { fields: oldFields, ...oldSettings } = before;
+  const { fields: newFields, ...newSettings } = after;
+  if (oldSettings.label !== newSettings.label) details.push(`Label is now ${newSettings.label}`);
+  if (oldSettings.titleField !== newSettings.titleField) details.push(newSettings.titleField ? `Records are now named by ${newSettings.titleField}` : 'Records are no longer named by a field');
+  if (oldSettings.history !== newSettings.history) details.push(newSettings.history ? 'History is now kept' : 'History is no longer kept');
+  const { label: _l1, titleField: _t1, history: _h1, ...oldRest } = oldSettings;
+  const { label: _l2, titleField: _t2, history: _h2, ...newRest } = newSettings;
+  if (!same(oldRest, newRest)) details.push('Description changed');
+
+  const old = new Map(oldFields.map((field) => [field.id, field]));
+  const kept = new Set(newFields.map((field) => field.id));
+  for (const field of newFields) {
+    const prior = old.get(field.id);
+    if (!prior) {
+      details.push(`Added field ${field.name} (${field.type})`);
+      continue;
+    }
+    if (prior.name !== field.name) details.push(`Renamed field ${prior.name} to ${field.name}`);
+    if (prior.type !== field.type) details.push(`Field ${field.name} is now ${field.type}, not ${prior.type}`);
+    else if (!same({ ...prior, name: '' }, { ...field, name: '' })) details.push(`Changed field ${field.name}`);
+  }
+  for (const field of oldFields) if (!kept.has(field.id)) details.push(`Removed field ${field.name}`);
+  const order = (fields: readonly { id: string }[]) => fields.map((field) => field.id).filter((id) => old.has(id) && kept.has(id));
+  if (!same(order(oldFields), order(newFields))) details.push('Fields are in a new order');
+  return details;
+}
+
+/** One way in which holding a role changes. */
+export interface AccessChange {
+  readonly role: string;
+  /** `gains`: the role can do more. `loses`: less. `changes`: something different, neither more nor less. */
+  readonly kind: 'gains' | 'loses' | 'changes';
+  readonly text: string;
+}
+
+const VERBS: Readonly<Record<string, string>> = {
+  'record.read': 'read',
+  'record.create': 'create',
+  'record.update': 'update',
+  'record.delete': 'delete',
+  'record.export': 'export',
+  'action.run': 'run',
+  'query.run': 'run',
+};
+const ACCESS_RANK: Readonly<Record<FieldAccess, number>> = { hidden: 0, masked: 1, full: 2 };
+
+/** The grants of each role, keyed by permission and target. Entities are keyed by ID, so renames match. */
+function grantsByRole(definition: StoredDefinition): Map<string, Map<string, PermissionGrant>> {
+  const { permissionSets } = compileAppPolicy('diff', definition);
+  const result = new Map<string, Map<string, PermissionGrant>>();
+  const names = Object.keys(definition.roles);
+  permissionSets.forEach((set, index) => {
+    const grants = new Map<string, PermissionGrant>();
+    for (const grant of set.grants) {
+      if (!(grant.permission in VERBS)) continue;
+      const target = grant.permission.startsWith('record.') ? (definition.entities[grant.resource ?? '']?.id ?? grant.resource) : grant.resource;
+      grants.set(`${grant.permission} ${target}`, grant);
+    }
+    result.set(names[index]!, grants);
+  });
+  return result;
+}
+
+/** A field's paths in an entity, by ID: `fieldId` or `linesFieldId.lineFieldId`, with the names that grants use. */
+function fieldPaths(definition: StoredDefinition, entity: StoredEntity): Map<string, string> {
+  const paths = new Map<string, string>();
+  for (const field of entity.fields) {
+    paths.set(field.id, field.name);
+    if (field.type !== 'lines') continue;
+    for (const sub of definition.entities[field.entity]?.fields ?? []) paths.set(`${field.id}.${sub.id}`, `${field.name}.${sub.name}`);
+  }
+  return paths;
+}
+
+/**
+ * Who gains or loses access, role by role, in plain words: for example "Approver can now export
+ * Expense claim" (design §6.7). Field-level access is compared through the compiled grants, so the
+ * diff means exactly what the policy engine will do.
+ */
+export function accessChanges(base: StoredDefinition, head: StoredDefinition): AccessChange[] {
+  const changes: AccessChange[] = [];
+  const before = grantsByRole(base);
+  const after = grantsByRole(head);
+  const entityById = (definition: StoredDefinition, id: string) => Object.values(definition.entities).find((entity) => entity.id === id);
+  const labelOf = (permission: string, target: string): string => {
+    if (permission === 'action.run') return head.actions[target]?.label ?? base.actions[target]?.label ?? target;
+    if (permission === 'query.run') return head.queries[target]?.label ?? base.queries[target]?.label ?? target;
+    return (entityById(head, target) ?? entityById(base, target))?.label ?? target;
+  };
+
+  for (const role of new Set([...Object.keys(base.roles), ...Object.keys(head.roles)])) {
+    const label = head.roles[role]?.label ?? base.roles[role]!.label;
+    const add = (kind: AccessChange['kind'], text: string) => changes.push({ role, kind, text: `${label} ${text}` });
+    if (!head.roles[role]) {
+      add('loses', 'is removed: whoever holds it loses its access');
+      continue;
+    }
+    if (!base.roles[role]) add('gains', 'is a new role');
+    const old = before.get(role) ?? new Map<string, PermissionGrant>();
+    const now = after.get(role)!;
+    for (const key of new Set([...old.keys(), ...now.keys()])) {
+      const [permission, target] = key.split(' ') as [string, string];
+      const verb = VERBS[permission]!;
+      const what = labelOf(permission, target);
+      const b = old.get(key);
+      const h = now.get(key);
+      const isRecord = permission.startsWith('record.');
+      // An entity that the change removes takes its access with it: the data change says so.
+      if (isRecord && !entityById(head, target)) continue;
+      if (!b && h) {
+        add('gains', `can now ${verb} ${what}${h.condition ? ', for records that match a condition' : ''}`);
+        continue;
+      }
+      if (b && !h) {
+        add('loses', `can no longer ${verb} ${what}`);
+        continue;
+      }
+      if (!b || !h || !isRecord) continue;
+      if (b.condition && !h.condition) add('gains', `can now ${verb} every ${what} record`);
+      else if (!b.condition && h.condition) add('loses', `can now ${verb} only ${what} records that match a condition`);
+      else if (!same(b.condition, h.condition)) add('changes', `${verb}s a different set of ${what} records`);
+      if (!same(b.check, h.check)) add('changes', `must meet a different condition to ${verb} ${what}`);
+      if (permission === 'record.delete' || permission === 'record.export') continue;
+
+      const baseEntity = entityById(base, target);
+      const headEntity = entityById(head, target)!;
+      const oldPaths = baseEntity ? fieldPaths(base, baseEntity) : new Map<string, string>();
+      for (const [id, name] of fieldPaths(head, headEntity)) {
+        const oldName = oldPaths.get(id);
+        if (permission === 'record.read') {
+          const was = oldName === undefined ? 'hidden' : fieldAccess([b], oldName);
+          const is = fieldAccess([h], name);
+          if (ACCESS_RANK[is] > ACCESS_RANK[was]) add('gains', is === 'full' && was === 'masked' ? `now sees ${what}.${name} in full` : `can now see ${what}.${name}${is === 'masked' ? ', masked' : ''}`);
+          else if (ACCESS_RANK[is] < ACCESS_RANK[was]) add('loses', is === 'masked' ? `now sees ${what}.${name} masked` : `can no longer see ${what}.${name}`);
+        } else {
+          const could = oldName !== undefined && covers(b, oldName);
+          const can = covers(h, name);
+          if (can && !could) add('gains', `can now set ${what}.${name} when it ${verb}s`);
+          else if (could && !can) add('loses', `can no longer set ${what}.${name} when it ${verb}s`);
+        }
+      }
+    }
+  }
+  return changes;
+}
+
+/** One way in which the tools that agents see change. Actions and queries are the tools. */
+export interface CapabilityChange {
+  readonly tool: string;
+  readonly change: 'added' | 'removed' | 'changed';
+  readonly text: string;
+}
+
+const CONFIRMATION_TEXT: Readonly<Record<ConfirmationLevel, string>> = {
+  none: 'runs without asking the person',
+  preview: 'asks the person to confirm a preview',
+  review: 'asks the person to review it in full',
+};
+const CONFIRMATION_RANK: Readonly<Record<ConfirmationLevel, number>> = { none: 0, preview: 1, review: 2 };
+
+/**
+ * Which tools agents gain or lose, and what changes in the others: for example "submit_claim now
+ * needs less confirmation" (design §6.7).
+ */
+export function capabilityChanges(base: StoredDefinition, head: StoredDefinition): CapabilityChange[] {
+  const changes: CapabilityChange[] = [];
+  const entityLabel = (name: string) => head.entities[name]?.label ?? base.entities[name]?.label ?? name;
+  for (const name of new Set([...Object.keys(base.actions), ...Object.keys(head.actions)])) {
+    const [b, h] = [base.actions[name], head.actions[name]];
+    if (!b && h) {
+      changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}, and ${CONFIRMATION_TEXT[h.confirm]}` });
+    } else if (b && !h) {
+      changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
+    } else if (b && h && !same(b, h)) {
+      for (const text of actionChanges(name, b, h, entityLabel)) changes.push({ tool: name, change: 'changed', text });
+    }
+  }
+  for (const name of new Set([...Object.keys(base.queries), ...Object.keys(head.queries)])) {
+    const [b, h] = [base.queries[name], head.queries[name]];
+    if (!b && h) changes.push({ tool: name, change: 'added', text: `New tool ${name}: answers from ${entityLabel(h.entity)}` });
+    else if (b && !h) changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
+    else if (b && h && !same(b, h)) for (const text of queryChanges(name, b, h, entityLabel)) changes.push({ tool: name, change: 'changed', text });
+  }
+  return changes;
+}
+
+function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: string) => string): string[] {
+  const texts: string[] = [];
+  if (b.operation !== h.operation || b.entity !== h.entity) texts.push(`${name} now ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}`);
+  if (b.confirm !== h.confirm) {
+    const less = CONFIRMATION_RANK[h.confirm] < CONFIRMATION_RANK[b.confirm];
+    texts.push(`${name} now needs ${less ? 'less' : 'more'} confirmation: it ${CONFIRMATION_TEXT[h.confirm]}`);
+  }
+  for (const field of h.input) if (!b.input.includes(field)) texts.push(`${name} now takes ${field}`);
+  for (const field of b.input) if (!h.input.includes(field)) texts.push(`${name} no longer takes ${field}`);
+  for (const [field, value] of Object.entries(h.set)) if (!same(b.set[field], value)) texts.push(`${name} now sets ${field} to ${JSON.stringify(value)}`);
+  for (const field of Object.keys(b.set)) if (!(field in h.set)) texts.push(`${name} no longer sets ${field}`);
+  if (!same(b.where, h.where)) texts.push(`${name} now applies to a different set of records`);
+  if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);
+  if (b.card !== h.card) texts.push(`${name} shows a different review card`);
+  if (b.label !== h.label && !texts.length) texts.push(`${name} has a new label`);
+  return texts;
+}
+
+function queryChanges(name: string, b: Query, h: Query, entityLabel: (name: string) => string): string[] {
+  const texts: string[] = [];
+  if (b.entity !== h.entity) texts.push(`${name} now answers from ${entityLabel(h.entity)}`);
+  for (const field of h.fields) if (!b.fields.includes(field)) texts.push(`${name} now returns ${field}`);
+  for (const field of b.fields) if (!h.fields.includes(field)) texts.push(`${name} no longer returns ${field}`);
+  if (!same(b.filter, h.filter)) texts.push(`${name} now returns a different set of records`);
+  for (const parameter of Object.keys(h.parameters)) if (!(parameter in b.parameters)) texts.push(`${name} now takes ${parameter}`);
+  for (const parameter of Object.keys(b.parameters)) if (!(parameter in h.parameters)) texts.push(`${name} no longer takes ${parameter}`);
+  if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);
+  if (!texts.length) texts.push(`${name} changed`);
+  return texts;
+}
+
+/** Things that are allowed but probably wrong, for reviewers to weigh. */
+export function lintDefinition(definition: StoredDefinition): string[] {
+  const findings: string[] = [];
+  const roles = Object.values(definition.roles);
+  const lines = new Set(Object.values(definition.entities).flatMap((entity) => entity.fields.flatMap((field) => (field.type === 'lines' ? [field.entity] : []))));
+  if (Object.keys(definition.entities).length && !roles.length) findings.push('The app has no roles, so nobody can use it outside a preview');
+  if (!roles.length) return findings;
+  for (const [name, entity] of Object.entries(definition.entities)) {
+    if (lines.has(name)) continue;
+    if (!roles.some((role) => role.entities[name]?.read)) findings.push(`No role can read ${entity.label}`);
+  }
+  for (const [name, action] of Object.entries(definition.actions)) {
+    if (!roles.some((role) => role.actions.includes(name))) findings.push(`No role can run the action ${action.label}`);
+  }
+  for (const [name, query] of Object.entries(definition.queries)) {
+    if (!roles.some((role) => role.queries.includes(name))) findings.push(`No role can run the query ${query.label}`);
+  }
+  for (const [name, role] of Object.entries(definition.roles)) {
+    const grants = Object.values(role.entities).some((p) => p.read || p.create || p.update || p.delete || p.export);
+    if (!grants && !role.actions.length && !role.queries.length) findings.push(`The role ${role.label} (${name}) grants nothing`);
+  }
+  return findings;
+}
+
+/** Where both sides of a merge changed the same artifact differently. */
+export interface MergeConflict {
+  readonly section: DefinitionSection;
+  readonly name: string;
+  /** What this side did: the change being merged. */
+  readonly ours: 'added' | 'removed' | 'changed';
+  /** What the main line did since the change started. */
+  readonly theirs: 'added' | 'removed' | 'changed';
+}
+
+export type MergeResult = { readonly ok: true; readonly definition: Record<string, unknown> } | { readonly ok: false; readonly conflicts: readonly MergeConflict[] };
+
+/**
+ * A three-way merge at the artifact level (design §6.7): an artifact changed on one side only
+ * takes that side; changed the same way on both, either; changed differently, a conflict. The
+ * result must still be validated, because two clean changes can break a reference together.
+ */
+export function mergeDefinitions(base: StoredDefinition, ours: StoredDefinition, theirs: StoredDefinition): MergeResult {
+  const conflicts: MergeConflict[] = [];
+  const merged: Record<string, unknown> = { formatVersion: theirs.formatVersion };
+  const what = (from: unknown, to: unknown): MergeConflict['ours'] => (from === undefined ? 'added' : to === undefined ? 'removed' : 'changed');
+  for (const section of DEFINITION_SECTIONS) {
+    const b: Readonly<Record<string, unknown>> = base[section];
+    const o: Readonly<Record<string, unknown>> = ours[section];
+    const t: Readonly<Record<string, unknown>> = theirs[section];
+    const out: Record<string, unknown> = {};
+    for (const name of new Set([...Object.keys(t), ...Object.keys(o), ...Object.keys(b)])) {
+      const [bv, ov, tv] = [b[name], o[name], t[name]];
+      const pick = same(ov, tv) || same(bv, ov) ? tv : same(bv, tv) ? ov : null;
+      if (pick === null) {
+        conflicts.push({ section, name, ours: what(bv, ov), theirs: what(bv, tv) });
+        continue;
+      }
+      if (pick !== undefined) out[name] = pick;
+    }
+    merged[section] = out;
+  }
+  return conflicts.length ? { ok: false, conflicts } : { ok: true, definition: merged };
+}

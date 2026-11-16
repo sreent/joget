@@ -193,7 +193,7 @@ export class AppRuntime {
 
   /** The platform's policy with this app's own roles. */
   async policy(loaded: LoadedApp): Promise<Policy> {
-    return this.#ctx.apps.policyFor(await this.#ctx.policy.policy(), loaded.app.id, loaded.app.currentRevision, loaded.definition);
+    return this.#ctx.apps.policyFor(await this.#ctx.policy.policy(), loaded.app.id, loaded.revision, loaded.definition);
   }
 
   entity(loaded: LoadedApp, name: string): StoredEntity {
@@ -206,8 +206,9 @@ export class AppRuntime {
     return { schema: loaded.env.schemaName, role: loaded.env.dbRole };
   }
 
+  /** The environment still runs the definition the request was checked against, on the same data model. */
   #sameRevision(tx: AppTransaction, loaded: LoadedApp): void {
-    if (tx.revision !== loaded.app.currentRevision) {
+    if (tx.activeRevision !== loaded.revision || tx.revision !== loaded.env.appliedRevision) {
       throw conflict('definition_changed', 'The app changed while this request was running. Try again.');
     }
   }
@@ -1033,7 +1034,7 @@ export class AppRuntime {
     const digest = sha256Hex(
       canonicalJson({
         appId: loaded.app.id,
-        revision: loaded.app.currentRevision,
+        revision: loaded.revision,
         action: proposal.action,
         recordId: proposal.recordId,
         baseVersion: proposal.baseVersion,
@@ -1050,7 +1051,7 @@ export class AppRuntime {
         appId: loaded.app.id,
         environmentId: loaded.env.id,
         action: proposal.action,
-        revision: loaded.app.currentRevision,
+        revision: loaded.revision,
         recordId: proposal.recordId,
         baseVersion: proposal.baseVersion,
         effect: proposal.effect as unknown as Record<string, unknown>,
@@ -1115,7 +1116,7 @@ export class AppRuntime {
   async approve(request: FastifyRequest, auth: AuthContext, id: string, digest: string): Promise<{ proposal: ProposalOut; record: RecordOut | { id: string; version: number } }> {
     const ctx = this.#ctx;
     const proposal = await this.proposalFor(auth, id);
-    const loaded = await ctx.apps.load(proposal.appId);
+    const loaded = await ctx.apps.load(proposal.appId, { id: proposal.environmentId });
     const action = loaded.definition.actions[proposal.action];
     if (!action) throw conflict('definition_changed', 'The app changed since this was proposed. Ask for a new proposal.');
     const entity = this.entity(loaded, action.entity);
@@ -1133,7 +1134,7 @@ export class AppRuntime {
         throw conflict('expired', 'This proposal has expired. Ask for a new one.');
       }
       if (locked!.digest !== digest) throw conflict('digest_mismatch', 'This is not the change you were shown. Review it again.');
-      if (tx.revision !== locked!.revision || loaded.app.currentRevision !== locked!.revision) {
+      if (tx.activeRevision !== locked!.revision || loaded.revision !== locked!.revision) {
         throw conflict('definition_changed', 'The app changed since this was proposed. Ask for a new proposal.');
       }
       let before: StoredRecord | null = null;
@@ -1209,7 +1210,7 @@ export class AppRuntime {
   async revise(request: FastifyRequest, auth: AuthContext, id: string, edits: Readonly<Record<string, unknown>>): Promise<ActionResult> {
     const proposal = await this.proposalFor(auth, id);
     if (proposal.status !== 'pending') throw conflict('not_pending', `This proposal is already ${proposal.status}`);
-    const loaded = await this.#ctx.apps.load(proposal.appId);
+    const loaded = await this.#ctx.apps.load(proposal.appId, { id: proposal.environmentId });
     const effect = proposal.effect as unknown as SealedEffect;
     const action = loaded.definition.actions[proposal.action];
     if (!action) throw conflict('definition_changed', 'The app changed since this was proposed. Ask for a new proposal.');
