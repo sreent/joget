@@ -208,4 +208,42 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await builder.getByRole('button', { name: /^Bank account/ }).click();
     await shot(builder, '8-data-designer-dark');
   });
+
+  it('builds a rule and a role without JSON, and the app follows them', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/rules`);
+    await page.getByLabel('New rule').fill('Total cap');
+    await page.getByRole('button', { name: 'Add rule' }).click();
+    // The new rule checks claims: make it "Total is at most 1000", and block the change otherwise.
+    await page.getByLabel('Field').selectOption('record.total');
+    await page.getByLabel('Test').selectOption('lte');
+    await page.getByLabel('Value').fill('1000');
+    await page.getByLabel('Message', { exact: true }).fill('Claims over SGD 1,000 need a director');
+    await shot(page, '11-rule-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+
+    await page.goto(`${BASE}/studio/apps/${appId}/build/roles`);
+    await page.getByRole('button', { name: 'Approver', exact: true }).click();
+    await page.getByLabel('Exports records').click();
+    await shot(page, '12-roles');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.rules.total_cap).toMatchObject({ entity: 'expense_claim', assert: { lte: [{ ref: 'record.total' }, 1000] }, severity: 'error' });
+    expect(saved.roles.approver.entities.expense_claim.export).toBe(true);
+
+    // The app now refuses a claim over the cap, with the rule's message.
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: '+ Claim an expense' }).click();
+    await page.getByLabel('Title').fill('Conference');
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-10');
+    await page.getByLabel('Receipt 1, Merchant').fill('Expo');
+    await page.getByLabel('Receipt 1, Category').selectOption('travel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('1200');
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByText('Claims over SGD 1,000 need a director'));
+  });
 });

@@ -1,14 +1,14 @@
 import { createElement, useSyncExternalStore, type AnchorHTMLAttributes, type ReactNode } from 'react';
 
 /** The studio's pages. Building needs `app.read`; using an app needs only `app.run`. */
-export type BuildTab = 'data' | 'forms' | 'share' | 'advanced' | 'history';
+export type BuildTab = 'data' | 'forms' | 'rules' | 'actions' | 'queries' | 'cards' | 'roles' | 'share' | 'history' | 'advanced';
 export type Route =
   | { readonly name: 'home' }
   | { readonly name: 'build'; readonly appId: string; readonly tab: BuildTab }
   | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string };
 
 const BASE = '/studio';
-const TABS: readonly BuildTab[] = ['data', 'forms', 'share', 'advanced', 'history'];
+const TABS: readonly BuildTab[] = ['data', 'forms', 'rules', 'actions', 'queries', 'cards', 'roles', 'share', 'history', 'advanced'];
 
 export function parse(pathname: string): Route {
   const parts = pathname.replace(/^\/studio\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);

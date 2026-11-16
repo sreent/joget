@@ -19,7 +19,7 @@ export function SharePanel({ appId, definition }: { appId: string; definition: D
   const unshare = useMutation({ mutationFn: (id: string) => api.unshare(appId, id), onSuccess: refresh });
 
   if (roles.length === 0) {
-    return <EmptyState title="This app has no roles yet">A role says what the people you share with may do. Add roles on the Advanced tab, then share.</EmptyState>;
+    return <EmptyState title="This app has no roles yet">A role says what the people you share with may do. Add roles on the Roles tab, then share.</EmptyState>;
   }
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
@@ -78,7 +78,7 @@ export function AdvancedPanel({ definition, onChange }: { definition: Definition
   return (
     <Card className="grid gap-3">
       <p className="m-0 text-sm text-muted">
-        Rules, actions, queries, review cards and roles are edited here for now. Applying puts the JSON into your draft; saving checks it, as for any change.
+        The whole definition, as JSON: for what the designers don't show yet, or to paste a definition in. Applying puts it into your draft; saving checks it, as for any change.
       </p>
       <textarea
         aria-label="The app definition, as JSON"

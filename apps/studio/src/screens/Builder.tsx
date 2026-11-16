@@ -8,13 +8,20 @@ import type { Definition, Issue, Plan } from '../types.js';
 import { AdvancedPanel, HistoryPanel, SharePanel } from './BuilderPanels.js';
 import { DataDesigner } from './DataDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
+import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from './LogicDesigners.js';
+import { RolesDesigner } from './RolesDesigner.js';
 
 const TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
   { tab: 'data', label: 'Data' },
   { tab: 'forms', label: 'Forms' },
+  { tab: 'rules', label: 'Rules' },
+  { tab: 'actions', label: 'Actions' },
+  { tab: 'queries', label: 'Queries' },
+  { tab: 'cards', label: 'Review cards' },
+  { tab: 'roles', label: 'Roles' },
   { tab: 'share', label: 'Share' },
-  { tab: 'advanced', label: 'Advanced' },
   { tab: 'history', label: 'History' },
+  { tab: 'advanced', label: 'Advanced' },
 ];
 
 type Review = { plan?: Plan; issues?: Issue[]; error?: string; conflict?: boolean };
@@ -88,13 +95,13 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         </div>
       </div>
 
-      <nav aria-label="Building" className="flex gap-1 border-b border-line">
+      <nav aria-label="Building" className="flex gap-1 overflow-x-auto border-b border-line">
         {TABS.map((item) => (
           <Link
             key={item.tab}
             to={{ name: 'build', appId, tab: item.tab }}
             aria-current={item.tab === tab ? 'page' : undefined}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium no-underline ${item.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
+            className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap no-underline ${item.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
           >
             {item.label}
           </Link>
@@ -103,6 +110,11 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
 
       {tab === 'data' ? <DataDesigner definition={draft} onChange={setDraft} /> : null}
       {tab === 'forms' ? <FormDesigner definition={draft} onChange={setDraft} /> : null}
+      {tab === 'rules' ? <RulesDesigner definition={draft} onChange={setDraft} /> : null}
+      {tab === 'actions' ? <ActionsDesigner definition={draft} onChange={setDraft} /> : null}
+      {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={setDraft} /> : null}
+      {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
+      {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
       {tab === 'share' ? <SharePanel appId={appId} definition={saved.data.definition} /> : null}
       {tab === 'advanced' ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
       {tab === 'history' ? <HistoryPanel appId={appId} /> : null}
