@@ -32,6 +32,8 @@ const TaskOut = z.object({
   card: z.string().nullable(),
   due: z.string().nullable(),
   overdue: z.boolean(),
+  several: z.boolean(),
+  voters: z.number().int().nullable(),
   outcome: z.string().nullable(),
   completedBy: z.uuid().nullable(),
   createdAt: z.string(),

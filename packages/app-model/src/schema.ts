@@ -509,6 +509,31 @@ export const Routing = z.union([
 ]);
 export type Routing = z.infer<typeof Routing>;
 
+/** Who votes, when several people decide a task. */
+export const Voters = z.union([
+  /** Everyone with the task's role, in its department where it has one. */
+  z.strictObject({ everyone: z.literal(true) }),
+  /** The people some user fields of the record name, such as two reviewers. */
+  z.strictObject({ fields: z.array(Name).min(2).max(10) }),
+  /** The reporting line up from whoever a user field names: their manager, that manager's, and so on. */
+  z.strictObject({ lineOf: Name, levels: z.int().min(2).max(5) }),
+]);
+export type Voters = z.infer<typeof Voters>;
+
+/**
+ * What decides a task that several people decide: the first vote; or a number of votes for one
+ * outcome, all of them, or a majority, and the other outcome once that can no longer happen.
+ */
+export const VoteRule = z.union([
+  z.strictObject({ first: z.literal(true) }),
+  z.strictObject({ count: z.union([z.int().min(1).max(50), z.enum(['all', 'majority'])]), outcome: Name, otherwise: Name }),
+]);
+export type VoteRule = z.infer<typeof VoteRule>;
+
+/** Several people decide a task, each with a vote in their own inbox: at once, or one after another. */
+export const Several = z.strictObject({ people: Voters, sequential: z.boolean().default(false), decide: VoteRule });
+export type Several = z.infer<typeof Several>;
+
 /** Work a person does, such as deciding on a claim: it waits in their inbox until they choose an outcome. */
 const UserTask = z.strictObject({
   type: z.literal('userTask'),
@@ -521,6 +546,11 @@ const UserTask = z.strictObject({
   assignee: Routing.optional(),
   /** Without one person: only those with the role in the department of whoever a user field names, such as the requester's. */
   department: z.strictObject({ of: Name }).optional(),
+  /**
+   * Several people decide, each with a vote. Once the rule decides, the outcome's action runs with
+   * the app's authority: no one person made the decision.
+   */
+  several: Several.optional(),
   outcomes: z.array(Outcome).min(1).max(10),
   /** How long the task may stay open, from when it opens: its due date. */
   due: Duration.optional(),

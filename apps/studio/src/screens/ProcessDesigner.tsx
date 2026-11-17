@@ -117,6 +117,13 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         </svg>
       ) : null}
       <span className="grid h-full place-items-center px-2 pt-2 text-center text-xs leading-tight">{label}</span>
+      {element.type === 'userTask' && element.several ? (
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-label={element.several.sequential ? 'Several people, one after another' : 'Several people, at once'} className="absolute bottom-1.5 left-1/2 -translate-x-1/2 text-text">
+          {element.several.sequential
+            ? [2, 6, 10].map((y) => <line key={y} x1="1" x2="11" y1={y} y2={y} stroke="currentColor" strokeWidth="1.5" />)
+            : [2, 6, 10].map((x) => <line key={x} y1="1" y2="11" x1={x} x2={x} stroke="currentColor" strokeWidth="1.5" />)}
+        </svg>
+      ) : null}
       {boundaries.map((boundary) => (
         <div key={boundary.id} className="absolute -bottom-[18px]" style={{ left: boundary.left }} title={`${boundary.element.name ?? 'Deadline'}: ${'duration' in boundary.element.timer ? durationWords(boundary.element.timer.duration) : `on ${boundary.element.timer.date}`}`}>
           <div className={cx('grid size-9 place-items-center rounded-full bg-surface', boundary.element.interrupting ? 'border-[1.5px] border-text' : 'border-[1.5px] border-dashed border-text')}>
@@ -419,6 +426,161 @@ function Remove({ children, onClick, disabled }: { children: ReactNode; onClick:
   );
 }
 
+/** Several people deciding a task: who votes, in what order, and what decides. */
+function SeveralEditor({
+  element,
+  people,
+  onChange,
+}: {
+  element: Extract<ProcessElement, { type: 'userTask' }>;
+  people: ReadonlyArray<{ name: string; label: string }>;
+  onChange: (change: (element: ProcessElement) => ProcessElement) => void;
+}) {
+  const several = element.several;
+  const set = (next: NonNullable<typeof several> | undefined) =>
+    onChange((current) => {
+      if (current.type !== 'userTask') return current;
+      const { several: _several, assignee: _assignee, ...rest } = current;
+      return next ? { ...rest, several: next } : current.assignee && !next ? { ...rest, assignee: current.assignee } : rest;
+    });
+  const outcomes = element.outcomes;
+  const voters = several?.people;
+  const decide = several?.decide;
+  return (
+    <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+      <legend className="px-1 text-sm text-muted">Several people</legend>
+      <Checkbox
+        label="Several people decide, each with a vote"
+        checked={Boolean(several)}
+        onChange={(on) =>
+          set(
+            on
+              ? {
+                  people: { everyone: true },
+                  sequential: false,
+                  decide: outcomes.length > 1 ? { count: 'all', outcome: outcomes[0]!.name, otherwise: outcomes[1]!.name } : { first: true },
+                }
+              : undefined,
+          )
+        }
+      />
+      {several && voters && decide ? (
+        <>
+          <Field label="Who votes">
+            {(id) => (
+              <Select
+                id={id}
+                value={'everyone' in voters ? 'everyone' : 'fields' in voters ? 'fields' : `line:${voters.lineOf}`}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  const next =
+                    value === 'everyone'
+                      ? { everyone: true as const }
+                      : value === 'fields'
+                        ? { fields: people.slice(0, 2).map((person) => person.name) }
+                        : { lineOf: value.slice('line:'.length), levels: 2 };
+                  set({ ...several, people: next });
+                }}
+              >
+                <option value="everyone">Everyone with the role</option>
+                <option value="fields" disabled={people.length < 2}>
+                  The people some fields of the record name
+                </option>
+                {people.map((person) => (
+                  <option key={person.name} value={`line:${person.name}`}>
+                    Up the reporting line from the record's {person.label.toLowerCase()}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          {'fields' in voters ? (
+            <div className="grid gap-1">
+              {people.map((person) => (
+                <Checkbox
+                  key={person.name}
+                  label={`The record's ${person.label.toLowerCase()}`}
+                  checked={voters.fields.includes(person.name)}
+                  onChange={(on) => set({ ...several, people: { fields: on ? [...voters.fields, person.name] : voters.fields.filter((field) => field !== person.name) } })}
+                />
+              ))}
+            </div>
+          ) : null}
+          {'lineOf' in voters ? (
+            <Field label="Levels up the line">
+              {(id) => (
+                <Select id={id} value={voters.levels} onChange={(event) => set({ ...several, people: { ...voters, levels: Number(event.target.value) } })}>
+                  {[2, 3, 4, 5].map((levels) => (
+                    <option key={levels} value={levels}>
+                      {levels}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          ) : null}
+          <Checkbox label="One after another, in order" checked={several.sequential} onChange={(sequential) => set({ ...several, sequential })} />
+          <Field label="Decided by">
+            {(id) => (
+              <Select
+                id={id}
+                value={'first' in decide ? 'first' : String(decide.count)}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (value === 'first') return set({ ...several, decide: { first: true } });
+                  const count = value === 'all' || value === 'majority' ? value : Number(value);
+                  const base = 'first' in decide ? { outcome: outcomes[0]!.name, otherwise: (outcomes[1] ?? outcomes[0])!.name } : decide;
+                  set({ ...several, decide: { count, outcome: base.outcome, otherwise: base.otherwise } });
+                }}
+              >
+                <option value="first">The first vote</option>
+                <option value="all" disabled={outcomes.length < 2}>
+                  Everyone's votes for one outcome
+                </option>
+                <option value="majority" disabled={outcomes.length < 2}>
+                  A majority's votes for one outcome
+                </option>
+                {[1, 2, 3, 4, 5].map((count) => (
+                  <option key={count} value={count} disabled={outcomes.length < 2}>
+                    {count} vote{count > 1 ? 's' : ''} for one outcome
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          {'first' in decide ? null : (
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="For">
+                {(id) => (
+                  <Select id={id} value={decide.outcome} onChange={(event) => set({ ...several, decide: { ...decide, outcome: event.target.value } })}>
+                    {outcomes.map((outcome) => (
+                      <option key={outcome.name} value={outcome.name}>
+                        {outcome.label}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
+              <Field label="Otherwise">
+                {(id) => (
+                  <Select id={id} value={decide.otherwise} onChange={(event) => set({ ...several, decide: { ...decide, otherwise: event.target.value } })}>
+                    {outcomes.map((outcome) => (
+                      <option key={outcome.name} value={outcome.name}>
+                        {outcome.label}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
+            </div>
+          )}
+          <p className="m-0 text-xs text-muted">Once the votes decide, the outcome's action runs with the app's authority: no one person made the decision.</p>
+        </>
+      ) : null}
+    </fieldset>
+  );
+}
+
 /** A duration set with a number and a unit, or its ISO 8601 text when it has another shape. */
 function DurationInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   const parts = durationParts(value);
@@ -528,6 +690,8 @@ function ElementPanel(props: {
               </Select>
             )}
           </Field>
+          <SeveralEditor element={element} people={people} onChange={set} />
+          {element.several ? null : (
           <Field label="Assigned to" hint="Routing narrows the task to one person; the role still decides what they may do.">
             {(inputId) => (
               <Select
@@ -563,6 +727,7 @@ function ElementPanel(props: {
               </Select>
             )}
           </Field>
+          )}
           {element.assignee ? null : (
             <Field label="In the department of" hint="Only people with the role in that department see and decide the task.">
               {(inputId) => (

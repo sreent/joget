@@ -1,7 +1,9 @@
 import { uuidv7 } from '@platform/audit';
 import {
   addDuration,
+  appRoleId,
   appRoleName,
+  decideVotes,
   elementName,
   evaluateExpression,
   flowsOut,
@@ -13,8 +15,9 @@ import {
   type ProcessGraph,
   type RecordValues,
   type UserTaskElement,
+  votesNeeded,
 } from '@platform/app-model';
-import { apps, processEvents, processInstances, processTasks, processTimers, processTokens, users, type Database } from '@platform/db';
+import { apps, bindings, groupMembers, processEvents, processInstances, processTasks, processTimers, processTokens, users, type Database } from '@platform/db';
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { auditScopeFor, recordAudit, SYSTEM_ACTOR, type AuditScope } from '../audit/writer.js';
@@ -89,6 +92,9 @@ export interface TaskView {
   readonly card: string | null;
   readonly due: string | null;
   readonly overdue: boolean;
+  /** One vote of a task that several people decide, and how many vote in all, while it is open. */
+  readonly several: boolean;
+  readonly voters: number | null;
   readonly outcome: string | null;
   readonly completedBy: string | null;
   readonly createdAt: string;
@@ -139,6 +145,8 @@ export class ProcessEngine implements ProcessHooks {
   async checkDecider(tx: AppTransaction, loaded: LoadedApp, recordId: string, action: string, actorId: string): Promise<void> {
     const open = await this.#tasksDecidedBy(tx.db, loaded, recordId, action, false);
     if (!open.length) return;
+    const votes = open.find((task) => task.several);
+    if (votes) throw forbidden('votes_pending', `${votes.name} waits for the votes of several people: vote in your inbox`);
     const department = await departmentOf(tx.db, actorId);
     if (open.some((task) => decidable(task, actorId, department))) return;
     const [task] = open;
@@ -197,6 +205,19 @@ export class ProcessEngine implements ProcessHooks {
     if (task.status !== 'open') throw conflict('task_closed', `${task.name} is already ${task.status}`);
     const outcome = task.outcomes.find((candidate) => candidate.name === input.outcome);
     if (!outcome) throw unprocessable('unknown_outcome', `${task.name} has no outcome ${input.outcome}: choose ${task.outcomes.map((o) => o.name).join(' or ')}`);
+    if (task.several) {
+      // A vote is the person's own: an agent can't cast it, as there is no proposal to approve.
+      if (auth.credential.kind === 'token') throw forbidden('person_only', `Several people decide ${task.name}: only the person can vote, in Ambit`);
+      await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
+        await this.#runtime.lockRecord(tx, loaded, task.entity, task.recordId);
+        const [locked] = await tx.db.select().from(processTasks).where(eq(processTasks.id, task.id)).for('update');
+        if (locked!.status !== 'open') throw conflict('task_closed', `${task.name} is already ${locked!.status}`);
+        const turn = this.#turn(tx, loaded, (now) => auditScopeFor(request, this.#ctx.org.id, now), auth.actor.type === 'user' ? auth.actor.id : null);
+        await this.#vote(turn, locked!, outcome.name, auth.actor.id);
+        await this.#drain(turn);
+      });
+      return { task: (await this.#taskViews(eq(processTasks.id, task.id), 1, 'all'))[0]!, result: null };
+    }
     // An agent's choice becomes a proposal through the outcome's action; without one, there is nothing to approve.
     if (!outcome.action && auth.credential.kind === 'token') {
       throw forbidden('person_only', `${outcome.label} runs no action, so only the person can choose it, in Ambit`);
@@ -232,6 +253,7 @@ export class ProcessEngine implements ProcessHooks {
     if (!task) throw notFound('Task');
     if (task.status !== 'open') throw conflict('task_closed', `${task.name} is already ${task.status}`);
     const me = auth.actor.id;
+    if (task.several) throw conflict('vote', "A vote is the person's own: it can't be handed over");
     if (!options.operator) {
       if (task.assignee && task.assignee !== me) throw forbidden('task_assigned', `${task.name} waits for ${await this.#personName(this.#ctx.db, task.assignee)}`);
       if (!task.assignee) await this.#mayDo(auth, task);
@@ -387,7 +409,17 @@ export class ProcessEngine implements ProcessHooks {
       await tx.db.update(processTimers).set({ status: 'fired', firedAt: turn.now, lastError: null }).where(eq(processTimers.id, timer.id));
       const element = live.process.elements[timer.element];
       await this.#event(turn, live, 'timer_fired', timer.element, null);
-      if (timer.tokenId) {
+      if (timer.tokenId && element?.type === 'boundaryEvent') {
+        // On a task that several people decide: an interrupting timer ends the vote.
+        const [token] = await tx.db.select().from(processTokens).where(eq(processTokens.id, timer.tokenId)).for('update');
+        if (!token) return;
+        if (element.interrupting) {
+          await this.#closeVotes(turn, live, timer.tokenId, 'timer');
+          await tx.db.delete(processTokens).where(eq(processTokens.id, timer.tokenId));
+        }
+        await this.#audit(turn, live, 'process.escalate', { timer: timer.element, interrupting: element.interrupting });
+        await this.#leave(turn, live, timer.element);
+      } else if (timer.tokenId) {
         await tx.db.delete(processTokens).where(eq(processTokens.id, timer.tokenId));
         await this.#leave(turn, live, timer.element);
       } else if (timer.taskId && element?.type === 'boundaryEvent') {
@@ -447,6 +479,7 @@ export class ProcessEngine implements ProcessHooks {
   async #actionCommitted(turn: Turn, action: string, recordId: string, actorId: string | null): Promise<void> {
     const department = actorId ? await departmentOf(turn.tx.db, actorId) : null;
     for (const task of await this.#tasksDecidedBy(turn.tx.db, turn.loaded, recordId, action, true)) {
+      if (task.several) continue;
       if (!(actorId ? decidable(task, actorId, department) : !task.assignee && !task.department)) continue;
       const outcome = task.outcomes.find((candidate) => candidate.action === action)!;
       await this.#completeTask(turn, task, outcome.name, actorId);
@@ -559,6 +592,7 @@ export class ProcessEngine implements ProcessHooks {
 
   async #openTask(turn: Turn, live: Live, id: string, element: UserTaskElement): Promise<void> {
     const record = (await this.#record(turn, live)) ?? {};
+    if (element.several) return this.#openVotes(turn, live, id, element, record);
     const db = turn.tx.db;
     const person = (field: string): string | null => {
       const value = record[field];
@@ -608,6 +642,156 @@ export class ProcessEngine implements ProcessHooks {
     const routing = { role: element.role, assignee, ...(routed && routed !== assignee ? { covering: routed } : {}), ...(element.assignee && !routed ? { routing: 'fell back to the role' } : {}), ...(departmentOfTask ? { department: departmentOfTask } : {}) };
     await this.#event(turn, live, 'task_opened', id, { task: taskId, ...routing });
     await this.#audit(turn, live, 'process.task.assign', { task: taskId, name: element.name, ...routing }, { type: 'process_task', id: taskId, name: element.name });
+  }
+
+  /** Who votes on a task that several people decide: each once, with cover for those away. */
+  async #voters(turn: Turn, live: Live, element: UserTaskElement, record: RecordValues): Promise<string[]> {
+    const db = turn.tx.db;
+    const people = element.several!.people;
+    const named = (field: string) => (typeof record[field] === 'string' ? (record[field] as string) : null);
+    let found: string[] = [];
+    if ('everyone' in people) {
+      found = await this.#roleHolders(db, live.row.appId, live.row.environmentId, element.role, turn.now);
+      const department = element.department ? await this.#departmentOfField(db, named(element.department.of)) : null;
+      if (department) {
+        const rows = found.length ? await db.select({ id: users.id }).from(users).where(and(inArray(users.id, found), eq(users.department, department))) : [];
+        const kept = new Set(rows.map((row) => row.id));
+        found = found.filter((id) => kept.has(id));
+      }
+    } else if ('fields' in people) {
+      for (const field of people.fields) {
+        const person = named(field);
+        if (person && (await this.#activeUser(db, person))) found.push(person);
+      }
+    } else {
+      const from = named(people.lineOf);
+      for (let level = 1; from && level <= people.levels; level++) {
+        const manager = await managerUp(db, from, level);
+        if (!manager) break;
+        found.push(manager);
+      }
+    }
+    const voters: string[] = [];
+    for (const person of found) {
+      const cover = await coverFor(db, person, turn.now);
+      if (!voters.includes(cover)) voters.push(cover);
+    }
+    return voters.slice(0, 50);
+  }
+
+  /** The active people who hold an app role in an environment, themselves or through a group. */
+  async #roleHolders(db: Database, appId: string, environmentId: string, role: string, now: Date): Promise<string[]> {
+    const held = await db
+      .select({ type: bindings.principalType, id: bindings.principalId })
+      .from(bindings)
+      .where(
+        and(
+          eq(bindings.scopeType, 'env'),
+          eq(bindings.scopeId, environmentId),
+          eq(bindings.appRoleId, appRoleId(appId, role)),
+          isNull(bindings.revokedAt),
+          or(isNull(bindings.expiresAt), sql`${bindings.expiresAt} > ${now}`),
+        ),
+      );
+    const direct = held.filter((binding) => binding.type === 'user').map((binding) => binding.id);
+    const groupIds = held.filter((binding) => binding.type === 'group').map((binding) => binding.id);
+    const viaGroups = groupIds.length ? (await db.select({ id: groupMembers.userId }).from(groupMembers).where(inArray(groupMembers.groupId, groupIds))).map((row) => row.id) : [];
+    const candidates = [...new Set([...direct, ...viaGroups])];
+    if (!candidates.length) return [];
+    const active = await db.select({ id: users.id }).from(users).where(and(inArray(users.id, candidates), eq(users.status, 'active'))).orderBy(asc(users.displayName), asc(users.id));
+    return active.map((row) => row.id);
+  }
+
+  /** Open a task that several people decide: one waiting token with its voters, and a vote for each, or for the first of them. */
+  async #openVotes(turn: Turn, live: Live, id: string, element: UserTaskElement, record: RecordValues): Promise<void> {
+    const voters = await this.#voters(turn, live, element, record);
+    if (!voters.length) return this.#stuck(turn, live, id, null, `${element.name}: nobody can vote`);
+    const needed = votesNeeded(element.several!.decide, voters.length);
+    if (needed !== null && needed > voters.length) return this.#stuck(turn, live, id, null, `${element.name} needs ${needed} votes, but only ${voters.length} people can vote`);
+    const tokenId = uuidv7(turn.now.getTime());
+    await turn.tx.db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, state: 'waiting', voters, createdAt: turn.now });
+    for (const person of element.several!.sequential ? voters.slice(0, 1) : voters) await this.#openVote(turn, live, id, element, tokenId, person);
+    for (const boundary of live.graph.boundaries.get(id) ?? []) {
+      const timer = live.process.elements[boundary];
+      if (timer?.type !== 'boundaryEvent') continue;
+      const fireAt = timerFiresAt(timer.timer, turn.now, record);
+      if (fireAt) await turn.tx.db.insert(processTimers).values({ id: uuidv7(turn.now.getTime()), orgId: this.#ctx.org.id, instanceId: live.row.id, element: boundary, tokenId, fireAt, nextAttemptAt: fireAt, createdAt: turn.now });
+    }
+  }
+
+  async #openVote(turn: Turn, live: Live, id: string, element: UserTaskElement, tokenId: string, person: string): Promise<void> {
+    const taskId = uuidv7(turn.now.getTime());
+    await turn.tx.db.insert(processTasks).values({
+      id: taskId,
+      orgId: this.#ctx.org.id,
+      appId: live.row.appId,
+      environmentId: live.row.environmentId,
+      instanceId: live.row.id,
+      element: id,
+      tokenId,
+      name: element.name,
+      entity: live.row.entity,
+      recordId: live.row.recordId,
+      role: element.role,
+      assignee: person,
+      several: true,
+      outcomes: element.outcomes.map((outcome) => ({ name: outcome.name, label: outcome.label, ...(outcome.action ? { action: outcome.action } : {}) })),
+      card: element.card ?? null,
+      dueAt: element.due ? addDuration(turn.now, element.due) : null,
+      createdAt: turn.now,
+    });
+    await this.#event(turn, live, 'task_opened', id, { task: taskId, role: element.role, assignee: person, vote: true });
+    await this.#audit(turn, live, 'process.task.assign', { task: taskId, name: element.name, role: element.role, assignee: person, vote: true }, { type: 'process_task', id: taskId, name: element.name });
+  }
+
+  /**
+   * Count a person's vote. Once the votes decide, the other votes close and the outcome's action runs
+   * with the app's authority; if its checks stop it, the deciding vote is refused, with why.
+   */
+  async #vote(turn: Turn, task: TaskRow, outcome: string, by: string): Promise<void> {
+    const db = turn.tx.db;
+    const live = await this.#live(turn, task.instanceId);
+    const element = live.process.elements[task.element];
+    if (element?.type !== 'userTask' || !element.several || !task.tokenId) throw conflict('not_a_vote', `${task.name} is not decided by votes`);
+    await db.update(processTasks).set({ status: 'completed', outcome, completedBy: by, closedAt: turn.now }).where(eq(processTasks.id, task.id));
+    await this.#event(turn, live, 'voted', task.element, { task: task.id, outcome }, by);
+    await this.#audit(turn, live, 'process.task.vote', { task: task.id, outcome }, { type: 'process_task', id: task.id, name: task.name });
+    const [token] = await db.select().from(processTokens).where(eq(processTokens.id, task.tokenId)).for('update');
+    const voters = token?.voters ?? [];
+    const all = await db.select().from(processTasks).where(eq(processTasks.tokenId, task.tokenId)).orderBy(asc(processTasks.createdAt), asc(processTasks.id));
+    const cast = all.filter((vote) => vote.status === 'completed').sort((a, b) => a.closedAt!.getTime() - b.closedAt!.getTime() || (a.id < b.id ? -1 : 1));
+    const decided = decideVotes(element.several.decide, voters.length, cast.map((vote) => vote.outcome!));
+    if (!decided) {
+      const next = element.several.sequential ? voters[all.length] : undefined;
+      if (next) await this.#openVote(turn, live, task.element, element, task.tokenId, next);
+      return;
+    }
+    await this.#closeVotes(turn, live, task.tokenId, 'decided');
+    const chosen = element.outcomes.find((candidate) => candidate.name === decided)!;
+    if (chosen.action) {
+      const origin: ProcessOrigin = { kind: 'process', instanceId: live.row.id, process: live.row.process, element: task.element, onBehalfOf: by };
+      const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, chosen.action, live.row.recordId, origin);
+      if (!ran.ok) throw unprocessable('action_failed', `${chosen.label}: ${ran.message}`);
+      turn.records.delete(live.row.recordId);
+      await this.#event(turn, live, 'ran', task.element, { action: chosen.action });
+      await this.#actionCommitted(turn, chosen.action, live.row.recordId, null);
+    }
+    await db.delete(processTokens).where(eq(processTokens.id, task.tokenId));
+    await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, task.tokenId), eq(processTimers.status, 'waiting')));
+    live.outcomes[task.element] = decided;
+    await db.update(processInstances).set({ outcomes: live.outcomes }).where(eq(processInstances.id, live.row.id));
+    await this.#event(turn, live, 'task_completed', task.element, { outcome: decided, votes: cast.length }, by);
+    await this.#audit(turn, live, 'process.task.complete', { outcome: decided, votes: cast.length }, { type: 'process_task', id: task.id, name: task.name });
+    if (!live.ended) await this.#leave(turn, live, task.element, decided);
+  }
+
+  /** Close the votes still open on a task that several people decide. */
+  async #closeVotes(turn: Turn, live: Live, tokenId: string, reason: 'decided' | 'timer'): Promise<void> {
+    const open = await turn.tx.db.select().from(processTasks).where(and(eq(processTasks.tokenId, tokenId), eq(processTasks.status, 'open')));
+    for (const vote of open) {
+      await turn.tx.db.update(processTasks).set({ status: 'cancelled', cancelReason: reason, closedAt: turn.now }).where(eq(processTasks.id, vote.id));
+      await this.#event(turn, live, 'task_cancelled', vote.element, { task: vote.id, reason });
+    }
   }
 
   async #completeTask(turn: Turn, task: TaskRow, outcome: string, by: string | null): Promise<void> {
@@ -754,11 +938,12 @@ export class ProcessEngine implements ProcessHooks {
   async #taskViews(where: SQL, limit: number, order: 'open' | 'closed' | 'all' = 'open'): Promise<TaskView[]> {
     const now = this.#ctx.now();
     const rows = await this.#ctx.db
-      .select({ task: processTasks, appName: apps.name, process: processInstances.process, assigneeName: users.displayName, assigneeEmail: users.email })
+      .select({ task: processTasks, appName: apps.name, process: processInstances.process, assigneeName: users.displayName, assigneeEmail: users.email, voters: processTokens.voters })
       .from(processTasks)
       .innerJoin(apps, eq(apps.id, processTasks.appId))
       .innerJoin(processInstances, eq(processInstances.id, processTasks.instanceId))
       .leftJoin(users, eq(users.id, processTasks.assignee))
+      .leftJoin(processTokens, eq(processTokens.id, processTasks.tokenId))
       .where(where)
       .orderBy(
         ...(order === 'open'
@@ -768,7 +953,7 @@ export class ProcessEngine implements ProcessHooks {
             : [asc(processTasks.createdAt)]),
       )
       .limit(limit);
-    return rows.map(({ task, appName, process, assigneeName, assigneeEmail }) => ({
+    return rows.map(({ task, appName, process, assigneeName, assigneeEmail, voters }) => ({
       id: task.id,
       name: task.name,
       status: task.status,
@@ -785,6 +970,8 @@ export class ProcessEngine implements ProcessHooks {
       card: task.card,
       due: task.dueAt?.toISOString() ?? null,
       overdue: task.status === 'open' && task.dueAt !== null && task.dueAt.getTime() < now.getTime(),
+      several: task.several,
+      voters: task.several && voters ? voters.length : null,
       outcome: task.outcome,
       completedBy: task.completedBy,
       createdAt: task.createdAt.toISOString(),

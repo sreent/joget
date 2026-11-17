@@ -382,6 +382,9 @@ export interface Task {
   card: string | null;
   due: string | null;
   overdue: boolean;
+  /** One vote of a task that several people decide, and how many vote. */
+  several: boolean;
+  voters: number | null;
   outcome: string | null;
   completedBy: string | null;
   createdAt: string;

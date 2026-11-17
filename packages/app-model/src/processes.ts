@@ -1,6 +1,6 @@
 import { evaluateCondition, type ConditionEnv } from '@platform/authz';
 import type { StoredDefinition } from './fields.js';
-import { DURATION_PATTERN, type Process, type ProcessElement, type ProcessElementType, type Timer } from './schema.js';
+import { DURATION_PATTERN, type Process, type ProcessElement, type ProcessElementType, type Timer, type VoteRule } from './schema.js';
 import { conditionRecord, type RecordValues } from './values.js';
 
 /*
@@ -177,4 +177,23 @@ export function processSkillTasks(definition: Pick<StoredDefinition, 'processes'
       element.type === 'serviceTask' && element.skill ? [{ path: `processes.${process}.elements.${id}`, name: element.name, skill: element.skill }] : [],
     ),
   );
+}
+
+/**
+ * The outcome that votes decide, or null while it is still open. `people` is how many vote in all;
+ * `votes` the outcomes chosen so far, in order.
+ */
+export function decideVotes(rule: VoteRule, people: number, votes: readonly string[]): string | null {
+  if ('first' in rule) return votes[0] ?? null;
+  const needed = rule.count === 'all' ? people : rule.count === 'majority' ? Math.floor(people / 2) + 1 : rule.count;
+  const yes = votes.filter((vote) => vote === rule.outcome).length;
+  if (yes >= needed) return rule.outcome;
+  if (yes + (people - votes.length) < needed) return rule.otherwise;
+  return null;
+}
+
+/** How many votes a rule needs for its outcome, of `people`; null for the first vote. */
+export function votesNeeded(rule: VoteRule, people: number): number | null {
+  if ('first' in rule) return null;
+  return rule.count === 'all' ? people : rule.count === 'majority' ? Math.floor(people / 2) + 1 : rule.count;
 }

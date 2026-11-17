@@ -748,6 +748,8 @@ export const processTokens = pgTable(
     state: text('state', { enum: ['waiting', 'stuck'] }).notNull(),
     /** Why it is stuck, for the operator who retries it. */
     error: text('error'),
+    /** At a task that several people decide: who votes, in order. */
+    voters: jsonb('voters').$type<string[]>(),
     createdAt: createdAt(),
   },
   (t) => [index('process_tokens_instance_idx').on(t.instanceId), check('process_tokens_stuck_why', sql`(${t.state} = 'stuck') = (${t.error} is not null)`)],
@@ -782,6 +784,8 @@ export const processTasks = pgTable(
     assignee: uuid('assignee').references(() => users.id),
     /** Without one person: only those with the role in this department may take it. */
     department: text('department'),
+    /** One vote of a task that several people decide: the votes together decide its outcome. */
+    several: boolean('several').notNull().default(false),
     /** The outcomes as the task opened with them, and the action each runs. */
     outcomes: jsonb('outcomes').$type<Array<{ name: string; label: string; action?: string }>>().notNull(),
     card: text('card'),
@@ -853,7 +857,7 @@ export const processEvents = pgTable(
       .references(() => processInstances.id, { onDelete: 'cascade' }),
     at: timestamp('at', tz).notNull(),
     kind: text('kind', {
-      enum: ['started', 'task_opened', 'task_completed', 'task_cancelled', 'reassigned', 'timer_fired', 'ran', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
+      enum: ['started', 'task_opened', 'voted', 'task_completed', 'task_cancelled', 'reassigned', 'timer_fired', 'ran', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
     }).notNull(),
     element: text('element'),
     /** The person behind it, if there is one. */

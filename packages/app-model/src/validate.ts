@@ -307,6 +307,19 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
                     ? { assignee: 'field' in element.assignee ? { field: field(element.assignee.field) } : { ...element.assignee, managerOf: field(element.assignee.managerOf) } }
                     : {}),
                   ...(element.department ? { department: { of: field(element.department.of) } } : {}),
+                  ...(element.several
+                    ? {
+                        several: {
+                          ...element.several,
+                          people:
+                            'fields' in element.several.people
+                              ? { fields: element.several.people.fields.map(field) }
+                              : 'lineOf' in element.several.people
+                                ? { ...element.several.people, lineOf: field(element.several.people.lineOf) }
+                                : element.several.people,
+                        },
+                      }
+                    : {}),
                 };
               case 'serviceTask':
                 return element.input ? { ...element, input: mapRecord(element.input, (value) => mapExpressionRefs(value, refs(entity))) } : element;
@@ -1130,6 +1143,32 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
             else person(element.assignee.managerOf, `${path}.assignee.managerOf`);
           }
           if (element.department) person(element.department.of, `${path}.department.of`);
+          if (element.several) {
+            const { people, decide } = element.several;
+            if (element.assignee) issues.push({ path: `${path}.assignee`, message: 'Several people decide this task, so it has no one assignee' });
+            if ('fields' in people) {
+              people.fields.forEach((field, index) => person(field, `${path}.several.people.fields[${index}]`));
+              if (new Set(people.fields).size !== people.fields.length) issues.push({ path: `${path}.several.people.fields`, message: 'Name each field once' });
+            }
+            if ('lineOf' in people) person(people.lineOf, `${path}.several.people.lineOf`);
+            if (!('first' in decide)) {
+              const names = element.outcomes.map((outcome) => outcome.name);
+              if (!names.includes(decide.outcome)) issues.push({ path: `${path}.several.decide.outcome`, message: `${label(id)} has no outcome ${decide.outcome}` });
+              if (!names.includes(decide.otherwise)) issues.push({ path: `${path}.several.decide.otherwise`, message: `${label(id)} has no outcome ${decide.otherwise}` });
+              if (decide.outcome === decide.otherwise) issues.push({ path: `${path}.several.decide.otherwise`, message: 'The other outcome differs from the one the votes are for' });
+              const most = 'fields' in people ? people.fields.length : 'lineOf' in people ? people.levels : undefined;
+              if (typeof decide.count === 'number' && most !== undefined && decide.count > most) {
+                issues.push({ path: `${path}.several.decide.count`, message: `${decide.count} votes are needed, but only ${most} people vote` });
+              }
+            }
+            // No one person decides, so the outcome's action runs with the app's authority, as a service task's does.
+            element.outcomes.forEach((outcome, index) => {
+              const action = outcome.action ? definition.actions[outcome.action] : undefined;
+              if (action && readsPrincipal(action)) {
+                issues.push({ path: `${path}.outcomes[${index}].action`, message: `${outcome.action} reads the person who runs it, but when several people decide, it runs with no one person` });
+              }
+            });
+          }
           const seen = new Set<string>();
           element.outcomes.forEach((outcome, index) => {
             const at = `${path}.outcomes[${index}]`;
@@ -1141,7 +1180,8 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
               issues.push({ path: `${at}.action`, message: `Another outcome already runs ${outcome.action}: each outcome runs an action of its own` });
             }
             const action = updateAction(outcome.action, `${at}.action`);
-            if (action && role && !role.actions.includes(outcome.action)) {
+            // When several people decide, the action runs with the app's authority: the role need not run it.
+            if (action && role && !element.several && !role.actions.includes(outcome.action)) {
               issues.push({ path: `${at}.action`, message: `${role.label} can't run ${outcome.action}, so nobody who may do the task could choose ${outcome.label}` });
             }
           });

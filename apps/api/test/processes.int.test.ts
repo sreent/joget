@@ -304,6 +304,84 @@ describe('routing from the directory', () => {
   });
 });
 
+describe('several people deciding', () => {
+  /** A leave app whose decision is a vote: its outcomes' actions read no one person. */
+  const votingApp = (name: string, several: Record<string, unknown>) =>
+    leaveApp(name, (definition) => {
+      for (const [action, status] of [['mark_approved', 'approved'], ['mark_rejected', 'rejected']] as const) {
+        definition['actions'][action] = {
+          label: `Mark as ${status}`,
+          description: `Record that the leave is ${status}.`,
+          entity: 'leave_request',
+          operation: 'update',
+          input: [],
+          set: { status },
+          where: { eq: [{ ref: 'record.status' }, 'submitted'] },
+          steps: [{ type: 'set', field: 'decided_on', value: { today: true } }],
+        };
+      }
+      definition['roles'].manager.actions.push('mark_approved', 'mark_rejected');
+      const decide = definition['processes'].leave_approval.elements.decide;
+      delete decide.assignee;
+      decide.outcomes = [
+        { name: 'approve', label: 'Approve', action: 'mark_approved' },
+        { name: 'reject', label: 'Reject', action: 'mark_rejected' },
+      ];
+      decide.several = several;
+    });
+  const votesOn = async (session: Session, recordId: string) => (await inbox(session)).filter((task: { recordId: string }) => task.recordId === recordId);
+
+  it('lets everyone with the role vote, and one rejection rejects when all must approve', async () => {
+    const app = await votingApp('Leave, by everyone', { people: { everyone: true }, decide: { count: 'all', outcome: 'approve', otherwise: 'reject' } });
+    await inject({ method: 'POST', url: `/v1/apps/${app}/shares`, ...as(alice), payload: { email: 'carol@example.com', role: 'manager' } }, 201);
+    const asked = await ask(app, { starts: '2027-05-03', ends: '2027-05-04', days: 2 });
+    const [bobs] = await votesOn(bob, asked.record.id);
+    const [carols] = await votesOn(carol, asked.record.id);
+    expect(bobs).toMatchObject({ name: 'Decide on the leave', several: true, voters: 2, assignee: { id: bob.userId } });
+    expect(carols).toMatchObject({ several: true, voters: 2, assignee: { id: carol.userId } });
+
+    await complete(bob, bobs.id, 'approve');
+    expect(await votesOn(bob, asked.record.id)).toEqual([]);
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe('submitted');
+    // The decision is the votes': nobody runs its action around them, and an agent can't vote.
+    expect((await inject({ method: 'POST', url: `/v1/apps/${app}/actions/mark_approved/run`, ...as(alice), payload: { recordId: asked.record.id } }, 403)).json().error).toBe('votes_pending');
+    const token = (await json({ method: 'POST', url: '/v1/me/tokens', ...as(carol), payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } }, 201)).token;
+    expect((await inject({ method: 'POST', url: `/v1/tasks/${carols.id}/complete`, headers: { authorization: `Bearer ${token}` }, payload: { outcome: 'approve' } }, 403)).json().error).toBe('person_only');
+
+    await complete(carol, carols.id, 'reject');
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe('rejected');
+    const [instance] = await processesOf(app, asked.record.id);
+    expect(instance.status).toBe('completed');
+    expect(instance.events.map((event: { kind: string; element: string | null }) => [event.kind, event.element])).toEqual([
+      ['started', 'requested'],
+      ['task_opened', 'decide'],
+      ['task_opened', 'decide'],
+      ['voted', 'decide'],
+      ['voted', 'decide'],
+      ['ran', 'decide'],
+      ['task_completed', 'decide'],
+      ['ended', 'rejected'],
+    ]);
+  });
+
+  it('asks up the reporting line one after another, until the line agrees', async () => {
+    const erin = await t.login('erin');
+    const app = await votingApp('Leave, up the line', { people: { lineOf: 'owner', levels: 2 }, sequential: true, decide: { count: 'all', outcome: 'approve', otherwise: 'reject' } });
+    await inject({ method: 'POST', url: `/v1/apps/${app}/shares`, ...as(alice), payload: { email: 'erin@example.com', role: 'manager' } }, 201);
+    // Alice reports to Bob, who reports to Erin (set by the routing test): Bob first, then Erin.
+    const asked = await ask(app, { starts: '2027-06-07', ends: '2027-06-08', days: 2 });
+    expect(await votesOn(erin, asked.record.id)).toEqual([]);
+    const [first] = await votesOn(bob, asked.record.id);
+    expect(first).toMatchObject({ several: true, voters: 2 });
+    await complete(bob, first.id, 'approve');
+    const [second] = await votesOn(erin, asked.record.id);
+    expect(second).toMatchObject({ name: 'Decide on the leave', assignee: { id: erin.userId } });
+    await complete(erin, second.id, 'approve');
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe('approved');
+    expect((await processesOf(app, asked.record.id))[0]).toMatchObject({ status: 'completed' });
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

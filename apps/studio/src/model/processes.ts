@@ -390,6 +390,13 @@ export function forgetInProcesses(definition: Definition, gone: { readonly actio
           const named = element.assignee && ('field' in element.assignee ? element.assignee.field : element.assignee.managerOf);
           if (named === gone.field) delete element.assignee;
           if (element.department?.of === gone.field) delete element.department;
+          const voters = element.several?.people;
+          if (voters && 'lineOf' in voters && voters.lineOf === gone.field) delete element.several;
+          if (voters && 'fields' in voters && voters.fields.includes(gone.field)) {
+            const left = voters.fields.filter((field) => field !== gone.field);
+            if (left.length >= 2) element.several = { ...element.several!, people: { fields: left } };
+            else delete element.several;
+          }
         }
       }
       if (element.type === 'serviceTask' && gone.action && element.action === gone.action) delete element.action;

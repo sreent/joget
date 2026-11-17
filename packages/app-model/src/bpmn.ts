@@ -3,7 +3,7 @@ import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
 import { processGraph } from './processes.js';
-import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Process, type ProcessElement } from './schema.js';
+import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Process, type ProcessElement, type Several } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
 
@@ -243,6 +243,17 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     }
     for (const flow of graph.incoming.get(id) ?? []) children.push({ name: 'bpmn:incoming', text: flow });
     for (const flow of graph.outgoing.get(id) ?? []) children.push({ name: 'bpmn:outgoing', text: flow });
+    if (element.type === 'userTask' && element.several) {
+      const { people, sequential, decide } = element.several;
+      children.push({
+        name: 'bpmn:multiInstanceLoopCharacteristics',
+        attributes: {
+          isSequential: sequential ? 'true' : 'false',
+          ...('everyone' in people ? { 'ambit:everyone': 'true' } : 'fields' in people ? { 'ambit:fields': people.fields.join(' ') } : { 'ambit:lineOf': people.lineOf, 'ambit:levels': String(people.levels) }),
+          ...('first' in decide ? { 'ambit:decide': 'first' } : { 'ambit:count': String(decide.count), 'ambit:outcome': decide.outcome, 'ambit:otherwise': decide.otherwise }),
+        },
+      });
+    }
     if (element.type === 'endEvent' && element.terminate) children.push({ name: 'bpmn:terminateEventDefinition', attributes: { id: `${id}_terminate` } });
     if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') children.push(timer(id, element.timer));
     return { name: TAGS[element.type], attributes, children };
@@ -334,6 +345,27 @@ const EVENT_KINDS: Readonly<Record<string, string>> = {
   timerEventDefinition: 'timer',
   terminateEventDefinition: 'terminate',
 };
+
+/** Ambit's settings for a task that several people decide, from a multi-instance loop: who votes, and what decides. */
+function several(loop: XmlElement): Several | undefined {
+  const own = (local: string) => attribute(loop, local, AMBIT_BPMN);
+  const people: Several['people'] | undefined =
+    own('everyone') === 'true'
+      ? { everyone: true }
+      : own('fields')
+        ? { fields: own('fields')!.split(/\s+/).filter(Boolean) }
+        : own('lineOf')
+          ? { lineOf: own('lineOf')!, levels: Number(own('levels') ?? '2') }
+          : undefined;
+  const count = own('count');
+  const decide: Several['decide'] | undefined =
+    own('decide') === 'first'
+      ? { first: true }
+      : count && own('outcome') && own('otherwise')
+        ? { count: count === 'all' || count === 'majority' ? count : Number(count), outcome: own('outcome')!, otherwise: own('otherwise')! }
+        : undefined;
+  return people && decide ? { people, sequential: attribute(loop, 'isSequential') === 'true', decide } : undefined;
+}
 
 /** An Ambit name from a BPMN ID, such as `Process_Leave-1` → `process_leave_1`. */
 function nameFrom(id: string, taken: ReadonlySet<string>): string {
@@ -449,8 +481,9 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
         refuse(`Ambit doesn't run ${KINDS[node.local]!} yet`);
         continue;
       }
-      if (bpmn(node, 'multiInstanceLoopCharacteristics').length || bpmn(node, 'standardLoopCharacteristics').length) {
-        refuse("Ambit doesn't run a task that repeats or runs for several people yet");
+      const loop = bpmn(node, 'multiInstanceLoopCharacteristics')[0];
+      if (bpmn(node, 'standardLoopCharacteristics').length || (loop && (node.local !== 'userTask' || !several(loop)))) {
+        refuse(loop && node.local === 'userTask' ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide' : "Ambit doesn't run a task that repeats yet");
         continue;
       }
       const timerOf = (): Extract<ProcessElement, { timer: unknown }>['timer'] | undefined => {
@@ -483,6 +516,7 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           const outcomes = bpmn(node, 'extensionElements')
             .flatMap((extension) => childElements(extension, AMBIT_BPMN, 'outcome'))
             .map((outcome) => ({ name: attribute(outcome, 'name') ?? '', label: attribute(outcome, 'label') ?? attribute(outcome, 'name') ?? '', ...(attribute(outcome, 'action') ? { action: attribute(outcome, 'action')! } : {}) }));
+          const votes = loop ? several(loop) : undefined;
           const assignee = ambit(node, 'assignee');
           const managerOf = ambit(node, 'managerOf');
           const levels = Number(ambit(node, 'levels') ?? '1');
@@ -496,6 +530,7 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             role,
             ...(assignee ? { assignee: { field: assignee } } : managerOf ? { assignee: { managerOf, levels: Number.isInteger(levels) ? levels : 1 } } : {}),
             ...(department ? { department: { of: department } } : {}),
+            ...(votes ? { several: votes } : {}),
             outcomes: outcomes.length ? outcomes : [{ name: 'done', label: 'Done' }],
             ...(due ? { due } : {}),
             ...(card ? { card } : {}),

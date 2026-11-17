@@ -57,7 +57,7 @@ export function TaskOutcomes({ task, onDone }: { task: Task; onDone?: () => void
             Take it
           </Button>
         )}
-        {task.assignee?.id === me.data?.id ? (
+        {task.assignee?.id === me.data?.id && !task.several ? (
           <Button size="sm" variant="ghost" onClick={() => setHanding(!handing)}>
             Hand over
           </Button>
@@ -130,6 +130,7 @@ export function Tasks() {
                 <div className="flex flex-wrap items-center gap-2">
                   {status === 'open' ? <Due task={task} /> : <Badge tone={task.status === 'completed' ? 'good' : 'idle'}>{task.status === 'completed' ? (task.outcomes.find((o) => o.name === task.outcome)?.label ?? task.outcome) : 'Cancelled'}</Badge>}
                   {task.assignee ? null : <Badge>For the role {task.role}</Badge>}
+                  {task.several ? <Badge tone="accent">{task.voters ? `Your vote, of ${task.voters}` : 'Your vote'}</Badge> : null}
                 </div>
               </div>
               <Link to={{ name: 'use', appId: task.app.id, page: task.entity, recordId: task.recordId, env: task.environment.id }}>Open the record</Link>

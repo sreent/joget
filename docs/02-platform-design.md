@@ -795,12 +795,13 @@ The test: if a process waits for people to decide on an app's records, it is an 
 
 - start events, and end events, which can terminate the instance;
 - user tasks, with outcomes such as approve and reject, each of which can run one of the app's actions;
+- user tasks that several people decide (BPMN's multi-instance tasks), each with a vote: everyone with the role, the people some fields of the record name, or the reporting line up from someone, at once or one after another. The first vote decides, or enough votes for one outcome (a number, all, or a majority), and the other outcome once that can no longer happen;
 - service tasks, which run one of the app's actions, or start an a7c skill;
 - tasks and manual tasks, which pass straight on;
 - exclusive and parallel gateways;
 - timer catch events, and timer boundary events on user tasks, interrupting or not, for deadlines and escalation.
 
-Next come inclusive gateways, sub-processes and call activities, message events, multi-instance tasks (where several people decide), and error events.
+Next come inclusive gateways, sub-processes and call activities, message events, and error events.
 
 **How a process starts.** An action starts it when the action commits on a record, if a start event names that action. Otherwise a person whose app role may start it starts it on a record. Only one instance of a process runs on a record at a time.
 
@@ -838,6 +839,7 @@ So a change request's permission diff still says who can decide, and a process n
 - The studio's process designer draws BPMN 2.0 on a canvas (React Flow). Its palette offers first what most processes need, and the rest of what Ambit runs after; a timer on a task's boundary is drawn on the task, with its own path. The checks of any definition run as the builder works, and mark the shapes they concern. Every person has an inbox of their tasks across apps, and each record page says where its processes are.
 - Routing from the directory: a task goes to the manager of whoever a field names, up to five levels up the reporting line, or is kept to the department of whoever a field names. The directory takes departments and managers from the IdP's claims at each sign-in (the claims an installation names), and directory admins set them where the IdP doesn't. A loop in the reporting line is refused. Someone who has left, or a line that ends, sends the task to the role.
 - Out-of-office cover: a person names who takes their new tasks while they are away, until a date, and the task's history says whom the cover stands in for. A person hands their task to a colleague who holds its role; operators move any task of the apps they operate; and anyone with a task's role takes one that waits for nobody in particular. Each move is audited.
+- When several people decide, a vote is the person's own: an agent can't cast it, and it can't be handed over. Once the votes decide, the other votes close and the outcome's action runs with the app's authority, as a service task's does; if its checks stop it, the deciding vote is refused, with why. Nobody can run that action around the vote while it is open.
 - Not built yet: the next elements above, and reading the directory by SCIM.
 
 ---

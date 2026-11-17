@@ -110,6 +110,38 @@ describe('BPMN 2.0 files', () => {
     expect(back.ok && back.processes['leave_approval']!.elements['decide']).toMatchObject({ assignee: { managerOf: 'owner', levels: 2 }, department: { of: 'owner' } });
   });
 
+  it('carry a task that several people decide out and back, as a multi-instance task', () => {
+    const voted = valid({
+      ...LEAVE_APP,
+      actions: {
+        ...LEAVE_APP.actions,
+        mark_approved: { label: 'Mark approved', description: 'Record that the leave is approved.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'approved' } },
+      },
+      processes: {
+        leave_approval: {
+          ...LEAVE_APP.processes.leave_approval,
+          elements: {
+            ...LEAVE_APP.processes.leave_approval.elements,
+            decide: {
+              type: 'userTask',
+              name: 'The line decides',
+              role: 'manager',
+              outcomes: [
+                { name: 'approve', label: 'Approve', action: 'mark_approved' },
+                { name: 'reject', label: 'Reject' },
+              ],
+              several: { people: { lineOf: 'owner', levels: 2 }, sequential: true, decide: { count: 'all', outcome: 'approve', otherwise: 'reject' } },
+            },
+          },
+        },
+      },
+    });
+    const xml = processToBpmn(voted, 'leave_approval');
+    expect(xml).toContain('<bpmn:multiInstanceLoopCharacteristics isSequential="true" ambit:lineOf="owner" ambit:levels="2" ambit:count="all" ambit:outcome="approve" ambit:otherwise="reject" />');
+    const back = bpmnToProcesses(xml, { ...voted, processes: {} });
+    expect(back.ok && back.processes['leave_approval']).toEqual(voted.processes!['leave_approval']);
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);
@@ -194,7 +226,7 @@ describe('BPMN 2.0 files', () => {
         { element: 's', message: "Ambit doesn't start a process on a message event yet: (s)" },
         { element: 't1', message: 'Ambit doesn\'t run a script task yet: "Compute" (t1)' },
         { element: 'g', message: "Ambit doesn't run an inclusive gateway yet: (g)" },
-        { element: 'u', message: 'Ambit doesn\'t run a task that repeats or runs for several people yet: "Everyone decides" (u)' },
+        { element: 'u', message: 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide: "Everyone decides" (u)' },
         { element: 'f', message: 'Ambit can\'t read the condition "amount > 5" of (f): Unknown name amount. Write it as a condition on the record\'s fields' },
       ],
     });

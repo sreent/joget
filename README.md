@@ -258,6 +258,8 @@ A task goes to whoever a field of the record names, or, from the directory, to t
 
 The directory's departments and managers come from the IdP at each sign-in, from the claims that `OIDC_DEPARTMENT_CLAIM` and `OIDC_MANAGER_CLAIM` (the manager's email) name. Directory admins set them by hand where the IdP doesn't (`PATCH /v1/people/{userId}/directory`), and a loop in the reporting line is refused.
 
+Several people can decide one task, each with a vote in their inbox: everyone with the role, the people some fields of the record name, or the reporting line up from the requester, at once or one after another. The first vote decides, or enough votes for one outcome (a number, all, or a majority); for example, "all approve, or one rejection rejects". Once the votes decide, the outcome's action runs with the app's authority.
+
 Agents get `my_tasks` and `complete_task` on `/mcp` once an app they can use has a process. `PROCESS_TIMER_INTERVAL_SECONDS` (5) sets how often due timers fire; 0 leaves them to a worker.
 
 Processes move to and from other BPMN tools, such as Camunda Modeler or Signavio, as BPMN 2.0 files with their diagrams:

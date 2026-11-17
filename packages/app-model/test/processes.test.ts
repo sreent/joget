@@ -3,6 +3,7 @@ import {
   accessChanges,
   addDuration,
   capabilityChanges,
+  decideVotes,
   decisionsBy,
   diffDefinitions,
   flowsOut,
@@ -14,6 +15,7 @@ import {
   startsOf,
   timerFiresAt,
   validateDefinition,
+  votesNeeded,
   type Process,
   type StoredDefinition,
 } from '@platform/app-model';
@@ -98,6 +100,41 @@ describe('a process in BPMN 2.0', () => {
     );
     const process = definition.processes!['leave_approval']!;
     expect(flowsOut(process, processGraph(process), 'which', { record: {}, outcomes: { decide: 'approve' } })).toEqual({ ok: true, flows: ['yes'] });
+  });
+});
+
+describe('votes, when several people decide', () => {
+  const all = { count: 'all', outcome: 'approve', otherwise: 'reject' } as const;
+  it('decide as soon as the outcome is sure, either way', () => {
+    expect(decideVotes(all, 3, ['approve', 'approve'])).toBeNull();
+    expect(decideVotes(all, 3, ['approve', 'approve', 'approve'])).toBe('approve');
+    // One rejection makes "everyone approves" impossible: it decides at once.
+    expect(decideVotes(all, 3, ['approve', 'reject'])).toBe('reject');
+    expect(decideVotes({ ...all, count: 'majority' }, 4, ['approve', 'reject', 'approve'])).toBeNull();
+    expect(decideVotes({ ...all, count: 'majority' }, 4, ['approve', 'reject', 'approve', 'approve'])).toBe('approve');
+    expect(decideVotes({ ...all, count: 2 }, 5, ['reject', 'reject', 'reject', 'approve'])).toBeNull();
+    expect(decideVotes({ ...all, count: 2 }, 5, ['reject', 'reject', 'reject', 'reject'])).toBe('reject');
+    expect(decideVotes({ first: true }, 3, [])).toBeNull();
+    expect(decideVotes({ first: true }, 3, ['reject'])).toBe('reject');
+    expect(votesNeeded({ ...all, count: 'majority' }, 5)).toBe(3);
+  });
+
+  it('are checked: voters that name people, outcomes the task has, and actions with no one person', () => {
+    expect(
+      issuesOf(
+        leave((process) => {
+          process.elements.decide.assignee = { field: 'manager' };
+          process.elements.decide.several = { people: { fields: ['manager', 'reason'] }, decide: { count: 3, outcome: 'approve', otherwise: 'maybe' } };
+        }),
+      ),
+    ).toEqual([
+      'processes.leave_approval.elements.decide.assignee: Several people decide this task, so it has no one assignee',
+      "processes.leave_approval.elements.decide.several.people.fields[1]: reason doesn't name a person",
+      'processes.leave_approval.elements.decide.several.decide.otherwise: Decide on the leave has no outcome maybe',
+      'processes.leave_approval.elements.decide.several.decide.count: 3 votes are needed, but only 2 people vote',
+      "processes.leave_approval.elements.decide.outcomes[0].action: approve_leave reads the person who runs it, but when several people decide, it runs with no one person",
+      "processes.leave_approval.elements.decide.outcomes[1].action: reject_leave reads the person who runs it, but when several people decide, it runs with no one person",
+    ]);
   });
 });
 
