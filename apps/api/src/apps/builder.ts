@@ -17,6 +17,7 @@ import { and, count, eq, isNotNull, isNull, like } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
+import { requirePerson } from '../access/rules.js';
 import { conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
 import { isTeamApp, type AppRef, type LoadedApp, type SpaceRow } from './catalog.js';
 import { pgError as pgCode } from './pg-errors.js';
@@ -349,9 +350,7 @@ export class AppBuilder {
         throw conflict('destructive_change', 'This change deletes data. Check the plan, then confirm it.', { plan });
       }
       // Agents and scripts may prepare such a change, but only the builder, signed in, can confirm it.
-      if (auth.credential.kind !== 'session') {
-        throw forbidden('session_required', 'A change that deletes data must be confirmed by the builder in an interactive session.', { plan });
-      }
+      requirePerson(auth, 'data.delete', { plan });
     }
     const now = ctx.now();
     const audit = auditScopeFor(request, ctx.org.id, now);
@@ -395,6 +394,7 @@ export class AppBuilder {
 
   async remove(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp): Promise<void> {
     const ctx = this.#ctx;
+    requirePerson(auth, 'data.delete');
     if (isTeamApp(loaded)) throw unprocessable('team_app_delete', 'Team apps cannot be deleted yet. A space owner can freeze the space instead.');
     const now = ctx.now();
     const audit = auditScopeFor(request, ctx.org.id, now);

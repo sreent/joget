@@ -66,7 +66,7 @@ import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { checkPermission, checkQuery, principalEnv } from '../access/check.js';
-import type { AllowedQuery } from '../access/rules.js';
+import { requirePerson, type AllowedQuery } from '../access/rules.js';
 import { auditScopeFor, recordAudit, type AuditScope } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import type { FileUse } from '../files/service.js';
@@ -874,6 +874,7 @@ export class AppRuntime {
   async remove(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, entityName: string, id: string, decision?: AllowedQuery): Promise<void> {
     const entity = this.entity(loaded, entityName);
     const permission = decision ?? (await this.decide(request, auth, loaded, 'record.delete', entityName));
+    requirePerson(auth, 'data.delete');
     const read = await this.#readGrants(auth, loaded, entityName);
     await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
@@ -1679,6 +1680,7 @@ export class AppRuntime {
    * they were when it was made.
    */
   async approve(request: FastifyRequest, auth: AuthContext, id: string, digest: string): Promise<{ proposal: ProposalOut; record: RecordOut | { id: string; version: number } }> {
+    requirePerson(auth, 'proposal.approve');
     const ctx = this.#ctx;
     const proposal = await this.proposalFor(auth, id);
     const loaded = await ctx.apps.load(proposal.appId, { id: proposal.environmentId });

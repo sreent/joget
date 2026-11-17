@@ -116,18 +116,17 @@ describe('ambit', () => {
     expect(staging.requests.at(-1)!.body).toEqual({ releaseId: RELEASE, env: 'staging', confirmDestructive: false, execute: true });
     expect(staging.out).toEqual(['Staging runs release 2.']);
 
-    // Prod: one look finds it waiting, the next approved; then the command executes it.
+    // Prod: one look finds it waiting, the next approved. A person makes it live, not the command.
     let looks = 0;
     const prod = fake({
       'GET /v1/apps': () => ({ body: apps }),
       [`GET /v1/apps/${APP}/releases`]: () => ({ body: releases }),
       [`POST /v1/apps/${APP}/deployments`]: () => ({ status: 201, body: deployment('awaiting_approval', 'prod') }),
       [`GET /v1/apps/${APP}/deployments`]: () => ({ body: { deployments: [deployment(++looks > 1 ? 'approved' : 'awaiting_approval', 'prod')] } }),
-      [`POST /v1/deployments/${DEPLOYMENT}/execute`]: () => ({ body: deployment('succeeded', 'prod') }),
     });
     expect(await run(['deploy', 'expenses', '--release', '2', '--env', 'prod', '--wait'], prod.io)).toBe(0);
-    expect(prod.out).toEqual(['Prod runs release 2.']);
-    expect(prod.requests.filter((r) => r.path.endsWith('/execute'))).toHaveLength(1);
+    expect(prod.out).toEqual(['Deploying release 2 to Prod is approved. A person signed in to Ambit makes it live.']);
+    expect(prod.requests.filter((r) => r.path.endsWith('/execute'))).toHaveLength(0);
 
     const waiting = fake({
       'GET /v1/apps': () => ({ body: apps }),

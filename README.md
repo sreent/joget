@@ -177,6 +177,8 @@ curl http://localhost:3000/v1/spaces -H 'authorization: Bearer plt_pat_...'
 
 For automation, a team-space admin creates a service account (`POST /v1/spaces/{spaceId}/service-accounts`), grants it roles like any other principal (`POST /v1/bindings`), and issues it a token (`POST /v1/service-accounts/{id}/tokens`). Security admins can list every token (`GET /v1/tokens`) and revoke any of them (`POST /v1/tokens/{id}/revoke`).
 
+Some steps stay with a person, whatever the token: approving a proposal or a change request, deploying to Prod (approving it, making it live and rolling it back), and deleting data (a record, an app, or a change or deployment that deletes data). A token, an agent or a pipeline can prepare them: a pipeline cuts a release, deploys it to Staging and asks for Prod. Only the person, signed in, does them. A token gets `403 session_required`, with the step in `details.step`.
+
 ## Building an app and letting an agent use it
 
 Sign in as `alice` and open http://localhost:3000/studio/. Create an app, starting from the example, an expense-claim app. Change its fields in the data designer, lay out its form, arrange its pages, menu and dashboard, and share it with `bob` as a requester. **Open the app** shows its screens; sign in as `bob` to see his narrower view, without the page for approvers.

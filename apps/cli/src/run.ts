@@ -95,9 +95,12 @@ Usage: ambit <command> [options]
   releases <app>                            A team app's releases
   deploy <app> --release <n> --env <staging|prod> [--confirm-destructive] [--wait]
                                             Deploy a release. Staging deploys at once;
-                                            Prod waits for approvals
+                                            Prod waits for approvals, and a person
+                                            signed in to Ambit makes it live
   deployments <app>                         A team app's deployments
-  rollback <app> --env <staging|prod>       Make the previous release live again
+  rollback <app> --env <staging|prod>       Make the previous release live again.
+                                            Only a person signed in to Ambit rolls
+                                            Prod back
 
 <app> is an app's ID or handle. <space> is a space's ID or name, or "mine".
 Add --json for machine-readable output.
@@ -217,7 +220,9 @@ function describeDeployment(deployment: DeploymentInfo): string {
     case 'awaiting_approval':
       return `Deploying ${release} to ${where} waits for ${deployment.approvals.required - deployment.approvals.by.length} approval(s) in Ambit.`;
     case 'approved':
-      return `Deploying ${release} to ${where} is approved, and waits to be executed.`;
+      return deployment.environment === 'prod'
+        ? `Deploying ${release} to Prod is approved. A person signed in to Ambit makes it live.`
+        : `Deploying ${release} to ${where} is approved, and waits to be executed.`;
     case 'failed':
       return `Deploying ${release} to ${where} failed: ${deployment.error ?? 'no reason given'}`;
     default:
@@ -389,8 +394,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const release = await releaseOf(api, id, values.release);
         let deployment = await api.call<DeploymentInfo>('POST', `/v1/apps/${id}/deployments`, { releaseId: release.id, env: target, confirmDestructive: values['confirm-destructive'], execute: true });
         const deadline = io.now() + Number(values.timeout) * 1000;
-        // Waiting follows the deployment until it ends: approvals come from people, in Ambit.
-        while (values.wait && !FINAL.has(deployment.status) && io.now() < deadline) {
+        // Waiting follows the deployment until it ends: approvals come from people, in Ambit. Prod
+        // goes live only by a person's hand, so for Prod the wait ends once it is approved.
+        const handedOver = (d: DeploymentInfo) => d.environment === 'prod' && d.status === 'approved';
+        while (values.wait && !FINAL.has(deployment.status) && !handedOver(deployment) && io.now() < deadline) {
           if (deployment.status === 'approved') {
             deployment = await api.call<DeploymentInfo>('POST', `/v1/deployments/${deployment.id}/execute`);
             continue;
@@ -403,7 +410,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const ended: DeploymentInfo = deployment;
         print(ended, () => describeDeployment(ended));
         if (ended.status === 'failed' || ended.status === 'cancelled') return 1;
-        if (values.wait && !FINAL.has(ended.status)) {
+        if (values.wait && !FINAL.has(ended.status) && !handedOver(ended)) {
           io.err('Stopped waiting: the deployment has not ended.');
           return 1;
         }

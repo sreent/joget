@@ -381,6 +381,13 @@ Guardrails are rules that deny an action or require something before it. They ar
 - **Just-in-time elevation:** a sensitive role such as Prod operator can be *eligible* rather than active. Activating it takes a justification (and optionally an approval), lasts a few hours at most, and is audited.
 - **Access reviews:** scheduled campaigns ask space owners to re-certify their members and bindings, and anything not confirmed expires automatically. Bindings unused for 90 days are flagged.
 - **Expiry everywhere:** bindings, tokens and shares can all carry `expires_at`, and temporary grants are the default for exceptions.
+- **Steps that stay with a person (built in phase 3).** Some steps stay with a person on every channel. An agent, a script or a pipeline can prepare them, but only the person, signed in to Ambit, does them:
+  - approving a proposal: an agent proposes, and the person approves on the review page (§6.3);
+  - approving a change request: a script can review it and comment, and a reviewer approves it;
+  - deploying to Prod: a pipeline can cut a release, deploy it to Staging and ask for Prod. People approve the Prod deployment, make it live and roll it back;
+  - deleting data: deleting a record or an app, and confirming a change or a deployment that deletes data. A script can see the plan of such a change, and the person confirms it.
+
+  The services check this, not only the routes. So every channel keeps the rule: the API with a token, MCP, an agent that acts for the person, the command line and the studio's chat. A refusal names the step (`session_required`, with `step` in its details). A chat adapter that can prove who pressed a button, such as Teams with the corporate sign-in, may later carry a person's own approval (§14, still open).
 
 ### 5.8 Decision algorithm and enforcement points
 
@@ -1276,6 +1283,7 @@ Phases 0–3 are the MVP: the point where an employee can claim expenses through
 |---|---|---|
 | Who calls the model | Ambit calls the model for the studio's chat itself, on a provider that the installation sets up: Anthropic first, then OpenAI-compatible. It is off until an admin turns it on | The chat drafts and the builder saves, through the same checks, plans and gates as any change. The `app.compose` permission and the audit log govern its use (§6.5) |
 | How AI changes a definition | With small, checked edits (JSON Patch), in the studio's chat and through MCP alike | A client changes a few values instead of sending the whole definition, and the checks report problems after each edit (§6.5) |
+| Steps that stay with a person | Approving a proposal or a change request, deploying to Prod, and deleting data need the person, signed in, on every channel. Agents, scripts and pipelines prepare them | A pipeline deploys to Staging and asks for Prod; people approve the deployment and make it live (§5.7) |
 
 **Still open:**
 

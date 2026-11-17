@@ -48,6 +48,7 @@ import { pgError } from '../apps/pg-errors.js';
 import { lockEnvironment, withTransaction } from '../apps/transaction.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
+import { requirePerson } from '../access/rules.js';
 import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
 import { addSampleRecords } from './samples.js';
 
@@ -457,6 +458,7 @@ export class Delivery {
     input: { readonly verdict: 'approve' | 'request_changes' | 'comment'; readonly comment?: string },
   ): Promise<void> {
     const ctx = this.#ctx;
+    if (input.verdict === 'approve') requirePerson(auth, 'change.approve');
     if (cr.status !== 'open') throw conflict('not_open', `Change request #${cr.number} is ${cr.status}`);
     // The guardrail has said so already; this keeps the rule even if it is disabled.
     if (input.verdict === 'approve' && cr.authorId === auth.actor.id) throw forbidden('author_cannot_approve', 'Someone other than the author must approve a change');
@@ -779,9 +781,7 @@ export class Delivery {
     const shown = { steps: plan.steps, notes: plan.notes, destructive: plan.destructive };
     if (plan.destructive) {
       if (!input.confirmDestructive) throw conflict('destructive_change', `This deployment deletes data in ${envName(input.env)}. Check the plan, then confirm it.`, { plan: shown });
-      if (auth.credential.kind !== 'session') {
-        throw forbidden('session_required', 'A deployment that deletes data must be confirmed by a person in an interactive session.', { plan: shown });
-      }
+      requirePerson(auth, 'data.delete', { plan: shown });
     }
     const approvalsRequired = input.env === 'prod' ? ctx.config.DEPLOY_PROD_APPROVALS : 0;
     const now = ctx.now();
@@ -856,6 +856,7 @@ export class Delivery {
   }
 
   async approveDeployment(request: FastifyRequest, auth: AuthContext, deployment: DeploymentRow): Promise<DeploymentRow> {
+    requirePerson(auth, 'deploy.approve');
     const ctx = this.#ctx;
     if (deployment.status !== 'awaiting_approval') throw conflict('not_awaiting_approval', `This deployment is ${deployment.status.replace('_', ' ')}`);
     const now = ctx.now();
@@ -891,6 +892,8 @@ export class Delivery {
    * the environment's own role, and make the release live, all in one transaction (design §7.1).
    */
   async execute(request: FastifyRequest, auth: AuthContext, deployment: DeploymentRow): Promise<DeploymentRow> {
+    // Staging can go out from a pipeline; Prod goes out only by a person's hand.
+    if (deployment.environmentKind === 'prod') requirePerson(auth, 'deploy.prod');
     const ctx = this.#ctx;
     if (deployment.status === 'awaiting_approval') {
       throw conflict('not_approved', `This deployment needs ${deployment.approvalsRequired} approval(s) from people who authored none of its changes`);
@@ -1042,6 +1045,7 @@ export class Delivery {
    * Refused across a deployment that deleted data, which a rollback can't bring back.
    */
   async rollback(request: FastifyRequest, auth: AuthContext, team: AppRef, kind: EnvKind): Promise<DeploymentRow> {
+    if (kind === 'prod') requirePerson(auth, 'rollback.prod');
     const ctx = this.#ctx;
     const started = ctx.now();
     const env = await ctx.apps.environment(team, kind);
