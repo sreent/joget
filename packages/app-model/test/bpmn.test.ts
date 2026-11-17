@@ -591,6 +591,29 @@ describe('BPMN 2.0 files', () => {
     expect(read2.ok ? read2.processes['p']!.elements['g'] : read2.issues).toEqual({ type: 'complexGateway', waitFor: 2 });
   });
 
+  it('carry loops out and back as standard loops, with their condition and their most times', () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    const process = definition['processes'].leave_approval;
+    process.elements.decide.repeat = { while: { eq: [{ ref: 'tasks.decide.outcome' }, 'reject'] }, max: 2 };
+    process.elements.note = {
+      type: 'scriptTask',
+      name: 'Note long leave',
+      steps: [{ type: 'set', field: 'reason', value: 'Long' }],
+      repeat: { while: { gt: [{ ref: 'record.days' }, 10] }, max: 3, before: true },
+    };
+    process.flows.to_decide.to = 'note';
+    process.flows.noted = { from: 'note', to: 'decide' };
+    delete process.diagram;
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:standardLoopCharacteristics testBefore="true" loopMaximum="3">');
+    const back = bpmnToProcesses(xml, { ...app, processes: {} });
+    expect(back.ok ? [] : back.issues).toEqual([]);
+    const { diagram: _diagram, ...read } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    const { diagram: _was, ...was } = app.processes!['leave_approval']!;
+    expect(read).toEqual(was);
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

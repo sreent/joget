@@ -4,6 +4,7 @@ import {
   adHocStarts,
   addDuration,
   automaticStarts,
+  canRepeat,
   caughtSignals,
   capabilityChanges,
   decideVotes,
@@ -785,6 +786,54 @@ describe('complex gateways', () => {
 
   it('are checked: they wait for no more paths than lead into them', () => {
     expect(issuesOf(complex((process) => (process.elements.enough.waitFor = 4)))).toEqual(['processes.leave_approval.elements.enough.waitFor: Two checks waits for 4 paths, but 3 lead into it']);
+  });
+});
+
+describe('loops', () => {
+  /**
+   * The leave app where the manager decides again while they reject, twice at most; and where a
+   * script notes long leave before each time, while it is long, three times at most.
+   */
+  const looping = (edit: (process: Record<string, any>) => void = () => undefined) =>
+    leave((process) => {
+      process.elements.decide.repeat = { while: { eq: [{ ref: 'tasks.decide.outcome' }, 'reject'] }, max: 2 };
+      process.elements.note = {
+        type: 'scriptTask',
+        name: 'Note long leave',
+        steps: [{ type: 'set', field: 'reason', value: 'Long' }],
+        repeat: { while: { gt: [{ ref: 'record.days' }, 10] }, max: 3, before: true },
+      };
+      process.flows.to_decide.to = 'note';
+      process.flows.noted = { from: 'note', to: 'decide' };
+      delete process.diagram;
+      edit(process);
+    });
+
+  it('pass the checks, and a rename of a field carries into their conditions', () => {
+    const before = valid(looping());
+    expect(canRepeat(before.processes!['leave_approval']!.elements['note'])).toBe(true);
+    const renamed = structuredClone(before) as unknown as Record<string, any>;
+    renamed['entities'].leave_request.fields.find((field: { name: string }) => field.name === 'days').name = 'working_days';
+    const result = validateDefinition(renamed, before, ids());
+    if (!result.ok) throw new Error(JSON.stringify(result.issues));
+    expect(result.definition.processes!['leave_approval']!.elements['note']).toMatchObject({ repeat: { while: { gt: [{ ref: 'record.working_days' }, 10] } } });
+  });
+
+  it('are checked: a task that leaves by its outcome checks after it runs, and votes repeat no task', () => {
+    expect(
+      issuesOf(
+        looping((process) => {
+          process.elements.decide.repeat.before = true;
+        }),
+      ),
+    ).toEqual(['processes.leave_approval.elements.decide.repeat.before: Decide on the leave leaves by its outcome, so it checks whether to repeat after it runs, not before']);
+    expect(
+      issuesOf(
+        looping((process) => {
+          process.elements.decide.several = { people: { everyone: true }, decide: { first: true } };
+        }),
+      ),
+    ).toEqual(expect.arrayContaining(['processes.leave_approval.elements.decide.repeat: Decide on the leave repeats, or several people decide it: one of the two']));
   });
 });
 

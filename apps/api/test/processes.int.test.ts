@@ -1397,6 +1397,70 @@ describe('complex gateways', () => {
   });
 });
 
+describe('loops', () => {
+  it('run an activity again while its condition holds, up to its most times, checked after it or before it', async () => {
+    const app = await passingApp('Leave, with loops', (definition) => {
+      const process = definition['processes'].leave_approval;
+      Object.assign(process.elements, {
+        // Before each time, while the leave is long, three times at most: so short leave skips it.
+        note: { type: 'scriptTask', name: 'Note long leave', steps: [{ type: 'set', field: 'reason', value: 'Long' }], repeat: { while: { gt: [{ ref: 'record.days' }, 10] }, max: 3, before: true } },
+        // After each time, while the manager asks for more, twice at most.
+        review: {
+          type: 'userTask',
+          name: 'Review the request',
+          role: 'manager',
+          assignee: { field: 'manager' },
+          outcomes: [
+            { name: 'more', label: 'Ask for more' },
+            { name: 'ok', label: 'Enough' },
+          ],
+          repeat: { while: { eq: [{ ref: 'tasks.review.outcome' }, 'more'] }, max: 2 },
+        },
+      });
+      process.flows.to_decide.to = 'note';
+      process.flows.noted = { from: 'note', to: 'review' };
+      process.flows.reviewed = { from: 'review', to: 'decide' };
+      delete process.diagram;
+    });
+    const open = async (recordId: string) =>
+      (await inbox(bob))
+        .filter((task: { recordId: string }) => task.recordId === recordId)
+        .map((task: { element: string }) => task.element)
+        .sort();
+    const finish = async (recordId: string, element: string, outcome: string) =>
+      complete(bob, (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element).id, outcome);
+    const kinds = async (recordId: string) => (await processesOf(app, recordId))[0].events.map((event: { kind: string; element: string | null }) => [event.kind, event.element]);
+
+    // Short leave skips the note. The manager asks for more once, then has enough.
+    const short = await ask(app, { starts: '2028-08-07', ends: '2028-08-08', days: 2 });
+    expect(await open(short.record.id)).toEqual(['review']);
+    await finish(short.record.id, 'review', 'more');
+    expect(await open(short.record.id)).toEqual(['review']);
+    await finish(short.record.id, 'review', 'ok');
+    expect(await open(short.record.id)).toEqual(['decide']);
+    expect((await kinds(short.record.id)).filter(([kind]: [string]) => kind === 'ran')).toEqual([]);
+
+    // Long leave: the note runs three times. The manager asks for more twice, and the second time is the last.
+    const long = await ask(app, { starts: '2028-08-14', ends: '2028-08-29', days: 12 });
+    await finish(long.record.id, 'review', 'more');
+    await finish(long.record.id, 'review', 'more');
+    expect(await open(long.record.id)).toEqual(['decide']);
+    expect((await kinds(long.record.id)).slice(1)).toEqual([
+      ['ran', 'note'],
+      ['repeated', 'note'],
+      ['ran', 'note'],
+      ['repeated', 'note'],
+      ['ran', 'note'],
+      ['task_opened', 'review'],
+      ['task_completed', 'review'],
+      ['repeated', 'review'],
+      ['task_opened', 'review'],
+      ['task_completed', 'review'],
+      ['task_opened', 'decide'],
+    ]);
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

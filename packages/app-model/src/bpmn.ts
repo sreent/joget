@@ -2,8 +2,8 @@ import { isRef, type Condition } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { caughtSignals, isAdHoc, isEventSub, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
-import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Raised, type Several, type Step, type Timer } from './schema.js';
+import { canRepeat, caughtSignals, isAdHoc, isEventSub, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
+import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Raised, type Repeat, type Several, type Step, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
 
@@ -350,6 +350,14 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     }
     for (const flow of graph.incoming.get(id) ?? []) children.push({ name: 'bpmn:incoming', text: flow });
     for (const flow of graph.outgoing.get(id) ?? []) children.push({ name: 'bpmn:outgoing', text: flow });
+    // An activity that repeats: BPMN's standard loop, with its condition and its most times.
+    if (canRepeat(element) && element.repeat) {
+      children.push({
+        name: 'bpmn:standardLoopCharacteristics',
+        attributes: { testBefore: element.repeat.before ? 'true' : 'false', loopMaximum: String(element.repeat.max) },
+        children: [formal('bpmn:loopCondition', LANGUAGES.condition, conditionText(element.repeat.while))],
+      });
+    }
     // A sub-process holds its own elements and flows.
     if (element.type === 'subProcess') children.push(...contentOf(id));
     // An ad hoc sub-process's condition comes after what it holds.
@@ -678,7 +686,25 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
         const kinds = definitions.map((child) => EVENT_KINDS[child.local] ?? child.local);
         const refuse = (message: string) => issues.push({ element: attribute(node, 'id') ?? id, message: `${message}: ${describe(node)}` });
         const loop = bpmn(node, 'multiInstanceLoopCharacteristics')[0];
-        if (bpmn(node, 'standardLoopCharacteristics').length || (loop && (node.local !== 'userTask' || !several(loop)))) {
+        // A standard loop: a condition, read as any other, and the most times, which Ambit needs.
+        const standard = bpmn(node, 'standardLoopCharacteristics')[0];
+        let repeat: Repeat | undefined;
+        if (standard) {
+          const expression = bpmn(standard, 'loopCondition')[0];
+          const text = expression ? textOf(expression).trim() : '';
+          const language = expression ? (attribute(expression, 'language') ?? attribute(source, 'expressionLanguage') ?? attribute(root, 'expressionLanguage')) : undefined;
+          const parsed = text ? parseConditionText(text, language === LANGUAGES.condition ? (ref) => ref : foreignName) : undefined;
+          if (!parsed?.ok) {
+            refuse(text ? `Ambit can't read the loop condition "${text}"${parsed && !parsed.ok ? `: ${parsed.message}` : ''}` : 'A loop needs a condition: loopCondition');
+            continue;
+          }
+          if (language !== LANGUAGES.condition) notes.add(`Read the loop condition "${text}" of ${describe(node)} as ${conditionText(parsed.condition)}`);
+          const most = Number(attribute(standard, 'loopMaximum'));
+          const max = Number.isInteger(most) && most >= 1 ? Math.min(most, 100) : 10;
+          if (max !== most) notes.add(`${describe(node)} repeats ${max} times at most: give it a loopMaximum of 100 or less`);
+          repeat = { while: parsed.condition, max, ...(attribute(standard, 'testBefore') === 'true' ? { before: true as const } : {}) };
+        }
+        if (loop && (node.local !== 'userTask' || !several(loop))) {
           refuse(loop && node.local === 'userTask' ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide' : "Ambit doesn't run a task that repeats yet");
           continue;
         }
@@ -1031,6 +1057,9 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           default:
             refuse(`Ambit doesn't know the element ${node.local}`);
         }
+        // What repeats says so.
+        const repeated = elements[id];
+        if (repeat && canRepeat(repeated)) elements[id] = { ...repeated, repeat };
         // What a sub-process holds names it.
         const made = elements[id];
         if (made && scope !== undefined && made.type !== 'boundaryEvent') elements[id] = { ...made, in: scope };

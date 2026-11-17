@@ -92,6 +92,14 @@ export function startEventsOf(process: Process, scope?: string): string[] {
   return Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'startEvent' && element.in === scope ? [id] : []));
 }
 
+/** An element that can repeat: a task, a sub-process or a call. */
+export type RepeatableElement = Extract<ProcessElement, { repeat?: unknown }>;
+
+/** Whether an element can repeat. */
+export function canRepeat(element: ProcessElement | undefined): element is RepeatableElement {
+  return element !== undefined && 'name' in element && (element.type.endsWith('Task') || element.type === 'task' || element.type === 'subProcess' || element.type === 'callActivity');
+}
+
 /** Whether an element is an ad hoc sub-process. */
 export function isAdHoc(process: Process, id: string | undefined): boolean {
   const element = id === undefined ? undefined : process.elements[id];

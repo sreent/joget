@@ -750,4 +750,27 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
     expect(saved.elements['complex_1']).toEqual({ type: 'complexGateway', name: 'Enough paths', waitFor: 1 });
   });
+
+  it('designs a task that repeats while a condition holds', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a loop', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    await canvas.getByText('Decide on the leave', { exact: true }).click();
+    await page.getByLabel('It runs again while a condition holds', { exact: true }).check();
+    await visible(page.getByRole('group', { name: 'Again while this holds' }));
+    // Its flows follow its outcomes, so it checks after it runs.
+    expect(await page.getByLabel('Check before each time, so it may not run at all', { exact: true }).isDisabled()).toBe(true);
+    await visible(canvas.getByLabel('Repeats'));
+    await shot(page, '15m-process-loop');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['decide']).toMatchObject({ repeat: { while: { exists: 'record.kind' }, max: 3 } });
+  });
 });

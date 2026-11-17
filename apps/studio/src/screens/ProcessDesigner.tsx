@@ -1,4 +1,5 @@
 import {
+  canRepeat,
   conditionText,
   eventKind,
   RULE_OUTCOMES,
@@ -10,6 +11,7 @@ import {
   type Process,
   type ProcessElement,
   type Raised,
+  type Repeat,
 } from '@platform/app-model';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { applyNodeChanges, Background, Controls, Handle, MarkerType, Position, ReactFlow, type Connection, type Edge, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
@@ -210,6 +212,7 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         style={{ width: data.size?.width ?? 340, height: data.size?.height ?? 180 }}
       >
         <span className="absolute top-2 left-3 text-xs font-semibold text-text">{label}</span>
+        {element.repeat ? <LoopMarker className="bottom-1 left-[calc(50%+10px)]" /> : null}
         {element.adHoc ? (
           // BPMN's marker for an ad hoc sub-process: a tilde.
           <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-base leading-none font-semibold text-text" aria-label="Ad hoc">
@@ -276,6 +279,7 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
           <EventIcon kind="compensation" size={12} />
         </span>
       ) : null}
+      {canRepeat(element) && element.repeat ? <LoopMarker className={element.type === 'callActivity' ? 'bottom-1 left-[calc(50%-18px)]' : 'bottom-1 left-1/2 -translate-x-1/2'} /> : null}
       {element.type === 'callActivity' ? (
         // BPMN's marker for a call: a small square with a plus.
         <span className="absolute bottom-1 left-1/2 grid size-3.5 -translate-x-1/2 place-items-center border border-text text-[10px] leading-none text-text" aria-hidden>
@@ -862,6 +866,63 @@ function typeLabel(element: ProcessElement): string {
     if (kind === 'cancel') return 'Cancel';
   }
   return TYPE_LABELS[element.type];
+}
+
+/** BPMN's marker for an activity that repeats: an arrow that comes round. */
+function LoopMarker({ className }: { className: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-label="Repeats" className={cx('absolute text-text', className)}>
+      <path d="M4.2 11.2A4.6 4.6 0 1 1 9.8 11.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <path d="M9.8 8.4v2.8H7" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Whether an activity runs again while a condition holds, and how many times at most. */
+function RepeatEditor({
+  repeat,
+  starting,
+  choices,
+  outcomes,
+  onChange,
+}: {
+  repeat: Repeat | undefined;
+  starting: Repeat['while'];
+  choices: readonly RefChoice[];
+  /** Its flows follow its outcomes: it checks after it runs. */
+  outcomes: boolean;
+  onChange: (repeat: Repeat | undefined) => void;
+}) {
+  return (
+    <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+      <legend className="px-1 text-sm text-muted">Repeats</legend>
+      <Checkbox label="It runs again while a condition holds" checked={repeat !== undefined} onChange={(on) => onChange(on ? { while: starting, max: 3 } : undefined)} />
+      {repeat ? (
+        <>
+          <ConditionEditor label="Again while this holds" value={repeat.while} onChange={(condition) => onChange({ ...repeat, while: condition ?? repeat.while })} choices={choices} />
+          <Field label="At most this many times">
+            {(inputId) => (
+              <TextInput
+                id={inputId}
+                type="number"
+                min={1}
+                max={100}
+                value={repeat.max}
+                onChange={(event) => onChange({ ...repeat, max: Math.max(1, Math.min(100, Math.round(Number(event.target.value) || 1))) })}
+              />
+            )}
+          </Field>
+          <Checkbox
+            label="Check before each time, so it may not run at all"
+            checked={repeat.before === true}
+            disabled={outcomes}
+            onChange={(before) => onChange(before ? { ...repeat, before: true } : { while: repeat.while, max: repeat.max })}
+          />
+          {outcomes ? <p className="m-0 text-xs text-muted">Its flows follow its outcomes, so it checks after it runs.</p> : null}
+        </>
+      ) : null}
+    </fieldset>
+  );
 }
 
 /** Whether an element is an event sub-process. */
@@ -2097,6 +2158,21 @@ function ElementPanel(props: {
         <p className="m-0 text-sm text-muted">
           Select a flow out of it to set when it is taken. Every flow whose condition holds is taken, or else the one marked Otherwise. With several flows in, it waits for each path that can still arrive.
         </p>
+      ) : null}
+      {canRepeat(element) && !(element.type === 'userTask' && element.several) && !(element.type === 'subProcess' && element.event) ? (
+        <RepeatEditor
+          repeat={element.repeat}
+          starting={startingCondition(definition, process.entity)}
+          choices={conditionChoices}
+          outcomes={(element.type === 'userTask' || element.type === 'businessRuleTask') && Object.values(process.flows).some((flow) => flow.from === id && flow.outcome !== undefined)}
+          onChange={(repeat) =>
+            set((current) => {
+              if (!canRepeat(current)) return current;
+              const { repeat: _repeat, ...rest } = current;
+              return repeat ? { ...current, repeat } : rest;
+            })
+          }
+        />
       ) : null}
       {'description' in element || element.type.endsWith('Task') || element.type === 'task' || element.type === 'subProcess' || element.type === 'callActivity' ? (
         <Field label="Description">

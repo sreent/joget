@@ -14,7 +14,7 @@ import {
   type StoredField,
 } from './fields.js';
 import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { adHocStarts, catcherOn, elementName, eventSubCatcher, eventSubsIn, isAdHoc, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
+import { adHocStarts, canRepeat, catcherOn, elementName, eventSubCatcher, eventSubsIn, isAdHoc, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
 import {
   AppDefinition,
   LINE_PATH_PATTERN,
@@ -313,8 +313,11 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
           entity,
           elements: mapRecord(process.elements, (original): ProcessElement => {
             // A message sent to another record names it by a reference field of this one.
-            const element: ProcessElement =
+            const sent: ProcessElement =
               'message' in original && original.message?.record ? { ...original, message: { ...original.message, record: field(original.message.record) } } : original;
+            // The conditions that a loop and an ad hoc sub-process end on read the record too.
+            const repeated: ProcessElement = canRepeat(sent) && sent.repeat ? { ...sent, repeat: { ...sent.repeat, while: condition(entity, sent.repeat.while) } } : sent;
+            const element: ProcessElement = repeated.type === 'subProcess' && repeated.completeWhen ? { ...repeated, completeWhen: condition(entity, repeated.completeWhen) } : repeated;
             switch (element.type) {
               case 'userTask':
                 return {
@@ -1202,6 +1205,15 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         else if (container.type !== 'subProcess') issues.push({ path: `${path}.in`, message: `${label(element.in)} isn't a sub-process: only a sub-process holds other elements` });
         else if (scopeOf(process, element.in) !== undefined && scopesOf(process, element.in).includes(id)) {
           issues.push({ path: `${path}.in`, message: `${label(id)} would be inside itself` });
+        }
+      }
+      if (canRepeat(element) && element.repeat) {
+        checkCondition(element.repeat.while, scope, `${path}.repeat.while`, issues);
+        if (element.type === 'userTask' && element.several) issues.push({ path: `${path}.repeat`, message: `${label(id)} repeats, or several people decide it: one of the two` });
+        if (element.type === 'subProcess' && element.event) issues.push({ path: `${path}.repeat`, message: `${label(id)} is an event sub-process: its trigger starts it, so it doesn't repeat` });
+        // A task whose flows follow its outcomes needs an outcome to leave by, so it checks after it runs.
+        if (element.repeat.before && (element.type === 'userTask' || element.type === 'businessRuleTask') && out.some((flowId) => process.flows[flowId]!.outcome !== undefined)) {
+          issues.push({ path: `${path}.repeat.before`, message: `${label(id)} leaves by its outcome, so it checks whether to repeat after it runs, not before` });
         }
       }
       switch (element.type) {

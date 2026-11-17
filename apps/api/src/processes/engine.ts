@@ -5,6 +5,7 @@ import {
   appRoleId,
   automaticStarts,
   appRoleName,
+  canRepeat,
   catcherOn,
   caughtSignals,
   decideVotes,
@@ -82,6 +83,8 @@ interface Live {
   /** The entity of its record. */
   readonly entity: string;
   readonly outcomes: Record<string, string>;
+  /** How many times each activity that repeats has run so far, by its run and the element. */
+  readonly loops: Record<string, number>;
   ended: boolean;
   /** The end event a path last reached, which the instance ends at when no path is left. */
   reached: string | null;
@@ -183,6 +186,9 @@ function decidable(task: Pick<TaskRow, 'assignee' | 'department'>, actorId: stri
 function isDetail(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+/** Where an activity that repeats counts its times: in its run, or in the process itself. */
+const loopKey = (id: string, scope: string | null): string => `${scope ?? '-'}:${id}`;
 
 /** The run an event happened in, for the history and for undoing it: absent at the level of the process itself. */
 const inRun = (scope: string | null): { readonly scope?: string } => (scope === null ? {} : { scope });
@@ -735,7 +741,17 @@ export class ProcessEngine implements ProcessHooks {
     if (!row) throw notFound('Process instance');
     const process = await this.#processOf(row, turn.tx.db);
     if (!process) throw conflict('process_missing', `Revision ${row.revision} has no process ${row.process}`);
-    const live: Live = { row, process, graph: processGraph(process), entity: row.entity, outcomes: { ...row.outcomes }, ended: row.status !== 'running', reached: null, reach: new Map() };
+    const live: Live = {
+      row,
+      process,
+      graph: processGraph(process),
+      entity: row.entity,
+      outcomes: { ...row.outcomes },
+      loops: { ...row.loops },
+      ended: row.status !== 'running',
+      reached: null,
+      reach: new Map(),
+    };
     turn.live.set(id, live);
     return live;
   }
@@ -1119,7 +1135,7 @@ export class ProcessEngine implements ProcessHooks {
         startedAt: turn.now,
       })
       .returning();
-    const live: Live = { row: row!, process, graph: processGraph(process), entity: process.entity, outcomes: {}, ended: false, reached: null, reach: new Map() };
+    const live: Live = { row: row!, process, graph: processGraph(process), entity: process.entity, outcomes: {}, loops: {}, ended: false, reached: null, reach: new Map() };
     turn.live.set(row!.id, live);
     await this.#listen(turn, live, undefined, null);
     const why = action ? { action } : caller ? { calledBy: caller.instanceId } : automatic ? { [automatic]: true } : null;
@@ -1477,6 +1493,18 @@ export class ProcessEngine implements ProcessHooks {
   async #arrive(turn: Turn, live: Live, id: string, flow: string | null, scope: string | null): Promise<void> {
     const element = live.process.elements[id];
     if (!element) return this.#stuck(turn, live, id, flow, `The process has no element ${id}`, scope);
+    if (canRepeat(element) && element.repeat) {
+      const key = loopKey(id, scope);
+      // A path that comes along a flow counts afresh; the activity coming round again comes with none.
+      if (flow !== null && live.loops[key] !== undefined) await this.#setLoop(turn, live, key, undefined);
+      const count = live.loops[key] ?? 0;
+      if (element.repeat.before && (count >= element.repeat.max || !(await this.#holds(turn, live, element.repeat.while)))) {
+        // Checked before each time: it doesn't run again, or at all, and the path goes on.
+        await this.#setLoop(turn, live, key, undefined);
+        return this.#leaveFlows(turn, live, id, scope);
+      }
+      if (count > 0) await this.#event(turn, live, 'repeated', id, { time: count + 1 });
+    }
     switch (element.type) {
       case 'endEvent': {
         // An end that sends a message sends it first; if that fails, the path waits there.
@@ -1637,8 +1665,41 @@ export class ProcessEngine implements ProcessHooks {
     }
   }
 
-  /** Send a token on along the flows out of an element: for a user task or a rule check, those of its outcome. */
+  /**
+   * An activity ended. One that repeats runs again while its condition holds, up to its most
+   * times; checked before each time, it comes round to be checked. Otherwise, the token goes on.
+   */
   async #leave(turn: Turn, live: Live, id: string, scope: string | null, outcome?: string): Promise<void> {
+    const element = live.process.elements[id];
+    if (canRepeat(element) && element.repeat) {
+      const key = loopKey(id, scope);
+      const count = (live.loops[key] ?? 0) + 1;
+      const again = count < element.repeat.max && (element.repeat.before === true || (await this.#holds(turn, live, element.repeat.while)));
+      if (again) {
+        await this.#setLoop(turn, live, key, count);
+        this.#move(turn, live, id, null, scope);
+        return;
+      }
+      await this.#setLoop(turn, live, key, undefined);
+    }
+    return this.#leaveFlows(turn, live, id, scope, outcome);
+  }
+
+  /** Whether a condition holds now, on the record and the outcomes of the tasks. */
+  async #holds(turn: Turn, live: Live, condition: Condition): Promise<boolean> {
+    return evaluateCondition(condition, processConditionEnv({ record: (await this.#record(turn, live)) ?? {}, outcomes: live.outcomes }));
+  }
+
+  /** Count a time of an activity that repeats, or forget its count. */
+  async #setLoop(turn: Turn, live: Live, key: string, count: number | undefined): Promise<void> {
+    if (live.loops[key] === count) return;
+    if (count === undefined) delete live.loops[key];
+    else live.loops[key] = count;
+    await turn.tx.db.update(processInstances).set({ loops: live.loops }).where(eq(processInstances.id, live.row.id));
+  }
+
+  /** Send a token on along the flows out of an element: for a user task or a rule check, those of its outcome. */
+  async #leaveFlows(turn: Turn, live: Live, id: string, scope: string | null, outcome?: string): Promise<void> {
     const type = live.process.elements[id]?.type;
     const decides = type === 'exclusiveGateway' || type === 'inclusiveGateway';
     const state = { record: decides ? ((await this.#record(turn, live)) ?? {}) : {}, outcomes: live.outcomes };

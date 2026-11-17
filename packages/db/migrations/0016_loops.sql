@@ -1,0 +1,1 @@
+ALTER TABLE "process_instances" ADD COLUMN "loops" jsonb DEFAULT '{}'::jsonb NOT NULL;

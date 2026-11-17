@@ -719,6 +719,8 @@ export const processInstances = pgTable(
       .default('running'),
     /** The outcome each user task was last completed with, which conditions read. */
     outcomes: jsonb('outcomes').$type<Record<string, string>>().notNull().default({}),
+    /** How many times each activity that repeats has run so far, in its run: by the run and the element. */
+    loops: jsonb('loops').$type<Record<string, number>>().notNull().default({}),
     /** Who started it: the person whose action started it, or who started it by hand. */
     startedBy: uuid('started_by').references(() => users.id),
     /** The action whose commit started it, if one did. */
@@ -966,6 +968,7 @@ export const processEvents = pgTable(
         'signalled',
         'signal',
         'escalated',
+        'repeated',
         'compensated',
         'transaction_cancelled',
         'skill_queued',

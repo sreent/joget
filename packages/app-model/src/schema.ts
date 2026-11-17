@@ -590,6 +590,14 @@ export type VoteRule = z.infer<typeof VoteRule>;
 export const Several = z.strictObject({ people: Voters, sequential: z.boolean().default(false), decide: VoteRule });
 export type Several = z.infer<typeof Several>;
 
+/**
+ * An activity that repeats: once it ends, it runs again while this condition holds, on the record
+ * and the outcomes of the tasks, up to `max` times in all. With `before`, the condition is checked
+ * before each time instead, so the activity may not run at all.
+ */
+export const Repeat = z.strictObject({ while: ConditionSchema, max: z.int().min(1).max(100), before: z.literal(true).optional() });
+export type Repeat = z.infer<typeof Repeat>;
+
 /** Work a person does, such as deciding on a claim: it waits in their inbox until they choose an outcome. */
 const UserTask = z.strictObject({
   type: z.literal('userTask'),
@@ -613,6 +621,7 @@ const UserTask = z.strictObject({
   due: Duration.optional(),
   /** The review card the task shows. */
   card: Name.optional(),
+  repeat: Repeat.optional(),
 });
 /** Work the process does by itself: run one of the app's actions on the record, with the app's authority, or start an a7c skill. */
 /** An update action that undoes what a task did, which a compensation runs on the same record. */
@@ -627,6 +636,7 @@ const ServiceTask = z.strictObject({
   skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim').optional(),
   /** The skill's input, worked out from the record. */
   input: z.record(SkillInputName, ExpressionSchema).optional(),
+  repeat: Repeat.optional(),
 });
 /**
  * Changes the record by itself, with the app's authority: Ambit's steps, as an action's steps,
@@ -639,6 +649,7 @@ const ScriptTask = z.strictObject({
   in: In,
   undo: Undo,
   steps: z.array(Step).max(MAX_STEPS).default([]),
+  repeat: Repeat.optional(),
 });
 /** What a rule check finds: every rule holds, only warnings fail, or an error fails. */
 export const RULE_OUTCOMES = ['passed', 'warned', 'failed'] as const;
@@ -652,15 +663,16 @@ const BusinessRuleTask = z.strictObject({
   description: Description.optional(),
   in: In,
   rules: z.array(Name).max(50).optional(),
+  repeat: Repeat.optional(),
 });
 /** Sends a message: runs an update action, with the app's authority, on the record or on the one a reference field names. */
-const SendTask = z.strictObject({ type: z.literal('sendTask'), name: Label, description: Description.optional(), in: In, message: Message, undo: Undo });
+const SendTask = z.strictObject({ type: z.literal('sendTask'), name: Label, description: Description.optional(), in: In, message: Message, undo: Undo, repeat: Repeat.optional() });
 /** Waits for a message, an action committing on the record, as a task: deadlines and other events can sit on its boundary. */
-const ReceiveTask = z.strictObject({ type: z.literal('receiveTask'), name: Label, description: Description.optional(), in: In, message: Message });
+const ReceiveTask = z.strictObject({ type: z.literal('receiveTask'), name: Label, description: Description.optional(), in: In, message: Message, repeat: Repeat.optional() });
 /** A task with nothing to run, which passes straight on: work that is only drawn. */
-const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional(), in: In });
+const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional(), in: In, repeat: Repeat.optional() });
 /** Work done away from any system, such as posting a letter: the process passes straight on. */
-const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, description: Description.optional(), in: In });
+const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, description: Description.optional(), in: In, repeat: Repeat.optional() });
 /** Takes the first flow whose condition holds, in order, or its default flow. With several flows in, it lets each token through. */
 const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), name: Label.optional(), in: In });
 /** Takes every flow out at once; with several flows in, waits for a token from each. */
@@ -733,6 +745,7 @@ const SubProcess = z.strictObject({
   adHoc: z.literal(true).optional(),
   /** In an ad hoc sub-process: it ends once this holds, as a path inside it moves on, and what still runs inside it ends. */
   completeWhen: ConditionSchema.optional(),
+  repeat: Repeat.optional(),
 });
 /**
  * Runs another process of the app and waits until it ends: on the same record, or, for a process
@@ -747,6 +760,7 @@ const CallActivity = z.strictObject({
   process: Name,
   /** A reference field of the record, for a process about the entity it refers to. */
   record: Name.optional(),
+  repeat: Repeat.optional(),
 });
 /**
  * An event on a task's boundary: a timer or a message on a user task, a sub-process or a call
