@@ -2,7 +2,7 @@ import { LEAVE_APP } from '@platform/app-model';
 import { auditEvents } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { startTestApp, type Session, type TestApp } from './helpers.js';
 
 /**
@@ -41,6 +41,18 @@ async function leaveApp(name: string, edit: (definition: Record<string, any>) =>
     await inject({ method: 'POST', url: `/v1/apps/${started.app.id}/shares`, ...as(alice), payload: { email: `${subject}@example.com`, role } }, 201);
   }
   return started.app.id;
+}
+
+/**
+ * A leave app that the test deletes when it finishes, as a personal space holds 20 apps at most.
+ * Only for a test that leaves no timer waiting, so later tests count the same timers.
+ */
+async function passingApp(name: string, edit: (definition: Record<string, any>) => void): Promise<string> {
+  const app = await leaveApp(name, edit);
+  onTestFinished(async () => {
+    await inject({ method: 'DELETE', url: `/v1/apps/${app}`, ...as(alice), payload: { confirm: name } }, 204);
+  });
+  return app;
 }
 
 const ask = (app: string, values: Record<string, unknown> = {}) =>
@@ -961,7 +973,7 @@ describe('errors with codes, escalations, undo and transactions', () => {
   const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
 
   it('books a room in a transaction, and a cancel inside it frees the room again', async () => {
-    const app = await leaveApp('Leave, with a room', (definition) => {
+    const app = await passingApp('Leave, with a room', (definition) => {
       withRoom(definition);
       definition['processes'].leave_approval = {
         label: 'Leave, with a room',
@@ -1022,7 +1034,7 @@ describe('errors with codes, escalations, undo and transactions', () => {
   });
 
   it('hears an escalation from a called process, and an error from it undoes what the caller did', async () => {
-    const app = await leaveApp('Leave, with a budget', (definition) => {
+    const app = await passingApp('Leave, with a budget', (definition) => {
       withRoom(definition);
       definition['processes'].budget_check = {
         label: 'Budget check',
@@ -1111,7 +1123,7 @@ describe('errors with codes, escalations, undo and transactions', () => {
 
 describe('signals', () => {
   it('reach every process of the app that waits for them, start processes on a record, and reach only what waited', async () => {
-    const app = await leaveApp('Leave, with signals', (definition) => {
+    const app = await passingApp('Leave, with signals', (definition) => {
       const process = definition['processes'].leave_approval;
       // Closing the office takes each manager's task away, and the request's leave closes.
       Object.assign(process.elements, {
@@ -1190,7 +1202,7 @@ describe('signals', () => {
 
 describe('event sub-processes', () => {
   it('start on a timer beside the rest, end it all on a withdrawal, and catch an error that a rejection raises', async () => {
-    const app = await leaveApp('Leave, with event sub-processes', (definition) => {
+    const app = await passingApp('Leave, with event sub-processes', (definition) => {
       definition['actions'].withdraw_leave = {
         label: 'Withdraw the leave',
         description: 'Withdraw a leave request that waits for a decision.',
@@ -1283,6 +1295,54 @@ describe('event sub-processes', () => {
       ['ended', 'f_end'],
     ]);
     expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught').detail).toEqual({ from: 'rejected', code: 'refused' });
+  });
+});
+
+describe('ad hoc sub-processes', () => {
+  it('start all their work at once, take it in any order, and end early once their condition holds', async () => {
+    const app = await passingApp('Leave, with checks in any order', (definition) => {
+      const process = definition['processes'].leave_approval;
+      const done = [{ name: 'done', label: 'Done' }];
+      Object.assign(process.elements, {
+        checks: { type: 'subProcess', name: 'Checks', adHoc: true, completeWhen: { eq: [{ ref: 'tasks.dates.outcome' }, 'done'] } },
+        dates: { type: 'userTask', name: 'Check the dates', in: 'checks', role: 'manager', assignee: { field: 'manager' }, outcomes: done },
+        team: { type: 'userTask', name: 'Check the team', in: 'checks', role: 'manager', assignee: { field: 'manager' }, outcomes: done },
+        note: { type: 'scriptTask', name: 'Note the checks', in: 'checks', steps: [{ type: 'set', field: 'reason', value: 'Checking' }] },
+      });
+      process.flows.to_decide.to = 'checks';
+      process.flows.after_checks = { from: 'checks', to: 'decide' };
+      delete process.diagram;
+    });
+    const open = async (recordId: string) =>
+      (await inbox(bob))
+        .filter((task: { recordId: string }) => task.recordId === recordId)
+        .map((task: { element: string }) => task.element)
+        .sort();
+    const find = async (recordId: string, element: string) => (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element);
+
+    // Both checks wait at once, and the note runs by itself.
+    const first = await ask(app, { starts: '2028-06-05', ends: '2028-06-06', days: 2 });
+    expect(await open(first.record.id)).toEqual(['dates', 'team']);
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${first.record.id}`, ...as(alice) }, 200)).values.reason).toBe('Checking');
+    // The team first: the checks go on, for the dates. Then the dates: the checks end, and the manager decides.
+    await complete(bob, (await find(first.record.id, 'team')).id, 'done');
+    expect(await open(first.record.id)).toEqual(['dates']);
+    await complete(bob, (await find(first.record.id, 'dates')).id, 'done');
+    expect(await open(first.record.id)).toEqual(['decide']);
+
+    // The dates first: the condition holds, so the checks end at once, and the team's check closes.
+    const second = await ask(app, { starts: '2028-06-12', ends: '2028-06-13', days: 2 });
+    await complete(bob, (await find(second.record.id, 'dates')).id, 'done');
+    expect(await open(second.record.id)).toEqual(['decide']);
+    const [instance] = await processesOf(app, second.record.id);
+    expect(instance.events.map((event: { kind: string; element: string | null }) => [event.kind, event.element]).slice(-5)).toEqual([
+      ['task_completed', 'dates'],
+      ['condition', 'checks'],
+      ['task_cancelled', 'team'],
+      ['exited', 'checks'],
+      ['task_opened', 'decide'],
+    ]);
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'task_cancelled').detail).toMatchObject({ reason: 'condition' });
   });
 });
 

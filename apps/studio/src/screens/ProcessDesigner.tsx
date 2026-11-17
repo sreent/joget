@@ -23,6 +23,7 @@ import {
   addBoundary,
   addElement,
   arrange,
+  isAdHocElement,
   boundaryKinds,
   callChoices,
   connect,
@@ -209,6 +210,12 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         style={{ width: data.size?.width ?? 340, height: data.size?.height ?? 180 }}
       >
         <span className="absolute top-2 left-3 text-xs font-semibold text-text">{label}</span>
+        {element.adHoc ? (
+          // BPMN's marker for an ad hoc sub-process: a tilde.
+          <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-base leading-none font-semibold text-text" aria-label="Ad hoc">
+            ~
+          </span>
+        ) : null}
         {markers}
         {handles}
         {problem}
@@ -432,7 +439,7 @@ export function ProcessDesigner({
     onChange(added.definition);
     setSelection({ kind: 'element', id: added.id });
     // A sub-process is large: fit the canvas to the shapes again, so all of it shows.
-    if (kind === 'subProcess' || kind === 'transaction' || kind === 'eventSubProcess') setView((n) => n + 1);
+    if (kind === 'subProcess' || kind === 'transaction' || kind === 'eventSubProcess' || kind === 'adHocSubProcess') setView((n) => n + 1);
   };
   // What a palette entry needs first: a role does each task, and a message is an update action saved on the record.
   const missing = (kind: ElementKind): string | null => {
@@ -838,6 +845,7 @@ function typeLabel(element: ProcessElement): string {
   if (element.type === 'intermediateThrowEvent' && element.compensate) return 'Undo';
   if (element.type === 'subProcess' && element.transaction) return 'Transaction';
   if (element.type === 'subProcess' && element.event) return 'Event sub-process';
+  if (element.type === 'subProcess' && element.adHoc) return 'Ad hoc sub-process';
   if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
     const kind = eventKind(element);
     if (kind === 'message') return 'Message';
@@ -1886,7 +1894,34 @@ function ElementPanel(props: {
           Select its start event to choose the trigger, and whether it ends all that runs beside it.
         </p>
       ) : null}
-      {element.type === 'subProcess' && !element.event ? (
+      {element.type === 'subProcess' && element.adHoc ? (
+        <>
+          <p className="m-0 text-sm text-muted">
+            All that no flow leads to inside it starts at once, so people do its tasks in any order, and a path inside it ends where no flow leads on. Select it to add more work inside it.
+          </p>
+          <Checkbox
+            label="It ends early, once a condition holds"
+            checked={element.completeWhen !== undefined}
+            onChange={(on) =>
+              set((current) => {
+                if (current.type !== 'subProcess') return current;
+                const { completeWhen: _completeWhen, ...rest } = current;
+                return on ? { ...rest, completeWhen: startingCondition(definition, process.entity) } : rest;
+              })
+            }
+          />
+          {element.completeWhen ? (
+            <ConditionEditor
+              label="It ends once this holds"
+              value={element.completeWhen}
+              onChange={(condition) => set((current) => (current.type === 'subProcess' ? { ...current, completeWhen: condition ?? startingCondition(definition, process.entity) } : current))}
+              choices={conditionChoices}
+            />
+          ) : null}
+          <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} />
+        </>
+      ) : null}
+      {element.type === 'subProcess' && !element.event && !element.adHoc ? (
         <>
           <Checkbox
             label="A transaction: a cancel end inside undoes what completed in it"

@@ -699,4 +699,35 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.elements['when_1']).toEqual({ type: 'subProcess', name: 'New event sub-process', event: true });
     expect(saved.elements['start_1']).toEqual({ type: 'startEvent', in: 'when_1', actions: ['withdraw_leave'], interrupting: true });
   });
+
+  it('designs an ad hoc sub-process, whose work starts at once and which ends on a condition', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with checks', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    // Once approved, checks that people do in any order.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('adHocSubProcess');
+    await visible(page.getByRole('heading', { name: 'Ad hoc sub-process', exact: true }));
+    // With it selected, a user task goes in it, with no flow.
+    await page.getByRole('button', { name: 'User task', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'User task', exact: true }));
+    // It ends early once a condition holds.
+    await canvas.getByText('New ad hoc sub-process', { exact: true }).click();
+    await page.getByLabel('It ends early, once a condition holds', { exact: true }).check();
+    await visible(page.getByRole('group', { name: 'It ends once this holds' }));
+    await shot(page, '15k-process-ad-hoc');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['adhoc_1']).toMatchObject({ type: 'subProcess', name: 'New ad hoc sub-process', adHoc: true, completeWhen: { exists: 'record.kind' } });
+    expect(saved.elements['manual_1']).toEqual({ type: 'manualTask', name: 'Some work', in: 'adhoc_1' });
+    expect(saved.elements['task_1']).toMatchObject({ type: 'userTask', in: 'adhoc_1' });
+    expect(Object.values(saved.flows).filter((flow: any) => flow.to === 'task_1' || flow.from === 'task_1')).toEqual([]);
+  });
 });

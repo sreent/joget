@@ -42,7 +42,8 @@ export type ElementKind =
   | 'signalEvent'
   | 'signalThrow'
   | 'transaction'
-  | 'eventSubProcess';
+  | 'eventSubProcess'
+  | 'adHocSubProcess';
 
 /** Where the rest of BPMN stands in the palette. */
 export type PaletteGroup = 'Tasks' | 'Gateways' | 'Events' | 'Parts';
@@ -75,6 +76,7 @@ export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label
   { kind: 'subProcess', label: 'Sub-process', hint: 'A part with its own start and end, and deadlines for all of it', group: 'Parts' },
   { kind: 'callActivity', label: 'Call process', hint: 'Run another process of the app, and wait until it ends', group: 'Parts' },
   { kind: 'transaction', label: 'Transaction', hint: 'A sub-process that a cancel end undoes as one', group: 'Parts' },
+  { kind: 'adHocSubProcess', label: 'Ad hoc sub-process', hint: 'Work that people do in any order: all of it starts at once', group: 'Parts' },
   { kind: 'eventSubProcess', label: 'Event sub-process', hint: 'Starts on an event while the process runs: a time, an action, a condition, a signal or an error', group: 'Parts' },
 ];
 
@@ -106,12 +108,13 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   undoThrow: 'undo',
   transaction: 'transaction',
   eventSubProcess: 'when',
+  adHocSubProcess: 'adhoc',
 };
 
 const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 }, sub: { width: 340, height: 180 } } as const;
 const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'conditionEvent', 'milestone', 'messageThrow', 'link', 'escalationThrow', 'undoThrow', 'signalEvent', 'signalThrow']);
 export const sizeOf = (type: ProcessElementType | ElementKind) =>
-  type === 'subProcess' || type === 'transaction' || type === 'eventSubProcess' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
+  type === 'subProcess' || type === 'transaction' || type === 'eventSubProcess' || type === 'adHocSubProcess' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -296,6 +299,8 @@ export function newElement(definition: Definition, process: Process, type: Eleme
       return { type: 'subProcess', name: 'New transaction', transaction: true };
     case 'eventSubProcess':
       return { type: 'subProcess', name: 'New event sub-process', event: true };
+    case 'adHocSubProcess':
+      return { type: 'subProcess', name: 'New ad hoc sub-process', adHoc: true };
     case 'escalationThrow':
       return { type: 'intermediateThrowEvent', name: 'Escalate', escalation: true };
     case 'signalEvent':
@@ -355,7 +360,9 @@ export function addElement(
   const next = withProcess(definition, name, (process) => {
     id = freeId(process, PREFIX[type]);
     // The element stands where the flow it goes on, or the element it follows, is: in a sub-process, it goes in there.
-    const scope = options.on && process.flows[options.on] ? scopeOf(process, process.flows[options.on]!.from) : options.after ? scopeOf(process, options.after) : undefined;
+    // After an ad hoc sub-process means in it: what is added there starts at once, with no flow.
+    const into = options.after && isAdHocElement(process.elements[options.after]) ? options.after : undefined;
+    const scope = into ?? (options.on && process.flows[options.on] ? scopeOf(process, process.flows[options.on]!.from) : options.after ? scopeOf(process, options.after) : undefined);
     const made = newElement(definition, process, type, name);
     process.elements[id] = made.type !== 'boundaryEvent' && scope !== undefined ? { ...made, in: scope } : made;
     const diagram = process.diagram!;
@@ -363,6 +370,15 @@ export function addElement(
     const on = options.on ? process.flows[options.on] : undefined;
     if (type === 'link') {
       linkUp(process, id, options);
+      return;
+    }
+    if (into) {
+      const box = diagram.shapes[into];
+      const inner = Object.entries(diagram.shapes).filter(([other]) => other !== id && process.elements[other]?.type !== 'boundaryEvent' && scopeOf(process, other) === into);
+      const right = inner.length ? Math.max(...inner.map(([, shape]) => shape.x + shape.width)) : (box?.x ?? 100);
+      diagram.shapes[id] = clear(process, diagram, id, { x: right + 40, y: (box ? box.y + box.height / 2 : 100) - size.height / 2, ...size });
+      finish(process, id, definition);
+      fit(process, id);
       return;
     }
     if (type === 'eventSubProcess') {
@@ -491,7 +507,12 @@ function finish(process: Process, id: string, definition?: Definition): void {
   const shapes = process.diagram!.shapes;
   const box = shapes[id];
   if (process.elements[id]?.type === 'eventBasedGateway' && box) firstOf(process, id, definition);
-  if (process.elements[id]?.type === 'subProcess' && box) {
+  if (process.elements[id]?.type === 'subProcess' && box && isAdHocElement(process.elements[id])) {
+    // An ad hoc sub-process has no start or end: some work to do in it, which the builder renames or replaces.
+    const work = freeId(process, 'manual');
+    process.elements[work] = { type: 'manualTask', name: 'Some work', in: id };
+    shapes[work] = { x: box.x + 40, y: box.y + box.height / 2 - 40, width: 100, height: 80 };
+  } else if (process.elements[id]?.type === 'subProcess' && box) {
     const start = freeId(process, 'start');
     // An event sub-process starts on a trigger: a day on, beside the rest, until the builder chooses another.
     const triggered = process.elements[id]?.type === 'subProcess' && process.elements[id].event === true;
@@ -668,6 +689,9 @@ const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonl
   escalation: { prefix: 'escalation', end: 'Escalated', endPrefix: 'escalated' },
   cancel: { prefix: 'cancel', end: 'Cancelled', endPrefix: 'cancelled' },
 };
+
+/** Whether an element is an ad hoc sub-process. */
+export const isAdHocElement = (element: ProcessElement | undefined): boolean => element?.type === 'subProcess' && element.adHoc === true;
 
 /** The signals that the app's processes throw or wait for, which a new signal event can name. */
 export function signalChoices(definition: Definition): string[] {

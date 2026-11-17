@@ -520,6 +520,28 @@ describe('BPMN 2.0 files', () => {
     expect(read).toEqual(was);
   });
 
+  it('carry an ad hoc sub-process out and back, with the condition that ends it', () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    const process = definition['processes'].leave_approval;
+    Object.assign(process.elements, {
+      checks: { type: 'subProcess', name: 'Checks', adHoc: true, completeWhen: { eq: [{ ref: 'tasks.dates.outcome' }, 'done'] } },
+      dates: { type: 'userTask', name: 'Check the dates', in: 'checks', role: 'manager', outcomes: [{ name: 'done', label: 'Done' }] },
+      team: { type: 'userTask', name: 'Check the team', in: 'checks', role: 'manager', outcomes: [{ name: 'done', label: 'Done' }] },
+    });
+    process.flows.to_decide.to = 'checks';
+    process.flows.after_checks = { from: 'checks', to: 'decide' };
+    delete process.diagram;
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:adHocSubProcess id="checks" name="Checks">');
+    expect(xml).toContain('<bpmn:completionCondition xsi:type="bpmn:tFormalExpression" language="urn:ambit:condition">');
+    const back = bpmnToProcesses(xml, { ...app, processes: {} });
+    expect(back.ok ? [] : back.issues).toEqual([]);
+    const { diagram: _diagram, ...read } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    const { diagram: _was, ...was } = app.processes!['leave_approval']!;
+    expect(read).toEqual(was);
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

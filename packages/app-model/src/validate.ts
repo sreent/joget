@@ -14,7 +14,7 @@ import {
   type StoredField,
 } from './fields.js';
 import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { catcherOn, elementName, eventSubCatcher, eventSubsIn, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
+import { adHocStarts, catcherOn, elementName, eventSubCatcher, eventSubsIn, isAdHoc, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
 import {
   AppDefinition,
   LINE_PATH_PATTERN,
@@ -1188,11 +1188,14 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
       const path = `${base}.elements.${id}`;
       const into = graph.incoming.get(id) ?? [];
       const out = graph.outgoing.get(id) ?? [];
+      // In an ad hoc sub-process, a path may end where no flow leads on.
       const oneOut = () => {
-        if (out.length !== 1) issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
+        if (out.length !== 1 && !(out.length === 0 && isAdHoc(process, scopeOf(process, id)))) issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
       };
       const linked = element.type === 'intermediateCatchEvent' && element.link !== undefined;
-      if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !linked && !into.length && !isEventSub(process, id)) issues.push({ path, message: `No flow leads to ${label(id)}` });
+      if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !linked && !into.length && !isEventSub(process, id) && !isAdHoc(process, scopeOf(process, id))) {
+        issues.push({ path, message: `No flow leads to ${label(id)}` });
+      }
       if (element.type !== 'boundaryEvent' && element.in !== undefined) {
         const container = process.elements[element.in];
         if (!container) issues.push({ path: `${path}.in`, message: `No element ${element.in}` });
@@ -1311,8 +1314,20 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         }
         case 'subProcess': {
           const inner = startEventsOf(process, id);
-          if (inner.length !== 1) issues.push({ path, message: inner.length ? `${label(id)} starts at one start event inside it` : `${label(id)} needs a start event inside it` });
-          if (!Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id)) issues.push({ path, message: `${label(id)} needs an end event inside it` });
+          const ends = Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id);
+          if (element.adHoc) {
+            // What has no flow into it starts at once, and a path ends where no flow leads on.
+            if (inner.length || ends) issues.push({ path, message: `${label(id)} is ad hoc: it has no start or end event inside it` });
+            if (!adHocStarts(process, graph, id).length) issues.push({ path, message: `${label(id)} needs something inside it that no flow leads to, which starts at once` });
+            if (element.event || element.transaction) issues.push({ path, message: `${label(id)} is ad hoc, a transaction or an event sub-process: one of these` });
+          } else {
+            if (inner.length !== 1) issues.push({ path, message: inner.length ? `${label(id)} starts at one start event inside it` : `${label(id)} needs a start event inside it` });
+            if (!ends) issues.push({ path, message: `${label(id)} needs an end event inside it` });
+          }
+          if (element.completeWhen) {
+            if (!element.adHoc) issues.push({ path: `${path}.completeWhen`, message: `${label(id)} isn't ad hoc: only an ad hoc sub-process ends on a condition` });
+            else checkCondition(element.completeWhen, scope, `${path}.completeWhen`, issues);
+          }
           const cancels = Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id && other.cancel);
           const leaves = (graph.boundaries.get(id) ?? []).some((boundary) => {
             const event = process.elements[boundary];
@@ -1558,7 +1573,7 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
       reached.add(id);
       for (const flowId of graph.outgoing.get(id) ?? []) queue.push(process.flows[flowId]!.to);
       for (const boundary of graph.boundaries.get(id) ?? []) queue.push(boundary);
-      if (process.elements[id]?.type === 'subProcess') queue.push(...startEventsOf(process, id), ...eventSubsIn(process, id).map((sub) => sub.id));
+      if (process.elements[id]?.type === 'subProcess') queue.push(...startEventsOf(process, id), ...eventSubsIn(process, id).map((sub) => sub.id), ...(isAdHoc(process, id) ? adHocStarts(process, graph, id) : []));
       const jump = linkTarget(process, id);
       if (jump !== undefined) queue.push(jump);
     }

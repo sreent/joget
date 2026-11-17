@@ -1,5 +1,6 @@
 import { uuidv7 } from '@platform/audit';
 import {
+  adHocStarts,
   addDuration,
   appRoleId,
   automaticStarts,
@@ -1141,13 +1142,30 @@ export class ProcessEngine implements ProcessHooks {
    * starts another run, beside any that runs already.
    */
   async #enter(turn: Turn, live: Live, id: string, flow: string | null, scope: string | null): Promise<void> {
-    const start = startEventsOf(live.process, id)[0];
-    if (!start) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)} has no start event inside it`, scope);
+    const element = live.process.elements[id];
+    // An ad hoc sub-process starts all that no flow leads to inside it at once; another, its start event.
+    const adHoc = element?.type === 'subProcess' && element.adHoc === true;
+    const starts = adHoc ? adHocStarts(live.process, live.graph, id) : startEventsOf(live.process, id).slice(0, 1);
+    if (!adHoc && !starts.length) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)} has no start event inside it`, scope);
     const run = await this.#wait(turn, live, id, flow, scope);
     await this.#boundaryTimers(turn, live, id, { tokenId: run }, (await this.#record(turn, live)) ?? {});
     await this.#listen(turn, live, id, run);
     await this.#event(turn, live, 'entered', id, null);
-    this.#move(turn, live, start, null, run);
+    for (const start of starts) this.#move(turn, live, start, null, run);
+  }
+
+  /**
+   * An ad hoc sub-process ends once its condition holds, as a path inside it moves on: what still
+   * runs inside it ends, and the run then goes on as it would when nothing is left in it.
+   */
+  async #adHocDone(turn: Turn, live: Live, scope: string): Promise<void> {
+    const [run] = await turn.tx.db.select().from(processTokens).where(eq(processTokens.id, scope));
+    const element = run ? live.process.elements[run.element] : undefined;
+    if (!run || element?.type !== 'subProcess' || !element.adHoc || !element.completeWhen) return;
+    const record = (await this.#record(turn, live)) ?? {};
+    if (!evaluateCondition(element.completeWhen, processConditionEnv({ record, outcomes: live.outcomes }))) return;
+    await this.#event(turn, live, 'condition', run.element, { completes: true });
+    await this.#clearScope(turn, live, run.id, 'condition');
   }
 
   /** The event sub-processes of a scope listen while it runs: those that a timer starts get their timer; the others hear what happens. */
@@ -1570,6 +1588,7 @@ export class ProcessEngine implements ProcessHooks {
     const out = flowsOut(live.process, live.graph, id, state, outcome);
     if (!out.ok) return this.#stuck(turn, live, id, null, out.message, scope);
     for (const flow of out.flows) this.#move(turn, live, live.process.flows[flow]!.to, flow, scope);
+    if (scope !== null) await this.#adHocDone(turn, live, scope);
   }
 
   async #stuck(turn: Turn, live: Live, element: string, flow: string | null, message: string, scope: string | null): Promise<void> {

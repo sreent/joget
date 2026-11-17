@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   accessChanges,
+  adHocStarts,
   addDuration,
   automaticStarts,
   caughtSignals,
@@ -12,6 +13,7 @@ import {
   eventSubsIn,
   flowsOut,
   insideOf,
+  isAdHoc,
   isEventSub,
   linkTarget,
   LEAVE_APP,
@@ -716,6 +718,38 @@ describe('event sub-processes', () => {
       "processes.leave_approval.elements.late: If late starts on its start event's trigger: no flow leads into it or out of it",
       'processes.leave_approval.elements.l_start.interrupting: An error always ends what it comes from',
     ]);
+  });
+});
+
+describe('ad hoc sub-processes', () => {
+  /** The leave app where the manager checks the dates and the team in any order, and the checks end once the dates are done. */
+  const adHoc = (edit: (process: Record<string, any>) => void = () => undefined) =>
+    leave((process) => {
+      Object.assign(process.elements, {
+        checks: { type: 'subProcess', name: 'Checks', adHoc: true, completeWhen: { eq: [{ ref: 'tasks.dates.outcome' }, 'done'] } },
+        dates: { type: 'userTask', name: 'Check the dates', in: 'checks', role: 'manager', outcomes: [{ name: 'done', label: 'Done' }] },
+        team: { type: 'userTask', name: 'Check the team', in: 'checks', role: 'manager', outcomes: [{ name: 'done', label: 'Done' }] },
+        note: { type: 'scriptTask', name: 'Note the checks', in: 'checks', steps: [{ type: 'set', field: 'reason', value: 'Checking' }] },
+      });
+      process.flows.to_decide.to = 'checks';
+      process.flows.after_checks = { from: 'checks', to: 'decide' };
+      delete process.diagram;
+      edit(process);
+    });
+
+  it('pass the checks: what has no flow into it starts at once, and a path ends where none leads on', () => {
+    const process = valid(adHoc()).processes!['leave_approval']!;
+    expect(isAdHoc(process, 'checks')).toBe(true);
+    expect(adHocStarts(process, processGraph(process), 'checks')).toEqual(['dates', 'team', 'note']);
+  });
+
+  it('are checked: no start or end inside, and a condition only on an ad hoc sub-process', () => {
+    expect(issuesOf(adHoc((process) => (process.elements.stray = { type: 'endEvent', in: 'checks' })))).toEqual([
+      'processes.leave_approval.elements.checks: Checks is ad hoc: it has no start or end event inside it',
+    ]);
+    expect(issuesOf(adHoc((process) => delete process.elements.checks.adHoc))).toEqual(
+      expect.arrayContaining(["processes.leave_approval.elements.checks.completeWhen: Checks isn't ad hoc: only an ad hoc sub-process ends on a condition"]),
+    );
   });
 });
 

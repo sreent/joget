@@ -91,6 +91,25 @@ export function startEventsOf(process: Process, scope?: string): string[] {
   return Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'startEvent' && element.in === scope ? [id] : []));
 }
 
+/** Whether an element is an ad hoc sub-process. */
+export function isAdHoc(process: Process, id: string | undefined): boolean {
+  const element = id === undefined ? undefined : process.elements[id];
+  return element?.type === 'subProcess' && element.adHoc === true;
+}
+
+/** What starts at once in an ad hoc sub-process: what is in it and has no flow into it, but its boundary events and catch links. */
+export function adHocStarts(process: Process, graph: ProcessGraph, id: string): string[] {
+  return Object.entries(process.elements).flatMap(([inner, element]) =>
+    element.type !== 'boundaryEvent' &&
+    element.in === id &&
+    !(element.type === 'intermediateCatchEvent' && element.link !== undefined) &&
+    !(element.type === 'subProcess' && element.event) &&
+    !(graph.incoming.get(inner) ?? []).length
+      ? [inner]
+      : [],
+  );
+}
+
 /** Whether an element is an event sub-process. */
 export function isEventSub(process: Process, id: string | undefined): boolean {
   const element = id === undefined ? undefined : process.elements[id];

@@ -2,7 +2,7 @@ import { isRef, type Condition } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { caughtSignals, isEventSub, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
+import { caughtSignals, isAdHoc, isEventSub, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
 import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Raised, type Several, type Step, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
@@ -345,6 +345,8 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     for (const flow of graph.outgoing.get(id) ?? []) children.push({ name: 'bpmn:outgoing', text: flow });
     // A sub-process holds its own elements and flows.
     if (element.type === 'subProcess') children.push(...contentOf(id));
+    // An ad hoc sub-process's condition comes after what it holds.
+    if (element.type === 'subProcess' && element.adHoc && element.completeWhen) children.push(formal('bpmn:completionCondition', LANGUAGES.condition, conditionText(element.completeWhen)));
     if (element.type === 'userTask' && element.several) {
       const { people, sequential, decide } = element.several;
       children.push({
@@ -382,7 +384,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     }
     // A transaction is BPMN's own element; an event sub-process is a sub-process that an event triggers.
     if (element.type === 'subProcess' && element.event) attributes['triggeredByEvent'] = 'true';
-    return { name: element.type === 'subProcess' && element.transaction ? 'bpmn:transaction' : TAGS[element.type], attributes, children };
+    return { name: element.type === 'subProcess' && element.transaction ? 'bpmn:transaction' : isAdHoc(process!, id) ? 'bpmn:adHocSubProcess' : TAGS[element.type], attributes, children };
   };
   /** An error or an escalation, by its code: BPMN keeps each code in a root element that events refer to. */
   const raisedDefinition = (id: string, kind: 'error' | 'escalation', raised: Raised): XmlOut => {
@@ -501,10 +503,9 @@ export type BpmnImport =
 /** Elements that only document a model: an import leaves them out, and says so. */
 const DOCUMENTING = new Set(['textAnnotation', 'association', 'group', 'dataObject', 'dataObjectReference', 'dataStoreReference', 'dataStore', 'category', 'laneSet', 'documentation', 'extensionElements', 'ioSpecification', 'property', 'dataInputAssociation', 'dataOutputAssociation']);
 /** What a sub-process has as a node of its own, not as something it holds. */
-const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteristics', 'standardLoopCharacteristics']);
+const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteristics', 'standardLoopCharacteristics', 'completionCondition']);
 /** The elements Ambit doesn't run yet, as a sentence names them. */
 const KINDS: Readonly<Record<string, string>> = {
-  adHocSubProcess: 'an ad hoc sub-process',
   complexGateway: 'a complex gateway',
 };
 const EVENT_KINDS: Readonly<Record<string, string>> = {
@@ -940,13 +941,29 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             break;
           }
           case 'subProcess':
-          case 'transaction': {
+          case 'transaction':
+          case 'adHocSubProcess': {
+            // An ad hoc sub-process may end on a condition: Ambit's text as it is, another tool's with its names as the record's fields.
+            const completion = node.local === 'adHocSubProcess' ? bpmn(node, 'completionCondition')[0] : undefined;
+            let completeWhen: Condition | undefined;
+            if (completion) {
+              const text = textOf(completion).trim();
+              const language = attribute(completion, 'language') ?? attribute(source, 'expressionLanguage') ?? attribute(root, 'expressionLanguage');
+              const parsed = text ? parseConditionText(text, language === LANGUAGES.condition ? (ref) => ref : foreignName) : undefined;
+              if (!parsed?.ok) {
+                refuse(`Ambit can't read the condition "${text}"${parsed && !parsed.ok ? `: ${parsed.message}` : ''}. Write it as a condition on the record's fields`);
+                break;
+              }
+              if (language !== LANGUAGES.condition) notes.add(`Read the condition "${text}" of ${describe(node)} as ${conditionText(parsed.condition)}`);
+              completeWhen = parsed.condition;
+            }
             elements[id] = {
               type: 'subProcess',
               name: name ?? id,
               ...(documentation ? { description: documentation } : {}),
               ...(node.local === 'transaction' ? { transaction: true as const } : {}),
               ...(attribute(node, 'triggeredByEvent') === 'true' ? { event: true as const } : {}),
+              ...(node.local === 'adHocSubProcess' ? { adHoc: true as const, ...(completeWhen ? { completeWhen } : {}) } : {}),
             };
             if (attribute(shapesOf.get(attribute(node, 'id') ?? '') ?? node, 'isExpanded') !== 'true') collapsed.push(id);
             read(node, id);
@@ -1009,10 +1026,10 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
     read(source, undefined);
     const sequenceFlows = (container: XmlElement): XmlElement[] => [
       ...bpmn(container, 'sequenceFlow'),
-      ...[...bpmn(container, 'subProcess'), ...bpmn(container, 'transaction')].flatMap(sequenceFlows),
+      ...[...bpmn(container, 'subProcess'), ...bpmn(container, 'transaction'), ...bpmn(container, 'adHocSubProcess')].flatMap(sequenceFlows),
     ];
     // Undos: each compensation event leads, by an association, to a handler that runs the undo action.
-    const containers = (container: XmlElement): XmlElement[] => [container, ...[...bpmn(container, 'subProcess'), ...bpmn(container, 'transaction')].flatMap(containers)];
+    const containers = (container: XmlElement): XmlElement[] => [container, ...[...bpmn(container, 'subProcess'), ...bpmn(container, 'transaction'), ...bpmn(container, 'adHocSubProcess')].flatMap(containers)];
     const associations = containers(source).flatMap((container) => bpmn(container, 'association'));
     const handlers = new Map(
       containers(source).flatMap((container) => childElements(container).filter((child) => attribute(child, 'isForCompensation') === 'true').map((child) => [attribute(child, 'id') ?? '', child] as const)),

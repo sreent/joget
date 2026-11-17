@@ -720,6 +720,13 @@ const SubProcess = z.strictObject({
    * sub-process it is in, runs. No flow leads into it or out of it.
    */
   event: z.literal(true).optional(),
+  /**
+   * An ad hoc sub-process: it has no start or end event. What has no flow into it starts at once,
+   * so people do its tasks in any order, and a path inside it ends where no flow leads on.
+   */
+  adHoc: z.literal(true).optional(),
+  /** In an ad hoc sub-process: it ends once this holds, as a path inside it moves on, and what still runs inside it ends. */
+  completeWhen: ConditionSchema.optional(),
 });
 /**
  * Runs another process of the app and waits until it ends: on the same record, or, for a process
