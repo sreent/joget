@@ -14,7 +14,7 @@ import {
   type StoredField,
 } from './fields.js';
 import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { catcherOn, elementName, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
+import { catcherOn, elementName, eventSubCatcher, eventSubsIn, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
 import {
   AppDefinition,
   LINE_PATH_PATTERN,
@@ -23,6 +23,7 @@ import {
   type Action,
   type Entity,
   type Message,
+  type Process,
   type ProcessElement,
   type SimpleStep,
   type Step,
@@ -1146,11 +1147,16 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
       else if (readsPrincipal(action)) issues.push({ path, message: `${undo} reads the person who runs it, but a process undoes with no person` });
     };
     /** Where an error or an escalation of a code that an element throws is caught: a sub-process around it, or a call of this process. */
+    const caughtIn = (model: Process, modelGraph: ReturnType<typeof processGraph>, scopes: readonly string[], kind: 'error' | 'escalation', code: string | undefined): boolean =>
+      [...scopes, undefined].some((scope) => eventSubCatcher(model, scope, kind, code) !== undefined) || scopes.some((scope) => catcherOn(model, modelGraph, scope, kind, code) !== undefined);
     const caughtAround = (id: string, kind: 'error' | 'escalation', code: string | undefined): boolean =>
-      scopesOf(process, id).some((scope) => catcherOn(process, graph, scope, kind, code) !== undefined) ||
+      caughtIn(process, graph, scopesOf(process, id), kind, code) ||
       Object.values(definition.processes ?? {}).some((caller) => {
         const callerGraph = processGraph(caller);
-        return Object.entries(caller.elements).some(([callId, element]) => element.type === 'callActivity' && element.process === name && catcherOn(caller, callerGraph, callId, kind, code) !== undefined);
+        return Object.entries(caller.elements).some(
+          ([callId, element]) =>
+            element.type === 'callActivity' && element.process === name && (catcherOn(caller, callerGraph, callId, kind, code) !== undefined || caughtIn(caller, callerGraph, scopesOf(caller, callId), kind, code)),
+        );
       });
     /** A message the process sends: an update action that it runs with the app's authority, on its record or on the one a reference field names. */
     const sent = (message: Message, path: string) => {
@@ -1186,7 +1192,7 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         if (out.length !== 1) issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
       };
       const linked = element.type === 'intermediateCatchEvent' && element.link !== undefined;
-      if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !linked && !into.length) issues.push({ path, message: `No flow leads to ${label(id)}` });
+      if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !linked && !into.length && !isEventSub(process, id)) issues.push({ path, message: `No flow leads to ${label(id)}` });
       if (element.type !== 'boundaryEvent' && element.in !== undefined) {
         const container = process.elements[element.in];
         if (!container) issues.push({ path: `${path}.in`, message: `No element ${element.in}` });
@@ -1196,26 +1202,38 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         }
       }
       switch (element.type) {
-        case 'startEvent':
+        case 'startEvent': {
+          const caught = element.error !== undefined || element.escalation !== undefined || element.interrupting !== undefined;
           if (element.in === undefined) {
             starts++;
             if ([element.actions.length > 0, element.timer, element.condition, element.signal].filter(Boolean).length > 1) {
               issues.push({ path, message: `${label(id)} starts on actions, a timer, a condition or a signal: one of these` });
             }
-          } else if (element.actions.length || element.timer || element.condition || element.signal) {
+            if (caught) issues.push({ path, message: `${label(id)} starts the process: only a start event in an event sub-process catches an error or an escalation, or lets the rest go on` });
+          } else if (isEventSub(process, element.in)) {
+            if ([element.actions.length > 0, element.timer, element.condition, element.signal, element.error, element.escalation].filter(Boolean).length !== 1) {
+              issues.push({ path, message: `${label(id)} starts its event sub-process on an action, a timer, a condition, a signal, an error or an escalation: one of these` });
+            }
+            if (element.error && element.interrupting === false) issues.push({ path: `${path}.interrupting`, message: 'An error always ends what it comes from' });
+          } else if (element.actions.length || element.timer || element.condition || element.signal || caught) {
             issues.push({ path, message: 'A start event inside a sub-process starts when the sub-process does: it names no action, timer, condition or signal' });
           }
           if (element.timer) checkTimer(element.timer, path);
           // A start's condition reads the record: no task has an outcome yet.
           if (element.condition) checkCondition(element.condition, { ...scope, tasks: new Map() }, `${path}.condition`, issues);
           oneOut();
-          element.actions.forEach((action, index) => {
-            if (!startAction(action, `${path}.actions[${index}]`)) return;
-            const other = startedBy.get(action);
-            if (other) issues.push({ path: `${path}.actions[${index}]`, message: `${action} already starts this process, at ${label(other)}` });
-            startedBy.set(action, id);
-          });
+          // In an event sub-process, an action is a message saved on the record; otherwise, it starts the process.
+          if (isEventSub(process, element.in)) element.actions.forEach((action, index) => heard({ action }, `${path}.actions[${index}]`));
+          else {
+            element.actions.forEach((action, index) => {
+              if (!startAction(action, `${path}.actions[${index}]`)) return;
+              const other = startedBy.get(action);
+              if (other) issues.push({ path: `${path}.actions[${index}]`, message: `${action} already starts this process, at ${label(other)}` });
+              startedBy.set(action, id);
+            });
+          }
           break;
+        }
         case 'endEvent': {
           if (element.in === undefined) ends++;
           const ways = [element.terminate, element.message, element.error, element.escalation, element.compensate, element.cancel, element.signal].filter(Boolean).length;
@@ -1301,7 +1319,11 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
             return event?.type === 'boundaryEvent' && event.cancel;
           });
           if (element.transaction && cancels && !leaves) issues.push({ path, message: `${label(id)} has a cancel end event inside it, but no cancel event on its boundary to leave by` });
-          oneOut();
+          if (element.event) {
+            if (into.length || out.length) issues.push({ path, message: `${label(id)} starts on its start event's trigger: no flow leads into it or out of it` });
+            if ((graph.boundaries.get(id) ?? []).length) issues.push({ path, message: `${label(id)} is an event sub-process: no event sits on its boundary` });
+            if (element.transaction) issues.push({ path, message: `${label(id)} is a transaction or an event sub-process: one of the two` });
+          } else oneOut();
           break;
         }
         case 'callActivity': {
@@ -1528,14 +1550,15 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
 
     // Every element can be reached from a start event: a boundary event, once its task can; what is in a sub-process, once the sub-process can.
     const reached = new Set<string>();
-    const queue = startEventsOf(process);
+    // An event sub-process is reached where its scope is: it needs no flow.
+    const queue = [...startEventsOf(process), ...eventSubsIn(process, undefined).map((sub) => sub.id)];
     while (queue.length) {
       const id = queue.pop()!;
       if (reached.has(id)) continue;
       reached.add(id);
       for (const flowId of graph.outgoing.get(id) ?? []) queue.push(process.flows[flowId]!.to);
       for (const boundary of graph.boundaries.get(id) ?? []) queue.push(boundary);
-      if (process.elements[id]?.type === 'subProcess') queue.push(...startEventsOf(process, id));
+      if (process.elements[id]?.type === 'subProcess') queue.push(...startEventsOf(process, id), ...eventSubsIn(process, id).map((sub) => sub.id));
       const jump = linkTarget(process, id);
       if (jump !== undefined) queue.push(jump);
     }

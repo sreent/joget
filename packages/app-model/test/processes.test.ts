@@ -8,8 +8,11 @@ import {
   decideVotes,
   decisionsBy,
   diffDefinitions,
+  eventSubCatcher,
+  eventSubsIn,
   flowsOut,
   insideOf,
+  isEventSub,
   linkTarget,
   LEAVE_APP,
   lintDefinition,
@@ -645,6 +648,73 @@ describe('signals', () => {
     expect(issues).toEqual([
       "processes.leave_approval.elements.closed.attachedTo: Leave requested can't have a timer, a message, a condition or a signal on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
       'processes.follow_up.elements.start: Start event start starts on actions, a timer, a condition or a signal: one of these',
+    ]);
+  });
+});
+
+describe('event sub-processes', () => {
+  /**
+   * The leave app where a withdrawal while the process runs ends it; where HR hears of a request
+   * that waits five days, beside the rest; and where a rejection raises an error that an event
+   * sub-process catches.
+   */
+  const withSubs = (edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined) =>
+    leave((process, definition) => {
+      definition['actions'].withdraw_leave = { label: 'Withdraw', description: 'Withdraw.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' }, confirm: 'none' };
+      Object.assign(process.elements, {
+        withdrawn: { type: 'subProcess', name: 'If withdrawn', event: true },
+        w_start: { type: 'startEvent', in: 'withdrawn', actions: ['withdraw_leave'] },
+        w_end: { type: 'endEvent', name: 'Withdrawn', in: 'withdrawn' },
+        late: { type: 'subProcess', name: 'If late', event: true },
+        l_start: { type: 'startEvent', in: 'late', timer: { duration: 'P5D' }, interrupting: false },
+        l_tell: { type: 'manualTask', name: 'Tell HR', in: 'late' },
+        l_end: { type: 'endEvent', in: 'late' },
+        failed: { type: 'subProcess', name: 'If refused', event: true },
+        f_start: { type: 'startEvent', in: 'failed', error: { code: 'refused' } },
+        f_end: { type: 'endEvent', name: 'Refused', in: 'failed' },
+      });
+      process.elements.rejected.error = { code: 'refused' };
+      Object.assign(process.flows, {
+        w1: { from: 'w_start', to: 'w_end' },
+        l1: { from: 'l_start', to: 'l_tell' },
+        l2: { from: 'l_tell', to: 'l_end' },
+        f1: { from: 'f_start', to: 'f_end' },
+      });
+      delete process.diagram;
+      edit(process, definition);
+    });
+
+  it('pass the checks, and catch what is raised beside them', () => {
+    const definition = valid(withSubs());
+    const process = definition.processes!['leave_approval']!;
+    expect(eventSubsIn(process, undefined)).toEqual([
+      { id: 'withdrawn', start: 'w_start' },
+      { id: 'late', start: 'l_start' },
+      { id: 'failed', start: 'f_start' },
+    ]);
+    expect(isEventSub(process, 'late')).toBe(true);
+    expect(messageActions(process)).toContain('withdraw_leave');
+    expect(eventSubCatcher(process, undefined, 'error', 'refused')).toEqual({ id: 'failed', start: 'f_start' });
+    expect(eventSubCatcher(process, undefined, 'error', 'other')).toBeUndefined();
+  });
+
+  it('are checked: no flow in or out, one trigger, and errors only in an event sub-process', () => {
+    const issues = issuesOf(
+      withSubs((process) => {
+        process.elements.w_start.actions = [];
+        process.elements.l_start.timer = undefined;
+        process.elements.l_start.error = true;
+        process.elements.requested.escalation = true;
+        process.flows.into = { from: 'w_end', to: 'late' };
+      }),
+    );
+    expect(issues).toEqual([
+      'processes.leave_approval.flows.into.from: Withdrawn is an end event: no flow leaves it',
+      'processes.leave_approval.flows.into: A flow can\'t cross the edge of a sub-process: Withdrawn is in If withdrawn, and If late is in the process itself',
+      'processes.leave_approval.elements.requested: Leave requested starts the process: only a start event in an event sub-process catches an error or an escalation, or lets the rest go on',
+      'processes.leave_approval.elements.w_start: Start event w_start starts its event sub-process on an action, a timer, a condition, a signal, an error or an escalation: one of these',
+      "processes.leave_approval.elements.late: If late starts on its start event's trigger: no flow leads into it or out of it",
+      'processes.leave_approval.elements.l_start.interrupting: An error always ends what it comes from',
     ]);
   });
 });

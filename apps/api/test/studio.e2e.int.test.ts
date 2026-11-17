@@ -15,6 +15,7 @@ import { startTestApp, type Session, type TestApp } from './helpers.js';
 interface Locator {
   count(): Promise<number>;
   click(options?: { position?: { x: number; y: number } }): Promise<void>;
+  check(): Promise<void>;
   isDisabled(): Promise<boolean>;
   fill(value: string): Promise<void>;
   blur(): Promise<void>;
@@ -666,5 +667,36 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
     expect(saved.elements['signal_1']).toEqual({ type: 'intermediateThrowEvent', name: 'Signal', signal: 'leave_rejected' });
     expect(saved.elements['signal_2']).toEqual({ type: 'boundaryEvent', name: 'Signal', attachedTo: 'decide', interrupting: true, signal: 'office_closed' });
+  });
+
+  it('designs an event sub-process that a withdrawal starts, and that ends all that runs beside it', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a withdrawal', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
+    current.definition.actions.withdraw_leave = { label: 'Withdraw', description: 'Withdraw.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' }, confirm: 'none' };
+    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    expect(put.statusCode, put.body).toBe(200);
+
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    // An event sub-process stands apart, with a start that waits a day by default.
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('eventSubProcess');
+    await visible(page.getByRole('heading', { name: 'Event sub-process', exact: true }));
+    // A withdrawal starts it instead, and it ends all that runs beside it.
+    await page.getByTestId('rf__node-start_1').click();
+    await page.getByLabel('Starts', { exact: true }).selectOption('actions');
+    await page.getByLabel('The action', { exact: true }).selectOption('withdraw_leave');
+    await page.getByLabel('It ends all that runs beside it', { exact: true }).check();
+    await shot(page, '15j-process-event-sub');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 3' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['when_1']).toEqual({ type: 'subProcess', name: 'New event sub-process', event: true });
+    expect(saved.elements['start_1']).toEqual({ type: 'startEvent', in: 'when_1', actions: ['withdraw_leave'], interrupting: true });
   });
 });

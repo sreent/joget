@@ -520,6 +520,12 @@ const StartEvent = z.strictObject({
   condition: ConditionSchema.optional(),
   /** Starts the process on a record when a process on that record throws this signal, or an operator throws it for the record. */
   signal: Name.optional(),
+  /** In an event sub-process: an error that something beside it raises, which this catches. */
+  error: Raised.optional(),
+  /** In an event sub-process: an escalation from something beside it. */
+  escalation: Raised.optional(),
+  /** In an event sub-process: false lets what runs beside it go on. Otherwise, it ends all that runs beside it first. */
+  interrupting: z.boolean().optional(),
 });
 /**
  * Where a path ends. A terminate end event ends the whole instance, other paths included; inside a
@@ -709,6 +715,11 @@ const SubProcess = z.strictObject({
   in: In,
   /** A transaction: a cancel end event inside it undoes what completed in it, and leaves by its cancel event. */
   transaction: z.literal(true).optional(),
+  /**
+   * An event sub-process: the trigger of its start event starts it while the process, or the
+   * sub-process it is in, runs. No flow leads into it or out of it.
+   */
+  event: z.literal(true).optional(),
 });
 /**
  * Runs another process of the app and waits until it ends: on the same record, or, for a process

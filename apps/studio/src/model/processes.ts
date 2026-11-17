@@ -41,7 +41,8 @@ export type ElementKind =
   | 'undoThrow'
   | 'signalEvent'
   | 'signalThrow'
-  | 'transaction';
+  | 'transaction'
+  | 'eventSubProcess';
 
 /** Where the rest of BPMN stands in the palette. */
 export type PaletteGroup = 'Tasks' | 'Gateways' | 'Events' | 'Parts';
@@ -74,6 +75,7 @@ export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label
   { kind: 'subProcess', label: 'Sub-process', hint: 'A part with its own start and end, and deadlines for all of it', group: 'Parts' },
   { kind: 'callActivity', label: 'Call process', hint: 'Run another process of the app, and wait until it ends', group: 'Parts' },
   { kind: 'transaction', label: 'Transaction', hint: 'A sub-process that a cancel end undoes as one', group: 'Parts' },
+  { kind: 'eventSubProcess', label: 'Event sub-process', hint: 'Starts on an event while the process runs: a time, an action, a condition, a signal or an error', group: 'Parts' },
 ];
 
 const PREFIX: Readonly<Record<ElementKind, string>> = {
@@ -103,12 +105,13 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   signalThrow: 'signal',
   undoThrow: 'undo',
   transaction: 'transaction',
+  eventSubProcess: 'when',
 };
 
 const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 }, sub: { width: 340, height: 180 } } as const;
 const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'conditionEvent', 'milestone', 'messageThrow', 'link', 'escalationThrow', 'undoThrow', 'signalEvent', 'signalThrow']);
 export const sizeOf = (type: ProcessElementType | ElementKind) =>
-  type === 'subProcess' || type === 'transaction' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
+  type === 'subProcess' || type === 'transaction' || type === 'eventSubProcess' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -291,6 +294,8 @@ export function newElement(definition: Definition, process: Process, type: Eleme
       return { type, name: 'New sub-process' };
     case 'transaction':
       return { type: 'subProcess', name: 'New transaction', transaction: true };
+    case 'eventSubProcess':
+      return { type: 'subProcess', name: 'New event sub-process', event: true };
     case 'escalationThrow':
       return { type: 'intermediateThrowEvent', name: 'Escalate', escalation: true };
     case 'signalEvent':
@@ -358,6 +363,15 @@ export function addElement(
     const on = options.on ? process.flows[options.on] : undefined;
     if (type === 'link') {
       linkUp(process, id, options);
+      return;
+    }
+    if (type === 'eventSubProcess') {
+      // An event sub-process stands apart, below what is where it goes: no flow leads into it or out of it.
+      const around = Object.entries(diagram.shapes).filter(([other]) => other !== id && scopeOf(process, other) === scope && process.elements[other]?.type !== 'boundaryEvent');
+      const left = around.length ? Math.min(...around.map(([, shape]) => shape.x)) : 100;
+      const bottom = around.length ? Math.max(...around.map(([, shape]) => shape.y + shape.height)) : 100;
+      diagram.shapes[id] = clear(process, diagram, id, { x: left, y: bottom + 80, ...size });
+      finish(process, id, definition);
       return;
     }
     if (on) {
@@ -479,7 +493,9 @@ function finish(process: Process, id: string, definition?: Definition): void {
   if (process.elements[id]?.type === 'eventBasedGateway' && box) firstOf(process, id, definition);
   if (process.elements[id]?.type === 'subProcess' && box) {
     const start = freeId(process, 'start');
-    process.elements[start] = { type: 'startEvent', in: id, actions: [] };
+    // An event sub-process starts on a trigger: a day on, beside the rest, until the builder chooses another.
+    const triggered = process.elements[id]?.type === 'subProcess' && process.elements[id].event === true;
+    process.elements[start] = { type: 'startEvent', in: id, actions: [], ...(triggered ? { timer: { duration: 'P1D' }, interrupting: false } : {}) };
     const end = freeId(process, 'end');
     process.elements[end] = { type: 'endEvent', in: id, terminate: false };
     process.flows[freeId(process, 'flow')] = { from: start, to: end };

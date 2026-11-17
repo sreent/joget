@@ -490,6 +490,36 @@ describe('BPMN 2.0 files', () => {
     expect(read.ok ? read.notes : []).toContain('Read the signal "Office Closed" of (c) as office_closed');
   });
 
+  it('carry event sub-processes out and back, with what starts them and whether they interrupt', () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    definition['actions'].withdraw_leave = { label: 'Withdraw', description: 'Withdraw.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' }, confirm: 'none' };
+    const process = definition['processes'].leave_approval;
+    Object.assign(process.elements, {
+      withdrawn: { type: 'subProcess', name: 'If withdrawn', event: true },
+      w_start: { type: 'startEvent', in: 'withdrawn', actions: ['withdraw_leave'] },
+      w_end: { type: 'endEvent', name: 'Withdrawn', in: 'withdrawn' },
+      late: { type: 'subProcess', name: 'If late', event: true },
+      l_start: { type: 'startEvent', in: 'late', timer: { duration: 'P5D' }, interrupting: false },
+      l_end: { type: 'endEvent', in: 'late' },
+      failed: { type: 'subProcess', name: 'If refused', event: true },
+      f_start: { type: 'startEvent', in: 'failed', error: { code: 'refused' } },
+      f_end: { type: 'endEvent', name: 'Refused', in: 'failed' },
+    });
+    process.elements.rejected.error = { code: 'refused' };
+    Object.assign(process.flows, { w1: { from: 'w_start', to: 'w_end' }, l1: { from: 'l_start', to: 'l_end' }, f1: { from: 'f_start', to: 'f_end' } });
+    delete process.diagram;
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:subProcess id="late" name="If late" triggeredByEvent="true">');
+    expect(xml).toContain('<bpmn:startEvent id="l_start" isInterrupting="false">');
+    expect(xml).toContain('<bpmn:messageEventDefinition id="w_start_message" messageRef="Message_withdraw_leave" />');
+    const back = bpmnToProcesses(xml, { ...app, processes: {} });
+    expect(back.ok ? [] : back.issues).toEqual([]);
+    const { diagram: _diagram, ...read } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    const { diagram: _was, ...was } = app.processes!['leave_approval']!;
+    expect(read).toEqual(was);
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

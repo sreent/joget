@@ -58,6 +58,8 @@ interface ShapeData extends Record<string, unknown> {
   readonly element: ProcessElement;
   readonly boundaries: ReadonlyArray<{ readonly id: string; readonly element: BoundaryEventElement; readonly left: number; readonly title: string }>;
   readonly problems: number;
+  /** A start event that starts an event sub-process, which shows its trigger. */
+  readonly triggers?: boolean;
   /** A sub-process's size, which what it holds sets. */
   readonly size?: { readonly width: number; readonly height: number };
 }
@@ -125,10 +127,12 @@ function EventIcon({
 
 /** One element, drawn with BPMN 2.0's shapes: circles for events, rounded boxes for tasks, diamonds for gateways. */
 function Shape({ data, selected }: NodeProps<ShapeNode>) {
-  const { element, boundaries, problems } = data;
+  const { element, boundaries, problems, triggers } = data;
   const ring = selected ? 'ring-2 ring-focus' : '';
-  const hasIn = element.type !== 'startEvent';
-  const hasOut = element.type !== 'endEvent' && !(element.type === 'intermediateThrowEvent' && element.link !== undefined);
+  // An event sub-process starts on its trigger: no flow joins it.
+  const apart = element.type === 'subProcess' && element.event === true;
+  const hasIn = element.type !== 'startEvent' && !apart;
+  const hasOut = element.type !== 'endEvent' && !(element.type === 'intermediateThrowEvent' && element.link !== undefined) && !apart;
   const hasInHandle = !(element.type === 'intermediateCatchEvent' && element.link !== undefined);
   const label = 'name' in element && element.name ? element.name : undefined;
   const handles = (
@@ -146,15 +150,20 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
     const end = element.type === 'endEvent';
     return (
       <div className="relative size-9">
-        <div className={cx('grid size-9 place-items-center rounded-full bg-surface', end ? 'border-[3px] border-text' : 'border-[1.5px] border-text', ring)}>
+        <div
+          className={cx(
+            'grid size-9 place-items-center rounded-full bg-surface',
+            end ? 'border-[3px] border-text' : 'border-[1.5px] border-text',
+            element.type === 'startEvent' && element.interrupting === false ? 'border-dashed' : '',
+            ring,
+          )}
+        >
           {element.type === 'intermediateCatchEvent' ? (
             <div className="grid size-7 place-items-center rounded-full border border-text">
               <EventIcon kind={element.link !== undefined ? 'link' : eventKind(element)} />
             </div>
           ) : null}
-          {element.type === 'startEvent' && (element.timer || element.condition || element.signal !== undefined) ? (
-            <EventIcon kind={element.timer ? 'timer' : element.condition ? 'condition' : 'signal'} size={18} />
-          ) : null}
+          {element.type === 'startEvent' && startTrigger(element, triggers === true) ? <EventIcon kind={startTrigger(element, triggers === true)!} size={18} /> : null}
           {element.type === 'intermediateThrowEvent' ? (
             <div className="grid size-7 place-items-center rounded-full border border-text">
               {element.message ? (
@@ -196,7 +205,7 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
     // Drawn open, with what it holds inside it: its name at the top.
     return (
       <div
-        className={cx('relative rounded-xl border-text bg-surface/50', element.transaction ? 'border-[5px] border-double' : 'border-[1.5px]', ring)}
+        className={cx('relative rounded-xl border-text bg-surface/50', element.transaction ? 'border-[5px] border-double' : element.event ? 'border-2 border-dotted' : 'border-[1.5px]', ring)}
         style={{ width: data.size?.width ?? 340, height: data.size?.height ?? 180 }}
       >
         <span className="absolute top-2 left-3 text-xs font-semibold text-text">{label}</span>
@@ -322,7 +331,13 @@ function toNodes(definition: Definition, process: Process, selection: Selection,
         type: 'bpmn' as const,
         position: parent ? { x: shape.x - parent.x, y: shape.y - parent.y } : { x: shape.x, y: shape.y },
         ...(parent ? { parentId: container } : {}),
-        data: { element, boundaries, problems: count, ...(element.type === 'subProcess' ? { size: { width: shape.width, height: shape.height } } : {}) },
+        data: {
+          element,
+          boundaries,
+          problems: count,
+          ...(element.type === 'subProcess' ? { size: { width: shape.width, height: shape.height } } : {}),
+          ...(element.type === 'startEvent' && element.in !== undefined && isEventSubElement(process.elements[element.in]) ? { triggers: true } : {}),
+        },
         selected: selection?.kind === 'element' && selection.id === id,
       };
     });
@@ -417,7 +432,7 @@ export function ProcessDesigner({
     onChange(added.definition);
     setSelection({ kind: 'element', id: added.id });
     // A sub-process is large: fit the canvas to the shapes again, so all of it shows.
-    if (kind === 'subProcess') setView((n) => n + 1);
+    if (kind === 'subProcess' || kind === 'transaction' || kind === 'eventSubProcess') setView((n) => n + 1);
   };
   // What a palette entry needs first: a role does each task, and a message is an update action saved on the record.
   const missing = (kind: ElementKind): string | null => {
@@ -822,6 +837,7 @@ function typeLabel(element: ProcessElement): string {
   if (element.type === 'intermediateThrowEvent' && element.signal !== undefined) return 'Throw a signal';
   if (element.type === 'intermediateThrowEvent' && element.compensate) return 'Undo';
   if (element.type === 'subProcess' && element.transaction) return 'Transaction';
+  if (element.type === 'subProcess' && element.event) return 'Event sub-process';
   if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
     const kind = eventKind(element);
     if (kind === 'message') return 'Message';
@@ -832,6 +848,39 @@ function typeLabel(element: ProcessElement): string {
     if (kind === 'cancel') return 'Cancel';
   }
   return TYPE_LABELS[element.type];
+}
+
+/** Whether an element is an event sub-process. */
+const isEventSubElement = (element: ProcessElement | undefined): boolean => element?.type === 'subProcess' && element.event === true;
+
+/** What a start event waits for, as its marker shows it: in an event sub-process, an action saved on the record is a message. */
+function startTrigger(element: Extract<ProcessElement, { type: 'startEvent' }>, inEventSub: boolean): 'timer' | 'condition' | 'signal' | 'error' | 'escalation' | 'message' | undefined {
+  if (element.timer) return 'timer';
+  if (element.condition) return 'condition';
+  if (element.signal !== undefined) return 'signal';
+  if (element.error) return 'error';
+  if (element.escalation) return 'escalation';
+  return inEventSub && element.actions.length ? 'message' : undefined;
+}
+
+/** How an event sub-process starts, as its start event's panel names it. */
+type Trigger = 'actions' | 'after' | 'date' | 'condition' | 'signal' | 'error' | 'escalation';
+const TRIGGER_WORDS: Readonly<Record<Trigger, string>> = {
+  actions: 'When an action is saved',
+  after: 'A time after its scope starts',
+  date: 'On a date of the record',
+  condition: 'When a condition comes to hold',
+  signal: 'When a signal is thrown',
+  error: 'When an error is raised beside it',
+  escalation: 'When something beside it escalates',
+};
+function triggerOf(element: Extract<ProcessElement, { type: 'startEvent' }>): Trigger {
+  if (element.timer) return 'date' in element.timer ? 'date' : 'after';
+  if (element.condition) return 'condition';
+  if (element.signal !== undefined) return 'signal';
+  if (element.error) return 'error';
+  if (element.escalation) return 'escalation';
+  return 'actions';
 }
 
 /** The code of an error or an escalation. A catch for that code, or one for all, takes it; without a code, only a catch for all does. */
@@ -1354,6 +1403,92 @@ function ElementPanel(props: {
           )}
         </>
       ) : null}
+      {element.type === 'startEvent' && element.in !== undefined && isEventSubElement(process.elements[element.in]) ? (
+        <>
+          <Field label="Starts">
+            {(inputId) => (
+              <Select
+                id={inputId}
+                value={triggerOf(element)}
+                onChange={(event) =>
+                  set((current) => {
+                    if (current.type !== 'startEvent') return current;
+                    const { timer: _timer, condition: _condition, signal: _signal, error: _error, escalation: _escalation, ...rest } = current;
+                    const plain = { ...rest, actions: [] };
+                    const trigger = event.target.value;
+                    if (trigger === 'actions' && actions[0]) return { ...plain, actions: [actions[0]] };
+                    if (trigger === 'date' && dates[0]) return { ...plain, timer: { date: dates[0].name } };
+                    if (trigger === 'condition') return { ...plain, condition: startingCondition(definition, process.entity) };
+                    if (trigger === 'signal') return { ...plain, signal: signalChoices(definition)[0] ?? 'signal' };
+                    // An error always ends what runs beside it.
+                    if (trigger === 'error') return { ...plain, error: true, interrupting: true };
+                    if (trigger === 'escalation') return { ...plain, escalation: true };
+                    return { ...plain, timer: { duration: 'P1D' } };
+                  })
+                }
+              >
+                {(Object.keys(TRIGGER_WORDS) as Trigger[]).map((trigger) => (
+                  <option key={trigger} value={trigger} disabled={(trigger === 'actions' && !actions.length) || (trigger === 'date' && !dates.length)}>
+                    {TRIGGER_WORDS[trigger]}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          {triggerOf(element) === 'actions' ? (
+            <Field label="The action">
+              {(inputId) => (
+                <Select id={inputId} value={element.actions[0] ?? ''} onChange={(event) => set((current) => (current.type === 'startEvent' ? { ...current, actions: [event.target.value] } : current))}>
+                  {actions.map((action) => (
+                    <option key={action} value={action}>
+                      {definition.actions[action]!.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          ) : null}
+          {element.timer && 'duration' in element.timer ? (
+            <DurationInput label="After its scope starts" value={element.timer.duration} onChange={(duration) => set((current) => ({ ...current, timer: { duration } }) as ProcessElement)} />
+          ) : null}
+          {element.timer && 'date' in element.timer ? (
+            <Field label="On the record's">
+              {(inputId) => (
+                <Select id={inputId} value={element.timer && 'date' in element.timer ? element.timer.date : ''} onChange={(event) => set((current) => ({ ...current, timer: { date: event.target.value } }) as ProcessElement)}>
+                  {dates.map((field) => (
+                    <option key={field.name} value={field.name}>
+                      {field.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          ) : null}
+          {element.condition ? (
+            <ConditionEditor
+              label="Starts when this comes to hold"
+              value={element.condition}
+              onChange={(condition) => set((current) => (current.type === 'startEvent' ? { ...current, condition: condition ?? startingCondition(definition, process.entity) } : current))}
+              choices={conditionChoices}
+            />
+          ) : null}
+          {element.signal !== undefined ? (
+            <SignalInput definition={definition} label="The signal" hint="A process of the app, or an operator, throws it." value={element.signal} onChange={(signal) => set((current) => ({ ...current, signal }) as ProcessElement)} />
+          ) : null}
+          {element.error ? (
+            <CodeInput label="Catches the error" hint="An error end event with this code, beside it. Empty: any error, and an action that fails." value={element.error} onChange={(error) => set((current) => ({ ...current, error }) as ProcessElement)} />
+          ) : null}
+          {element.escalation ? (
+            <CodeInput label="Hears the escalation" hint="An escalation with this code, beside it. Empty: any escalation." value={element.escalation} onChange={(escalation) => set((current) => ({ ...current, escalation }) as ProcessElement)} />
+          ) : null}
+          <Checkbox
+            label="It ends all that runs beside it"
+            checked={element.interrupting !== false}
+            disabled={element.error !== undefined}
+            onChange={(interrupting) => set((current) => (current.type === 'startEvent' ? { ...current, interrupting } : current))}
+          />
+        </>
+      ) : null}
       {element.type === 'endEvent' ? (
         <>
           <Field label="As it ends">
@@ -1745,7 +1880,13 @@ function ElementPanel(props: {
       ) : null}
       {element.type === 'serviceTask' && element.action ? <UndoPicker definition={definition} name={name} id={id} onChange={onChange} /> : null}
       {element.type === 'serviceTask' ? <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} /> : null}
-      {element.type === 'subProcess' ? (
+      {element.type === 'subProcess' && element.event ? (
+        <p className="m-0 text-sm text-muted">
+          An event sub-process starts when its start event's trigger happens, while {element.in === undefined ? 'the process' : 'the sub-process it is in'} runs. No flow leads into it or out of it.
+          Select its start event to choose the trigger, and whether it ends all that runs beside it.
+        </p>
+      ) : null}
+      {element.type === 'subProcess' && !element.event ? (
         <>
           <Checkbox
             label="A transaction: a cancel end inside undoes what completed in it"

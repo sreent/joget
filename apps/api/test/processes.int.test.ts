@@ -1188,6 +1188,104 @@ describe('signals', () => {
   });
 });
 
+describe('event sub-processes', () => {
+  it('start on a timer beside the rest, end it all on a withdrawal, and catch an error that a rejection raises', async () => {
+    const app = await leaveApp('Leave, with event sub-processes', (definition) => {
+      definition['actions'].withdraw_leave = {
+        label: 'Withdraw the leave',
+        description: 'Withdraw a leave request that waits for a decision.',
+        entity: 'leave_request',
+        operation: 'update',
+        input: [],
+        set: { status: 'rejected' },
+        where: { eq: [{ ref: 'record.status' }, 'submitted'] },
+      };
+      definition['roles'].employee.actions.push('withdraw_leave');
+      const process = definition['processes'].leave_approval;
+      const note = (reason: string) => [{ type: 'set', field: 'reason', value: reason }];
+      Object.assign(process.elements, {
+        // Two days on, HR hears of the request, and the manager still decides.
+        late: { type: 'subProcess', name: 'If late', event: true },
+        l_start: { type: 'startEvent', name: 'Two days on', in: 'late', timer: { duration: 'P2D' }, interrupting: false },
+        l_note: { type: 'scriptTask', name: 'Note it for HR', in: 'late', steps: note('Late') },
+        l_end: { type: 'endEvent', in: 'late' },
+        // A withdrawal ends all that runs.
+        withdrawn: { type: 'subProcess', name: 'If withdrawn', event: true },
+        w_start: { type: 'startEvent', name: 'Withdrawn', in: 'withdrawn', actions: ['withdraw_leave'] },
+        w_note: { type: 'scriptTask', name: 'Note the withdrawal', in: 'withdrawn', steps: note('Withdrawn') },
+        w_end: { type: 'endEvent', name: 'Withdrawn', in: 'withdrawn' },
+        // A rejection raises an error, which an event sub-process catches.
+        failed: { type: 'subProcess', name: 'If refused', event: true },
+        f_start: { type: 'startEvent', in: 'failed', error: { code: 'refused' } },
+        f_end: { type: 'endEvent', name: 'Refused', in: 'failed' },
+      });
+      process.elements.rejected.error = { code: 'refused' };
+      Object.assign(process.flows, {
+        l1: { from: 'l_start', to: 'l_note' },
+        l2: { from: 'l_note', to: 'l_end' },
+        w1: { from: 'w_start', to: 'w_note' },
+        w2: { from: 'w_note', to: 'w_end' },
+        f1: { from: 'f_start', to: 'f_end' },
+      });
+      delete process.diagram;
+    });
+    const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
+    const values = async (id: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200)).values;
+    const decide = async (recordId: string) => (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === 'decide');
+
+    // Two days on, HR hears of the first request, beside the manager's task.
+    const first = await ask(app, { starts: '2028-05-01', ends: '2028-05-02', days: 2 });
+    const was = t.clock.offsetMs;
+    t.clock.offsetMs = was + 2 * 86_400_000 + 60_000;
+    try {
+      await t.server.processes.fireDue();
+    } finally {
+      t.clock.offsetMs = was;
+    }
+    let [instance] = await processesOf(app, first.record.id);
+    expect(instance).toMatchObject({ status: 'running', waiting: [{ element: 'decide' }] });
+    expect(kinds(instance).slice(-4)).toEqual([
+      ['timer_fired', 'l_start'],
+      ['entered', 'late'],
+      ['ran', 'l_note'],
+      ['exited', 'late'],
+    ]);
+    expect((await values(first.record.id)).reason).toBe('Late');
+    expect(await decide(first.record.id)).toBeDefined();
+
+    // The second is withdrawn: the manager's task goes, and the process ends where the withdrawal does.
+    const second = await ask(app, { starts: '2028-05-08', ends: '2028-05-09', days: 2 });
+    await inject({ method: 'POST', url: `/v1/apps/${app}/actions/withdraw_leave/run`, ...as(alice), payload: { recordId: second.record.id } }, 200);
+    [instance] = await processesOf(app, second.record.id);
+    expect(instance.status).toBe('completed');
+    expect(kinds(instance).slice(1)).toEqual([
+      ['task_opened', 'decide'],
+      ['task_cancelled', 'decide'],
+      ['message', 'w_start'],
+      ['entered', 'withdrawn'],
+      ['ran', 'w_note'],
+      ['exited', 'withdrawn'],
+      ['ended', 'w_end'],
+    ]);
+    expect(await decide(second.record.id)).toBeUndefined();
+    expect(await values(second.record.id)).toMatchObject({ status: 'rejected', reason: 'Withdrawn' });
+
+    // The third is rejected: the rejection's error starts the event sub-process that catches it.
+    const third = await ask(app, { starts: '2028-05-15', ends: '2028-05-16', days: 2 });
+    await complete(bob, (await decide(third.record.id)).id, 'reject');
+    [instance] = await processesOf(app, third.record.id);
+    expect(instance.status).toBe('completed');
+    expect(kinds(instance).slice(-5)).toEqual([
+      ['task_completed', 'decide'],
+      ['error_caught', 'f_start'],
+      ['entered', 'failed'],
+      ['exited', 'failed'],
+      ['ended', 'f_end'],
+    ]);
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught').detail).toEqual({ from: 'rejected', code: 'refused' });
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

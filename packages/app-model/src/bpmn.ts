@@ -2,7 +2,7 @@ import { isRef, type Condition } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { caughtSignals, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
+import { caughtSignals, isEventSub, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
 import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Raised, type Several, type Step, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
@@ -284,6 +284,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     switch (element.type) {
       case 'startEvent':
         if (element.actions.length) attributes['ambit:actions'] = element.actions.join(' ');
+        if (element.interrupting === false) attributes['isInterrupting'] = 'false';
         break;
       case 'endEvent':
         break;
@@ -370,6 +371,8 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         children.push({ name: 'bpmn:conditionalEventDefinition', attributes: { id: `${id}_condition` }, children: [formal('bpmn:condition', LANGUAGES.condition, conditionText(element.condition))] });
       }
       if ('message' in element && element.message) children.push(messageDefinition(id, element.message));
+      // In an event sub-process, the action that starts it is a message.
+      if (element.type === 'startEvent' && isEventSub(process!, element.in) && element.actions.length === 1) children.push(messageDefinition(id, { action: element.actions[0]! }));
       if ('error' in element && element.error) children.push(raisedDefinition(id, 'error', element.error));
       if ('escalation' in element && element.escalation) children.push(raisedDefinition(id, 'escalation', element.escalation));
       if ('signal' in element && element.signal !== undefined) children.push({ name: 'bpmn:signalEventDefinition', attributes: { id: `${id}_signal`, signalRef: signalId(element.signal) } });
@@ -377,7 +380,8 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
       if ('cancel' in element && element.cancel) children.push({ name: 'bpmn:cancelEventDefinition', attributes: { id: `${id}_cancel` } });
       if ('link' in element && element.link !== undefined) children.push({ name: 'bpmn:linkEventDefinition', attributes: { id: `${id}_link`, name: element.link } });
     }
-    // A transaction is BPMN's own element.
+    // A transaction is BPMN's own element; an event sub-process is a sub-process that an event triggers.
+    if (element.type === 'subProcess' && element.event) attributes['triggeredByEvent'] = 'true';
     return { name: element.type === 'subProcess' && element.transaction ? 'bpmn:transaction' : TAGS[element.type], attributes, children };
   };
   /** An error or an escalation, by its code: BPMN keeps each code in a root element that events refer to. */
@@ -757,8 +761,14 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             } else if (kinds.length === 1 && kinds[0] === 'signal') {
               const signal = signalOf();
               if (signal) elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [], signal };
+            } else if (kinds.length === 1 && (kinds[0] === 'error' || kinds[0] === 'escalation')) {
+              // An event sub-process's start: the checks refuse it anywhere else.
+              elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [], [kinds[0]]: raisedOf(kinds[0]) };
             } else if (kinds.length) refuse(`Ambit doesn't start a process on a ${kinds.join(' or ')} event yet`);
             else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions };
+            // An event sub-process's start that lets the rest go on.
+            const made = elements[id];
+            if (made?.type === 'startEvent' && attribute(node, 'isInterrupting') === 'false') elements[id] = { ...made, interrupting: false };
             break;
           }
           case 'endEvent': {
@@ -931,11 +941,13 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           }
           case 'subProcess':
           case 'transaction': {
-            if (attribute(node, 'triggeredByEvent') === 'true') {
-              refuse("Ambit doesn't run an event sub-process yet");
-              break;
-            }
-            elements[id] = { type: 'subProcess', name: name ?? id, ...(documentation ? { description: documentation } : {}), ...(node.local === 'transaction' ? { transaction: true as const } : {}) };
+            elements[id] = {
+              type: 'subProcess',
+              name: name ?? id,
+              ...(documentation ? { description: documentation } : {}),
+              ...(node.local === 'transaction' ? { transaction: true as const } : {}),
+              ...(attribute(node, 'triggeredByEvent') === 'true' ? { event: true as const } : {}),
+            };
             if (attribute(shapesOf.get(attribute(node, 'id') ?? '') ?? node, 'isExpanded') !== 'true') collapsed.push(id);
             read(node, id);
             break;

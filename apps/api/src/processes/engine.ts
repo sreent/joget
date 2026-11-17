@@ -9,12 +9,16 @@ import {
   decideVotes,
   elementName,
   evaluateExpression,
+  eventSubCatcher,
+  eventSubsIn,
   flowsOut,
+  isEventSub,
   linkTarget,
   plainStartOf,
   processConditionEnv,
   processGraph,
   raisedCode,
+  scopeOf,
   signalStarts,
   startEventsOf,
   startsOf,
@@ -87,12 +91,18 @@ interface Live {
 /** Where an error or an escalation is caught: an event on the boundary of an element, in an instance. */
 interface Catch {
   readonly live: Live;
+  /** The event that catches it: on a boundary, or the start event of an event sub-process. */
   readonly boundary: string;
+  /** The event sub-process that it starts, if an event sub-process catches it. */
+  readonly eventSub?: string;
   /** The token that waits at the element: a run of a sub-process, or a call. Null for a task's own event. */
   readonly host: TokenRow | null;
   /** The run the path out of the event goes on in. */
   readonly scope: string | null;
 }
+
+/** A start event, as an event sub-process's trigger. */
+type StartEventElement = Extract<Process['elements'][string], { type: 'startEvent' }>;
 
 /** One transaction's worth of process work: tokens arrive at elements until each waits or ends. */
 interface Turn {
@@ -586,7 +596,8 @@ export class ProcessEngine implements ProcessHooks {
   async #hearSignal(turn: Turn, live: Live, signal: SignalRow): Promise<boolean> {
     const db = turn.tx.db;
     const detail = { signal: signal.name, ...(signal.instanceId ? { from: signal.instanceId } : {}) };
-    let heard = await this.#boundariesHear(turn, live, (event) => event.signal === signal.name, 'signal', detail, signal.thrownAt);
+    let heard = await this.#eventSubsHear(turn, live, (start) => start.signal === signal.name, 'signal', detail, 'signal', signal.thrownAt);
+    heard = (await this.#boundariesHear(turn, live, (event) => event.signal === signal.name, 'signal', detail, signal.thrownAt)) || heard;
     const waiting = await db.select().from(processTokens).where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.state, 'waiting')));
     for (const token of waiting) {
       if (token.createdAt.getTime() > signal.thrownAt.getTime()) continue;
@@ -652,6 +663,16 @@ export class ProcessEngine implements ProcessHooks {
       }
       await tx.db.update(processTimers).set({ status: 'fired', firedAt: turn.now, lastError: null }).where(eq(processTimers.id, timer.id));
       const element = live.process.elements[timer.element];
+      if (element?.type === 'startEvent' && element.in !== undefined && isEventSub(live.process, element.in)) {
+        // An event sub-process's timer starts it, while its scope still runs.
+        const scope = timer.tokenId;
+        const [run] = scope ? await tx.db.select().from(processTokens).where(eq(processTokens.id, scope)) : [];
+        if ((scope === null || run) && !(await this.#interrupted(turn, live, scope))) {
+          await this.#runEventSub(turn, live, element.in, timer.element, scope, element.interrupting !== false, 'timer_fired', null, 'timer');
+        }
+        await this.#drain(turn);
+        return;
+      }
       await this.#event(turn, live, 'timer_fired', timer.element, null);
       if (timer.tokenId && element?.type === 'boundaryEvent') {
         // On a sub-process, a call or a receive task, an interrupting timer ends what waits there; on a task that several people decide, the vote.
@@ -754,6 +775,7 @@ export class ProcessEngine implements ProcessHooks {
     for (const { id } of running) {
       const live = await this.#live(turn, id);
       if (live.ended || !messageActions(live.process).includes(action)) continue;
+      await this.#eventSubsHear(turn, live, (start) => start.actions.includes(action), 'message', { action }, 'message');
       // What waits there hears it on its boundary first, the outermost run first: interrupting it ends what runs inside it.
       await this.#boundariesHear(turn, live, (event) => event.message?.action === action, 'message', { action });
       // Then what waits for it: a catch event, a receive task, or an event-based gateway before one of them.
@@ -907,6 +929,14 @@ export class ProcessEngine implements ProcessHooks {
         'condition',
         {},
       );
+      await this.#eventSubsHear(
+        turn,
+        live,
+        (start) => start.condition !== undefined && holds(start.condition, after, live.outcomes) && !holds(start.condition, before, live.outcomes),
+        'condition',
+        {},
+        'condition',
+      );
     }
   }
 
@@ -1052,6 +1082,7 @@ export class ProcessEngine implements ProcessHooks {
       .returning();
     const live: Live = { row: row!, process, graph: processGraph(process), entity: process.entity, outcomes: {}, ended: false, reached: null, reach: new Map() };
     turn.live.set(row!.id, live);
+    await this.#listen(turn, live, undefined, null);
     const why = action ? { action } : caller ? { calledBy: caller.instanceId } : automatic ? { [automatic]: true } : null;
     await this.#event(turn, live, 'started', startAt, why);
     await this.#audit(turn, live, 'process.start', why ?? { byHand: true });
@@ -1114,8 +1145,137 @@ export class ProcessEngine implements ProcessHooks {
     if (!start) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)} has no start event inside it`, scope);
     const run = await this.#wait(turn, live, id, flow, scope);
     await this.#boundaryTimers(turn, live, id, { tokenId: run }, (await this.#record(turn, live)) ?? {});
+    await this.#listen(turn, live, id, run);
     await this.#event(turn, live, 'entered', id, null);
     this.#move(turn, live, start, null, run);
+  }
+
+  /** The event sub-processes of a scope listen while it runs: those that a timer starts get their timer; the others hear what happens. */
+  async #listen(turn: Turn, live: Live, scopeElement: string | undefined, run: string | null): Promise<void> {
+    let record: RecordValues | undefined;
+    for (const sub of eventSubsIn(live.process, scopeElement)) {
+      const start = live.process.elements[sub.start];
+      if (start?.type !== 'startEvent' || !start.timer) continue;
+      record ??= (await this.#record(turn, live)) ?? {};
+      const fireAt = timerFiresAt(start.timer, turn.now, record);
+      if (!fireAt) continue;
+      await turn.tx.db.insert(processTimers).values({
+        id: uuidv7(turn.now.getTime()),
+        orgId: this.#ctx.org.id,
+        instanceId: live.row.id,
+        element: sub.start,
+        ...(run ? { tokenId: run } : {}),
+        fireAt,
+        nextAttemptAt: fireAt,
+        createdAt: turn.now,
+      });
+    }
+  }
+
+  /** Whether an interrupting event sub-process runs in a scope: then the scope's other event sub-processes no longer listen. */
+  async #interrupted(turn: Turn, live: Live, scope: string | null): Promise<boolean> {
+    const tokens = await turn.tx.db
+      .select({ element: processTokens.element })
+      .from(processTokens)
+      .where(and(eq(processTokens.instanceId, live.row.id), scope === null ? isNull(processTokens.scope) : eq(processTokens.scope, scope)));
+    return tokens.some((token) => {
+      if (!isEventSub(live.process, token.element)) return false;
+      const start = live.process.elements[startEventsOf(live.process, token.element)[0] ?? ''];
+      return start?.type === 'startEvent' && start.interrupting !== false;
+    });
+  }
+
+  /**
+   * Start an event sub-process in a run of a sub-process, or in the process itself (null). One that
+   * interrupts first ends all else that runs there, and the other event sub-processes there stop
+   * listening. The path goes on from its start event, whose trigger happened.
+   */
+  async #runEventSub(
+    turn: Turn,
+    live: Live,
+    sub: string,
+    start: string,
+    scope: string | null,
+    interrupting: boolean,
+    kind: EventKind,
+    detail: Record<string, unknown> | null,
+    reason: CloseReason,
+  ): Promise<void> {
+    if (interrupting) {
+      if (scope === null) {
+        for (let index = turn.queue.length - 1; index >= 0; index--) {
+          const move = turn.queue[index]!;
+          if (move.instanceId === live.row.id && move.scope === null) turn.queue.splice(index, 1);
+        }
+        const top = await turn.tx.db.select().from(processTokens).where(and(eq(processTokens.instanceId, live.row.id), isNull(processTokens.scope)));
+        await this.#dropTokens(turn, live, top, reason);
+      } else {
+        await this.#clearScope(turn, live, scope, reason);
+      }
+      const [run] = scope === null ? [] : await turn.tx.db.select({ element: processTokens.element }).from(processTokens).where(eq(processTokens.id, scope));
+      const others = eventSubsIn(live.process, run?.element).map((each) => each.start);
+      if (others.length) {
+        await turn.tx.db
+          .update(processTimers)
+          .set({ status: 'cancelled' })
+          .where(
+            and(
+              eq(processTimers.instanceId, live.row.id),
+              inArray(processTimers.element, others),
+              eq(processTimers.status, 'waiting'),
+              scope === null ? isNull(processTimers.tokenId) : eq(processTimers.tokenId, scope),
+            ),
+          );
+      }
+    }
+    const run = await this.#wait(turn, live, sub, null, scope);
+    await this.#listen(turn, live, sub, run);
+    await this.#event(turn, live, kind, start, detail);
+    await this.#event(turn, live, 'entered', sub, null);
+    await this.#leave(turn, live, start, run);
+  }
+
+  /**
+   * The event sub-processes that a happening starts, in the process itself and in each run of a
+   * sub-process, the outermost first. One that interrupts ends what else runs there. A signal
+   * reaches only the scopes that ran when it was thrown.
+   */
+  async #eventSubsHear(
+    turn: Turn,
+    live: Live,
+    matches: (start: StartEventElement) => boolean,
+    kind: EventKind,
+    detail: Record<string, unknown>,
+    reason: CloseReason,
+    since?: Date,
+  ): Promise<boolean> {
+    const db = turn.tx.db;
+    const all = await db.select().from(processTokens).where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.state, 'waiting')));
+    const depth = (token: TokenRow): number => {
+      let count = 0;
+      for (let at = token.scope; at !== null && count < 50; count++) at = all.find((other) => other.id === at)?.scope ?? null;
+      return count;
+    };
+    const runs = all.filter((token) => live.process.elements[token.element]?.type === 'subProcess').sort((a, b) => depth(a) - depth(b));
+    const scopes = [{ run: null, element: undefined, since: live.row.startedAt }, ...runs.map((token) => ({ run: token.id, element: token.element, since: token.createdAt }))];
+    let heard = false;
+    for (const scope of scopes) {
+      if (since !== undefined && scope.since.getTime() > since.getTime()) continue;
+      if (scope.run !== null) {
+        const [still] = await db.select({ id: processTokens.id }).from(processTokens).where(eq(processTokens.id, scope.run));
+        if (!still) continue;
+      }
+      for (const sub of eventSubsIn(live.process, scope.element)) {
+        if (await this.#interrupted(turn, live, scope.run)) break;
+        const start = live.process.elements[sub.start];
+        if (start?.type !== 'startEvent' || !matches(start)) continue;
+        const interrupting = start.interrupting !== false;
+        await this.#runEventSub(turn, live, sub.id, sub.start, scope.run, interrupting, kind, detail, reason);
+        heard = true;
+        if (interrupting) break;
+      }
+    }
+    return heard;
   }
 
   /** The runs of sub-processes that nothing runs inside any more end, and their paths go on. Returns whether one did. */
@@ -1130,7 +1290,8 @@ export class ProcessEngine implements ProcessHooks {
         await turn.tx.db.delete(processTokens).where(eq(processTokens.id, token.id));
         await turn.tx.db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
         await this.#event(turn, live, 'exited', token.element, { run: token.id, ...inRun(token.scope) });
-        await this.#leave(turn, live, token.element, token.scope);
+        // An event sub-process leads nowhere: what runs beside it goes on, or its scope ends.
+        if (!isEventSub(live.process, token.element)) await this.#leave(turn, live, token.element, token.scope);
         finished = true;
       }
     }
@@ -1265,7 +1426,8 @@ export class ProcessEngine implements ProcessHooks {
         if (element.cancel) return this.#cancelTransaction(turn, live, id, flow, scope);
         if (element.signal !== undefined) await this.#throwSignal(turn, live, id, element.signal);
         // Inside a sub-process, an end ends a path in its run; a terminate end ends all of the run, which then goes on.
-        if (scope === null) live.reached = id;
+        // The process ends where its last path ends: in it, or in one of its own event sub-processes.
+        if (scope === null || (isEventSub(live.process, element.in) && scopeOf(live.process, element.in!) === undefined)) live.reached = id;
         if (element.terminate) {
           if (scope === null) await this.#end(turn, live, 'completed', id);
           else await this.#clearScope(turn, live, scope, 'ended');
@@ -1435,12 +1597,19 @@ export class ProcessEngine implements ProcessHooks {
     }
     let current = live;
     let at = scope;
+    // What is raised inside an event sub-process goes past it, to the scope it is in.
+    let from: string | undefined;
     for (;;) {
-      while (at !== null) {
-        const [run] = await turn.tx.db.select().from(processTokens).where(eq(processTokens.id, at));
-        if (!run) return null;
+      for (;;) {
+        const [run] = at === null ? [] : await turn.tx.db.select().from(processTokens).where(eq(processTokens.id, at));
+        if (at !== null && !run) return null;
+        // An event sub-process of the scope catches first, unless one that interrupts runs there already.
+        const sub = eventSubCatcher(current.process, run?.element, kind, code, from);
+        if (sub && !(await this.#interrupted(turn, current, at))) return { live: current, boundary: sub.start, eventSub: sub.id, host: null, scope: at };
+        if (!run) break;
         const boundary = catcherOn(current.process, current.graph, run.element, kind, code);
         if (boundary) return { live: current, boundary, host: run, scope: run.scope };
+        from = isEventSub(current.process, run.element) ? run.element : undefined;
         at = run.scope;
       }
       const caller = await this.#caller(turn, current);
@@ -1449,6 +1618,7 @@ export class ProcessEngine implements ProcessHooks {
       if (boundary) return { live: caller.live, boundary, host: caller.token, scope: caller.token.scope };
       current = caller.live;
       at = caller.token.scope;
+      from = undefined;
     }
   }
 
@@ -1473,9 +1643,15 @@ export class ProcessEngine implements ProcessHooks {
       const why = raised.failure ?? (raised.code ? `nothing catches the error ${raised.code}` : 'nothing catches its error');
       return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: ${why}`, scope);
     }
-    await this.#interruptFor(turn, live, id, caught, 'error');
     const detail = raised.failure !== undefined ? { task: id, error: raised.failure } : { from: id, ...(raised.code ? { code: raised.code } : {}) };
-    await this.#event(turn, caught.live, 'error_caught', caught.boundary, { ...detail, ...(caught.live === live ? {} : { instance: live.row.id }) });
+    const where = caught.live === live ? {} : { instance: live.row.id };
+    if (caught.eventSub !== undefined) {
+      // An event sub-process catches it: the instance it came from ends, and the event sub-process ends what runs beside it.
+      if (caught.live !== live && !live.ended) await this.#end(turn, live, 'cancelled', id, false);
+      return this.#runEventSub(turn, caught.live, caught.eventSub, caught.boundary, caught.scope, true, 'error_caught', { ...detail, ...where }, 'error');
+    }
+    await this.#interruptFor(turn, live, id, caught, 'error');
+    await this.#event(turn, caught.live, 'error_caught', caught.boundary, { ...detail, ...where });
     return this.#leave(turn, caught.live, caught.boundary, caught.scope);
   }
 
@@ -1492,6 +1668,12 @@ export class ProcessEngine implements ProcessHooks {
       return true;
     }
     const event = caught.live.process.elements[caught.boundary];
+    if (caught.eventSub !== undefined) {
+      const interrupts = event?.type === 'startEvent' && event.interrupting !== false;
+      if (interrupts && caught.live !== live && !live.ended) await this.#end(turn, live, 'cancelled', id, false);
+      await this.#runEventSub(turn, caught.live, caught.eventSub, caught.boundary, caught.scope, interrupts, 'escalated', { ...raised, ...(caught.live === live ? {} : { instance: live.row.id }) }, 'escalation');
+      return !interrupts;
+    }
     const interrupting = event?.type === 'boundaryEvent' && event.interrupting;
     if (interrupting) await this.#interruptFor(turn, live, id, caught, 'escalation');
     await this.#event(turn, caught.live, 'escalated', caught.boundary, { ...raised, ...(caught.live === live ? {} : { instance: live.row.id }) });

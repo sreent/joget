@@ -1,0 +1,2 @@
+ALTER TABLE "process_timers" DROP CONSTRAINT "process_timers_one_place";--> statement-breakpoint
+ALTER TABLE "process_timers" ADD CONSTRAINT "process_timers_one_place" CHECK (not ("process_timers"."token_id" is not null and "process_timers"."task_id" is not null));

@@ -851,7 +851,8 @@ export const processTimers = pgTable(
   (t) => [
     index('process_timers_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`),
     index('process_timers_instance_idx').on(t.instanceId),
-    check('process_timers_one_place', sql`(${t.tokenId} is null) <> (${t.taskId} is null)`),
+    // A timer waits on a token, on a task, or on the instance itself: an event sub-process of the process listens for as long as it runs.
+    check('process_timers_one_place', sql`not (${t.tokenId} is not null and ${t.taskId} is not null)`),
   ],
 );
 

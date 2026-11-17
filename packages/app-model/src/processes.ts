@@ -91,6 +91,43 @@ export function startEventsOf(process: Process, scope?: string): string[] {
   return Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'startEvent' && element.in === scope ? [id] : []));
 }
 
+/** Whether an element is an event sub-process. */
+export function isEventSub(process: Process, id: string | undefined): boolean {
+  const element = id === undefined ? undefined : process.elements[id];
+  return element?.type === 'subProcess' && element.event === true;
+}
+
+/** The event sub-processes in the process itself, or in one of its sub-processes, each with its start event. */
+export function eventSubsIn(process: Process, scope: string | undefined): Array<{ readonly id: string; readonly start: string }> {
+  return Object.entries(process.elements).flatMap(([id, element]) => {
+    if (element.type !== 'subProcess' || !element.event || element.in !== scope) return [];
+    const start = startEventsOf(process, id)[0];
+    return start ? [{ id, start }] : [];
+  });
+}
+
+/**
+ * The event sub-process in the process itself, or in one of its sub-processes, whose start event
+ * catches an error or an escalation of a code: the one for that code first, then one for all.
+ */
+export function eventSubCatcher(
+  process: Process,
+  scope: string | undefined,
+  kind: 'error' | 'escalation',
+  code: string | undefined,
+  except?: string,
+): { readonly id: string; readonly start: string } | undefined {
+  // An event sub-process doesn't catch what is raised inside it: that goes on up.
+  const catching = eventSubsIn(process, scope).flatMap((sub) => {
+    if (sub.id === except) return [];
+    const start = process.elements[sub.start];
+    const raised = start?.type === 'startEvent' ? start[kind] : undefined;
+    return raised !== undefined && catches(raised, code) ? [{ ...sub, all: raised === true }] : [];
+  });
+  const found = catching.find((each) => !each.all) ?? catching[0];
+  return found ? { id: found.id, start: found.start } : undefined;
+}
+
 /**
  * Where an instance starts that no action starts: by hand, or from a call activity of another
  * process. That is the process's first start event without actions, or else its first.
@@ -306,7 +343,12 @@ export function messageActions(process: Process): string[] {
   return [
     ...new Set(
       Object.values(process.elements).flatMap((element) =>
-        (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'receiveTask') && element.message ? [element.message.action] : [],
+        (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'receiveTask') && element.message
+          ? [element.message.action]
+          : // An action saved on the record starts an event sub-process, as a message.
+            element.type === 'startEvent' && isEventSub(process, element.in)
+            ? element.actions
+            : [],
       ),
     ),
   ];
