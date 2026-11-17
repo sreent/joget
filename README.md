@@ -25,8 +25,8 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
 - **Built so far:**
   - phase 0, the governance kernel, proven on a real Kubernetes cluster;
   - phase 1, the capability core with line items and files, the studio's data-model and form designers, and the screens every app gets;
-  - from phase 2: governed delivery for team apps (working copies, change requests with checks and previews, signed releases, approved deployments to Prod and Staging, and rollback); the designers for rules, actions, queries, review cards, roles, pages, the menu and dashboards; steps for actions, which start a7c skills for work in other systems; moving a personal app to a team space; queries that total and group, for agents; and app templates, export and import.
-- **Next:** a CLI.
+  - from phase 2: governed delivery for team apps (working copies, change requests with checks and previews, signed releases, approved deployments to Prod and Staging, and rollback); the designers for rules, actions, queries, review cards, roles, pages, the menu and dashboards; steps for actions, which start a7c skills for work in other systems; moving a personal app to a team space; queries that total and group, for agents; app templates, export and import; and the command line, `ambit`.
+- **Next:** phase 3, approvals and the shared agent: processes with human tasks, a universal inbox and approving in chat.
 
 ## What the code does today
 
@@ -44,7 +44,7 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
 | Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
-Next (§13 of the design doc): a CLI.
+Next (§13 of the design doc): phase 3, approvals and the shared agent. Left from phase 2: signed release bundles between installations, Git sync, and watching error rates after a deployment.
 
 Later: workload identity federation, so CI systems can swap their own OIDC tokens for short-lived platform tokens with no stored secrets.
 
@@ -53,6 +53,7 @@ Later: workload identity federation, so CI systems can swap their own OIDC token
 ```text
 apps/api            Fastify API: auth, spaces, bindings, apps, records, actions, proposals, MCP, audit, health
 apps/studio         Ambit Studio (React, Vite, Tailwind): the designers and every app's screens, served by the API at /studio
+apps/cli            ambit, the command line: templates, export and import, releases and deployments
 packages/app-model  App definitions: validation, stable IDs, migration plans, roles, and the SQL behind record-level permissions
 packages/authz      Policy decision point (pure TypeScript, no I/O)
 packages/audit      Canonical hashing, Merkle seals, signatures, verification
@@ -205,6 +206,24 @@ A team app lives in a team space and changes only through reviewed change reques
 7. **Roll back** makes the previous release live again at once.
 
 The same through the API: `POST /v1/apps/{teamAppId}/working-copy`, `POST /v1/apps/{copyId}/submit`, `POST /v1/change-requests/{id}/reviews` and `/merge`, `POST /v1/apps/{teamAppId}/releases`, `POST /v1/apps/{teamAppId}/deployments`, `POST /v1/deployments/{id}/approve` and `/execute`, and `POST /v1/apps/{teamAppId}/environments/prod/rollback`. Runtime calls take `?env=staging`, or a preview's environment ID, to use an environment other than Prod. Two settings change how many approvals are needed: `CHANGE_APPROVALS` and `DEPLOY_PROD_APPROVALS` (both 1 by default).
+
+### The command line
+
+`ambit` does from a terminal or CI what the studio does for delivery. Build it, then run it with an API token in `AMBIT_TOKEN`, never in the command:
+
+```bash
+pnpm --filter @platform/cli build
+```
+
+```bash
+export AMBIT_URL=https://ambit.example.com
+```
+
+```bash
+node apps/cli/dist/bin.js deploy expenses --release 4 --env prod --wait
+```
+
+`ambit help` lists the commands: `templates`, `apps`, `export`, `import`, `check` (offline), `release`, `releases`, `deploy`, `deployments` and `rollback`. Add `--json` for machine-readable output. The token's scopes limit what it can do: naming a space needs `space.read`, and deploying needs `deploy.request` and `deploy.execute`. In CI, use a team space's service account.
 
 ### Templates, export and import
 

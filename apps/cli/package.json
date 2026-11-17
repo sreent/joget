@@ -1,0 +1,33 @@
+{
+  "name": "@platform/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ambit, the command line for Ambit: templates, export and import, releases and deployments, for people and CI.",
+  "type": "module",
+  "bin": {
+    "ambit": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/run.ts",
+      "types": "./dist/run.d.ts",
+      "default": "./dist/run.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@platform/app-model": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "~6.0.3",
+    "vitest": "^5.1.0"
+  }
+}
