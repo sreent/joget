@@ -142,6 +142,49 @@ describe('BPMN 2.0 files', () => {
     expect(back.ok && back.processes['leave_approval']).toEqual(voted.processes!['leave_approval']);
   });
 
+  it('carry messages, errors and inclusive gateways out and back', () => {
+    const definition = valid({
+      ...LEAVE_APP,
+      actions: {
+        ...LEAVE_APP.actions,
+        withdraw_leave: { label: 'Withdraw', description: 'Withdraw a leave request.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' } },
+        tell_payroll: { label: 'Tell payroll', description: 'Mark it known to payroll.', entity: 'leave_request', operation: 'update', input: [], set: { reason: 'Payroll knows' } },
+      },
+      processes: {
+        leave_approval: {
+          label: 'Leave approval',
+          entity: 'leave_request',
+          elements: {
+            start: { type: 'startEvent', actions: ['request_leave'] },
+            who: { type: 'inclusiveGateway', name: 'Who hears?' },
+            pay: { type: 'serviceTask', name: 'Tell payroll', action: 'tell_payroll' },
+            failed: { type: 'boundaryEvent', attachedTo: 'pay', error: true },
+            wait: { type: 'intermediateCatchEvent', name: 'Until withdrawn', message: { action: 'withdraw_leave' } },
+            join: { type: 'inclusiveGateway' },
+            end: { type: 'endEvent' },
+          },
+          flows: {
+            f1: { from: 'start', to: 'who' },
+            f2: { from: 'who', to: 'pay', when: { gt: [{ ref: 'record.days' }, 5] } },
+            f3: { from: 'who', to: 'wait', default: true },
+            f4: { from: 'pay', to: 'join' },
+            f5: { from: 'failed', to: 'join' },
+            f6: { from: 'wait', to: 'join' },
+            f7: { from: 'join', to: 'end' },
+          },
+        },
+      },
+    });
+    const xml = processToBpmn(definition, 'leave_approval');
+    expect(xml).toContain('<bpmn:message id="Message_withdraw_leave" name="withdraw_leave" ambit:action="withdraw_leave" />');
+    expect(xml).toContain('<bpmn:messageEventDefinition id="wait_message" messageRef="Message_withdraw_leave" />');
+    expect(xml).toContain('<bpmn:errorEventDefinition id="failed_error" />');
+    expect(xml).toContain('<bpmn:inclusiveGateway id="who" name="Who hears?" default="f3">');
+    const back = bpmnToProcesses(xml, { ...definition, processes: {} });
+    const { diagram: _diagram, ...process } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    expect(process).toEqual(definition.processes!['leave_approval']);
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);
@@ -225,7 +268,6 @@ describe('BPMN 2.0 files', () => {
       issues: [
         { element: 's', message: "Ambit doesn't start a process on a message event yet: (s)" },
         { element: 't1', message: 'Ambit doesn\'t run a script task yet: "Compute" (t1)' },
-        { element: 'g', message: "Ambit doesn't run an inclusive gateway yet: (g)" },
         { element: 'u', message: 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide: "Everyone decides" (u)' },
         { element: 'f', message: 'Ambit can\'t read the condition "amount > 5" of (f): Unknown name amount. Write it as a condition on the record\'s fields' },
       ],

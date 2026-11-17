@@ -1,4 +1,4 @@
-import { layoutProcess, processGraph, routeFlow, type Diagram, type Flow, type Process, type ProcessElement } from '@platform/app-model';
+import { layoutProcess, processGraph, routeFlow, type BoundaryEventElement, type Diagram, type Flow, type Process, type ProcessElement } from '@platform/app-model';
 import type { Definition } from '../types.js';
 import { toName } from './edit.js';
 
@@ -11,20 +11,24 @@ import { toName } from './edit.js';
 export type ProcessElementType = ProcessElement['type'];
 type Shape = Diagram['shapes'][string];
 
+/** What the palette adds: an element of a type, or a catch event that waits for an action instead of a time. */
+export type ElementKind = Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent'> | 'messageEvent';
+
 /** What the palette offers: first what most processes need, as Mendix does; then the rest of what Ambit runs. */
-export const PALETTE: ReadonlyArray<{ readonly type: Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent'>; readonly label: string; readonly hint: string; readonly more?: true }> = [
-  { type: 'userTask', label: 'User task', hint: 'A person decides, in their inbox' },
-  { type: 'exclusiveGateway', label: 'Decision', hint: 'One path, chosen by the record' },
-  { type: 'parallelGateway', label: 'Parallel', hint: 'Paths at once, then wait for them all' },
-  { type: 'intermediateCatchEvent', label: 'Timer', hint: 'Wait for a time' },
-  { type: 'serviceTask', label: 'System task', hint: 'Run an action by itself' },
-  { type: 'endEvent', label: 'End', hint: 'The path ends here' },
-  { type: 'task', label: 'Task', hint: 'Work that is only drawn', more: true },
-  { type: 'manualTask', label: 'Manual task', hint: 'Work away from any system', more: true },
+export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label: string; readonly hint: string; readonly more?: true }> = [
+  { kind: 'userTask', label: 'User task', hint: 'A person decides, in their inbox' },
+  { kind: 'exclusiveGateway', label: 'Decision', hint: 'One path, chosen by the record' },
+  { kind: 'parallelGateway', label: 'Parallel', hint: 'Paths at once, then wait for them all' },
+  { kind: 'intermediateCatchEvent', label: 'Timer', hint: 'Wait for a time' },
+  { kind: 'serviceTask', label: 'System task', hint: 'Run an action by itself' },
+  { kind: 'endEvent', label: 'End', hint: 'The path ends here' },
+  { kind: 'inclusiveGateway', label: 'Inclusive', hint: 'Each path whose condition holds, then wait for them', more: true },
+  { kind: 'messageEvent', label: 'Message', hint: 'Wait until an action is saved on the record', more: true },
+  { kind: 'task', label: 'Task', hint: 'Work that is only drawn', more: true },
+  { kind: 'manualTask', label: 'Manual task', hint: 'Work away from any system', more: true },
 ];
 
-const PREFIX: Readonly<Record<ProcessElementType, string>> = {
-  startEvent: 'start',
+const PREFIX: Readonly<Record<ElementKind, string>> = {
   endEvent: 'end',
   userTask: 'task',
   serviceTask: 'system',
@@ -32,14 +36,26 @@ const PREFIX: Readonly<Record<ProcessElementType, string>> = {
   manualTask: 'manual',
   exclusiveGateway: 'decision',
   parallelGateway: 'parallel',
+  inclusiveGateway: 'inclusive',
   intermediateCatchEvent: 'wait',
-  boundaryEvent: 'deadline',
+  messageEvent: 'wait',
 };
 
 const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 } } as const;
-export const sizeOf = (type: ProcessElementType) => (type.endsWith('Event') ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task);
+export const sizeOf = (type: ProcessElementType | ElementKind) => (type.endsWith('Event') ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task);
 
 const clone = <T>(value: T): T => structuredClone(value);
+
+/** Two shapes overlap, or come closer than a margin that keeps room for the label under an event. */
+const overlaps = (a: Shape, b: Shape, margin = 20) => a.x < b.x + b.width + margin && b.x < a.x + a.width + margin && a.y < b.y + b.height + margin && b.y < a.y + a.height + margin;
+
+/** Where a new shape can stand: where it is meant to, or lower down until it overlaps no other shape. */
+function clear(diagram: Diagram, id: string, shape: Shape): Shape {
+  const others = Object.entries(diagram.shapes).flatMap(([other, each]) => (other === id ? [] : [each]));
+  let at = shape;
+  for (let tries = 0; tries < 30 && others.some((other) => overlaps(at, other)); tries++) at = { ...at, y: at.y + 60 };
+  return at;
+}
 
 /** An ID that no element or flow of the process has yet: `task_2`, `flow_7`. */
 export function freeId(process: Process, prefix: string): string {
@@ -118,8 +134,8 @@ export function updateProcess(definition: Definition, name: string, patch: Parti
   });
 }
 
-/** A new element of a type, with values that pass the checks where the app allows it. */
-export function newElement(definition: Definition, process: Process, type: Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent'>): ProcessElement {
+/** A new element of a kind, with values that pass the checks where the app allows it. */
+export function newElement(definition: Definition, process: Process, type: ElementKind): ProcessElement {
   switch (type) {
     case 'userTask':
       return { type, name: 'New task', role: Object.keys(definition.roles)[0] ?? 'role', outcomes: [{ name: 'done', label: 'Done' }] };
@@ -130,9 +146,14 @@ export function newElement(definition: Definition, process: Process, type: Exclu
     case 'exclusiveGateway':
       return { type, name: 'Decision' };
     case 'parallelGateway':
+    case 'inclusiveGateway':
       return { type };
     case 'intermediateCatchEvent':
       return { type, name: 'Wait', timer: { duration: 'P1D' } };
+    case 'messageEvent': {
+      const action = updateActions(definition, process.entity)[0] ?? 'action';
+      return { type: 'intermediateCatchEvent', name: definition.actions[action]?.label ?? action, message: { action } };
+    }
     case 'endEvent':
       return { type, name: 'End', terminate: false };
     case 'task':
@@ -149,7 +170,7 @@ export function newElement(definition: Definition, process: Process, type: Exclu
 export function addElement(
   definition: Definition,
   name: string,
-  type: Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent'>,
+  type: ElementKind,
   options: { readonly after?: string; readonly on?: string; readonly at?: { x: number; y: number } } = {},
 ): { definition: Definition; id: string } {
   let id = '';
@@ -163,8 +184,18 @@ export function addElement(
       // On a flow: between the shapes it joins, and the path runs through the new element.
       const from = diagram.shapes[on.from];
       const to = diagram.shapes[on.to];
-      const center = from && to ? { x: (from.x + from.width / 2 + to.x + to.width / 2) / 2, y: (from.y + from.height / 2 + to.y + to.height / 2) / 2 } : { x: 100, y: 100 };
-      diagram.shapes[id] = { x: center.x - size.width / 2, y: center.y - size.height / 2, ...size };
+      if (from && to && to.x > from.x) {
+        // Make room: what stands from the target on moves right, with the events on its boundary.
+        const room = size.width + 100 - (to.x - (from.x + from.width));
+        if (room > 0) {
+          const moved = new Set(Object.entries(diagram.shapes).flatMap(([other, shape]) => (other !== id && process.elements[other]?.type !== 'boundaryEvent' && shape.x >= to.x - 1 ? [other] : [])));
+          for (const [other, element] of Object.entries(process.elements)) if (element.type === 'boundaryEvent' && moved.has(element.attachedTo)) moved.add(other);
+          for (const other of moved) if (diagram.shapes[other]) diagram.shapes[other].x += room;
+        }
+      }
+      // Halfway along the gap between the shapes, and halfway between their middles.
+      const center = from && to ? { x: (from.x + from.width + to.x) / 2, y: (from.y + from.height / 2 + to.y + to.height / 2) / 2 } : { x: 100, y: 100 };
+      diagram.shapes[id] = clear(diagram, id, { x: center.x - size.width / 2, y: center.y - size.height / 2, ...size });
       if (type !== 'endEvent') process.flows[freeId(process, 'flow')] = { from: id, to: on.to };
       on.to = id;
       reroute(process, new Set(Object.keys(process.elements)));
@@ -177,7 +208,6 @@ export function addElement(
       (after
         ? { x: after.x + after.width + 70, y: after.y + after.height / 2 - size.height / 2 }
         : { x: (shapes.length ? Math.max(...shapes.map((shape) => shape.x + shape.width)) : 0) + 70, y: 100 });
-    diagram.shapes[id] = { ...at, ...size };
     const from = options.after ? process.elements[options.after] : undefined;
     if (options.after && from && from.type !== 'endEvent') {
       const out = processGraph(process).outgoing.get(options.after) ?? [];
@@ -195,12 +225,13 @@ export function addElement(
         process.flows[freeId(process, 'flow')] = withOutcome(process, options.after, { from: options.after, to: id });
       }
     }
+    diagram.shapes[id] = clear(diagram, id, { ...at, ...size });
     reroute(process, new Set(Object.keys(process.elements)));
   });
   return { definition: next, id };
 }
 
-/** A flow out of a user task follows an outcome: the first one without a flow yet. Out of a decision, a second flow is the default. */
+/** A flow out of a user task follows an outcome: the first one without a flow yet. Out of a decision or an inclusive gateway, a second flow is the default. */
 function withOutcome(process: Process, from: string, flow: Flow): Flow {
   const source = process.elements[from];
   const out = Object.values(process.flows).filter((existing) => existing.from === from);
@@ -209,7 +240,7 @@ function withOutcome(process: Process, from: string, flow: Flow): Flow {
     const free = source.outcomes.find((outcome) => !out.some((existing) => existing.outcome === outcome.name));
     return free ? { ...flow, outcome: free.name } : flow;
   }
-  if (source?.type === 'exclusiveGateway' && out.length && !out.some((existing) => existing.default)) return { ...flow, default: true };
+  if ((source?.type === 'exclusiveGateway' || source?.type === 'inclusiveGateway') && out.length && !out.some((existing) => existing.default)) return { ...flow, default: true };
   return flow;
 }
 
@@ -231,7 +262,7 @@ export function connect(definition: Definition, name: string, from: string, to: 
 }
 
 /**
- * Remove an element, with its flows and the timers on its boundary. Where one path ran through
+ * Remove an element, with its flows and the events on its boundary. Where one path ran through
  * it, the path joins up again around it.
  */
 export function removeElement(definition: Definition, name: string, id: string): Definition {
@@ -287,13 +318,13 @@ export function updateFlow(definition: Definition, name: string, id: string, cha
     const flow = process.flows[id];
     if (!flow) return;
     const changed = change(clone(flow));
-    // One default at most out of a decision.
+    // One default at most out of a gateway.
     if (changed.default) for (const [other, sibling] of Object.entries(process.flows)) if (other !== id && sibling.from === changed.from) delete sibling.default;
     process.flows[id] = changed;
   });
 }
 
-/** Move an element on the canvas. The timers on its boundary move with it, and its flows follow. */
+/** Move an element on the canvas. The events on its boundary move with it, and its flows follow. */
 export function moveElement(definition: Definition, name: string, id: string, at: { x: number; y: number }): Definition {
   return withProcess(definition, name, (process) => {
     const shapes = process.diagram!.shapes;
@@ -318,24 +349,57 @@ export function arrange(definition: Definition, name: string): Definition {
   });
 }
 
+/** What a task's boundary can wait for: a deadline or an action saved on the record on a user task, the failure of its action on a system task. */
+export type BoundaryKind = 'timer' | 'message' | 'error';
+
+const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonly end: string; readonly endPrefix: string }>> = {
+  timer: { prefix: 'deadline', end: 'Too late', endPrefix: 'too_late' },
+  message: { prefix: 'message', end: 'Stopped', endPrefix: 'stopped' },
+  error: { prefix: 'error', end: 'Failed', endPrefix: 'failed' },
+};
+
 /**
- * Give a user task a deadline: a timer on its boundary that takes the task away after a time,
- * and a path for when it does, to an end that says so. The builder can lead it elsewhere.
+ * The update actions that can interrupt a user task as a message: not one of its outcomes, which
+ * decide it, and not one that another event on the task waits for already.
  */
-export function addDeadline(definition: Definition, name: string, task: string): { definition: Definition; id: string } {
+export function messageChoices(definition: Definition, process: Process, task: string): string[] {
+  const host = process.elements[task];
+  if (host?.type !== 'userTask') return [];
+  const taken = new Set([
+    ...host.outcomes.flatMap((outcome) => (outcome.action ? [outcome.action] : [])),
+    ...Object.values(process.elements).flatMap((element) => (element.type === 'boundaryEvent' && element.attachedTo === task && element.message ? [element.message.action] : [])),
+  ]);
+  return updateActions(definition, process.entity).filter((action) => !taken.has(action));
+}
+
+/**
+ * Put an event on a task's boundary, and a path for when it happens, to an end that says so. The
+ * builder can lead the path elsewhere. A deadline or a message waits on a user task; an error
+ * catches the failure of a system task's action.
+ */
+export function addBoundary(definition: Definition, name: string, task: string, kind: BoundaryKind): { definition: Definition; id: string } {
   let id = '';
   const next = withProcess(definition, name, (process) => {
-    const host = process.diagram!.shapes[task];
-    if (process.elements[task]?.type !== 'userTask') return;
-    id = freeId(process, 'deadline');
-    const end = freeId(process, 'too_late');
-    process.elements[id] = { type: 'boundaryEvent', name: 'Deadline', attachedTo: task, interrupting: true, timer: { duration: 'P3D' } };
-    process.elements[end] = { type: 'endEvent', name: 'Too late', terminate: false };
+    const host = process.elements[task];
+    if (host?.type !== (kind === 'error' ? 'serviceTask' : 'userTask')) return;
+    let event: BoundaryEventElement;
+    if (kind === 'timer') event = { type: 'boundaryEvent', name: 'Deadline', attachedTo: task, interrupting: true, timer: { duration: 'P3D' } };
+    else if (kind === 'error') event = { type: 'boundaryEvent', name: 'Error', attachedTo: task, interrupting: true, error: true };
+    else {
+      const action = messageChoices(definition, process, task)[0];
+      if (!action) return;
+      event = { type: 'boundaryEvent', name: definition.actions[action]?.label ?? action, attachedTo: task, interrupting: true, message: { action } };
+    }
+    id = freeId(process, BOUNDARY[kind].prefix);
+    const end = freeId(process, BOUNDARY[kind].endPrefix);
+    process.elements[id] = event;
+    process.elements[end] = { type: 'endEvent', name: BOUNDARY[kind].end, terminate: false };
     process.flows[freeId(process, 'flow')] = { from: id, to: end };
-    if (host) {
+    const shape = process.diagram!.shapes[task];
+    if (shape) {
       const taken = Object.values(process.elements).filter((element) => element.type === 'boundaryEvent' && element.attachedTo === task).length - 1;
-      process.diagram!.shapes[id] = { x: host.x + host.width - 30 - taken * 40, y: host.y + host.height - 18, width: 36, height: 36 };
-      process.diagram!.shapes[end] = { x: host.x + host.width + 60, y: host.y + host.height + 60, width: 36, height: 36 };
+      process.diagram!.shapes[id] = { x: shape.x + shape.width - 30 - taken * 40, y: shape.y + shape.height - 18, width: 36, height: 36 };
+      process.diagram!.shapes[end] = clear(process.diagram!, end, { x: shape.x + shape.width + 60, y: shape.y + shape.height + 60, width: 36, height: 36 });
     }
     reroute(process, new Set([id, end]));
   });
@@ -377,7 +441,10 @@ export function durationWords(duration: string): string {
   return `${parts.amount} ${unit}`;
 }
 
-/** Let go of an action, a role or a field that goes: processes stop naming it. */
+/**
+ * Let go of an action, a role or a field that goes: processes stop naming it. An event that waits
+ * for an action keeps its name, and the checks show where to choose another.
+ */
 export function forgetInProcesses(definition: Definition, gone: { readonly action?: string; readonly role?: string; readonly entity?: string; readonly field?: string }): Definition {
   if (!definition.processes) return definition;
   const next = clone(definition);
@@ -400,7 +467,7 @@ export function forgetInProcesses(definition: Definition, gone: { readonly actio
         }
       }
       if (element.type === 'serviceTask' && gone.action && element.action === gone.action) delete element.action;
-      if ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && gone.field && gone.entity === process.entity && 'date' in element.timer && element.timer.date === gone.field) {
+      if ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && gone.field && gone.entity === process.entity && element.timer && 'date' in element.timer && element.timer.date === gone.field) {
         element.timer = { duration: 'P1D' };
       }
     }

@@ -1,6 +1,6 @@
 import { evaluateCondition, type ConditionEnv } from '@platform/authz';
 import type { StoredDefinition } from './fields.js';
-import { DURATION_PATTERN, type Process, type ProcessElement, type ProcessElementType, type Timer, type VoteRule } from './schema.js';
+import { DURATION_PATTERN, type BoundaryEventElement, type CatchEventElement, type Process, type ProcessElement, type ProcessElementType, type Timer, type VoteRule } from './schema.js';
 import { conditionRecord, type RecordValues } from './values.js';
 
 /*
@@ -46,8 +46,9 @@ const TYPE_WORDS: Readonly<Record<ProcessElementType, string>> = {
   manualTask: 'Manual task',
   exclusiveGateway: 'Exclusive gateway',
   parallelGateway: 'Parallel gateway',
-  intermediateCatchEvent: 'Timer',
-  boundaryEvent: 'Boundary timer',
+  inclusiveGateway: 'Inclusive gateway',
+  intermediateCatchEvent: 'Event',
+  boundaryEvent: 'Boundary event',
 };
 
 /** What people call an element: its name, or what it is and its ID. */
@@ -123,6 +124,17 @@ export function flowsOut(process: Process, graph: ProcessGraph, id: string, stat
     const fallback = out.find((flowId) => process.flows[flowId]!.default);
     return fallback ? { ok: true, flows: [fallback] } : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
   }
+  if (element.type === 'inclusiveGateway') {
+    // Every flow whose condition holds, or else the default.
+    const env = processConditionEnv(state);
+    const taken = out.filter((flowId) => {
+      const flow = process.flows[flowId]!;
+      return !flow.default && (flow.when === undefined ? out.length === 1 : evaluateCondition(flow.when, env));
+    });
+    if (taken.length) return { ok: true, flows: taken };
+    const fallback = out.find((flowId) => process.flows[flowId]!.default);
+    return fallback ? { ok: true, flows: [fallback] } : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
+  }
   if (element.type === 'userTask') {
     const named = out.filter((flowId) => process.flows[flowId]!.outcome !== undefined);
     if (!named.length) return { ok: true, flows: out };
@@ -136,6 +148,44 @@ export function flowsOut(process: Process, graph: ProcessGraph, id: string, stat
 export interface ProcessStart {
   readonly process: string;
   readonly element: string;
+}
+
+/** Every element a token at an element could still reach, through flows and the events on a task's boundary. */
+export function reachable(process: Process, graph: ProcessGraph, from: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [from];
+  while (queue.length) {
+    const id = queue.pop()!;
+    for (const flowId of graph.outgoing.get(id) ?? []) {
+      const to = process.flows[flowId]!.to;
+      if (!seen.has(to)) {
+        seen.add(to);
+        queue.push(to);
+      }
+    }
+    for (const boundary of graph.boundaries.get(id) ?? []) {
+      if (!seen.has(boundary)) {
+        seen.add(boundary);
+        queue.push(boundary);
+      }
+    }
+  }
+  return seen;
+}
+
+/** What an event waits for: a time, an action saved on the record (a message), or the failure of its task's action. */
+export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' {
+  if (event.message) return 'message';
+  return event.type === 'boundaryEvent' && event.error ? 'error' : 'timer';
+}
+
+/** The actions whose commit a process waits for at a message: at a catch event, or on a task's boundary. */
+export function messageActions(process: Process): string[] {
+  return [
+    ...new Set(
+      Object.values(process.elements).flatMap((element) => ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && element.message ? [element.message.action] : [])),
+    ),
+  ];
 }
 
 /** The start events of the app's processes that an action starts. */

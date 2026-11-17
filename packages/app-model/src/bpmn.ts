@@ -2,8 +2,8 @@ import { isRef } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { processGraph } from './processes.js';
-import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Process, type ProcessElement, type Several } from './schema.js';
+import { messageActions, processGraph } from './processes.js';
+import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Process, type ProcessElement, type Several, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
 
@@ -176,9 +176,13 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
   manualTask: 'bpmn:manualTask',
   exclusiveGateway: 'bpmn:exclusiveGateway',
   parallelGateway: 'bpmn:parallelGateway',
+  inclusiveGateway: 'bpmn:inclusiveGateway',
   intermediateCatchEvent: 'bpmn:intermediateCatchEvent',
   boundaryEvent: 'bpmn:boundaryEvent',
 };
+
+/** The ID of the BPMN message that stands for an action committing on the record. */
+const messageId = (action: string) => `Message_${action}`;
 
 const formal = (name: string, language: string, text: string): XmlOut => ({ name, attributes: { 'xsi:type': 'bpmn:tFormalExpression', language }, text });
 
@@ -189,7 +193,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
   const graph = processGraph(process);
   const diagram = process.diagram && Object.keys(process.diagram.shapes).length ? process.diagram : layoutProcess(process);
   const defaults = new Map(Object.entries(process.flows).flatMap(([id, flow]) => (flow.default ? [[flow.from, id] as const] : [])));
-  const timer = (id: string, definitionOf: Extract<ProcessElement, { timer: unknown }>['timer']): XmlOut => ({
+  const timer = (id: string, definitionOf: Timer): XmlOut => ({
     name: 'bpmn:timerEventDefinition',
     attributes: { id: `${id}_timer` },
     children: ['duration' in definitionOf ? formal('bpmn:timeDuration', LANGUAGES.duration, definitionOf.duration) : formal('bpmn:timeDate', LANGUAGES.field, definitionOf.date)],
@@ -232,6 +236,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         }
         break;
       case 'exclusiveGateway':
+      case 'inclusiveGateway':
         attributes['default'] = defaults.get(id);
         break;
       case 'boundaryEvent':
@@ -255,7 +260,11 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
       });
     }
     if (element.type === 'endEvent' && element.terminate) children.push({ name: 'bpmn:terminateEventDefinition', attributes: { id: `${id}_terminate` } });
-    if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') children.push(timer(id, element.timer));
+    if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
+      if (element.timer) children.push(timer(id, element.timer));
+      if (element.message) children.push({ name: 'bpmn:messageEventDefinition', attributes: { id: `${id}_message`, messageRef: messageId(element.message.action) } });
+      if (element.type === 'boundaryEvent' && element.error) children.push({ name: 'bpmn:errorEventDefinition', attributes: { id: `${id}_error` } });
+    }
     return { name: TAGS[element.type], attributes, children };
   });
   const flows: XmlOut[] = Object.entries(process.flows).map(([id, flow]) => {
@@ -292,6 +301,8 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
       exporterVersion: '1',
     },
     children: [
+      // A message is an action of the app committing on the record: each one the process waits for.
+      ...messageActions(process).map((action) => ({ name: 'bpmn:message', attributes: { id: messageId(action), name: action, 'ambit:action': action } })),
       {
         name: 'bpmn:process',
         attributes: { id: name, name: process.label, isExecutable: 'true', 'ambit:entity': process.entity },
@@ -329,7 +340,6 @@ const KINDS: Readonly<Record<string, string>> = {
   adHocSubProcess: 'an ad hoc sub-process',
   transaction: 'a transaction',
   eventBasedGateway: 'an event-based gateway',
-  inclusiveGateway: 'an inclusive gateway',
   complexGateway: 'a complex gateway',
   intermediateThrowEvent: 'a throw event',
 };
@@ -417,6 +427,9 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
     for (const edge of childElements(plane, BPMN_DI, 'BPMNEdge')) edgesOf.set(attribute(edge, 'bpmnElement') ?? '', edge);
   }
 
+  const messages = new Map(
+    bpmn(root, 'message').map((message) => [attribute(message, 'id') ?? '', { name: attribute(message, 'name'), action: attribute(message, 'action', AMBIT_BPMN) }] as const),
+  );
   const found = bpmn(root, 'process').filter((process) => childElements(process).some((child) => child.ns === BPMN_MODEL && !DOCUMENTING.has(child.local)));
   if (!found.length) return { ok: false, issues: [{ element: null, message: 'The file has no process with anything in it' }] };
 
@@ -486,7 +499,7 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
         refuse(loop && node.local === 'userTask' ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide' : "Ambit doesn't run a task that repeats yet");
         continue;
       }
-      const timerOf = (): Extract<ProcessElement, { timer: unknown }>['timer'] | undefined => {
+      const timerOf = (): Timer | undefined => {
         const timer = bpmn(node, 'timerEventDefinition')[0]!;
         const duration = bpmn(timer, 'timeDuration')[0];
         const date = bpmn(timer, 'timeDate')[0];
@@ -497,6 +510,17 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
         }
         refuse('A timer runs after an ISO 8601 duration, such as P3D, or on a date field of the record');
         return undefined;
+      };
+      /** The action a message event waits for: the message's own setting, or a message named after one of the app's actions. */
+      const messageOf = (): string | undefined => {
+        const ref = attribute(bpmn(node, 'messageEventDefinition')[0]!, 'messageRef');
+        const message = ref ? messages.get(ref) : undefined;
+        const action = message?.action ?? (message?.name && definition.actions[message.name] ? message.name : undefined);
+        if (!action || !definition.actions[action]) {
+          refuse(`A message is one of the app's actions committing on the record: name the action, with ambit:action on the message${ref ? ` ${ref}` : ''}`);
+          return undefined;
+        }
+        return action;
       };
       switch (node.local) {
         case 'startEvent':
@@ -571,26 +595,42 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           break;
         case 'exclusiveGateway':
         case 'parallelGateway':
-          elements[id] = { type: node.local === 'exclusiveGateway' ? 'exclusiveGateway' : 'parallelGateway', ...(name ? { name } : {}) };
-          if (node.local === 'exclusiveGateway' && attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
+        case 'inclusiveGateway':
+          elements[id] = { type: node.local === 'exclusiveGateway' ? 'exclusiveGateway' : node.local === 'inclusiveGateway' ? 'inclusiveGateway' : 'parallelGateway', ...(name ? { name } : {}) };
+          if (node.local !== 'parallelGateway' && attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
           break;
         case 'intermediateCatchEvent': {
-          if (kinds.length !== 1 || kinds[0] !== 'timer') {
+          if (kinds.length !== 1 || (kinds[0] !== 'timer' && kinds[0] !== 'message')) {
             refuse(`Ambit doesn't wait for a ${kinds.join(' or ') || 'plain'} event yet`);
             break;
           }
-          const timer = timerOf();
-          if (timer) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), timer };
+          if (kinds[0] === 'timer') {
+            const timer = timerOf();
+            if (timer) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), timer };
+          } else {
+            const action = messageOf();
+            if (action) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), message: { action } };
+          }
           break;
         }
         case 'boundaryEvent': {
-          if (kinds.length !== 1 || kinds[0] !== 'timer') {
+          if (kinds.length !== 1 || !['timer', 'message', 'error'].includes(kinds[0]!)) {
             refuse(`Ambit doesn't catch a ${kinds.join(' or ') || 'plain'} event on a task yet`);
             break;
           }
-          const timer = timerOf();
           const attachedTo = idOf(attribute(node, 'attachedToRef'), node);
-          if (timer && attachedTo) elements[id] = { type: 'boundaryEvent', ...(name ? { name } : {}), attachedTo, interrupting: attribute(node, 'cancelActivity') !== 'false', timer };
+          const interrupting = attribute(node, 'cancelActivity') !== 'false';
+          const base = { type: 'boundaryEvent' as const, ...(name ? { name } : {}), attachedTo: attachedTo ?? '', interrupting };
+          if (!attachedTo) break;
+          if (kinds[0] === 'timer') {
+            const timer = timerOf();
+            if (timer) elements[id] = { ...base, timer };
+          } else if (kinds[0] === 'message') {
+            const action = messageOf();
+            if (action) elements[id] = { ...base, message: { action } };
+          } else {
+            elements[id] = { ...base, interrupting: true, error: true };
+          }
           break;
         }
         default:

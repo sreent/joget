@@ -1,5 +1,6 @@
 import {
   conditionText,
+  eventKind,
   validateDefinition,
   type BoundaryEventElement,
   type Flow,
@@ -15,7 +16,7 @@ import { ConditionEditor } from '../components/condition.js';
 import { Badge, Button, Card, Checkbox, cx, Dialog, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type RefChoice } from '../model/conditions.js';
 import {
-  addDeadline,
+  addBoundary,
   addElement,
   arrange,
   connect,
@@ -23,6 +24,7 @@ import {
   durationParts,
   durationWords,
   issuesByPart,
+  messageChoices,
   moveElement,
   newProcess,
   PALETTE,
@@ -34,6 +36,7 @@ import {
   updateElement,
   updateFlow,
   updateProcess,
+  type ElementKind,
 } from '../model/processes.js';
 import type { Definition } from '../types.js';
 
@@ -41,7 +44,7 @@ type Selection = { readonly kind: 'element' | 'flow'; readonly id: string } | nu
 
 interface ShapeData extends Record<string, unknown> {
   readonly element: ProcessElement;
-  readonly boundaries: ReadonlyArray<{ readonly id: string; readonly element: BoundaryEventElement; readonly left: number }>;
+  readonly boundaries: ReadonlyArray<{ readonly id: string; readonly element: BoundaryEventElement; readonly left: number; readonly title: string }>;
   readonly problems: number;
 }
 type ShapeNode = Node<ShapeData, 'bpmn'>;
@@ -52,11 +55,23 @@ const ICON_PATH: Partial<Record<ProcessElement['type'], string>> = {
   manualTask: 'M4 9V4.5a1 1 0 0 1 2 0V8m0-4a1 1 0 0 1 2 0v4m0-3a1 1 0 0 1 2 0v3m0-2a1 1 0 0 1 2 0v4a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V9',
 };
 
-function Clock({ size = 16 }: { size?: number }) {
+/** BPMN's markers for what an event waits for: a clock for a time, an envelope for a message, a lightning bolt for an error. */
+function EventIcon({ kind, size = 16 }: { kind: 'timer' | 'message' | 'error'; size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden className="text-text">
-      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.3" />
-      <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      {kind === 'message' ? (
+        <>
+          <rect x="2" y="4" width="12" height="8.5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <path d="m2.5 4.5 5.5 4.5 5.5-4.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+        </>
+      ) : kind === 'error' ? (
+        <path d="M3 13.5 6 6l3.5 3.5L13 2.5 10 10 6.5 6.5Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      ) : (
+        <>
+          <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </>
+      )}
     </svg>
   );
 }
@@ -86,7 +101,7 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         <div className={cx('grid size-9 place-items-center rounded-full bg-surface', end ? 'border-[3px] border-text' : 'border-[1.5px] border-text', ring)}>
           {element.type === 'intermediateCatchEvent' ? (
             <div className="grid size-7 place-items-center rounded-full border border-text">
-              <Clock />
+              <EventIcon kind={eventKind(element)} />
             </div>
           ) : null}
           {end && element.terminate ? <div className="size-4 rounded-full bg-text" /> : null}
@@ -101,7 +116,11 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
     return (
       <div className="relative grid size-[50px] place-items-center">
         <div className={cx('absolute size-[35px] rotate-45 border-[1.5px] border-text bg-surface', ring)} />
-        <span className="relative text-lg font-semibold text-text">{element.type === 'parallelGateway' ? '+' : '×'}</span>
+        {element.type === 'inclusiveGateway' ? (
+          <span className="relative size-4 rounded-full border-[2.5px] border-text" aria-hidden />
+        ) : (
+          <span className="relative text-lg font-semibold text-text">{element.type === 'parallelGateway' ? '+' : '×'}</span>
+        )}
         {label ? <span className="absolute top-[54px] left-1/2 w-28 -translate-x-1/2 text-center text-[11px] leading-tight text-muted">{label}</span> : null}
         {handles}
         {problem}
@@ -125,9 +144,9 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         </svg>
       ) : null}
       {boundaries.map((boundary) => (
-        <div key={boundary.id} className="absolute -bottom-[18px]" style={{ left: boundary.left }} title={`${boundary.element.name ?? 'Deadline'}: ${'duration' in boundary.element.timer ? durationWords(boundary.element.timer.duration) : `on ${boundary.element.timer.date}`}`}>
+        <div key={boundary.id} className="absolute -bottom-[18px]" style={{ left: boundary.left }} title={boundary.title}>
           <div className={cx('grid size-9 place-items-center rounded-full bg-surface', boundary.element.interrupting ? 'border-[1.5px] border-text' : 'border-[1.5px] border-dashed border-text')}>
-            <Clock size={14} />
+            <EventIcon kind={eventKind(boundary.element)} size={14} />
           </div>
           <Handle id={boundary.id} type="source" position={Position.Bottom} className="!size-2 !border-line-strong !bg-surface" />
         </div>
@@ -153,7 +172,16 @@ function flowLabel(process: Process, flow: Flow): string | undefined {
   return undefined;
 }
 
-function toNodes(process: Process, selection: Selection, problems: ReadonlyMap<string, string[]>): ShapeNode[] {
+/** What an event on a task's boundary waits for, in words: the tooltip of its marker. */
+function boundaryTitle(definition: Definition, event: BoundaryEventElement): string {
+  const stays = event.interrupting ? '' : ' (the task stays open)';
+  if (event.message) return `${event.name ?? 'Message'}: when ${definition.actions[event.message.action]?.label ?? event.message.action} is saved${stays}`;
+  if (event.error) return `${event.name ?? 'Error'}: when the action fails`;
+  if (event.timer) return `${event.name ?? 'Deadline'}: ${'duration' in event.timer ? `after ${durationWords(event.timer.duration)}` : `on ${event.timer.date}`}${stays}`;
+  return event.name ?? 'Event';
+}
+
+function toNodes(definition: Definition, process: Process, selection: Selection, problems: ReadonlyMap<string, string[]>): ShapeNode[] {
   const shapes = process.diagram?.shapes ?? {};
   return Object.entries(process.elements)
     .filter(([, element]) => element.type !== 'boundaryEvent')
@@ -161,7 +189,15 @@ function toNodes(process: Process, selection: Selection, problems: ReadonlyMap<s
       const shape = shapes[id] ?? { x: 80 + index * 160, y: 100, width: 100, height: 80 };
       const boundaries = Object.entries(process.elements).flatMap(([other, candidate]) =>
         candidate.type === 'boundaryEvent' && candidate.attachedTo === id
-          ? [{ id: other, element: candidate, left: Math.max(0, Math.min(82, (shapes[other]?.x ?? shape.x + shape.width - 30) - shape.x)), problems: problems.get(other)?.length ?? 0 }]
+          ? [
+              {
+                id: other,
+                element: candidate,
+                left: Math.max(0, Math.min(82, (shapes[other]?.x ?? shape.x + shape.width - 30) - shape.x)),
+                title: boundaryTitle(definition, candidate),
+                problems: problems.get(other)?.length ?? 0,
+              },
+            ]
           : [],
       );
       const count = (problems.get(id)?.length ?? 0) + boundaries.reduce((sum, boundary) => sum + boundary.problems, 0);
@@ -258,13 +294,18 @@ export function ProcessDesigner({
     );
   }
 
-  const add = (type: (typeof PALETTE)[number]['type']) => {
+  const add = (kind: ElementKind) => {
     const options = selection?.kind === 'flow' ? { on: selection.id } : selection?.kind === 'element' ? { after: selection.id } : {};
-    const added = addElement(definition, name, type, options);
+    const added = addElement(definition, name, kind, options);
     onChange(added.definition);
     setSelection({ kind: 'element', id: added.id });
   };
-  const noRoles = !Object.keys(definition.roles).length;
+  // What a palette entry needs first: a role does each task, and a message is an update action saved on the record.
+  const missing = (kind: ElementKind): string | null => {
+    if (kind === 'userTask' && !Object.keys(definition.roles).length) return 'Add a role first: a role does each task';
+    if (kind === 'messageEvent' && !updateActions(definition, process.entity).length) return 'Add an action that changes the record first: the process waits until it is saved';
+    return null;
+  };
 
   return (
     <div className="grid gap-3">
@@ -297,9 +338,9 @@ export function ProcessDesigner({
           <Card className="grid content-start gap-1.5 p-2">
             <p className="m-0 text-xs text-muted">{selection?.kind === 'flow' ? 'Add on the flow' : selection ? 'Add after it' : 'Add'}</p>
             {PALETTE.map((item, index) => (
-              <div key={item.type} className="contents">
+              <div key={item.kind} className="contents">
                 {item.more && !PALETTE[index - 1]?.more ? <p className="m-0 mt-2 text-xs text-muted">More BPMN</p> : null}
-                <Button size="sm" className="justify-start" title={item.type === 'userTask' && noRoles ? 'Add a role first: a role does each task' : item.hint} onClick={() => add(item.type)} disabled={item.type === 'userTask' && noRoles}>
+                <Button size="sm" className="justify-start" title={missing(item.kind) ?? item.hint} onClick={() => add(item.kind)} disabled={missing(item.kind) !== null}>
                   {item.label}
                 </Button>
               </div>
@@ -353,8 +394,8 @@ function Canvas(props: {
   onChange: (definition: Definition) => void;
 }) {
   const { definition, name, process, selection, problems, readOnly, onSelect, onChange } = props;
-  const [nodes, setNodes] = useState<ShapeNode[]>(() => toNodes(process, selection, problems));
-  useEffect(() => setNodes(toNodes(process, selection, problems)), [process, selection, problems]);
+  const [nodes, setNodes] = useState<ShapeNode[]>(() => toNodes(definition, process, selection, problems));
+  useEffect(() => setNodes(toNodes(definition, process, selection, problems)), [definition, process, selection, problems]);
   const edges = useMemo(() => toEdges(process, selection, problems), [process, selection, problems]);
   const starts = Object.values(process.elements).filter((element) => element.type === 'startEvent').length;
 
@@ -612,9 +653,20 @@ const TYPE_LABELS: Readonly<Record<ProcessElement['type'], string>> = {
   manualTask: 'Manual task',
   exclusiveGateway: 'Decision',
   parallelGateway: 'Parallel',
+  inclusiveGateway: 'Inclusive',
   intermediateCatchEvent: 'Timer',
   boundaryEvent: 'Deadline',
 };
+
+/** What the panel calls an element: an event by what it waits for. */
+function typeLabel(element: ProcessElement): string {
+  if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
+    const kind = eventKind(element);
+    if (kind === 'message') return 'Message';
+    if (kind === 'error') return 'Error';
+  }
+  return TYPE_LABELS[element.type];
+}
 
 function ElementPanel(props: {
   definition: Definition;
@@ -638,12 +690,18 @@ function ElementPanel(props: {
   ];
   const actions = updateActions(definition, process.entity);
   const dates = (entity?.fields ?? []).filter((field) => field.type === 'date' || field.type === 'datetime');
-  const deadlines = Object.entries(process.elements).flatMap(([other, candidate]) => (candidate.type === 'boundaryEvent' && candidate.attachedTo === id ? [[other, candidate] as const] : []));
+  const events = Object.entries(process.elements).flatMap(([other, candidate]) => (candidate.type === 'boundaryEvent' && candidate.attachedTo === id ? [{ id: other, event: candidate }] : []));
+  const deadlines = events.flatMap(({ id: other, event }) => (event.timer ? [{ id: other, event, timer: event.timer }] : []));
+  const messages = events.flatMap(({ id: other, event }) => (event.message ? [{ id: other, event, action: event.message.action }] : []));
+  const error = events.find(({ event }) => event.error);
+  const free = messageChoices(definition, process, id);
+  // The action a catch event waits for, kept apart: the narrowing of the element doesn't reach a field's render function.
+  const awaited = element.type === 'intermediateCatchEvent' ? element.message?.action : undefined;
 
   return (
     <fieldset disabled={readOnly} className="m-0 grid min-w-0 gap-3 border-0 p-0">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="m-0 text-base font-semibold">{TYPE_LABELS[element.type]}</h3>
+        <h3 className="m-0 text-base font-semibold">{typeLabel(element)}</h3>
         <code className="text-xs text-muted">{id}</code>
       </div>
       <Problems messages={problems.get(id)} />
@@ -826,27 +884,78 @@ function ElementPanel(props: {
           </fieldset>
           <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
             <legend className="px-1 text-sm text-muted">Deadlines</legend>
-            {deadlines.map(([deadline, timer]) => (
+            {deadlines.map(({ id: deadline, event, timer }) => (
               <div key={deadline} className="grid gap-1.5 rounded-md bg-sunken p-2">
                 <Problems messages={problems.get(deadline)} />
-                {'duration' in timer.timer ? (
-                  <DurationInput label="After" value={timer.timer.duration} onChange={(duration) => onChange(updateElement(definition, name, deadline, (current) => ({ ...current, timer: { duration } }) as ProcessElement))} />
+                {'duration' in timer ? (
+                  <DurationInput label="After" value={timer.duration} onChange={(duration) => onChange(updateElement(definition, name, deadline, (current) => ({ ...current, timer: { duration } }) as ProcessElement))} />
                 ) : (
-                  <p className="m-0 text-sm">On the record's {timer.timer.date}</p>
+                  <p className="m-0 text-sm">On the record's {timer.date}</p>
                 )}
                 <Checkbox
                   label="It takes the task away"
-                  checked={timer.interrupting}
+                  checked={event.interrupting}
                   onChange={(interrupting) => onChange(updateElement(definition, name, deadline, (current) => ({ ...current, interrupting }) as ProcessElement))}
                 />
                 <Remove onClick={() => onChange(removeElement(definition, name, deadline))}>Remove the deadline</Remove>
               </div>
             ))}
-            <Button size="sm" onClick={() => onChange(addDeadline(definition, name, id).definition)}>
+            <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'timer').definition)}>
               Add a deadline
             </Button>
-            <p className="m-0 text-xs text-muted">Drag from a deadline's clock to lead its path elsewhere, such as to a task for someone else.</p>
           </fieldset>
+          <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+            <legend className="px-1 text-sm text-muted">When an action is saved</legend>
+            {messages.map(({ id: message, event, action }) => (
+              <div key={message} className="grid gap-1.5 rounded-md bg-sunken p-2">
+                <Problems messages={problems.get(message)} />
+                <Select
+                  aria-label="The action that is saved"
+                  value={action}
+                  onChange={(change) =>
+                    onChange(
+                      updateElement(definition, name, message, (current) => {
+                        if (current.type !== 'boundaryEvent') return current;
+                        const chosen = change.target.value;
+                        // A name that only repeated the action's label follows the action.
+                        const named = current.name !== undefined && current.name !== (definition.actions[action]?.label ?? action);
+                        return { ...current, ...(named ? {} : { name: definition.actions[chosen]?.label ?? chosen }), message: { action: chosen } };
+                      }),
+                    )
+                  }
+                >
+                  {actions.includes(action) ? null : (
+                    <option value={action} disabled>
+                      Choose an action
+                    </option>
+                  )}
+                  {actions
+                    .filter((each) => each === action || free.includes(each))
+                    .map((each) => (
+                      <option key={each} value={each}>
+                        {definition.actions[each]!.label}
+                      </option>
+                    ))}
+                </Select>
+                <Checkbox
+                  label="It takes the task away"
+                  checked={event.interrupting}
+                  onChange={(interrupting) => onChange(updateElement(definition, name, message, (current) => ({ ...current, interrupting }) as ProcessElement))}
+                />
+                <Remove onClick={() => onChange(removeElement(definition, name, message))}>Remove the message</Remove>
+              </div>
+            ))}
+            <Button
+              size="sm"
+              disabled={!free.length}
+              title={free.length ? undefined : "No action is free: the task's outcomes decide it, so they can't also interrupt it"}
+              onClick={() => onChange(addBoundary(definition, name, id, 'message').definition)}
+            >
+              Add an action
+            </Button>
+            <p className="m-0 text-xs text-muted">Someone saves the action on the record while the task is open: to withdraw a request, for example.</p>
+          </fieldset>
+          <p className="m-0 text-xs text-muted">Drag from a marker on the task's edge to lead its path elsewhere, such as to a task for someone else.</p>
           <Field label="Review card">
             {(inputId) => (
               <Select
@@ -895,28 +1004,73 @@ function ElementPanel(props: {
           </Field>
         )
       ) : null}
+      {element.type === 'serviceTask' && !element.skill ? (
+        <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+          <legend className="px-1 text-sm text-muted">If the action fails</legend>
+          {error ? (
+            <>
+              <Problems messages={problems.get(error.id)} />
+              <p className="m-0 text-sm">The process leads on by the error's path. Drag from the lightning bolt to lead it elsewhere.</p>
+              <Remove onClick={() => onChange(removeElement(definition, name, error.id))}>Remove the error event</Remove>
+            </>
+          ) : (
+            <>
+              <p className="m-0 text-sm text-muted">The process stops here until an admin retries it.</p>
+              <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'error').definition)}>
+                Catch the failure
+              </Button>
+            </>
+          )}
+        </fieldset>
+      ) : null}
       {element.type === 'intermediateCatchEvent' ? (
         <>
           <Field label="Wait">
             {(inputId) => (
               <Select
                 id={inputId}
-                value={'duration' in element.timer ? 'duration' : 'date'}
-                onChange={(event) => set((current) => ({ ...current, timer: event.target.value === 'date' && dates[0] ? { date: dates[0].name } : { duration: 'P1D' } }) as ProcessElement)}
+                value={element.message ? 'message' : element.timer && 'date' in element.timer ? 'date' : 'duration'}
+                onChange={(event) =>
+                  set((current) => {
+                    if (current.type !== 'intermediateCatchEvent') return current;
+                    const { timer: _timer, message: _message, ...rest } = current;
+                    if (event.target.value === 'message' && actions[0]) return { ...rest, message: { action: actions[0] } };
+                    if (event.target.value === 'date' && dates[0]) return { ...rest, timer: { date: dates[0].name } };
+                    return { ...rest, timer: { duration: 'P1D' } };
+                  })
+                }
               >
                 <option value="duration">For a time</option>
                 <option value="date" disabled={!dates.length}>
                   Until a date of the record
                 </option>
+                <option value="message" disabled={!actions.length}>
+                  Until an action is saved
+                </option>
               </Select>
             )}
           </Field>
-          {'duration' in element.timer ? (
-            <DurationInput label="For" value={element.timer.duration} onChange={(duration) => set((current) => ({ ...current, timer: { duration } }) as ProcessElement)} />
-          ) : (
+          {awaited !== undefined ? (
+            <Field label="Until it is saved" hint="Someone saves the action on the record, and the process goes on.">
+              {(inputId) => (
+                <Select id={inputId} value={awaited} onChange={(event) => set((current) => ({ ...current, message: { action: event.target.value } }) as ProcessElement)}>
+                  {actions.includes(awaited) ? null : (
+                    <option value={awaited} disabled>
+                      Choose an action
+                    </option>
+                  )}
+                  {actions.map((action) => (
+                    <option key={action} value={action}>
+                      {definition.actions[action]!.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          ) : element.timer && 'date' in element.timer ? (
             <Field label="Until">
               {(inputId) => (
-                <Select id={inputId} value={'date' in element.timer ? element.timer.date : ''} onChange={(event) => set((current) => ({ ...current, timer: { date: event.target.value } }) as ProcessElement)}>
+                <Select id={inputId} value={element.timer && 'date' in element.timer ? element.timer.date : ''} onChange={(event) => set((current) => ({ ...current, timer: { date: event.target.value } }) as ProcessElement)}>
                   {dates.map((field) => (
                     <option key={field.name} value={field.name}>
                       {field.label}
@@ -925,11 +1079,22 @@ function ElementPanel(props: {
                 </Select>
               )}
             </Field>
+          ) : (
+            <DurationInput
+              label="For"
+              value={element.timer && 'duration' in element.timer ? element.timer.duration : 'P1D'}
+              onChange={(duration) => set((current) => ({ ...current, timer: { duration } }) as ProcessElement)}
+            />
           )}
         </>
       ) : null}
       {element.type === 'exclusiveGateway' ? <p className="m-0 text-sm text-muted">Select a flow out of it to set when it is taken. The first flow whose condition holds is taken, or the one marked Otherwise.</p> : null}
       {element.type === 'parallelGateway' ? <p className="m-0 text-sm text-muted">Every flow out of it is taken at once. With several flows in, it waits for a token from each.</p> : null}
+      {element.type === 'inclusiveGateway' ? (
+        <p className="m-0 text-sm text-muted">
+          Select a flow out of it to set when it is taken. Every flow whose condition holds is taken, or else the one marked Otherwise. With several flows in, it waits for each path that can still arrive.
+        </p>
+      ) : null}
       {'description' in element || element.type.endsWith('Task') || element.type === 'task' ? (
         <Field label="Description">
           {(inputId) => (
@@ -957,7 +1122,7 @@ function ElementPanel(props: {
             onSelect(null);
           }}
         >
-          Remove {TYPE_LABELS[element.type].toLowerCase()}
+          Remove {typeLabel(element).toLowerCase()}
         </Remove>
       )}
     </fieldset>
@@ -1033,7 +1198,7 @@ function FlowPanel(props: {
           )}
         </Field>
       ) : null}
-      {from?.type === 'exclusiveGateway' ? (
+      {from?.type === 'exclusiveGateway' || from?.type === 'inclusiveGateway' ? (
         <>
           <Checkbox
             label="Otherwise: taken when no other flow's condition holds"

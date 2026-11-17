@@ -325,7 +325,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
                 return element.input ? { ...element, input: mapRecord(element.input, (value) => mapExpressionRefs(value, refs(entity))) } : element;
               case 'intermediateCatchEvent':
               case 'boundaryEvent':
-                return 'date' in element.timer ? { ...element, timer: { date: field(element.timer.date) } } : element;
+                return element.timer && 'date' in element.timer ? { ...element, timer: { date: field(element.timer.date) } } : element;
               default:
                 return element;
             }
@@ -1077,8 +1077,8 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         if (from.type !== 'userTask') issues.push({ path: `${path}.outcome`, message: 'Only a flow out of a user task follows an outcome' });
         else if (!from.outcomes.some((outcome) => outcome.name === flow.outcome)) issues.push({ path: `${path}.outcome`, message: `${label(flow.from)} has no outcome ${flow.outcome}` });
       }
-      if ((flow.when || flow.default) && from.type !== 'exclusiveGateway') {
-        issues.push({ path, message: 'Only a flow out of an exclusive gateway has a condition or is its default' });
+      if ((flow.when || flow.default) && from.type !== 'exclusiveGateway' && from.type !== 'inclusiveGateway') {
+        issues.push({ path, message: 'Only a flow out of an exclusive or inclusive gateway has a condition or is its default' });
       }
       if (flow.when && flow.default) issues.push({ path: `${path}.when`, message: "A default flow has no condition: it's taken when no other flow's condition holds" });
       if (flow.when) checkCondition(flow.when, scope, `${path}.when`, issues);
@@ -1096,6 +1096,10 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
       else if (found.entity !== process.entity) issues.push({ path, message: `${action} works on ${found.entity}, not on ${process.entity}` });
       else if (found.operation !== 'update') issues.push({ path, message: `${action} creates a record; here an action changes the process's own record` });
       return found;
+    };
+    /** A message is an update action committing on the process's record. */
+    const messageAction = (action: string, path: string) => {
+      updateAction(action, path);
     };
     /** An action that starts the process: it may create the record or change it. */
     const startAction = (action: string, path: string) => {
@@ -1224,11 +1228,16 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           break;
         case 'task':
         case 'manualTask':
+          oneOut();
+          break;
         case 'intermediateCatchEvent':
           oneOut();
-          if (element.type === 'intermediateCatchEvent') checkTimer(element.timer, path);
+          if (Boolean(element.timer) === Boolean(element.message)) issues.push({ path, message: `${label(id)} waits for a timer or a message: one of the two` });
+          if (element.timer) checkTimer(element.timer, path);
+          if (element.message) messageAction(element.message.action, `${path}.message.action`);
           break;
-        case 'exclusiveGateway': {
+        case 'exclusiveGateway':
+        case 'inclusiveGateway': {
           if (!out.length) issues.push({ path, message: `${label(id)} needs a flow out` });
           const defaults = out.filter((flowId) => process.flows[flowId]!.default);
           if (defaults.length > 1) issues.push({ path, message: `${label(id)} has one default flow at most` });
@@ -1245,9 +1254,28 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           break;
         case 'boundaryEvent': {
           const host = process.elements[element.attachedTo];
+          const kinds = [element.timer, element.message, element.error].filter(Boolean).length;
+          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message or an error: one of the three` });
           if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
-          else if (host.type !== 'userTask') issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a user task: a timer sits on a user task` });
-          checkTimer(element.timer, path);
+          else if (element.error) {
+            if (host.type !== 'serviceTask') issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a service task: an error sits on a service task, whose action can fail` });
+            else if (host.skill) issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} starts an a7c skill, which runs later in a7c: an error event catches the failure of an action` });
+            if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'An error always ends its task' });
+            const errors = (graph.boundaries.get(element.attachedTo) ?? []).filter((other) => {
+              const candidate = process.elements[other];
+              return candidate?.type === 'boundaryEvent' && candidate.error;
+            });
+            if (errors[0] !== id && errors.includes(id)) issues.push({ path, message: `${label(element.attachedTo)} has one error event at most` });
+          } else if (host.type !== 'userTask') {
+            issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a user task: a timer or a message sits on a user task` });
+          }
+          if (element.timer) checkTimer(element.timer, path);
+          if (element.message) {
+            messageAction(element.message.action, `${path}.message.action`);
+            if (host?.type === 'userTask' && host.outcomes.some((outcome) => outcome.action === element.message!.action)) {
+              issues.push({ path: `${path}.message.action`, message: `${element.message.action} decides ${label(element.attachedTo)}, so it can't also interrupt it` });
+            }
+          }
           oneOut();
           break;
         }

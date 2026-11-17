@@ -9,8 +9,10 @@ import {
   flowsOut,
   LEAVE_APP,
   lintDefinition,
+  messageActions,
   mergeDefinitions,
   processGraph,
+  reachable,
   skillStepIssues,
   startsOf,
   timerFiresAt,
@@ -103,6 +105,73 @@ describe('a process in BPMN 2.0', () => {
   });
 });
 
+describe('inclusive gateways, messages and errors', () => {
+  /** The leave app with withdrawal, a payroll update that can fail, and an inclusive gateway for who hears of it. */
+  const more = (edit: (process: Record<string, any>) => void = () => undefined) =>
+    leave((process, definition) => {
+      definition['actions'].withdraw_leave = { label: 'Withdraw', description: 'Withdraw a leave request.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' } };
+      definition['actions'].tell_payroll = { label: 'Tell payroll', description: 'Mark the leave as known to payroll.', entity: 'leave_request', operation: 'update', input: [], set: { reason: 'Payroll knows' } };
+      definition['roles'].employee.actions.push('withdraw_leave');
+      process.elements.withdrawn = { type: 'boundaryEvent', name: 'Withdrawn', attachedTo: 'decide', message: { action: 'withdraw_leave' } };
+      process.elements.gone = { type: 'endEvent', name: 'Withdrawn' };
+      process.elements.who = { type: 'inclusiveGateway', name: 'Who hears?' };
+      process.elements.payroll = { type: 'serviceTask', name: 'Tell payroll', action: 'tell_payroll' };
+      process.elements.failed = { type: 'boundaryEvent', name: 'Payroll failed', attachedTo: 'payroll', error: true };
+      process.elements.fix = { type: 'userTask', name: 'Tell payroll by hand', role: 'manager', outcomes: [{ name: 'done', label: 'Done' }] };
+      process.elements.wait = { type: 'intermediateCatchEvent', name: 'Until withdrawn', message: { action: 'withdraw_leave' } };
+      process.elements.joined = { type: 'inclusiveGateway' };
+      process.flows.on_approve.to = 'who';
+      process.flows.long = { from: 'who', to: 'payroll', when: { gt: [{ ref: 'record.days' }, 5] } };
+      process.flows.always = { from: 'who', to: 'wait', when: { gte: [{ ref: 'record.days' }, 0] } };
+      process.flows.paid = { from: 'payroll', to: 'joined' };
+      process.flows.to_fix = { from: 'failed', to: 'fix' };
+      process.flows.fixed = { from: 'fix', to: 'joined' };
+      process.flows.waited = { from: 'wait', to: 'joined' };
+      process.flows.done = { from: 'joined', to: 'approved' };
+      process.flows.withdraw = { from: 'withdrawn', to: 'gone' };
+      delete process.diagram;
+      edit(process);
+    });
+
+  it('pass the checks, and an inclusive gateway takes every flow whose condition holds', () => {
+    const definition = valid(more());
+    const process = definition.processes!['leave_approval']!;
+    expect(flowsOut(process, processGraph(process), 'who', { record: { days: 8 }, outcomes: {} })).toEqual({ ok: true, flows: ['long', 'always'] });
+    expect(flowsOut(process, processGraph(process), 'who', { record: { days: 2 }, outcomes: {} })).toEqual({ ok: true, flows: ['always'] });
+    expect(reachable(process, processGraph(process), 'decide')).toContain('gone');
+    expect(messageActions(process)).toEqual(['withdraw_leave']);
+  });
+
+  it('are checked: one kind of event each, on the task that suits it', () => {
+    expect(
+      issuesOf(
+        more((process) => {
+          process.elements.failed.interrupting = false;
+          process.elements.withdrawn.attachedTo = 'payroll';
+          process.elements.wait.timer = { duration: 'P1D' };
+          process.elements.also = { type: 'boundaryEvent', attachedTo: 'decide', message: { action: 'approve_leave' } };
+          process.flows.also_out = { from: 'also', to: 'gone' };
+        }),
+      ),
+    ).toEqual([
+      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll isn't a user task: a timer or a message sits on a user task",
+      'processes.leave_approval.elements.failed.interrupting: An error always ends its task',
+      'processes.leave_approval.elements.wait: Until withdrawn waits for a timer or a message: one of the two',
+      "processes.leave_approval.elements.also.message.action: approve_leave decides Decide on the leave, so it can't also interrupt it",
+    ]);
+  });
+
+  it('catch an error where an action runs, not where an a7c skill starts', () => {
+    expect(
+      issuesOf(
+        more((process) => {
+          process.elements.payroll = { type: 'serviceTask', name: 'Tell payroll', skill: 'hr/record-leave' };
+        }),
+      ),
+    ).toEqual(['processes.leave_approval.elements.failed.attachedTo: Tell payroll starts an a7c skill, which runs later in a7c: an error event catches the failure of an action']);
+  });
+});
+
 describe('votes, when several people decide', () => {
   const all = { count: 'all', outcome: 'approve', otherwise: 'reject' } as const;
   it('decide as soon as the outcome is sure, either way', () => {
@@ -167,7 +236,7 @@ describe('the checks of a process', () => {
         }),
       ),
     ).toEqual([
-      'processes.leave_approval.flows.on_reject: Only a flow out of an exclusive gateway has a condition or is its default',
+      'processes.leave_approval.flows.on_reject: Only a flow out of an exclusive or inclusive gateway has a condition or is its default',
       'processes.leave_approval.flows.back.from: Leave approved is an end event: no flow leaves it',
       'processes.leave_approval.flows.back.to: Leave requested is a start event: no flow leads into it',
       'processes.leave_approval.flows.to_ghost.to: No element ghost',
@@ -232,7 +301,7 @@ describe('the checks of a process', () => {
       'processes.leave_approval.flows.self.from: End event island_end is an end event: no flow leaves it',
       'processes.leave_approval.flows.bare: A flow out of Exclusive gateway which needs a condition, or must be its default',
       "processes.leave_approval.elements.wait.timer.date: reason isn't a date or a time",
-      "processes.leave_approval.elements.late.attachedTo: Timer wait isn't a user task: a timer sits on a user task",
+      "processes.leave_approval.elements.late.attachedTo: Event wait isn't a user task: a timer or a message sits on a user task",
       "processes.leave_approval.elements.island: Island can't be reached from a start event",
       "processes.leave_approval.elements.island_end: End event island_end can't be reached from a start event",
       'processes.leave_approval.diagram.shapes.gone: No element gone',

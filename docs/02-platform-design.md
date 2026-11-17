@@ -798,10 +798,13 @@ The test: if a process waits for people to decide on an app's records, it is an 
 - user tasks that several people decide (BPMN's multi-instance tasks), each with a vote: everyone with the role, the people some fields of the record name, or the reporting line up from someone, at once or one after another. The first vote decides, or enough votes for one outcome (a number, all, or a majority), and the other outcome once that can no longer happen;
 - service tasks, which run one of the app's actions, or start an a7c skill;
 - tasks and manual tasks, which pass straight on;
-- exclusive and parallel gateways;
-- timer catch events, and timer boundary events on user tasks, interrupting or not, for deadlines and escalation.
+- exclusive, parallel and inclusive gateways. An inclusive gateway takes each flow whose condition holds, or else its default. Where paths join, it waits for each path that can still arrive;
+- catch events that wait for a time, a date of the record, or a message;
+- events on a task's boundary: a timer or a message on a user task, interrupting or not, for deadlines, escalation and withdrawal; and an error on a service task, for when its action fails.
 
-Next come inclusive gateways, sub-processes and call activities, message events, and error events.
+Next come sub-processes and call activities.
+
+**A message is an action saved on the record.** In BPMN, a message comes from outside the process. In Ambit, the record is the process's data, so a message is one of the app's update actions that commits on the instance's record. For example, the employee withdraws a request while the manager decides: the withdrawal takes the manager's task away, and the process ends. A process waits for messages on its own record only, and an outcome of a task can't also interrupt that task.
 
 **How a process starts.** An action starts it when the action commits on a record, if a start event names that action. Otherwise a person whose app role may start it starts it on a record. Only one instance of a process runs on a record at a time.
 
@@ -815,7 +818,7 @@ So a change request's permission diff still says who can decide, and a process n
 
 **A task is an action that someone is expected to run.** Running the action that an open task's outcome names completes the task, whether it runs from the inbox, from a list's row button, or from an agent's proposal that the person approves. While a task is assigned to one person, nobody else can run its outcomes' actions on that record.
 
-**Service tasks act for the process.** A service task's action runs with the app's authority, not a person's: the definition grants it, and a change request's capability diff names it, for example "Expense approval runs mark_paid by itself". The action's own checks, steps and rules still run. If they stop it, the instance waits at that task until an operator retries it, and the instance's history says why.
+**Service tasks act for the process.** A service task's action runs with the app's authority, not a person's: the definition grants it, and a change request's capability diff names it, for example "Expense approval runs mark_paid by itself". The action's own checks, steps and rules still run. If they stop it, the instance waits at that task until an operator retries it, and the instance's history says why. An error event on the task changes that: it catches the failure, and the process takes the error's path.
 
 **The engine is Ambit's own, on PostgreSQL.**
 
@@ -836,10 +839,11 @@ So a change request's permission diff still says who can decide, and a process n
 - BPMN 2.0 files go out with their diagram, laid out if the process has none, and come back exactly as they went. Ambit's settings travel in the namespace `urn:ambit:bpmn:1`, and conditions as text, such as `record.days > 10`, which maps one to one onto the stored JSON. The XML reader is Ambit's own: it refuses a DOCTYPE and any entity but XML's own, so a file can't expand entities or reach outside.
 - A model from another tool comes in where Ambit can run it. A lane named after a role gives its tasks that role. A simple condition, such as `${days > 10}`, is read with its names as the record's fields, and the import says how it read each one. Pools without a process, message flows and what only documents the model are left out, and the import says so. Anything else Ambit can't run is refused by name and ID.
 - An import changes a personal app, or the working copy of a team app, through the same checks as any edit.
-- The studio's process designer draws BPMN 2.0 on a canvas (React Flow). Its palette offers first what most processes need, and the rest of what Ambit runs after; a timer on a task's boundary is drawn on the task, with its own path. The checks of any definition run as the builder works, and mark the shapes they concern. Every person has an inbox of their tasks across apps, and each record page says where its processes are.
+- The studio's process designer draws BPMN 2.0 on a canvas (React Flow). Its palette offers first what most processes need, and the rest of what Ambit runs after. An event on a task's boundary (a deadline, a message or an error) is drawn on the task, with its own path. A new element makes room for itself, and doesn't land on another. The checks of any definition run as the builder works, and mark the shapes they concern. Every person has an inbox of their tasks across apps, and each record page says where its processes are.
 - Routing from the directory: a task goes to the manager of whoever a field names, up to five levels up the reporting line, or is kept to the department of whoever a field names. The directory takes departments and managers from the IdP's claims at each sign-in (the claims an installation names), and directory admins set them where the IdP doesn't. A loop in the reporting line is refused. Someone who has left, or a line that ends, sends the task to the role.
 - Out-of-office cover: a person names who takes their new tasks while they are away, until a date, and the task's history says whom the cover stands in for. A person hands their task to a colleague who holds its role; operators move any task of the apps they operate; and anyone with a task's role takes one that waits for nobody in particular. Each move is audited.
 - When several people decide, a vote is the person's own: an agent can't cast it, and it can't be handed over. Once the votes decide, the other votes close and the outcome's action runs with the app's authority, as a service task's does; if its checks stop it, the deciding vote is refused, with why. Nobody can run that action around the vote while it is open.
+- Inclusive gateways, messages and errors run as described above. A message that commits moves on each instance of the record that waits for it, in the same transaction. An error event catches only an action's failure: a service task that starts an a7c skill can't have one, as the skill runs later in a7c. BPMN files carry all three, with each message as a `bpmn:message` that names its action.
 - Not built yet: the next elements above, and reading the directory by SCIM.
 
 ---

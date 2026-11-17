@@ -857,7 +857,7 @@ export const processEvents = pgTable(
       .references(() => processInstances.id, { onDelete: 'cascade' }),
     at: timestamp('at', tz).notNull(),
     kind: text('kind', {
-      enum: ['started', 'task_opened', 'voted', 'task_completed', 'task_cancelled', 'reassigned', 'timer_fired', 'ran', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
+      enum: ['started', 'task_opened', 'voted', 'task_completed', 'task_cancelled', 'reassigned', 'timer_fired', 'message', 'ran', 'error_caught', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
     }).notNull(),
     element: text('element'),
     /** The person behind it, if there is one. */

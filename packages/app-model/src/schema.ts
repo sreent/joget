@@ -575,15 +575,27 @@ const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, 
 const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), name: Label.optional() });
 /** Takes every flow out at once; with several flows in, waits for a token from each. */
 const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), name: Label.optional() });
-/** Waits until a timer fires. */
-const TimerCatchEvent = z.strictObject({ type: z.literal('intermediateCatchEvent'), name: Label.optional(), timer: Timer });
-/** A timer on a user task, for a deadline or an escalation. An interrupting one ends the task; one that doesn't interrupt starts another path beside it. */
+/** A message, as Ambit's processes hear one: one of the app's actions committing on the record, such as the requester withdrawing. */
+export const Message = z.strictObject({ action: Name });
+export type Message = z.infer<typeof Message>;
+
+/** Takes every flow out whose condition holds, or else its default; with several flows in, waits for every path that can still arrive. */
+const InclusiveGateway = z.strictObject({ type: z.literal('inclusiveGateway'), name: Label.optional() });
+/** Waits until a timer fires, or a message comes: one of the two. */
+const CatchEvent = z.strictObject({ type: z.literal('intermediateCatchEvent'), name: Label.optional(), timer: Timer.optional(), message: Message.optional() });
+/**
+ * An event on a task's boundary: a timer or a message on a user task, for a deadline, an escalation
+ * or a withdrawal; or an error on a service task, which its action failing raises. An interrupting
+ * one ends the task; one that doesn't interrupt starts another path beside it.
+ */
 const BoundaryEvent = z.strictObject({
   type: z.literal('boundaryEvent'),
   name: Label.optional(),
   attachedTo: ElementId,
   interrupting: z.boolean().default(true),
-  timer: Timer,
+  timer: Timer.optional(),
+  message: Message.optional(),
+  error: z.literal(true).optional(),
 });
 
 export const ProcessElement = z.discriminatedUnion('type', [
@@ -595,7 +607,8 @@ export const ProcessElement = z.discriminatedUnion('type', [
   ManualTask,
   ExclusiveGateway,
   ParallelGateway,
-  TimerCatchEvent,
+  InclusiveGateway,
+  CatchEvent,
   BoundaryEvent,
 ]);
 export type ProcessElement = z.infer<typeof ProcessElement>;
@@ -603,6 +616,7 @@ export type ProcessElementType = ProcessElement['type'];
 export type UserTaskElement = Extract<ProcessElement, { type: 'userTask' }>;
 export type ServiceTaskElement = Extract<ProcessElement, { type: 'serviceTask' }>;
 export type BoundaryEventElement = Extract<ProcessElement, { type: 'boundaryEvent' }>;
+export type CatchEventElement = Extract<ProcessElement, { type: 'intermediateCatchEvent' }>;
 
 /** A sequence flow: the arrow from one element to the next. */
 export const Flow = z.strictObject({
@@ -610,11 +624,11 @@ export const Flow = z.strictObject({
   to: ElementId,
   /** The label on the arrow, such as "Over SGD 1,000". */
   name: Label.optional(),
-  /** Out of an exclusive gateway: take the flow only if this holds. */
+  /** Out of an exclusive or inclusive gateway: take the flow only if this holds. */
   when: ConditionSchema.optional(),
   /** Out of a user task: the outcome that takes this flow. */
   outcome: Name.optional(),
-  /** Out of an exclusive gateway: the flow it takes when no other flow's condition holds. */
+  /** Out of an exclusive or inclusive gateway: the flow it takes when no other flow's condition holds. */
   default: z.boolean().optional(),
 });
 export type Flow = z.infer<typeof Flow>;

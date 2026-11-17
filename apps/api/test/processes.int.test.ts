@@ -382,6 +382,111 @@ describe('several people deciding', () => {
   });
 });
 
+describe('inclusive gateways, messages and errors', () => {
+  /** The leave app with a withdrawal, and a payroll update that applies to approved leave only. */
+  const withMore = (definition: Record<string, any>) => {
+    definition['actions'].withdraw_leave = {
+      label: 'Withdraw the leave',
+      description: 'Withdraw a leave request that waits for a decision.',
+      entity: 'leave_request',
+      operation: 'update',
+      input: [],
+      set: { status: 'rejected' },
+      where: { eq: [{ ref: 'record.status' }, 'submitted'] },
+    };
+    definition['actions'].tell_payroll = {
+      label: 'Tell payroll',
+      description: 'Record that payroll knows of approved leave.',
+      entity: 'leave_request',
+      operation: 'update',
+      input: [],
+      set: { reason: 'Payroll knows' },
+      where: { eq: [{ ref: 'record.status' }, 'approved'] },
+    };
+    definition['roles'].employee.actions.push('withdraw_leave');
+    definition['roles'].manager.actions.push('tell_payroll');
+  };
+
+  it('takes every path whose condition holds, catches a failed action, and joins what can still arrive', async () => {
+    const app = await leaveApp('Leave, with payroll', (definition) => {
+      withMore(definition);
+      definition['processes'].leave_approval = {
+        label: 'Leave, with payroll',
+        entity: 'leave_request',
+        elements: {
+          requested: { type: 'startEvent', actions: ['request_leave'] },
+          who: { type: 'inclusiveGateway', name: 'Who hears?' },
+          payroll: { type: 'serviceTask', name: 'Tell payroll', action: 'tell_payroll' },
+          failed: { type: 'boundaryEvent', name: 'Payroll refused', attachedTo: 'payroll', error: true },
+          by_hand: { type: 'userTask', name: 'Tell payroll by hand', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          team: { type: 'manualTask', name: 'Tell the team' },
+          joined: { type: 'inclusiveGateway' },
+          done: { type: 'endEvent', name: 'Everyone knows' },
+        },
+        flows: {
+          f1: { from: 'requested', to: 'who' },
+          long: { from: 'who', to: 'payroll', name: 'Over 5 days', when: { gt: [{ ref: 'record.days' }, 5] } },
+          always: { from: 'who', to: 'team', name: 'Always', when: { gte: [{ ref: 'record.days' }, 0] } },
+          paid: { from: 'payroll', to: 'joined' },
+          refused: { from: 'failed', to: 'by_hand' },
+          by_hand_done: { from: 'by_hand', to: 'joined' },
+          told: { from: 'team', to: 'joined' },
+          f2: { from: 'joined', to: 'done' },
+        },
+      };
+    });
+    // Two days: only the team hears; the join has nothing else to wait for.
+    const short = await ask(app, { days: 2 });
+    expect((await processesOf(app, short.record.id))[0]).toMatchObject({ status: 'completed' });
+
+    // Eight days: payroll too. Its action doesn't apply to leave that waits for a decision, so the error path
+    // gives the work to the manager, and the join waits for it.
+    const long = await ask(app, { days: 8, starts: '2027-07-05', ends: '2027-07-14' });
+    let [instance] = await processesOf(app, long.record.id);
+    expect(instance).toMatchObject({ status: 'running', stuck: [], waiting: expect.arrayContaining([{ element: 'by_hand', name: 'Tell payroll by hand' }, { element: 'joined', name: 'Inclusive gateway joined' }]) });
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught')).toMatchObject({ element: 'failed', detail: { task: 'payroll' } });
+    const [task] = (await inbox(bob)).filter((open: { recordId: string }) => open.recordId === long.record.id);
+    await complete(bob, task.id, 'done');
+    [instance] = await processesOf(app, long.record.id);
+    expect(instance).toMatchObject({ status: 'completed' });
+    expect(instance.events.at(-1)).toMatchObject({ kind: 'ended', element: 'done' });
+  });
+
+  it("hears an action as a message: withdrawing interrupts the manager's task, and a waiting event moves on", async () => {
+    const app = await leaveApp('Leave, withdrawable', (definition) => {
+      withMore(definition);
+      const process = definition['processes'].leave_approval;
+      process.elements.withdrawn = { type: 'boundaryEvent', name: 'Withdrawn', attachedTo: 'decide', message: { action: 'withdraw_leave' } };
+      process.elements.gone = { type: 'endEvent', name: 'Leave withdrawn' };
+      process.flows.withdraw = { from: 'withdrawn', to: 'gone' };
+      definition['processes'].watch = {
+        label: 'Watch for withdrawal',
+        entity: 'leave_request',
+        elements: {
+          requested: { type: 'startEvent', actions: ['request_leave'] },
+          wait: { type: 'intermediateCatchEvent', name: 'Until withdrawn', message: { action: 'withdraw_leave' } },
+          done: { type: 'endEvent', name: 'Seen' },
+        },
+        flows: { f1: { from: 'requested', to: 'wait' }, f2: { from: 'wait', to: 'done' } },
+      };
+    });
+    const asked = await ask(app, { starts: '2027-08-02', ends: '2027-08-03', days: 2 });
+    expect((await processesOf(app, asked.record.id)).map((instance: { process: string; status: string }) => [instance.process, instance.status]).sort()).toEqual([
+      ['leave_approval', 'running'],
+      ['watch', 'running'],
+    ]);
+    await inject({ method: 'POST', url: `/v1/apps/${app}/actions/withdraw_leave/run`, ...as(alice), payload: { recordId: asked.record.id } }, 200);
+    expect((await inbox(bob)).filter((task: { recordId: string }) => task.recordId === asked.record.id)).toEqual([]);
+    const instances = await processesOf(app, asked.record.id);
+    const approval = instances.find((instance: { process: string }) => instance.process === 'leave_approval');
+    const watch = instances.find((instance: { process: string }) => instance.process === 'watch');
+    expect(approval).toMatchObject({ status: 'completed', tasks: [{ status: 'cancelled' }] });
+    expect(approval.events.at(-1)).toMatchObject({ kind: 'ended', element: 'gone' });
+    expect(watch).toMatchObject({ status: 'completed' });
+    expect(watch.events.map((event: { kind: string }) => event.kind)).toEqual(['started', 'message', 'ended']);
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

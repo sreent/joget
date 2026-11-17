@@ -4,7 +4,7 @@ import type { Definition } from '../types.js';
 import { normalize, removeField } from './edit.js';
 import { removeItem } from './logic.js';
 import {
-  addDeadline,
+  addBoundary,
   addElement,
   arrange,
   connect,
@@ -12,6 +12,7 @@ import {
   durationParts,
   durationWords,
   issuesByPart,
+  messageChoices,
   moveElement,
   newProcess,
   removeElement,
@@ -67,7 +68,7 @@ describe('editing a process', () => {
   });
 
   it('adds a deadline with a path for when it passes, which moves with its task', () => {
-    const added = addDeadline(app(), 'leave_approval', 'decide');
+    const added = addBoundary(app(), 'leave_approval', 'decide', 'timer');
     let definition = added.definition;
     expect(leave(definition).elements[added.id]).toEqual({ type: 'boundaryEvent', name: 'Deadline', attachedTo: 'decide', interrupting: true, timer: { duration: 'P3D' } });
     expect(valid(definition)).toEqual([]);
@@ -76,6 +77,52 @@ describe('editing a process', () => {
     const after = leave(definition).diagram!.shapes[added.id]!;
     expect([after.x - before.x, after.y - before.y]).toEqual([300 - 250, 200 - 80]);
     expect(valid(arrange(definition, 'leave_approval'))).toEqual([]);
+  });
+
+  it('adds a message and an error event, on the tasks that suit them, with paths that pass the checks', () => {
+    let definition = app();
+    // Both update actions decide the task, so neither can interrupt it.
+    expect(messageChoices(definition, leave(definition), 'decide')).toEqual([]);
+    expect(addBoundary(definition, 'leave_approval', 'decide', 'message').id).toBe('');
+    definition = {
+      ...definition,
+      actions: { ...definition.actions, withdraw_leave: { label: 'Withdraw', description: 'Withdraw the request.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' }, confirm: 'none' } },
+    };
+    const message = addBoundary(definition, 'leave_approval', 'decide', 'message');
+    definition = message.definition;
+    expect(leave(definition).elements[message.id]).toEqual({ type: 'boundaryEvent', name: 'Withdraw', attachedTo: 'decide', interrupting: true, message: { action: 'withdraw_leave' } });
+    expect(messageChoices(definition, leave(definition), 'decide')).toEqual([]);
+    expect(valid(definition)).toEqual([]);
+
+    // An error sits on a system task, not on a user task.
+    expect(addBoundary(definition, 'leave_approval', 'decide', 'error').id).toBe('');
+    const system = addElement(definition, 'leave_approval', 'serviceTask', { on: 'on_reject' });
+    definition = updateElement(system.definition, 'leave_approval', system.id, (element) => ({ ...element, action: 'withdraw_leave' }));
+    const error = addBoundary(definition, 'leave_approval', system.id, 'error');
+    definition = error.definition;
+    expect(leave(definition).elements[error.id]).toEqual({ type: 'boundaryEvent', name: 'Error', attachedTo: system.id, interrupting: true, error: true });
+    expect(valid(definition)).toEqual([]);
+    // The events go with their tasks.
+    definition = removeElement(removeElement(definition, 'leave_approval', system.id), 'leave_approval', 'decide');
+    expect(Object.keys(leave(definition).elements)).not.toContain(message.id);
+    expect(Object.keys(leave(definition).elements)).not.toContain(error.id);
+  });
+
+  it('adds an inclusive gateway, whose second flow out is its default, and an event that waits for an action', () => {
+    let definition = app();
+    const gateway = addElement(definition, 'leave_approval', 'inclusiveGateway', { on: 'on_approve' });
+    expect(gateway.id).toBe('inclusive_1');
+    definition = gateway.definition;
+    expect(leave(definition).elements[gateway.id]).toEqual({ type: 'inclusiveGateway' });
+    // What stood after the flow moved right, to make room.
+    const shapes = leave(definition).diagram!.shapes;
+    expect(shapes['approved']!.x - (shapes[gateway.id]!.x + 50)).toBeGreaterThanOrEqual(50);
+    expect(shapes[gateway.id]!.x - (shapes['decide']!.x + 100)).toBeGreaterThanOrEqual(50);
+    const joined = connect(definition, 'leave_approval', gateway.id, 'rejected')!;
+    definition = joined.definition;
+    expect(leave(definition).flows[joined.id]).toEqual({ from: gateway.id, to: 'rejected', default: true });
+    const wait = addElement(definition, 'leave_approval', 'messageEvent', { on: 'on_reject' });
+    expect(leave(wait.definition).elements[wait.id]).toEqual({ type: 'intermediateCatchEvent', name: 'Approve the leave', message: { action: 'approve_leave' } });
   });
 
   it('lets go of an action or a field that the app no longer has', () => {

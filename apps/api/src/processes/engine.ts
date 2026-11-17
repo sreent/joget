@@ -15,6 +15,8 @@ import {
   type ProcessGraph,
   type RecordValues,
   type UserTaskElement,
+  messageActions,
+  reachable,
   votesNeeded,
 } from '@platform/app-model';
 import { apps, bindings, groupMembers, processEvents, processInstances, processTasks, processTimers, processTokens, users, type Database } from '@platform/db';
@@ -57,6 +59,8 @@ interface Live {
   ended: boolean;
   /** The end event a path last reached, which the instance ends at when no path is left. */
   reached: string | null;
+  /** What each element can still reach, as inclusive joins ask it. */
+  readonly reach: Map<string, Set<string>>;
 }
 
 /** One transaction's worth of process work: tokens arrive at elements until each waits or ends. */
@@ -461,7 +465,7 @@ export class ProcessEngine implements ProcessHooks {
     if (!row) throw notFound('Process instance');
     const process = await this.#processOf(row, turn.tx.db);
     if (!process) throw conflict('process_missing', `Revision ${row.revision} has no process ${row.process}`);
-    const live: Live = { row, process, graph: processGraph(process), entity: row.entity, outcomes: { ...row.outcomes }, ended: row.status !== 'running', reached: null };
+    const live: Live = { row, process, graph: processGraph(process), entity: row.entity, outcomes: { ...row.outcomes }, ended: row.status !== 'running', reached: null, reach: new Map() };
     turn.live.set(id, live);
     return live;
   }
@@ -484,7 +488,81 @@ export class ProcessEngine implements ProcessHooks {
       const outcome = task.outcomes.find((candidate) => candidate.action === action)!;
       await this.#completeTask(turn, task, outcome.name, actorId);
     }
+    await this.#deliverMessage(turn, action, recordId);
     for (const start of startsOf(turn.loaded.definition, action)) await this.#start(turn, start.process, start.element, recordId, action);
+  }
+
+  /**
+   * An action committed on a record is a message to the processes that run on it: a catch event
+   * that waits for it moves on, and an event on a task's boundary interrupts the task or starts a
+   * path beside it.
+   */
+  async #deliverMessage(turn: Turn, action: string, recordId: string): Promise<void> {
+    const db = turn.tx.db;
+    const running = await db
+      .select({ id: processInstances.id })
+      .from(processInstances)
+      .where(and(eq(processInstances.environmentId, turn.loaded.env.id), eq(processInstances.recordId, recordId), eq(processInstances.status, 'running')));
+    for (const { id } of running) {
+      const live = await this.#live(turn, id);
+      if (live.ended || !messageActions(live.process).includes(action)) continue;
+      const waiting = await db.select().from(processTokens).where(and(eq(processTokens.instanceId, id), eq(processTokens.state, 'waiting')));
+      for (const token of waiting) {
+        const element = live.process.elements[token.element];
+        if (element?.type !== 'intermediateCatchEvent' || element.message?.action !== action) continue;
+        await db.delete(processTokens).where(eq(processTokens.id, token.id));
+        await this.#event(turn, live, 'message', token.element, { action });
+        await this.#leave(turn, live, token.element);
+      }
+      const open = await db.select().from(processTasks).where(and(eq(processTasks.instanceId, id), eq(processTasks.status, 'open')));
+      const handled = new Set<string>();
+      for (const task of open) {
+        // The votes of one task share its boundary: it hears the message once.
+        const key = task.several && task.tokenId ? task.tokenId : task.id;
+        if (handled.has(key)) continue;
+        handled.add(key);
+        for (const boundary of live.graph.boundaries.get(task.element) ?? []) {
+          const event = live.process.elements[boundary];
+          if (event?.type !== 'boundaryEvent' || event.message?.action !== action) continue;
+          if (event.interrupting) {
+            if (task.several && task.tokenId) {
+              await this.#closeVotes(turn, live, task.tokenId, 'message');
+              await db.delete(processTokens).where(eq(processTokens.id, task.tokenId));
+              await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, task.tokenId), eq(processTimers.status, 'waiting')));
+            } else {
+              await this.#closeTask(turn, live, task, 'message');
+            }
+          }
+          await this.#event(turn, live, 'message', boundary, { action, task: task.id, interrupting: event.interrupting });
+          await this.#leave(turn, live, boundary);
+          if (event.interrupting) break;
+        }
+      }
+    }
+  }
+
+  /** An inclusive gateway's join goes on once no other token of the instance can still reach it. */
+  async #tryJoin(turn: Turn, live: Live, id: string): Promise<boolean> {
+    const db = turn.tx.db;
+    const tokens = await db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id));
+    const here = tokens.filter((token) => token.element === id && token.state === 'waiting');
+    if (!here.length) return false;
+    const elsewhere = [
+      ...tokens.filter((token) => token.element !== id).map((token) => token.element),
+      ...turn.queue.filter((move) => move.instanceId === live.row.id).map((move) => move.element),
+    ];
+    for (const at of elsewhere) {
+      if (at === id) return false;
+      let reach = live.reach.get(at);
+      if (!reach) {
+        reach = reachable(live.process, live.graph, at);
+        live.reach.set(at, reach);
+      }
+      if (reach.has(id)) return false;
+    }
+    await db.delete(processTokens).where(inArray(processTokens.id, here.map((token) => token.id)));
+    await this.#leave(turn, live, id);
+    return true;
   }
 
   async #start(turn: Turn, name: string, startAt: string, recordId: string, action: string | null): Promise<Live> {
@@ -511,7 +589,7 @@ export class ProcessEngine implements ProcessHooks {
         startedAt: turn.now,
       })
       .returning();
-    const live: Live = { row: row!, process, graph: processGraph(process), entity: process.entity, outcomes: {}, ended: false, reached: null };
+    const live: Live = { row: row!, process, graph: processGraph(process), entity: process.entity, outcomes: {}, ended: false, reached: null, reach: new Map() };
     turn.live.set(row!.id, live);
     await this.#event(turn, live, 'started', startAt, action ? { action } : null);
     await this.#audit(turn, live, 'process.start', action ? { action } : { byHand: true });
@@ -521,11 +599,23 @@ export class ProcessEngine implements ProcessHooks {
 
   /** Move tokens until each waits or ends. An instance whose last token ended completes. */
   async #drain(turn: Turn): Promise<void> {
-    while (turn.queue.length) {
-      if (++turn.moves > MAX_MOVES) throw unprocessable('process_loops', `A process moved ${MAX_MOVES} times without waiting: check its flows for a loop that waits for nothing`);
-      const { instanceId, element, flow } = turn.queue.shift()!;
-      const live = await this.#live(turn, instanceId);
-      if (!live.ended) await this.#arrive(turn, live, element, flow);
+    for (;;) {
+      while (turn.queue.length) {
+        if (++turn.moves > MAX_MOVES) throw unprocessable('process_loops', `A process moved ${MAX_MOVES} times without waiting: check its flows for a loop that waits for nothing`);
+        const { instanceId, element, flow } = turn.queue.shift()!;
+        const live = await this.#live(turn, instanceId);
+        if (!live.ended) await this.#arrive(turn, live, element, flow);
+      }
+      // A path that ended may be what an inclusive join waited for: try the joins that wait again.
+      let joined = false;
+      for (const live of turn.live.values()) {
+        if (live.ended) continue;
+        const waiting = await turn.tx.db.select({ element: processTokens.element }).from(processTokens).where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.state, 'waiting')));
+        for (const element of new Set(waiting.map((token) => token.element))) {
+          if (live.process.elements[element]?.type === 'inclusiveGateway' && (await this.#tryJoin(turn, live, element))) joined = true;
+        }
+      }
+      if (!joined) break;
     }
     for (const live of turn.live.values()) {
       if (live.ended) continue;
@@ -547,11 +637,22 @@ export class ProcessEngine implements ProcessHooks {
       case 'serviceTask':
         return this.#serve(turn, live, id, element);
       case 'intermediateCatchEvent': {
+        if (!element.timer) {
+          // A message: the token waits until the action commits on the record.
+          await turn.tx.db.insert(processTokens).values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
+          return;
+        }
         const fireAt = timerFiresAt(element.timer, turn.now, (await this.#record(turn, live)) ?? {});
         if (!fireAt) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: the record has no ${'date' in element.timer ? element.timer.date : 'date'}`);
         const tokenId = uuidv7(turn.now.getTime());
         await turn.tx.db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
         await turn.tx.db.insert(processTimers).values({ id: uuidv7(turn.now.getTime()), orgId: this.#ctx.org.id, instanceId: live.row.id, element: id, tokenId, fireAt, nextAttemptAt: fireAt, createdAt: turn.now });
+        return;
+      }
+      case 'inclusiveGateway': {
+        if ((live.graph.incoming.get(id) ?? []).length < 2) return this.#leave(turn, live, id);
+        await turn.tx.db.insert(processTokens).values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
+        await this.#tryJoin(turn, live, id);
         return;
       }
       case 'parallelGateway': {
@@ -578,7 +679,8 @@ export class ProcessEngine implements ProcessHooks {
 
   /** Send a token on along the flows out of an element: for a user task, those of its outcome. */
   async #leave(turn: Turn, live: Live, id: string, outcome?: string): Promise<void> {
-    const decides = live.process.elements[id]?.type === 'exclusiveGateway';
+    const type = live.process.elements[id]?.type;
+    const decides = type === 'exclusiveGateway' || type === 'inclusiveGateway';
     const state = { record: decides ? ((await this.#record(turn, live)) ?? {}) : {}, outcomes: live.outcomes };
     const out = flowsOut(live.process, live.graph, id, state, outcome);
     if (!out.ok) return this.#stuck(turn, live, id, null, out.message);
@@ -635,6 +737,7 @@ export class ProcessEngine implements ProcessHooks {
     for (const boundary of live.graph.boundaries.get(id) ?? []) {
       const timer = live.process.elements[boundary];
       if (timer?.type !== 'boundaryEvent') continue;
+      if (!timer.timer) continue;
       const fireAt = timerFiresAt(timer.timer, turn.now, record);
       if (!fireAt) continue;
       await turn.tx.db.insert(processTimers).values({ id: uuidv7(turn.now.getTime()), orgId: this.#ctx.org.id, instanceId: live.row.id, element: boundary, taskId, fireAt, nextAttemptAt: fireAt, createdAt: turn.now });
@@ -714,6 +817,7 @@ export class ProcessEngine implements ProcessHooks {
     for (const boundary of live.graph.boundaries.get(id) ?? []) {
       const timer = live.process.elements[boundary];
       if (timer?.type !== 'boundaryEvent') continue;
+      if (!timer.timer) continue;
       const fireAt = timerFiresAt(timer.timer, turn.now, record);
       if (fireAt) await turn.tx.db.insert(processTimers).values({ id: uuidv7(turn.now.getTime()), orgId: this.#ctx.org.id, instanceId: live.row.id, element: boundary, tokenId, fireAt, nextAttemptAt: fireAt, createdAt: turn.now });
     }
@@ -786,7 +890,7 @@ export class ProcessEngine implements ProcessHooks {
   }
 
   /** Close the votes still open on a task that several people decide. */
-  async #closeVotes(turn: Turn, live: Live, tokenId: string, reason: 'decided' | 'timer'): Promise<void> {
+  async #closeVotes(turn: Turn, live: Live, tokenId: string, reason: 'decided' | 'timer' | 'message'): Promise<void> {
     const open = await turn.tx.db.select().from(processTasks).where(and(eq(processTasks.tokenId, tokenId), eq(processTasks.status, 'open')));
     for (const vote of open) {
       await turn.tx.db.update(processTasks).set({ status: 'cancelled', cancelReason: reason, closedAt: turn.now }).where(eq(processTasks.id, vote.id));
@@ -807,7 +911,7 @@ export class ProcessEngine implements ProcessHooks {
   }
 
   /** Close an open task without an outcome: a timer interrupted it, or its instance ended. */
-  async #closeTask(turn: Turn, live: Live, task: TaskRow, reason: 'timer' | 'ended' | 'cancelled'): Promise<void> {
+  async #closeTask(turn: Turn, live: Live, task: TaskRow, reason: 'timer' | 'message' | 'ended' | 'cancelled'): Promise<void> {
     await turn.tx.db.update(processTasks).set({ status: 'cancelled', cancelReason: reason, tokenId: null, closedAt: turn.now }).where(eq(processTasks.id, task.id));
     if (task.tokenId) await turn.tx.db.delete(processTokens).where(eq(processTokens.id, task.tokenId));
     await turn.tx.db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.taskId, task.id), eq(processTimers.status, 'waiting')));
@@ -820,7 +924,16 @@ export class ProcessEngine implements ProcessHooks {
     if (element.action) {
       if (turn.loaded.app.movedTo) return this.#stuck(turn, live, id, null, `${element.name}: the app moved to a team space, so it changes no records here`);
       const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, element.action, live.row.recordId, origin);
-      if (!ran.ok) return this.#stuck(turn, live, id, null, `${element.name}: ${ran.message}`);
+      if (!ran.ok) {
+        // An error event on the task catches the failure and leads elsewhere; without one, the instance waits for an operator.
+        const caught = (live.graph.boundaries.get(id) ?? []).find((boundary) => {
+          const event = live.process.elements[boundary];
+          return event?.type === 'boundaryEvent' && event.error;
+        });
+        if (!caught) return this.#stuck(turn, live, id, null, `${element.name}: ${ran.message}`);
+        await this.#event(turn, live, 'error_caught', caught, { task: id, error: ran.message });
+        return this.#leave(turn, live, caught);
+      }
       turn.records.delete(live.row.recordId);
       await this.#event(turn, live, 'ran', id, { action: element.action });
       await this.#actionCommitted(turn, element.action, live.row.recordId, null);
