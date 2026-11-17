@@ -208,6 +208,24 @@ describe('editing a process', () => {
     expect(Object.values(leave(definition).elements).filter((element) => element.type === 'boundaryEvent' && element.attachedTo === receive.id)).toHaveLength(1);
   });
 
+  it('adds an event-based gateway with a time and an action to wait for, and a condition on a task', () => {
+    const gateway = addElement(app(), 'leave_approval', 'eventBasedGateway', { on: 'on_approve' });
+    let definition = gateway.definition;
+    const after = Object.values(leave(definition).flows).filter((flow) => flow.from === gateway.id).map((flow) => leave(definition).elements[flow.to]);
+    expect(after).toEqual([
+      { type: 'intermediateCatchEvent', name: 'One day', timer: { duration: 'P1D' } },
+      { type: 'intermediateCatchEvent', name: 'Approve the leave', message: { action: 'approve_leave' } },
+    ]);
+    expect(valid(definition)).toEqual([]);
+    definition = addBoundary(definition, 'leave_approval', 'decide', 'condition').definition;
+    expect(Object.values(leave(definition).elements).find((element) => element.type === 'boundaryEvent' && element.condition)).toMatchObject({
+      attachedTo: 'decide',
+      interrupting: false,
+      condition: { exists: 'record.kind' },
+    });
+    expect(valid(definition)).toEqual([]);
+  });
+
   it('lets go of an action or a field that the app no longer has', () => {
     const withoutReject = removeItem(app(), 'actions', 'reject_leave');
     expect((leave(withoutReject).elements['decide'] as { outcomes: unknown[] }).outcomes).toEqual([

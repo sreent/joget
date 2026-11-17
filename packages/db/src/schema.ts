@@ -856,6 +856,45 @@ export const processTimers = pgTable(
 );
 
 /** What happened in an instance, step by step, for the people in it and its operators. */
+/**
+ * A start that waits for a record: a process with a timer start event starts on the record's date,
+ * or a time after the record was created. One per process, start event and record, and once.
+ */
+export const processStartTimers = pgTable(
+  'process_start_timers',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    process: text('process').notNull(),
+    /** The start event. */
+    element: text('element').notNull(),
+    entity: text('entity').notNull(),
+    recordId: uuid('record_id').notNull(),
+    fireAt: timestamp('fire_at', tz).notNull(),
+    status: text('status', { enum: ['waiting', 'fired', 'cancelled'] })
+      .notNull()
+      .default('waiting'),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    firedAt: timestamp('fired_at', tz),
+  },
+  (t) => [
+    uniqueIndex('process_start_timers_one_uq').on(t.environmentId, t.process, t.element, t.recordId),
+    index('process_start_timers_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`),
+  ],
+);
+
 export const processEvents = pgTable(
   'process_events',
   {
@@ -876,6 +915,7 @@ export const processEvents = pgTable(
         'reassigned',
         'timer_fired',
         'message',
+        'condition',
         'ran',
         'error_caught',
         'skill_queued',

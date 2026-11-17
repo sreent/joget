@@ -1,4 +1,4 @@
-import { isRef } from '@platform/authz';
+import { isRef, type Condition } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
@@ -239,6 +239,7 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
   exclusiveGateway: 'bpmn:exclusiveGateway',
   parallelGateway: 'bpmn:parallelGateway',
   inclusiveGateway: 'bpmn:inclusiveGateway',
+  eventBasedGateway: 'bpmn:eventBasedGateway',
   intermediateCatchEvent: 'bpmn:intermediateCatchEvent',
   intermediateThrowEvent: 'bpmn:intermediateThrowEvent',
   subProcess: 'bpmn:subProcess',
@@ -353,9 +354,18 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     // A script task's script comes after what every activity has.
     if (element.type === 'scriptTask') children.push({ name: 'bpmn:script', text: JSON.stringify(element.steps) });
     if (element.type === 'endEvent' && element.terminate) children.push({ name: 'bpmn:terminateEventDefinition', attributes: { id: `${id}_terminate` } });
-    if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'intermediateThrowEvent' || element.type === 'endEvent') {
+    if (
+      element.type === 'startEvent' ||
+      element.type === 'intermediateCatchEvent' ||
+      element.type === 'boundaryEvent' ||
+      element.type === 'intermediateThrowEvent' ||
+      element.type === 'endEvent'
+    ) {
       if ('timer' in element && element.timer) children.push(timer(id, element.timer));
-      if (element.message) children.push(messageDefinition(id, element.message));
+      if ('condition' in element && element.condition) {
+        children.push({ name: 'bpmn:conditionalEventDefinition', attributes: { id: `${id}_condition` }, children: [formal('bpmn:condition', LANGUAGES.condition, conditionText(element.condition))] });
+      }
+      if ('message' in element && element.message) children.push(messageDefinition(id, element.message));
       if (element.type === 'boundaryEvent' && element.error) children.push({ name: 'bpmn:errorEventDefinition', attributes: { id: `${id}_error` } });
       if ('link' in element && element.link !== undefined) children.push({ name: 'bpmn:linkEventDefinition', attributes: { id: `${id}_link`, name: element.link } });
     }
@@ -444,7 +454,6 @@ const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteri
 const KINDS: Readonly<Record<string, string>> = {
   adHocSubProcess: 'an ad hoc sub-process',
   transaction: 'a transaction',
-  eventBasedGateway: 'an event-based gateway',
   complexGateway: 'a complex gateway',
 };
 const EVENT_KINDS: Readonly<Record<string, string>> = {
@@ -645,6 +654,19 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           return action;
         };
         const linkName = () => attribute(bpmn(node, 'linkEventDefinition')[0]!, 'name')?.trim() || undefined;
+        /** The condition of a conditional event: Ambit's text as it is, another tool's with its names as the record's fields. */
+        const conditionOf = (): Condition | undefined => {
+          const expression = bpmn(bpmn(node, 'conditionalEventDefinition')[0]!, 'condition')[0];
+          const text = expression ? textOf(expression).trim() : '';
+          const language = expression ? (attribute(expression, 'language') ?? attribute(source, 'expressionLanguage') ?? attribute(root, 'expressionLanguage')) : undefined;
+          const parsed = text ? parseConditionText(text, language === LANGUAGES.condition ? (ref) => ref : foreignName) : undefined;
+          if (!parsed?.ok) {
+            refuse(`Ambit can't read the condition "${text}"${parsed && !parsed.ok ? `: ${parsed.message}` : ''}. Write it as a condition on the record's fields`);
+            return undefined;
+          }
+          if (language !== LANGUAGES.condition) notes.add(`Read the condition "${text}" of ${describe(node)} as ${conditionText(parsed.condition)}`);
+          return parsed.condition;
+        };
         switch (node.local) {
           case 'startEvent': {
             const actions = (ambit(node, 'actions') ?? '').split(/\s+/).filter(Boolean);
@@ -652,6 +674,12 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
               // A message starts a process when its action commits on a record: the start event names the action.
               const action = messageOf();
               if (action) elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [...new Set([...actions, action])] };
+            } else if (kinds.length === 1 && kinds[0] === 'timer') {
+              const timer = timerOf();
+              if (timer) elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [], timer };
+            } else if (kinds.length === 1 && kinds[0] === 'conditional') {
+              const condition = conditionOf();
+              if (condition) elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [], condition };
             } else if (kinds.length) refuse(`Ambit doesn't start a process on a ${kinds.join(' or ')} event yet`);
             else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions };
             break;
@@ -773,6 +801,11 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           case 'manualTask':
             elements[id] = { type: node.local === 'task' ? 'task' : 'manualTask', name: name ?? id, ...(documentation ? { description: documentation } : {}) };
             break;
+          case 'eventBasedGateway':
+            // An event-based gateway that starts a process has no record to start on.
+            if (attribute(node, 'instantiate') === 'true') refuse("Ambit doesn't start a process at an event-based gateway: a process starts on a record");
+            else elements[id] = { type: 'eventBasedGateway', ...(name ? { name } : {}) };
+            break;
           case 'exclusiveGateway':
           case 'parallelGateway':
           case 'inclusiveGateway':
@@ -780,11 +813,14 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             if (node.local !== 'parallelGateway' && attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
             break;
           case 'intermediateCatchEvent': {
-            if (kinds.length !== 1 || (kinds[0] !== 'timer' && kinds[0] !== 'message' && kinds[0] !== 'link')) {
+            if (kinds.length !== 1 || !['timer', 'message', 'link', 'conditional'].includes(kinds[0]!)) {
               refuse(`Ambit doesn't wait for a ${kinds.join(' or ') || 'plain'} event yet`);
               break;
             }
-            if (kinds[0] === 'timer') {
+            if (kinds[0] === 'conditional') {
+              const condition = conditionOf();
+              if (condition) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), condition };
+            } else if (kinds[0] === 'timer') {
               const timer = timerOf();
               if (timer) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), timer };
             } else if (kinds[0] === 'link') {
@@ -819,7 +855,7 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             break;
           }
           case 'boundaryEvent': {
-            if (kinds.length !== 1 || !['timer', 'message', 'error'].includes(kinds[0]!)) {
+            if (kinds.length !== 1 || !['timer', 'message', 'error', 'conditional'].includes(kinds[0]!)) {
               refuse(`Ambit doesn't catch a ${kinds.join(' or ') || 'plain'} event on a task yet`);
               break;
             }
@@ -830,6 +866,9 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             if (kinds[0] === 'timer') {
               const timer = timerOf();
               if (timer) elements[id] = { ...base, timer };
+            } else if (kinds[0] === 'conditional') {
+              const condition = conditionOf();
+              if (condition) elements[id] = { ...base, condition };
             } else if (kinds[0] === 'message') {
               const action = messageOf();
               if (action) elements[id] = { ...base, message: { action } };

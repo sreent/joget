@@ -334,6 +334,69 @@ describe('BPMN 2.0 files', () => {
     expect(read.ok && read.notes).toContain('Read "Decide" (r) as a check of the record against all the app\'s rules: Ambit has no DMN decisions');
   });
 
+  it('carry conditions, starts by a timer and event-based gateways out and back', () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    definition['actions'].confirm_leave = { label: 'Confirm', description: 'Confirm.', entity: 'leave_request', operation: 'update', input: [], set: { reason: 'Confirmed' }, confirm: 'none' };
+    definition['processes'].first_day = {
+      label: 'First day',
+      entity: 'leave_request',
+      elements: { start: { type: 'startEvent', timer: { date: 'starts' } }, end: { type: 'endEvent' } },
+      flows: { f: { from: 'start', to: 'end' } },
+    };
+    definition['processes'].leave_approval = {
+      label: 'Leave approval',
+      entity: 'leave_request',
+      elements: {
+        start: { type: 'startEvent', condition: { gt: [{ ref: 'record.days' }, 10] } },
+        gate: { type: 'eventBasedGateway' },
+        wait: { type: 'intermediateCatchEvent', timer: { duration: 'P1D' } },
+        shorter: { type: 'intermediateCatchEvent', condition: { lte: [{ ref: 'record.days' }, 10] } },
+        confirm: { type: 'receiveTask', name: 'Confirmed', message: { action: 'confirm_leave' } },
+        late: { type: 'boundaryEvent', attachedTo: 'confirm', interrupting: false, condition: { exists: 'record.reason' } },
+        end: { type: 'endEvent' },
+      },
+      flows: {
+        f1: { from: 'start', to: 'gate' },
+        f2: { from: 'gate', to: 'wait' },
+        f3: { from: 'gate', to: 'shorter' },
+        f4: { from: 'gate', to: 'confirm' },
+        f5: { from: 'wait', to: 'end' },
+        f6: { from: 'shorter', to: 'end' },
+        f7: { from: 'confirm', to: 'end' },
+        f8: { from: 'late', to: 'end' },
+      },
+    };
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:eventBasedGateway id="gate">');
+    expect(xml).toContain('<bpmn:condition xsi:type="bpmn:tFormalExpression" language="urn:ambit:condition">record.days &gt; 10</bpmn:condition>');
+    const back = bpmnToProcesses(xml, { ...app, processes: {} });
+    const { diagram: _diagram, ...process } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    expect(process).toEqual(app.processes!['leave_approval']);
+    const timed = bpmnToProcesses(processToBpmn(app, 'first_day'), { ...app, processes: {} });
+    expect(timed.ok && timed.processes['first_day']!.elements['start']).toEqual({ type: 'startEvent', actions: [], timer: { date: 'starts' } });
+  });
+
+  it("read another tool's conditional events, and refuse a cycle and a gateway that starts a process", () => {
+    const xml = `<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:ambit="urn:ambit:bpmn:1">
+  <process id="p" ambit:entity="leave_request">
+    <startEvent id="s"><conditionalEventDefinition><condition>\${days &gt; 10}</condition></conditionalEventDefinition></startEvent>
+    <startEvent id="weekly"><timerEventDefinition><timeCycle>R/P1W</timeCycle></timerEventDefinition></startEvent>
+    <eventBasedGateway id="g" instantiate="true" />
+    <endEvent id="e" />
+    <sequenceFlow id="f" sourceRef="s" targetRef="e" />
+  </process>
+</definitions>`;
+    const read = bpmnToProcesses(xml, leave);
+    expect(read.ok ? [] : read.issues).toEqual([
+      { element: 'weekly', message: 'A timer runs after an ISO 8601 duration, such as P3D, or on a date field of the record: (weekly)' },
+      { element: 'g', message: "Ambit doesn't start a process at an event-based gateway: a process starts on a record: (g)" },
+    ]);
+    const kept = bpmnToProcesses(xml.replace(/<startEvent id="weekly">.*?<\/startEvent>/s, '').replace('instantiate="true" ', ''), leave);
+    expect(kept.ok && kept.processes['p']!.elements['s']).toEqual({ type: 'startEvent', actions: [], condition: { gt: [{ ref: 'record.days' }, 10] } });
+    expect(kept.ok && kept.notes).toContain('Read the condition "${days > 10}" of (s) as record.days > 10');
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

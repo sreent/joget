@@ -26,6 +26,7 @@ import {
   callChoices,
   connect,
   sendChoices,
+  startingCondition,
   durationOf,
   durationParts,
   durationWords,
@@ -77,7 +78,7 @@ const FILLED_PATH: Partial<Record<ProcessElement['type'], string>> = {
  * BPMN's markers for what an event waits for or throws: a clock for a time, an envelope for a
  * message, a lightning bolt for an error, an arrow for a link. A throw event's marker is filled.
  */
-function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'message' | 'error' | 'link'; size?: number; filled?: boolean }) {
+function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'message' | 'error' | 'link' | 'condition'; size?: number; filled?: boolean }) {
   const fill = filled ? 'currentColor' : 'none';
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden className="text-text">
@@ -86,6 +87,8 @@ function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'messa
           <rect x="2" y="4" width="12" height="8.5" rx="1" fill={fill} stroke="currentColor" strokeWidth="1.3" />
           <path d="m2.5 4.5 5.5 4.5 5.5-4.5" fill="none" stroke={filled ? 'var(--surface)' : 'currentColor'} strokeWidth="1.3" strokeLinejoin="round" />
         </>
+      ) : kind === 'condition' ? (
+        <path d="M4 2.5h8v11H4ZM6 5.5h4M6 8h4M6 10.5h4" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
       ) : kind === 'link' ? (
         <path d="M2.5 6h6.5V3.5L13.5 8 9 12.5V10H2.5Z" fill={fill} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       ) : kind === 'error' ? (
@@ -129,6 +132,7 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
               <EventIcon kind={element.link !== undefined ? 'link' : eventKind(element)} />
             </div>
           ) : null}
+          {element.type === 'startEvent' && (element.timer || element.condition) ? <EventIcon kind={element.timer ? 'timer' : 'condition'} size={18} /> : null}
           {element.type === 'intermediateThrowEvent' ? (
             <div className="grid size-7 place-items-center rounded-full border border-text">
               {element.message ? <EventIcon kind="message" filled /> : element.link !== undefined ? <EventIcon kind="link" filled /> : null}
@@ -168,6 +172,12 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         <div className={cx('absolute size-[35px] rotate-45 border-[1.5px] border-text bg-surface', ring)} />
         {element.type === 'inclusiveGateway' ? (
           <span className="relative size-4 rounded-full border-[2.5px] border-text" aria-hidden />
+        ) : element.type === 'eventBasedGateway' ? (
+          <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden className="relative text-text">
+            <circle cx="11" cy="11" r="9.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            <circle cx="11" cy="11" r="7.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            <path d="M11 6.5 15.3 9.6 13.6 14.5H8.4L6.7 9.6Z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+          </svg>
         ) : (
           <span className="relative text-lg font-semibold text-text">{element.type === 'parallelGateway' ? '+' : '×'}</span>
         )}
@@ -747,6 +757,7 @@ const TYPE_LABELS: Readonly<Record<ProcessElement['type'], string>> = {
   exclusiveGateway: 'Decision',
   parallelGateway: 'Parallel',
   inclusiveGateway: 'Inclusive',
+  eventBasedGateway: 'Event-based gateway',
   intermediateCatchEvent: 'Timer',
   intermediateThrowEvent: 'Milestone',
   subProcess: 'Sub-process',
@@ -766,6 +777,7 @@ function typeLabel(element: ProcessElement): string {
     const kind = eventKind(element);
     if (kind === 'message') return 'Message';
     if (kind === 'error') return 'Error';
+    if (kind === 'condition') return 'Condition';
   }
   return TYPE_LABELS[element.type];
 }
@@ -851,6 +863,7 @@ function BoundaryEvents(props: {
   const events = Object.entries(process.elements).flatMap(([other, candidate]) => (candidate.type === 'boundaryEvent' && candidate.attachedTo === id ? [{ id: other, event: candidate }] : []));
   const deadlines = events.flatMap(({ id: other, event }) => (event.timer ? [{ id: other, event, timer: event.timer }] : []));
   const messages = events.flatMap(({ id: other, event }) => (event.message ? [{ id: other, event, action: event.message.action }] : []));
+  const conditions = events.flatMap(({ id: other, event }) => (event.condition ? [{ id: other, event, condition: event.condition }] : []));
   const error = events.find(({ event }) => event.error);
   const free = messageChoices(definition, process, id);
   return (
@@ -936,6 +949,32 @@ function BoundaryEvents(props: {
           </fieldset>
         </>
       ) : null}
+      {kinds.includes('condition') ? (
+        <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+          <legend className="px-1 text-sm text-muted">When a condition comes to hold</legend>
+          {conditions.map(({ id: holder, event, condition }) => (
+            <div key={holder} className="grid gap-1.5 rounded-md bg-sunken p-2">
+              <Problems messages={problems.get(holder)} />
+              <ConditionEditor
+                label="When this comes to hold"
+                value={condition}
+                onChange={(next) => onChange(updateElement(definition, name, holder, (current) => (current.type === 'boundaryEvent' ? { ...current, condition: next ?? condition } : current)))}
+                choices={recordChoices(definition, process.entity)}
+              />
+              <Checkbox
+                label={words.interrupts}
+                checked={event.interrupting}
+                onChange={(interrupting) => onChange(updateElement(definition, name, holder, (current) => ({ ...current, interrupting }) as ProcessElement))}
+              />
+              <Remove onClick={() => onChange(removeElement(definition, name, holder))}>Remove the condition</Remove>
+            </div>
+          ))}
+          <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'condition').definition)}>
+            Add a condition
+          </Button>
+          <p className="m-0 text-xs text-muted">It happens when a change to the record makes the condition hold, {words.open}.</p>
+        </fieldset>
+      ) : null}
       {kinds.includes('error') ? (
         <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
           <legend className="px-1 text-sm text-muted">{host.type === 'subProcess' ? 'If an action inside it fails' : 'If the action fails'}</legend>
@@ -987,6 +1026,14 @@ function ElementPanel(props: {
   const actions = updateActions(definition, process.entity);
   const dates = (entity?.fields ?? []).filter((field) => field.type === 'date' || field.type === 'datetime');
   const calls = callChoices(definition, name);
+  const conditionChoices = [
+    ...recordChoices(definition, process.entity),
+    ...Object.entries(process.elements).flatMap(([task, candidate]) =>
+      candidate.type === 'userTask'
+        ? [{ ref: `tasks.${task}.outcome`, label: `${candidate.name}: outcome`, kind: 'choice' as const, options: candidate.outcomes.map((outcome) => ({ value: outcome.name, label: outcome.label })) }]
+        : [],
+    ),
+  ];
   const links = Object.values(process.elements).flatMap((candidate) => (candidate.type === 'intermediateCatchEvent' && candidate.link !== undefined ? [candidate.link] : []));
   // The action a catch event waits for, kept apart: the narrowing of the element doesn't reach a field's render function.
   const awaited = element.type === 'intermediateCatchEvent' ? element.message?.action : undefined;
@@ -1009,21 +1056,72 @@ function ElementPanel(props: {
           )}
         </Field>
       ) : null}
-      {element.type === 'startEvent' ? (
-        <fieldset className="m-0 grid gap-1 rounded-md border border-line p-3">
-          <legend className="px-1 text-sm text-muted">Starts when this action is saved</legend>
-          {Object.entries(definition.actions)
-            .filter(([, action]) => action.entity === process.entity)
-            .map(([action, spec]) => (
-              <Checkbox
-                key={action}
-                label={spec.label}
-                checked={element.actions.includes(action)}
-                onChange={(on) => set((current) => (current.type === 'startEvent' ? { ...current, actions: on ? [...current.actions, action] : current.actions.filter((a) => a !== action) } : current))}
-              />
-            ))}
-          <p className="m-0 text-xs text-muted">Without one, people whose role may start the process start it on a record.</p>
-        </fieldset>
+      {element.type === 'startEvent' && element.in === undefined ? (
+        <>
+          <Field label="Starts">
+            {(inputId) => (
+              <Select
+                id={inputId}
+                value={element.condition ? 'condition' : element.timer ? ('date' in element.timer ? 'date' : 'after') : 'actions'}
+                onChange={(event) =>
+                  set((current) => {
+                    if (current.type !== 'startEvent') return current;
+                    const { timer: _timer, condition: _condition, ...rest } = current;
+                    const plain = { ...rest, actions: [] };
+                    if (event.target.value === 'date' && dates[0]) return { ...plain, timer: { date: dates[0].name } };
+                    if (event.target.value === 'after') return { ...plain, timer: { duration: 'P1D' } };
+                    if (event.target.value === 'condition') return { ...plain, condition: startingCondition(definition, process.entity) };
+                    return rest;
+                  })
+                }
+              >
+                <option value="actions">When an action is saved, or by hand</option>
+                <option value="date" disabled={!dates.length}>
+                  On a date of each record
+                </option>
+                <option value="after">A time after each record is created</option>
+                <option value="condition">When a condition comes to hold on a record</option>
+              </Select>
+            )}
+          </Field>
+          {element.condition ? (
+            <ConditionEditor
+              label="Starts when this comes to hold"
+              value={element.condition}
+              onChange={(condition) => set((current) => (current.type === 'startEvent' ? { ...current, condition: condition ?? startingCondition(definition, process.entity) } : current))}
+              choices={recordChoices(definition, process.entity)}
+            />
+          ) : element.timer && 'date' in element.timer ? (
+            <Field label="On the record's" hint="At the start of that day. A change to the date moves the start.">
+              {(inputId) => (
+                <Select id={inputId} value={element.timer && 'date' in element.timer ? element.timer.date : ''} onChange={(event) => set((current) => ({ ...current, timer: { date: event.target.value } }) as ProcessElement)}>
+                  {dates.map((field) => (
+                    <option key={field.name} value={field.name}>
+                      {field.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          ) : element.timer ? (
+            <DurationInput label="After the record is created" value={'duration' in element.timer ? element.timer.duration : 'P1D'} onChange={(duration) => set((current) => ({ ...current, timer: { duration } }) as ProcessElement)} />
+          ) : (
+            <fieldset className="m-0 grid gap-1 rounded-md border border-line p-3">
+              <legend className="px-1 text-sm text-muted">Starts when this action is saved</legend>
+              {Object.entries(definition.actions)
+                .filter(([, action]) => action.entity === process.entity)
+                .map(([action, spec]) => (
+                  <Checkbox
+                    key={action}
+                    label={spec.label}
+                    checked={element.actions.includes(action)}
+                    onChange={(on) => set((current) => (current.type === 'startEvent' ? { ...current, actions: on ? [...current.actions, action] : current.actions.filter((a) => a !== action) } : current))}
+                  />
+                ))}
+              <p className="m-0 text-xs text-muted">Without one, people whose role may start the process start it on a record.</p>
+            </fieldset>
+          )}
+        </>
       ) : null}
       {element.type === 'endEvent' ? (
         <>
@@ -1399,12 +1497,13 @@ function ElementPanel(props: {
             {(inputId) => (
               <Select
                 id={inputId}
-                value={element.message ? 'message' : element.timer && 'date' in element.timer ? 'date' : 'duration'}
+                value={element.message ? 'message' : element.condition ? 'condition' : element.timer && 'date' in element.timer ? 'date' : 'duration'}
                 onChange={(event) =>
                   set((current) => {
                     if (current.type !== 'intermediateCatchEvent') return current;
-                    const { timer: _timer, message: _message, ...rest } = current;
+                    const { timer: _timer, message: _message, condition: _condition, ...rest } = current;
                     if (event.target.value === 'message' && actions[0]) return { ...rest, message: { action: actions[0] } };
+                    if (event.target.value === 'condition') return { ...rest, condition: startingCondition(definition, process.entity) };
                     if (event.target.value === 'date' && dates[0]) return { ...rest, timer: { date: dates[0].name } };
                     return { ...rest, timer: { duration: 'P1D' } };
                   })
@@ -1417,10 +1516,18 @@ function ElementPanel(props: {
                 <option value="message" disabled={!actions.length}>
                   Until an action is saved
                 </option>
+                <option value="condition">Until a condition holds</option>
               </Select>
             )}
           </Field>
-          {awaited !== undefined ? (
+          {element.condition ? (
+            <ConditionEditor
+              label="Until this holds"
+              value={element.condition}
+              onChange={(condition) => set((current) => (current.type === 'intermediateCatchEvent' ? { ...current, condition: condition ?? startingCondition(definition, process.entity) } : current))}
+              choices={conditionChoices}
+            />
+          ) : awaited !== undefined ? (
             <Field label="Until it is saved" hint="Someone saves the action on the record, and the process goes on.">
               {(inputId) => (
                 <Select id={inputId} value={awaited} onChange={(event) => set((current) => ({ ...current, message: { action: event.target.value } }) as ProcessElement)}>
@@ -1460,6 +1567,11 @@ function ElementPanel(props: {
       ) : null}
       {element.type === 'exclusiveGateway' ? <p className="m-0 text-sm text-muted">Select a flow out of it to set when it is taken. The first flow whose condition holds is taken, or the one marked Otherwise.</p> : null}
       {element.type === 'parallelGateway' ? <p className="m-0 text-sm text-muted">Every flow out of it is taken at once. With several flows in, it waits for a token from each.</p> : null}
+      {element.type === 'eventBasedGateway' ? (
+        <p className="m-0 text-sm text-muted">
+          It waits for the first of the events after it: a time, an action saved on the record, a condition, or a receive task. The first that happens takes the path, and the others no longer wait.
+        </p>
+      ) : null}
       {element.type === 'inclusiveGateway' ? (
         <p className="m-0 text-sm text-muted">
           Select a flow out of it to set when it is taken. Every flow whose condition holds is taken, or else the one marked Otherwise. With several flows in, it waits for each path that can still arrive.

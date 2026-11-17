@@ -830,6 +830,124 @@ describe('rule checks, scripts, messages that a process sends, receive tasks and
   });
 });
 
+describe('conditions, event-based gateways and starts by themselves', () => {
+  /** The leave app with actions that change the days and the first day, a confirmation and a withdrawal. */
+  const withChanges = (definition: Record<string, any>) => {
+    const update = (label: string, set: Record<string, unknown>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    definition['actions'].make_long = update('Make it long', { days: 12 });
+    definition['actions'].make_short = update('Make it short', { days: 1 });
+    definition['actions'].move_start = update('Start on 5 January', { starts: '2026-01-05' });
+    definition['actions'].confirm_leave = update('Confirm the leave', { reason: 'Confirmed' });
+    definition['actions'].withdraw_leave = update('Withdraw the leave', { reason: 'Withdrawn' });
+    definition['roles'].employee.actions.push('make_long', 'make_short', 'move_start', 'confirm_leave', 'withdraw_leave');
+  };
+  const run = (app: string, action: string, recordId: string) => inject({ method: 'POST', url: `/v1/apps/${app}/actions/${action}/run`, ...as(alice), payload: { recordId } }, 200);
+  const processOf = async (app: string, recordId: string, process: string) =>
+    (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
+
+  it('starts a process when a change makes its condition hold, and on the first day of leave', async () => {
+    const app = await leaveApp('Leave, starting by itself', (definition) => {
+      withChanges(definition);
+      const simple = (label: string, start: Record<string, unknown>) => ({
+        label,
+        entity: 'leave_request',
+        elements: {
+          start: { type: 'startEvent', ...start },
+          note: { type: 'userTask', name: label, role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          end: { type: 'endEvent' },
+        },
+        flows: { f1: { from: 'start', to: 'note' }, f2: { from: 'note', to: 'end' } },
+      });
+      definition['processes'].long_review = simple('Review long leave', { condition: { gt: [{ ref: 'record.days' }, 10] } });
+      definition['processes'].first_day = simple('Cover the first day', { timer: { date: 'starts' } });
+    });
+    // Long from the start: the condition holds where there was no record before.
+    const long = await ask(app, { days: 12, starts: '2030-02-04', ends: '2030-02-19' });
+    expect(await processOf(app, long.record.id, 'long_review')).toMatchObject({ status: 'running' });
+    expect((await processOf(app, long.record.id, 'long_review')).events[0]).toMatchObject({ kind: 'started', detail: { condition: true } });
+    // Short at first; a change that makes it long starts the review, and a change that keeps it long starts nothing more.
+    const short = await ask(app, { days: 2, starts: '2030-03-04', ends: '2030-03-05' });
+    expect(await processOf(app, short.record.id, 'long_review')).toBeUndefined();
+    await run(app, 'make_long', short.record.id);
+    expect(await processOf(app, short.record.id, 'long_review')).toMatchObject({ status: 'running' });
+
+    // The first day of leave starts its process; moving the first day moves the start.
+    expect(await processOf(app, short.record.id, 'first_day')).toBeUndefined();
+    await t.server.processes.fireDue();
+    expect(await processOf(app, short.record.id, 'first_day')).toBeUndefined();
+    await run(app, 'move_start', short.record.id);
+    await t.server.processes.fireDue();
+    expect(await processOf(app, short.record.id, 'first_day')).toMatchObject({ status: 'running' });
+    expect((await processOf(app, short.record.id, 'first_day')).events[0]).toMatchObject({ kind: 'started', detail: { timer: true } });
+  });
+
+  it('waits for the first of several events, and hears a condition on a task', async () => {
+    const app = await leaveApp('Leave, waiting for what comes first', (definition) => {
+      withChanges(definition);
+      const process = definition['processes'].leave_approval;
+      Object.assign(process.elements, {
+        gate: { type: 'eventBasedGateway', name: 'What comes first?' },
+        two_days: { type: 'intermediateCatchEvent', name: 'Two days', timer: { duration: 'P2D' } },
+        withdrawn: { type: 'intermediateCatchEvent', name: 'Withdrawn', message: { action: 'withdraw_leave' } },
+        shortened: { type: 'intermediateCatchEvent', name: 'Shortened', condition: { lt: [{ ref: 'record.days' }, 2] } },
+        confirmed: { type: 'receiveTask', name: 'Confirmed', message: { action: 'confirm_leave' } },
+        grew: { type: 'boundaryEvent', name: 'Grew long', attachedTo: 'decide', interrupting: false, condition: { gt: [{ ref: 'record.days' }, 10] } },
+        hr_look: { type: 'userTask', name: 'Look at long leave', role: 'hr', outcomes: [{ name: 'done', label: 'Done' }] },
+        looked: { type: 'endEvent', name: 'Looked' },
+      });
+      process.flows.on_approve.to = 'gate';
+      Object.assign(process.flows, {
+        g1: { from: 'gate', to: 'two_days' },
+        g2: { from: 'gate', to: 'withdrawn' },
+        g3: { from: 'gate', to: 'shortened' },
+        g4: { from: 'gate', to: 'confirmed' },
+        w1: { from: 'two_days', to: 'approved' },
+        w2: { from: 'withdrawn', to: 'approved' },
+        w3: { from: 'shortened', to: 'approved' },
+        w4: { from: 'confirmed', to: 'approved' },
+        l1: { from: 'grew', to: 'hr_look' },
+        l2: { from: 'hr_look', to: 'looked' },
+      });
+      delete process.diagram;
+    });
+    const approve = async (recordId: string) => {
+      const [task] = (await inbox(bob)).filter((open: { recordId: string; element: string }) => open.recordId === recordId && open.element === 'decide');
+      await complete(bob, task.id, 'approve');
+    };
+    const taken = async (recordId: string) => (await processOf(app, recordId, 'leave_approval')).events.find((event: { element: string | null }) => ['two_days', 'withdrawn', 'shortened', 'confirmed'].includes(event.element ?? ''));
+
+    // While the manager decides, the leave grows long: HR looks at it beside the decision.
+    const first = await ask(app, { days: 4, starts: '2030-04-01', ends: '2030-04-04' });
+    await run(app, 'make_long', first.record.id);
+    expect((await inbox(carol)).filter((task: { recordId: string }) => task.recordId === first.record.id).map((task: { name: string }) => task.name)).toEqual(['Look at long leave']);
+    // Growing again doesn't make it happen again: the condition held before the change.
+    await run(app, 'make_long', first.record.id);
+    expect((await inbox(carol)).filter((task: { recordId: string }) => task.recordId === first.record.id)).toHaveLength(1);
+    // Approved: the confirmation comes first.
+    await approve(first.record.id);
+    expect(await processOf(app, first.record.id, 'leave_approval')).toMatchObject({ waiting: expect.arrayContaining([{ element: 'gate', name: 'What comes first?' }]) });
+    await run(app, 'confirm_leave', first.record.id);
+    expect(await taken(first.record.id)).toMatchObject({ kind: 'message', element: 'confirmed' });
+
+    // Another leave: shortened before anything else.
+    const second = await ask(app, { days: 4, starts: '2030-05-06', ends: '2030-05-09' });
+    await approve(second.record.id);
+    await run(app, 'make_short', second.record.id);
+    expect(await taken(second.record.id)).toMatchObject({ kind: 'condition', element: 'shortened' });
+    // The confirmation that comes after it moves nothing: the gateway no longer waits.
+    await run(app, 'confirm_leave', second.record.id);
+    const done = await processOf(app, second.record.id, 'leave_approval');
+    expect(done.status).toBe('completed');
+    expect(done.events.filter((event: { kind: string }) => event.kind === 'message')).toEqual([]);
+
+    // A third: withdrawn first.
+    const third = await ask(app, { days: 4, starts: '2030-06-03', ends: '2030-06-06' });
+    await approve(third.record.id);
+    await run(app, 'withdraw_leave', third.record.id);
+    expect(await taken(third.record.id)).toMatchObject({ kind: 'message', element: 'withdrawn' });
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

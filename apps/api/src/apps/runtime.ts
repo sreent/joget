@@ -275,11 +275,14 @@ function processAuthority(action: string, entity: string, instanceId: string): A
 export interface ProcessHooks {
   /** Refuse an action that decides a task assigned to someone else. */
   checkDecider(tx: AppTransaction, loaded: LoadedApp, recordId: string, action: string, actorId: string): Promise<void>;
-  /** After an action commits on a record, in its transaction: complete the tasks it decides, and start the processes it starts. */
+  /**
+   * After an action commits on a record, in its transaction: complete the tasks it decides, start
+   * the processes it starts, and hear the change. `before` is the record as it was, null for a new one.
+   */
   afterAction(
     tx: AppTransaction,
     loaded: LoadedApp,
-    event: { readonly action: string; readonly recordId: string; readonly by: AuthContext['actor']; readonly writer: Writer },
+    event: { readonly action: string; readonly recordId: string; readonly by: AuthContext['actor']; readonly writer: Writer; readonly before: RecordValues | null },
   ): Promise<void>;
 }
 
@@ -1434,7 +1437,9 @@ export class AppRuntime {
     }))!;
     await this.queueSkills(run.writer, loaded, tx, { action: name, recordId: record.id, calls: skills, onBehalfOf: run.onBehalfOf });
     // The processes it moves: tasks it decides complete, and processes it starts begin (design §6.10).
-    if (run.origin.kind === 'request') await this.#processes?.afterAction(tx, loaded, { action: name, recordId: record.id, by: run.origin.auth.actor, writer: run.writer });
+    if (run.origin.kind === 'request') {
+      await this.#processes?.afterAction(tx, loaded, { action: name, recordId: record.id, by: run.origin.auth.actor, writer: run.writer, before: before ? beforeValues : null });
+    }
     return { status: 'done' as const, record: { id: record.id, version: record.version } };
   }
 
@@ -1718,7 +1723,7 @@ export class AppRuntime {
         files,
       });
       await this.queueSkills(writer, loaded, tx, { action: proposal.action, recordId: record!.id, calls: effect.skills ?? [], proposalId: id, onBehalfOf: locked!.onBehalfOf });
-      await this.#processes?.afterAction(tx, loaded, { action: proposal.action, recordId: record!.id, by: auth.actor, writer });
+      await this.#processes?.afterAction(tx, loaded, { action: proposal.action, recordId: record!.id, by: auth.actor, writer, before: before ? recordValues(before) : null });
       await tx.db.update(proposals).set({ status: 'approved', decidedAt: now, resultRecordId: record!.id }).where(eq(proposals.id, id));
       await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
         action: 'proposal.approve',

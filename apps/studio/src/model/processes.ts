@@ -14,6 +14,7 @@ import {
   type UserTaskElement,
 } from '@platform/app-model';
 import type { Definition } from '../types.js';
+import type { Condition } from './conditions.js';
 import { toName } from './edit.js';
 
 /*
@@ -29,7 +30,7 @@ type Shape = Diagram['shapes'][string];
  * What the palette adds: an element of a type; a catch event that waits for an action instead of
  * a time; or a throw event that marks a milestone, sends a message, or links to a catch link.
  */
-export type ElementKind = Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent' | 'intermediateThrowEvent'> | 'messageEvent' | 'milestone' | 'messageThrow' | 'link';
+export type ElementKind = Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent' | 'intermediateThrowEvent'> | 'messageEvent' | 'conditionEvent' | 'milestone' | 'messageThrow' | 'link';
 
 /** Where the rest of BPMN stands in the palette. */
 export type PaletteGroup = 'Tasks' | 'Gateways' | 'Events' | 'Parts';
@@ -49,7 +50,9 @@ export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label
   { kind: 'task', label: 'Task', hint: 'Work that is only drawn', group: 'Tasks' },
   { kind: 'manualTask', label: 'Manual task', hint: 'Work away from any system', group: 'Tasks' },
   { kind: 'inclusiveGateway', label: 'Inclusive', hint: 'Each path whose condition holds, then wait for them', group: 'Gateways' },
+  { kind: 'eventBasedGateway', label: 'Event-based', hint: 'Wait for the first of several events: a time, an action, a condition', group: 'Gateways' },
   { kind: 'messageEvent', label: 'Message', hint: 'Wait until an action is saved on the record', group: 'Events' },
+  { kind: 'conditionEvent', label: 'Condition', hint: 'Wait until a condition on the record holds', group: 'Events' },
   { kind: 'messageThrow', label: 'Send a message', hint: 'Run an action as a message, and go on', group: 'Events' },
   { kind: 'milestone', label: 'Milestone', hint: 'A point that the history marks', group: 'Events' },
   { kind: 'link', label: 'Link', hint: 'Jump from here to a catch link, to spare a long flow', group: 'Events' },
@@ -77,10 +80,12 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   milestone: 'milestone',
   messageThrow: 'send',
   link: 'link',
+  eventBasedGateway: 'first',
+  conditionEvent: 'wait',
 };
 
 const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 }, sub: { width: 340, height: 180 } } as const;
-const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'milestone', 'messageThrow', 'link']);
+const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'conditionEvent', 'milestone', 'messageThrow', 'link']);
 export const sizeOf = (type: ProcessElementType | ElementKind) =>
   type === 'subProcess' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
 
@@ -151,6 +156,12 @@ export function sendChoices(definition: Definition, name: string): Array<{ reado
         : [],
     ),
   ];
+}
+
+/** A condition to start from on a record of an entity: that its first field has a value. The builder changes it. */
+export function startingCondition(definition: Definition, entity: string): Condition {
+  const field = definition.entities[entity]?.fields.find((each) => each.type !== 'lines')?.name ?? 'id';
+  return { exists: `record.${field}` };
 }
 
 /** A link name that no link of the process has yet. */
@@ -281,6 +292,10 @@ export function newElement(definition: Definition, process: Process, type: Eleme
       return { type, name: 'Wait', timer: { duration: 'P1D' } };
     case 'messageEvent':
       return { type: 'intermediateCatchEvent', name: label, message: { action } };
+    case 'conditionEvent':
+      return { type: 'intermediateCatchEvent', name: 'Until it holds', condition: startingCondition(definition, process.entity) };
+    case 'eventBasedGateway':
+      return { type, name: 'What comes first?' };
     case 'endEvent':
       return { type, name: 'End', terminate: false };
     case 'task':
@@ -332,7 +347,7 @@ export function addElement(
       diagram.shapes[id] = clear(process, diagram, id, { x: center.x - size.width / 2, y: center.y - size.height / 2, ...size });
       if (type !== 'endEvent') process.flows[freeId(process, 'flow')] = { from: id, to: on.to };
       on.to = id;
-      finish(process, id);
+      finish(process, id, definition);
       return;
     }
     const after = options.after ? diagram.shapes[options.after] : undefined;
@@ -360,9 +375,42 @@ export function addElement(
       }
     }
     diagram.shapes[id] = clear(process, diagram, id, { ...at, ...size });
-    finish(process, id);
+    finish(process, id, definition);
   });
   return { definition: next, id };
+}
+
+/**
+ * An event-based gateway waits for the first of the events after it: it comes with a time and an
+ * action saved on the record (or a condition), each leading where its path went.
+ */
+function firstOf(process: Process, id: string, definition?: Definition): void {
+  const shapes = process.diagram!.shapes;
+  const box = shapes[id]!;
+  const out = Object.entries(process.flows).filter(([, flow]) => flow.from === id);
+  const target = out[0]?.[1].to;
+  for (const [flowId] of out) {
+    delete process.flows[flowId];
+    delete process.diagram!.edges[flowId];
+  }
+  // Make a column for the events: what stands right of the gateway moves right.
+  const cut = box.x + box.width;
+  for (const [other, shape] of Object.entries(shapes)) if (other !== id && !scopesOf(process, id).includes(other) && shape.x >= cut - 1) shape.x += 110;
+  const action = definition ? updateActions(definition, process.entity)[0] : undefined;
+  const scope = scopeOf(process, id);
+  const events: ProcessElement[] = [
+    { type: 'intermediateCatchEvent', name: 'One day', timer: { duration: 'P1D' }, ...(scope !== undefined ? { in: scope } : {}) },
+    action
+      ? { type: 'intermediateCatchEvent', name: definition!.actions[action]!.label, message: { action }, ...(scope !== undefined ? { in: scope } : {}) }
+      : { type: 'intermediateCatchEvent', name: 'Until it holds', condition: definition ? startingCondition(definition, process.entity) : { exists: 'record.id' }, ...(scope !== undefined ? { in: scope } : {}) },
+  ];
+  events.forEach((event, index) => {
+    const eventId = freeId(process, 'wait');
+    process.elements[eventId] = event;
+    shapes[eventId] = clear(process, process.diagram!, eventId, { x: cut + 50, y: box.y + box.height / 2 - 18 + index * 90, width: 36, height: 36 });
+    process.flows[freeId(process, 'flow')] = { from: id, to: eventId };
+    if (target) process.flows[freeId(process, 'flow')] = { from: eventId, to: target };
+  });
 }
 
 /**
@@ -394,9 +442,10 @@ function linkUp(process: Process, id: string, options: { readonly after?: string
 }
 
 /** What adding an element ends with: a sub-process gets its own start and end, the sub-processes it is in grow to hold it, and the flows follow. */
-function finish(process: Process, id: string): void {
+function finish(process: Process, id: string, definition?: Definition): void {
   const shapes = process.diagram!.shapes;
   const box = shapes[id];
+  if (process.elements[id]?.type === 'eventBasedGateway' && box) firstOf(process, id, definition);
   if (process.elements[id]?.type === 'subProcess' && box) {
     const start = freeId(process, 'start');
     process.elements[start] = { type: 'startEvent', in: id, actions: [] };
@@ -543,18 +592,20 @@ export function arrange(definition: Definition, name: string): Definition {
  * What a boundary can wait for: a deadline or an action saved on the record, on a user task, a
  * sub-process or a call; the failure of an action, on a system task or a sub-process.
  */
-export type BoundaryKind = 'timer' | 'message' | 'error';
+export type BoundaryKind = 'timer' | 'message' | 'condition' | 'error';
 
 /** The elements whose boundary takes an event of a kind. */
 export const BOUNDARY_HOSTS: Readonly<Record<BoundaryKind, readonly ProcessElementType[]>> = {
   timer: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
   message: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
+  condition: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
   error: ['serviceTask', 'scriptTask', 'sendTask', 'subProcess'],
 };
 
 const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonly end: string; readonly endPrefix: string }>> = {
   timer: { prefix: 'deadline', end: 'Too late', endPrefix: 'too_late' },
   message: { prefix: 'message', end: 'Stopped', endPrefix: 'stopped' },
+  condition: { prefix: 'condition', end: 'Changed', endPrefix: 'changed' },
   error: { prefix: 'error', end: 'Failed', endPrefix: 'failed' },
 };
 
@@ -588,6 +639,7 @@ export function addBoundary(definition: Definition, name: string, task: string, 
     if (!host || !BOUNDARY_HOSTS[kind].includes(host.type)) return;
     let event: BoundaryEventElement;
     if (kind === 'timer') event = { type: 'boundaryEvent', name: 'Deadline', attachedTo: task, interrupting: true, timer: { duration: 'P3D' } };
+    else if (kind === 'condition') event = { type: 'boundaryEvent', name: 'When it holds', attachedTo: task, interrupting: false, condition: startingCondition(definition, process.entity) };
     else if (kind === 'error') event = { type: 'boundaryEvent', name: 'Error', attachedTo: task, interrupting: true, error: true };
     else {
       const action = messageChoices(definition, process, task)[0];

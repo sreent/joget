@@ -1,6 +1,7 @@
 import type { PermissionGrant } from '@platform/authz';
 import type { StoredDefinition, StoredEntity } from './fields.js';
 import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles.js';
+import { conditionText } from './condition-text.js';
 import { processWork } from './processes.js';
 import type { Action, ConfirmationLevel, Process, Query } from './schema.js';
 import { skillSteps } from './steps.js';
@@ -271,8 +272,9 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       const starts = startingActions(h);
       const { actions, skills, calls, scripts } = processWork(h);
       const called = Object.values(headProcesses).some((other) => processWork(other).calls.includes(name));
+      const how = [...(starts.length ? [`${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it`] : []), ...automaticStarts(h).map((words) => `it starts by itself ${words}`)];
       const texts = [
-        `New process ${h.label}, on ${entityLabel(h.entity)}: ${starts.length ? `${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it` : called ? 'another process calls it' : 'people start it by hand'}`,
+        `New process ${h.label}, on ${entityLabel(h.entity)}: ${how.length ? how.join('; ') : called ? 'another process calls it' : 'people start it by hand'}`,
         ...(actions.length ? [`It runs ${actions.join(', ')} by itself`] : []),
         ...(skills.length ? [`It starts the a7c skill${skills.length > 1 ? 's' : ''} ${skills.join(', ')}`] : []),
         ...(calls.length ? [`It calls ${calls.join(', ')}`] : []),
@@ -293,12 +295,25 @@ function startingActions(process: Process): string[] {
   return [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'startEvent' ? element.actions : [])))];
 }
 
+/** How a process starts by itself, in words: on a date of each record, a time after each is created, or when a condition comes to hold. */
+function automaticStarts(process: Process): string[] {
+  return Object.values(process.elements).flatMap((element) => {
+    if (element.type !== 'startEvent' || element.in) return [];
+    if (element.timer) return ['date' in element.timer ? `on each record's ${element.timer.date}` : `${element.timer.duration} after each record is created`];
+    if (element.condition) return [`when ${conditionText(element.condition)} comes to hold`];
+    return [];
+  });
+}
+
 /** What a reviewer weighs in a changed process: what starts it, what it does by itself, and whether its flow changed. Its layout doesn't count. */
 function processChanges(b: Process, h: Process): string[] {
   const texts: string[] = [];
   const [startsBefore, startsAfter] = [startingActions(b), startingActions(h)];
   for (const action of startsAfter) if (!startsBefore.includes(action)) texts.push(`${action} now starts ${h.label}`);
   for (const action of startsBefore) if (!startsAfter.includes(action)) texts.push(`${action} no longer starts ${h.label}`);
+  const [autoBefore, autoAfter] = [automaticStarts(b), automaticStarts(h)];
+  for (const words of autoAfter) if (!autoBefore.includes(words)) texts.push(`${h.label} now starts by itself ${words}`);
+  for (const words of autoBefore) if (!autoAfter.includes(words)) texts.push(`${h.label} no longer starts by itself ${words}`);
   const [before, after] = [processWork(b), processWork(h)];
   for (const action of after.actions) if (!before.actions.includes(action)) texts.push(`${h.label} now runs ${action} by itself`);
   for (const action of before.actions) if (!after.actions.includes(action)) texts.push(`${h.label} no longer runs ${action} by itself`);
@@ -372,8 +387,8 @@ export function lintDefinition(definition: StoredDefinition): string[] {
   }
   const called = new Set(Object.values(definition.processes ?? {}).flatMap((process) => processWork(process).calls));
   for (const [name, process] of Object.entries(definition.processes ?? {})) {
-    if (!startingActions(process).length && !roles.some((role) => role.processes?.includes(name)) && !called.has(name)) {
-      findings.push(`Nothing starts the process ${process.label}: no start event names an action, no role may start it, and no process calls it`);
+    if (!startingActions(process).length && !automaticStarts(process).length && !roles.some((role) => role.processes?.includes(name)) && !called.has(name)) {
+      findings.push(`Nothing starts the process ${process.label}: no start event names an action, a timer or a condition, no role may start it, and no process calls it`);
     }
   }
   for (const [name, role] of Object.entries(definition.roles)) {

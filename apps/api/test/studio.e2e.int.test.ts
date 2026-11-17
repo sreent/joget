@@ -518,6 +518,33 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.elements['land_1']).toMatchObject({ type: 'intermediateCatchEvent', link: 'link_1' });
   });
 
+  it('designs an event-based gateway, and a process that starts when a condition comes to hold', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with waits', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await visible(canvas);
+    // Once approved, wait for the first of a day or the next decision.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('eventBasedGateway');
+    await visible(page.getByRole('heading', { name: 'Event-based gateway', exact: true }));
+    await visible(canvas.getByText('One day', { exact: true }));
+    // The process starts by itself on long leave.
+    await canvas.getByText('Leave requested', { exact: true }).click();
+    await page.getByLabel('Starts', { exact: true }).selectOption('condition');
+    await visible(page.getByRole('group', { name: 'Starts when this comes to hold' }));
+    await shot(page, '15g-process-event-gateway');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['first_1']).toEqual({ type: 'eventBasedGateway', name: 'What comes first?' });
+    expect(saved.elements['requested']).toMatchObject({ type: 'startEvent', actions: [], condition: { exists: 'record.kind' } });
+  });
+
   it('designs a sub-process with a task inside it, and a call to another process of the app', async () => {
     // The leave template, with a second process on the same requests, for the first to call.
     const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a review', template: 'leave' } });

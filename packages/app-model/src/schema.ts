@@ -504,6 +504,13 @@ const StartEvent = z.strictObject({
   in: In,
   /** Without actions, a person whose role may start the process starts it on a record, or another process calls it. */
   actions: z.array(Name).max(10).default([]),
+  /**
+   * Starts the process on each record by itself: on a date field of the record, at the start of
+   * that day; or a duration after the record is created.
+   */
+  timer: Timer.optional(),
+  /** Starts the process on a record when a change makes this condition on it hold, where it didn't before. */
+  condition: ConditionSchema.optional(),
 });
 /**
  * Where a path ends. A terminate end event ends the whole instance, other paths included; inside a
@@ -624,6 +631,11 @@ const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), n
 /** Takes every flow out at once; with several flows in, waits for a token from each. */
 const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), name: Label.optional(), in: In });
 
+/**
+ * Waits for the first of the events after it: a timer, a message, a condition, or a receive task.
+ * The first that happens takes the path; the others no longer wait.
+ */
+const EventBasedGateway = z.strictObject({ type: z.literal('eventBasedGateway'), name: Label.optional(), in: In });
 /** Takes every flow out whose condition holds, or else its default; with several flows in, waits for every path that can still arrive. */
 const InclusiveGateway = z.strictObject({ type: z.literal('inclusiveGateway'), name: Label.optional(), in: In });
 /** Waits until a timer fires or a message comes; or, as a link, takes over from the throw link of the same name. One of these. */
@@ -634,6 +646,8 @@ const CatchEvent = z.strictObject({
   timer: Timer.optional(),
   message: Message.optional(),
   link: Name.optional(),
+  /** Waits until this condition on the record holds; if it holds already, the path goes straight on. */
+  condition: ConditionSchema.optional(),
 });
 /**
  * A point that a path passes: a milestone that the history marks; a message that it sends on the
@@ -674,6 +688,8 @@ const BoundaryEvent = z.strictObject({
   timer: Timer.optional(),
   message: Message.optional(),
   error: z.literal(true).optional(),
+  /** Happens when a change to the record makes this condition hold, where it didn't before. */
+  condition: ConditionSchema.optional(),
 });
 
 export const ProcessElement = z.discriminatedUnion('type', [
@@ -690,6 +706,7 @@ export const ProcessElement = z.discriminatedUnion('type', [
   ExclusiveGateway,
   ParallelGateway,
   InclusiveGateway,
+  EventBasedGateway,
   CatchEvent,
   ThrowEvent,
   SubProcess,

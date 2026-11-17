@@ -1,4 +1,4 @@
-import { evaluateCondition, type ConditionEnv } from '@platform/authz';
+import { evaluateCondition, type Condition, type ConditionEnv } from '@platform/authz';
 import type { StoredDefinition } from './fields.js';
 import { DURATION_PATTERN, type BoundaryEventElement, type CatchEventElement, type Process, type ProcessElement, type ProcessElementType, type Timer, type VoteRule } from './schema.js';
 import { conditionRecord, type RecordValues } from './values.js';
@@ -51,6 +51,7 @@ const TYPE_WORDS: Readonly<Record<ProcessElementType, string>> = {
   exclusiveGateway: 'Exclusive gateway',
   parallelGateway: 'Parallel gateway',
   inclusiveGateway: 'Inclusive gateway',
+  eventBasedGateway: 'Event-based gateway',
   intermediateCatchEvent: 'Event',
   intermediateThrowEvent: 'Event',
   subProcess: 'Sub-process',
@@ -98,8 +99,27 @@ export function plainStartOf(process: Process): string | undefined {
   const starts = startEventsOf(process);
   return starts.find((id) => {
     const element = process.elements[id];
-    return element?.type === 'startEvent' && !element.actions.length;
+    return element?.type === 'startEvent' && !element.actions.length && !element.timer && !element.condition;
   }) ?? starts[0];
+}
+
+/** A start event of the process itself that starts on its own: on a record's date or a time after it is created, or when a condition comes to hold. */
+export interface AutomaticStart {
+  readonly process: string;
+  readonly element: string;
+  readonly timer?: Timer;
+  readonly condition?: Condition;
+}
+
+/** The start events of the app's processes about an entity that start by themselves, with a timer or a condition. */
+export function automaticStarts(definition: Pick<StoredDefinition, 'processes'>, entity: string): AutomaticStart[] {
+  return Object.entries(definition.processes ?? {}).flatMap(([process, model]) =>
+    model.entity !== entity
+      ? []
+      : Object.entries(model.elements).flatMap(([element, el]) =>
+          el.type === 'startEvent' && !el.in && (el.timer || el.condition) ? [{ process, element, ...(el.timer ? { timer: el.timer } : {}), ...(el.condition ? { condition: el.condition } : {}) }] : [],
+        ),
+  );
 }
 
 /**
@@ -231,9 +251,11 @@ export function reachable(process: Process, graph: ProcessGraph, from: string): 
   return seen;
 }
 
-/** What an event waits for: a time, an action saved on the record (a message), or the failure of its task's action. */
-export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' {
+/** What an event waits for: a time, an action saved on the record (a message), a condition on the record, the failure of an action, or a link. */
+export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' | 'condition' | 'link' {
   if (event.message) return 'message';
+  if (event.condition) return 'condition';
+  if (event.type === 'intermediateCatchEvent' && event.link !== undefined) return 'link';
   return event.type === 'boundaryEvent' && event.error ? 'error' : 'timer';
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   accessChanges,
   addDuration,
+  automaticStarts,
   capabilityChanges,
   decideVotes,
   decisionsBy,
@@ -160,9 +161,9 @@ describe('inclusive gateways, messages and errors', () => {
         }),
       ),
     ).toEqual([
-      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll can't have a timer or a message on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
+      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll can't have a timer, a message or a condition on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
       'processes.leave_approval.elements.failed.interrupting: An error always ends what it sits on',
-      'processes.leave_approval.elements.wait: Until withdrawn waits for a timer or a message, or is a link: one of these',
+      'processes.leave_approval.elements.wait: Until withdrawn waits for a timer, a message or a condition, or is a link: one of these',
       "processes.leave_approval.elements.also.message.action: approve_leave decides Decide on the leave, so it can't also interrupt it",
     ]);
   });
@@ -258,7 +259,7 @@ describe('sub-processes and call activities', () => {
     expect(issues).toEqual(
       expect.arrayContaining([
         "processes.leave_approval.flows.out_of_it: A flow can't cross the edge of a sub-process: Start event review_start is in Review, and Leave rejected is in the process itself",
-        "processes.leave_approval.elements.review_start.actions: A start event inside a sub-process starts when the sub-process does: it names no actions",
+        "processes.leave_approval.elements.review_start: A start event inside a sub-process starts when the sub-process does: it names no action, timer or condition",
         "processes.leave_approval.elements.stray.in: Decide on the leave isn't a sub-process: only a sub-process holds other elements",
         "processes.leave_approval.elements.look.record: manager doesn't refer to a record",
         'processes.leave_approval.elements.look.process: Second look has no start event without actions, where a call starts it',
@@ -431,6 +432,86 @@ describe('script, rule check, send and receive tasks, and simple events', () => 
   });
 });
 
+/**
+ * The leave app with processes that start by themselves, and a wait for the first of several
+ * events: a reminder on the first day of leave, a review when leave grows long, and, after the
+ * decision, a wait for the confirmation, a withdrawal, long leave or two days.
+ */
+function waits(edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined): Record<string, any> {
+  return leave((process, definition) => {
+    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    definition['actions'].confirm_leave = update('Confirm the leave', { reason: 'Confirmed' });
+    definition['actions'].withdraw_leave = update('Withdraw the leave', { status: 'rejected' });
+    const simple = (label: string, start: Record<string, unknown>) => ({
+      label,
+      entity: 'leave_request',
+      elements: { start: { type: 'startEvent', ...start }, end: { type: 'endEvent' } },
+      flows: { through: { from: 'start', to: 'end' } },
+    });
+    definition['processes'].first_day = simple('First day', { timer: { date: 'starts' } });
+    definition['processes'].long_review = simple('Long review', { condition: { gt: [{ ref: 'record.days' }, 10] } });
+    Object.assign(process.elements, {
+      gate: { type: 'eventBasedGateway', name: 'What comes first?' },
+      two_days: { type: 'intermediateCatchEvent', name: 'Two days', timer: { duration: 'P2D' } },
+      withdrawn: { type: 'intermediateCatchEvent', name: 'Withdrawn', message: { action: 'withdraw_leave' } },
+      long: { type: 'intermediateCatchEvent', name: 'Long now', condition: { gt: [{ ref: 'record.days' }, 10] } },
+      confirm: { type: 'receiveTask', name: 'Confirmed', message: { action: 'confirm_leave' } },
+      shorter: { type: 'boundaryEvent', attachedTo: 'decide', interrupting: false, condition: { lt: [{ ref: 'record.days' }, 2] } },
+      note: { type: 'manualTask', name: 'Tell the team' },
+    });
+    process.flows.on_approve.to = 'gate';
+    Object.assign(process.flows, {
+      g1: { from: 'gate', to: 'two_days' },
+      g2: { from: 'gate', to: 'withdrawn' },
+      g3: { from: 'gate', to: 'long' },
+      g4: { from: 'gate', to: 'confirm' },
+      w1: { from: 'two_days', to: 'approved' },
+      w2: { from: 'withdrawn', to: 'approved' },
+      w3: { from: 'long', to: 'approved' },
+      w4: { from: 'confirm', to: 'approved' },
+      s1: { from: 'shorter', to: 'note' },
+      s2: { from: 'note', to: 'approved' },
+    });
+    delete process.diagram;
+    edit(process, definition);
+  });
+}
+
+describe('conditions, event-based gateways and starts by themselves', () => {
+  it('pass the checks, and name the starts that need no person', () => {
+    const definition = valid(waits());
+    expect(automaticStarts(definition, 'leave_request')).toEqual([
+      { process: 'first_day', element: 'start', timer: { date: 'starts' } },
+      { process: 'long_review', element: 'start', condition: { gt: [{ ref: 'record.days' }, 10] } },
+    ]);
+    expect(capabilityChanges(valid(leave()), definition).map((change) => change.text)).toEqual(
+      expect.arrayContaining([
+        "New process First day, on Leave request: it starts by itself on each record's starts",
+        'New process Long review, on Leave request: it starts by itself when record.days > 10 comes to hold',
+      ]),
+    );
+  });
+
+  it('are checked: one way to start, events that wait after the gateway, and no task outcome before a start', () => {
+    const issues = issuesOf(
+      waits((process, definition) => {
+        definition['processes'].first_day.elements.start.actions = ['request_leave'];
+        definition['processes'].long_review.elements.start.condition = { eq: [{ ref: 'tasks.decide.outcome' }, 'approve'] };
+        process.flows.g3.to = 'note';
+        process.flows.extra = { from: 'requested', to: 'two_days' };
+      }),
+    );
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        'processes.first_day.elements.start: Start event start starts on actions, a timer or a condition: one of these',
+        'processes.long_review.elements.start.condition: tasks.decide.outcome: the process has no user task decide',
+        "processes.leave_approval.flows.g3: Tell the team doesn't wait: after What comes first? come events that wait for a timer, a message or a condition, or receive tasks",
+        'processes.leave_approval.elements.two_days: Two days waits after What comes first? only: no other flow leads into it',
+      ]),
+    );
+  });
+});
+
 describe('votes, when several people decide', () => {
   const all = { count: 'all', outcome: 'approve', otherwise: 'reject' } as const;
   it('decide as soon as the outcome is sure, either way', () => {
@@ -560,7 +641,7 @@ describe('the checks of a process', () => {
       'processes.leave_approval.flows.self.from: End event island_end is an end event: no flow leaves it',
       'processes.leave_approval.flows.bare: A flow out of Exclusive gateway which needs a condition, or must be its default',
       "processes.leave_approval.elements.wait.timer.date: reason isn't a date or a time",
-      "processes.leave_approval.elements.late.attachedTo: Event wait can't have a timer or a message on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
+      "processes.leave_approval.elements.late.attachedTo: Event wait can't have a timer, a message or a condition on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
       "processes.leave_approval.elements.island: Island can't be reached from a start event",
       "processes.leave_approval.elements.island_end: End event island_end can't be reached from a start event",
       'processes.leave_approval.diagram.shapes.gone: No element gone',

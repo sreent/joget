@@ -338,9 +338,14 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
                 };
               case 'serviceTask':
                 return element.input ? { ...element, input: mapRecord(element.input, (value) => mapExpressionRefs(value, refs(entity))) } : element;
+              case 'startEvent':
               case 'intermediateCatchEvent':
               case 'boundaryEvent':
-                return element.timer && 'date' in element.timer ? { ...element, timer: { date: field(element.timer.date) } } : element;
+                return {
+                  ...element,
+                  ...(element.timer && 'date' in element.timer ? { timer: { date: field(element.timer.date) } } : {}),
+                  ...(element.condition ? { condition: condition(entity, element.condition) } : {}),
+                };
               case 'callActivity':
                 return element.record ? { ...element, record: field(element.record) } : element;
               case 'scriptTask':
@@ -1177,8 +1182,17 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
       }
       switch (element.type) {
         case 'startEvent':
-          if (element.in === undefined) starts++;
-          else if (element.actions.length) issues.push({ path: `${path}.actions`, message: 'A start event inside a sub-process starts when the sub-process does: it names no actions' });
+          if (element.in === undefined) {
+            starts++;
+            if ([element.actions.length > 0, element.timer, element.condition].filter(Boolean).length > 1) {
+              issues.push({ path, message: `${label(id)} starts on actions, a timer or a condition: one of these` });
+            }
+          } else if (element.actions.length || element.timer || element.condition) {
+            issues.push({ path, message: 'A start event inside a sub-process starts when the sub-process does: it names no action, timer or condition' });
+          }
+          if (element.timer) checkTimer(element.timer, path);
+          // A start's condition reads the record: no task has an outcome yet.
+          if (element.condition) checkCondition(element.condition, { ...scope, tasks: new Map() }, `${path}.condition`, issues);
           oneOut();
           element.actions.forEach((action, index) => {
             if (!startAction(action, `${path}.actions[${index}]`)) return;
@@ -1372,10 +1386,11 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           break;
         case 'intermediateCatchEvent':
           oneOut();
-          if ([element.timer, element.message, element.link].filter((kind) => kind !== undefined).length !== 1) {
-            issues.push({ path, message: `${label(id)} waits for a timer or a message, or is a link: one of these` });
+          if ([element.timer, element.message, element.link, element.condition].filter((kind) => kind !== undefined).length !== 1) {
+            issues.push({ path, message: `${label(id)} waits for a timer, a message or a condition, or is a link: one of these` });
           }
           if (element.timer) checkTimer(element.timer, path);
+          if (element.condition) checkCondition(element.condition, scope, `${path}.condition`, issues);
           if (element.message) heard(element.message, `${path}.message`);
           if (element.link !== undefined) {
             if (into.length) issues.push({ path, message: `${label(id)} takes over from its throw link: no flow leads into it` });
@@ -1399,10 +1414,22 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         case 'parallelGateway':
           if (!out.length) issues.push({ path, message: `${label(id)} needs a flow out` });
           break;
+        case 'eventBasedGateway': {
+          if (out.length < 2) issues.push({ path, message: `${label(id)} waits for the first of the events after it: draw flows to at least two` });
+          for (const flowId of out) {
+            const target = process.flows[flowId]!.to;
+            const event = process.elements[target];
+            const waits = (event?.type === 'intermediateCatchEvent' && event.link === undefined) || event?.type === 'receiveTask';
+            if (!waits) issues.push({ path: `${base}.flows.${flowId}`, message: `${label(target)} doesn't wait: after ${label(id)} come events that wait for a timer, a message or a condition, or receive tasks` });
+            else if ((graph.incoming.get(target) ?? []).length !== 1) issues.push({ path: `${base}.elements.${target}`, message: `${label(target)} waits after ${label(id)} only: no other flow leads into it` });
+          }
+          break;
+        }
         case 'boundaryEvent': {
           const host = process.elements[element.attachedTo];
-          const kinds = [element.timer, element.message, element.error].filter(Boolean).length;
-          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message or an error: one of the three` });
+          const kinds = [element.timer, element.message, element.error, element.condition].filter(Boolean).length;
+          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message, a condition or an error: one of these` });
+          if (element.condition) checkCondition(element.condition, scope, `${path}.condition`, issues);
           if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
           else if (element.error) {
             if (!['serviceTask', 'scriptTask', 'sendTask', 'subProcess'].includes(host.type)) {
@@ -1422,7 +1449,7 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           } else if (!['userTask', 'receiveTask', 'subProcess', 'callActivity'].includes(host.type)) {
             issues.push({
               path: `${path}.attachedTo`,
-              message: `${label(element.attachedTo)} can't have a timer or a message on its boundary: they sit on a user task, a receive task, a sub-process or a call activity`,
+              message: `${label(element.attachedTo)} can't have a timer, a message or a condition on its boundary: they sit on a user task, a receive task, a sub-process or a call activity`,
             });
           }
           if (element.timer) checkTimer(element.timer, path);
