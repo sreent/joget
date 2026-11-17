@@ -67,7 +67,8 @@ export function validateDefinition(input: unknown, previous?: StoredDefinition, 
   return issues.length ? { ok: false, issues } : { ok: true, definition, notes };
 }
 
-function mapRefs(condition: Condition, rename: (ref: string) => string): Condition {
+/** A condition with its references renamed. */
+export function mapRefs(condition: Condition, rename: (ref: string) => string): Condition {
   const operand = (o: Operand): Operand => (isRef(o) ? { ref: rename(o.ref) } : o);
   if ('all' in condition) return { all: condition.all.map((c) => mapRefs(c, rename)) };
   if ('any' in condition) return { any: condition.any.map((c) => mapRefs(c, rename)) };

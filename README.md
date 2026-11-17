@@ -26,8 +26,8 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
   - phase 0, the governance kernel, proven on a real Kubernetes cluster;
   - phase 1, the capability core with line items and files, the studio's data-model and form designers, and the screens every app gets;
   - from phase 2: governed delivery for team apps (working copies, change requests with checks and previews, signed releases, approved deployments to Prod and Staging, and rollback); the designers for rules, actions, queries, review cards, roles, pages, the menu and dashboards; steps for actions (they can start a7c skills too, switched off until an installation connects a7c); moving a personal app to a team space; queries that total and group, for agents; app templates, export and import; and the command line, `ambit`.
-  - from phase 3: business processes in BPMN 2.0, on Ambit's own engine in PostgreSQL, with people's tasks in an inbox across apps, timers for deadlines and escalation, and tools for agents. A business process, where people decide on an app's records, is Ambit's; automation across systems is a7c's ([design §6.10](docs/02-platform-design.md#610-business-processes-bpmn-20)).
-- **Next:** the rest of phase 3: BPMN 2.0 XML import and export, the process designer on a canvas, routing from the directory (the requester's manager, a reporting line), and approving in chat.
+  - from phase 3: business processes in BPMN 2.0, on Ambit's own engine in PostgreSQL, with people's tasks in an inbox across apps, timers for deadlines and escalation, tools for agents, and BPMN 2.0 files in and out, with their diagrams. A business process, where people decide on an app's records, is Ambit's; automation across systems is a7c's ([design §6.10](docs/02-platform-design.md#610-business-processes-bpmn-20)).
+- **Next:** the rest of phase 3: the process designer on a canvas, routing from the directory (the requester's manager, a reporting line), and approving in chat.
 
 ## What the code does today
 
@@ -255,6 +255,11 @@ A process starts when an action that its start event names commits on a record, 
 - `GET /v1/apps/{appId}/process-instances?stuck=true`, `…/{instanceId}`, `…/{instanceId}/retry` and `…/{instanceId}/cancel`: for an app's operators (its owner, in a personal space).
 
 Agents get `my_tasks` and `complete_task` on `/mcp` once an app they can use has a process. `PROCESS_TIMER_INTERVAL_SECONDS` (5) sets how often due timers fire; 0 leaves them to a worker.
+
+Processes move to and from other BPMN tools, such as Camunda Modeler or Signavio, as BPMN 2.0 files with their diagrams:
+
+- `GET /v1/apps/{appId}/processes/{process}/bpmn`, or `ambit bpmn export <app> <process>`: the process as a `.bpmn` file. A process without a diagram is laid out on the way.
+- `POST /v1/apps/{appId}/processes/import`, with the file's `xml`, or `ambit bpmn import <app> <file>`: adds its processes to a personal app, or to the working copy of a team app. Ambit's settings, such as the role of a task, travel in the namespace `urn:ambit:bpmn:1`, and conditions as text, such as `record.days > 10`. From another tool, a lane named after a role gives its tasks that role, and a simple condition such as `${days > 10}` is read with its names as the record's fields. An element Ambit can't run, such as a script task, is refused by name and ID.
 
 ### Connecting an agent that serves many people
 

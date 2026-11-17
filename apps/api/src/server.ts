@@ -135,7 +135,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(appRoutes(ctx, builder, runtime));
   await app.register(runtimeRoutes(ctx, runtime));
   await app.register(skillRoutes(ctx, runtime));
-  await app.register(processRoutes(ctx, runtime, processes));
+  await app.register(processRoutes(ctx, runtime, processes, builder));
   await app.register(proposalRoutes(ctx, runtime));
   const delivery = new Delivery(ctx, builder, runtime);
   await app.register(deliveryRoutes(ctx, delivery, runtime));

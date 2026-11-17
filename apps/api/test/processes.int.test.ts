@@ -213,6 +213,29 @@ describe('a process that works by itself', () => {
   });
 });
 
+describe('BPMN 2.0 files', () => {
+  it('carry a process from one app to another, and refuse what Ambit cannot run', async () => {
+    const exported = await inject({ method: 'GET', url: `/v1/apps/${appId}/processes/leave_approval/bpmn`, ...as(alice) }, 200);
+    expect(exported.headers['content-type']).toMatch(/^application\/xml/);
+    expect(exported.headers['content-disposition']).toBe('attachment; filename="leave_approval.bpmn"');
+    expect(exported.body).toMatch(/^<\?xml version="1.0" encoding="UTF-8"\?>\n<bpmn:definitions /);
+    await inject({ method: 'GET', url: `/v1/apps/${appId}/processes/leave_approval/bpmn`, ...as(bob) }, 403);
+
+    // An app without the process takes it in from the file, as it was.
+    const bare = await leaveApp('Leave, imported', (definition) => void delete definition['processes']);
+    const imported = await json({ method: 'POST', url: `/v1/apps/${bare}/processes/import`, ...as(alice), payload: { xml: exported.body } }, 200);
+    expect(imported).toMatchObject({ processes: ['leave_approval'], notes: [] });
+    const [source, copy] = await Promise.all(
+      [appId, bare].map(async (id) => (await json({ method: 'GET', url: `/v1/apps/${id}/definition`, ...as(alice) }, 200)).definition.processes.leave_approval),
+    );
+    expect(copy).toEqual(source);
+
+    const script = exported.body.replace('<bpmn:task ', '<bpmn:task ').replace(/<bpmn:userTask id="decide"[^>]*>/, '<bpmn:scriptTask id="decide" name="Compute">').replace('</bpmn:userTask>', '</bpmn:scriptTask>');
+    const refused = await inject({ method: 'POST', url: `/v1/apps/${bare}/processes/import`, ...as(alice), payload: { xml: script, as: 'leave_approval' } }, 422);
+    expect(refused.json()).toMatchObject({ error: 'invalid_bpmn', details: { issues: [{ path: 'bpmn.decide', message: 'Ambit doesn\'t run a script task yet: "Compute" (decide)' }] } });
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

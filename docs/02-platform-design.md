@@ -832,7 +832,10 @@ So a change request's permission diff still says who can decide, and a process n
 - Operators see where each instance waits and why, try a stuck one again, and cancel one. Every start, assignment, decision, escalation and end is audited.
 - Agents get the person's tasks and complete them through MCP, once an app they can use has a process.
 - The leave template has a process: the manager the employee names decides within three days.
-- Not built yet: BPMN 2.0 XML import and export, the designer, routing from the directory, and the next elements above.
+- BPMN 2.0 files go out with their diagram, laid out if the process has none, and come back exactly as they went. Ambit's settings travel in the namespace `urn:ambit:bpmn:1`, and conditions as text, such as `record.days > 10`, which maps one to one onto the stored JSON. The XML reader is Ambit's own: it refuses a DOCTYPE and any entity but XML's own, so a file can't expand entities or reach outside.
+- A model from another tool comes in where Ambit can run it. A lane named after a role gives its tasks that role. A simple condition, such as `${days > 10}`, is read with its names as the record's fields, and the import says how it read each one. Pools without a process, message flows and what only documents the model are left out, and the import says so. Anything else Ambit can't run is refused by name and ID.
+- An import changes a personal app, or the working copy of a team app, through the same checks as any edit.
+- Not built yet: the designer, routing from the directory, and the next elements above.
 
 ---
 
