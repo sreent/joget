@@ -7,16 +7,17 @@ import {
   elementName,
   evaluateExpression,
   flowsOut,
-  insideOf,
+  linkTarget,
   plainStartOf,
   processGraph,
-  scopeOf,
-  scopesOf,
   startEventsOf,
   startsOf,
   timerFiresAt,
+  type BusinessRuleTaskElement,
   type CallActivityElement,
   type ExpressionValue,
+  type Message,
+  type ScriptTaskElement,
   type Process,
   type ProcessGraph,
   type RecordValues,
@@ -70,8 +71,6 @@ interface Live {
   reached: string | null;
   /** What each element can still reach, as inclusive joins ask it. */
   readonly reach: Map<string, Set<string>>;
-  /** What each sub-process holds, at any depth. */
-  readonly inside: Map<string, Set<string>>;
 }
 
 /** One transaction's worth of process work: tokens arrive at elements until each waits or ends. */
@@ -85,7 +84,8 @@ interface Turn {
   readonly by: string | null;
   readonly now: Date;
   readonly live: Map<string, Live>;
-  readonly queue: Array<{ readonly instanceId: string; readonly element: string; readonly flow: string | null }>;
+  /** Moves still to make: to an element, in a run of a sub-process (`scope`, the token that waits at it) or in the process itself (null). */
+  readonly queue: Array<{ readonly instanceId: string; readonly element: string; readonly flow: string | null; readonly scope: string | null }>;
   readonly records: Map<string, RecordValues | null>;
   moves: number;
 }
@@ -355,7 +355,7 @@ export class ProcessEngine implements ProcessHooks {
       await turn.tx.db.delete(processTokens).where(inArray(processTokens.id, stuck.map((token) => token.id)));
       for (const token of stuck) {
         await this.#event(turn, live, 'retried', token.element, { error: token.error });
-        turn.queue.push({ instanceId: id, element: token.element, flow: token.arrivedBy });
+        turn.queue.push({ instanceId: id, element: token.element, flow: token.arrivedBy, scope: token.scope });
       }
       await this.#audit(turn, live, 'process.retry', { elements: stuck.map((token) => token.element) });
     });
@@ -426,27 +426,30 @@ export class ProcessEngine implements ProcessHooks {
       const element = live.process.elements[timer.element];
       await this.#event(turn, live, 'timer_fired', timer.element, null);
       if (timer.tokenId && element?.type === 'boundaryEvent') {
-        // On a sub-process or a call, an interrupting timer ends it with what runs inside it; on a task that several people decide, the vote.
+        // On a sub-process, a call or a receive task, an interrupting timer ends what waits there; on a task that several people decide, the vote.
         const [token] = await tx.db.select().from(processTokens).where(eq(processTokens.id, timer.tokenId)).for('update');
         if (!token) return;
         const host = live.process.elements[element.attachedTo]?.type;
-        if (element.interrupting && (host === 'subProcess' || host === 'callActivity')) {
-          await this.#interrupt(turn, live, token, 'timer');
-        } else if (element.interrupting) {
+        if (element.interrupting && host === 'userTask') {
           await this.#closeVotes(turn, live, timer.tokenId, 'timer');
           await tx.db.delete(processTokens).where(eq(processTokens.id, timer.tokenId));
+        } else if (element.interrupting) {
+          await this.#interrupt(turn, live, token, 'timer');
         }
         await this.#audit(turn, live, 'process.escalate', { timer: timer.element, interrupting: element.interrupting });
-        await this.#leave(turn, live, timer.element);
+        await this.#leave(turn, live, timer.element, token.scope);
       } else if (timer.tokenId) {
+        const [token] = await tx.db.select().from(processTokens).where(eq(processTokens.id, timer.tokenId)).for('update');
+        if (!token) return;
         await tx.db.delete(processTokens).where(eq(processTokens.id, timer.tokenId));
-        await this.#leave(turn, live, timer.element);
+        await this.#leave(turn, live, timer.element, token.scope);
       } else if (timer.taskId && element?.type === 'boundaryEvent') {
         const [task] = await tx.db.select().from(processTasks).where(eq(processTasks.id, timer.taskId)).for('update');
         if (!task || task.status !== 'open') return;
+        const scope = await this.#scopeOf(turn, task.tokenId);
         if (element.interrupting) await this.#closeTask(turn, live, task, 'timer');
         await this.#audit(turn, live, 'process.escalate', { task: task.id, timer: timer.element, interrupting: element.interrupting });
-        await this.#leave(turn, live, timer.element);
+        await this.#leave(turn, live, timer.element, scope);
       }
       await this.#drain(turn);
     });
@@ -480,7 +483,7 @@ export class ProcessEngine implements ProcessHooks {
     if (!row) throw notFound('Process instance');
     const process = await this.#processOf(row, turn.tx.db);
     if (!process) throw conflict('process_missing', `Revision ${row.revision} has no process ${row.process}`);
-    const live: Live = { row, process, graph: processGraph(process), entity: row.entity, outcomes: { ...row.outcomes }, ended: row.status !== 'running', reached: null, reach: new Map(), inside: new Map() };
+    const live: Live = { row, process, graph: processGraph(process), entity: row.entity, outcomes: { ...row.outcomes }, ended: row.status !== 'running', reached: null, reach: new Map() };
     turn.live.set(id, live);
     return live;
   }
@@ -521,10 +524,14 @@ export class ProcessEngine implements ProcessHooks {
     for (const { id } of running) {
       const live = await this.#live(turn, id);
       if (live.ended || !messageActions(live.process).includes(action)) continue;
-      // A sub-process or a call that waits hears it first, the outermost first: interrupting it ends what runs inside it.
-      const holders = (await db.select().from(processTokens).where(and(eq(processTokens.instanceId, id), eq(processTokens.state, 'waiting'))))
-        .filter((token) => ['subProcess', 'callActivity'].includes(live.process.elements[token.element]?.type ?? ''))
-        .sort((a, b) => scopesOf(live.process, a.element).length - scopesOf(live.process, b.element).length);
+      // A sub-process, a call or a receive task that waits hears it first on its boundary, the outermost run first: interrupting it ends what runs inside it.
+      const all = await db.select().from(processTokens).where(and(eq(processTokens.instanceId, id), eq(processTokens.state, 'waiting')));
+      const depth = (token: TokenRow): number => {
+        let count = 0;
+        for (let at = token.scope; at !== null && count < 50; count++) at = all.find((other) => other.id === at)?.scope ?? null;
+        return count;
+      };
+      const holders = all.filter((token) => ['subProcess', 'callActivity', 'receiveTask'].includes(live.process.elements[token.element]?.type ?? '')).sort((a, b) => depth(a) - depth(b));
       for (const holder of holders) {
         const [still] = await db.select({ id: processTokens.id }).from(processTokens).where(eq(processTokens.id, holder.id));
         if (!still) continue;
@@ -533,17 +540,19 @@ export class ProcessEngine implements ProcessHooks {
           if (event?.type !== 'boundaryEvent' || event.message?.action !== action) continue;
           if (event.interrupting) await this.#interrupt(turn, live, holder, 'message');
           await this.#event(turn, live, 'message', boundary, { action, interrupting: event.interrupting });
-          await this.#leave(turn, live, boundary);
+          await this.#leave(turn, live, boundary, holder.scope);
           if (event.interrupting) break;
         }
       }
+      // Then what waits for it: a catch event, or a receive task.
       const waiting = await db.select().from(processTokens).where(and(eq(processTokens.instanceId, id), eq(processTokens.state, 'waiting')));
       for (const token of waiting) {
         const element = live.process.elements[token.element];
-        if (element?.type !== 'intermediateCatchEvent' || element.message?.action !== action) continue;
+        if ((element?.type !== 'intermediateCatchEvent' && element?.type !== 'receiveTask') || element.message?.action !== action) continue;
         await db.delete(processTokens).where(eq(processTokens.id, token.id));
+        await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
         await this.#event(turn, live, 'message', token.element, { action });
-        await this.#leave(turn, live, token.element);
+        await this.#leave(turn, live, token.element, token.scope);
       }
       const open = await db.select().from(processTasks).where(and(eq(processTasks.instanceId, id), eq(processTasks.status, 'open')));
       const handled = new Set<string>();
@@ -552,6 +561,7 @@ export class ProcessEngine implements ProcessHooks {
         const key = task.several && task.tokenId ? task.tokenId : task.id;
         if (handled.has(key)) continue;
         handled.add(key);
+        const scope = await this.#scopeOf(turn, task.tokenId);
         for (const boundary of live.graph.boundaries.get(task.element) ?? []) {
           const event = live.process.elements[boundary];
           if (event?.type !== 'boundaryEvent' || event.message?.action !== action) continue;
@@ -565,22 +575,22 @@ export class ProcessEngine implements ProcessHooks {
             }
           }
           await this.#event(turn, live, 'message', boundary, { action, task: task.id, interrupting: event.interrupting });
-          await this.#leave(turn, live, boundary);
+          await this.#leave(turn, live, boundary, scope);
           if (event.interrupting) break;
         }
       }
     }
   }
 
-  /** An inclusive gateway's join goes on once no other token of the instance can still reach it. */
-  async #tryJoin(turn: Turn, live: Live, id: string): Promise<boolean> {
+  /** An inclusive gateway's join goes on once no other token of its run can still reach it. */
+  async #tryJoin(turn: Turn, live: Live, id: string, scope: string | null): Promise<boolean> {
     const db = turn.tx.db;
-    const tokens = await db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id));
+    const tokens = (await db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id))).filter((token) => token.scope === scope);
     const here = tokens.filter((token) => token.element === id && token.state === 'waiting');
     if (!here.length) return false;
     const elsewhere = [
       ...tokens.filter((token) => token.element !== id).map((token) => token.element),
-      ...turn.queue.filter((move) => move.instanceId === live.row.id).map((move) => move.element),
+      ...turn.queue.filter((move) => move.instanceId === live.row.id && move.scope === scope).map((move) => move.element),
     ];
     for (const at of elsewhere) {
       if (at === id) return false;
@@ -592,8 +602,15 @@ export class ProcessEngine implements ProcessHooks {
       if (reach.has(id)) return false;
     }
     await db.delete(processTokens).where(inArray(processTokens.id, here.map((token) => token.id)));
-    await this.#leave(turn, live, id);
+    await this.#leave(turn, live, id, scope);
     return true;
+  }
+
+  /** The run a token is in, by its ID: the scope that a task's token gives the paths that leave the task. */
+  async #scopeOf(turn: Turn, tokenId: string | null): Promise<string | null> {
+    if (!tokenId) return null;
+    const [token] = await turn.tx.db.select({ scope: processTokens.scope }).from(processTokens).where(eq(processTokens.id, tokenId));
+    return token?.scope ?? null;
   }
 
   async #start(
@@ -629,34 +646,36 @@ export class ProcessEngine implements ProcessHooks {
         startedAt: turn.now,
       })
       .returning();
-    const live: Live = { row: row!, process, graph: processGraph(process), entity: process.entity, outcomes: {}, ended: false, reached: null, reach: new Map(), inside: new Map() };
+    const live: Live = { row: row!, process, graph: processGraph(process), entity: process.entity, outcomes: {}, ended: false, reached: null, reach: new Map() };
     turn.live.set(row!.id, live);
     await this.#event(turn, live, 'started', startAt, action ? { action } : caller ? { calledBy: caller.instanceId } : null);
     await this.#audit(turn, live, 'process.start', action ? { action } : caller ? { calledBy: caller.instanceId } : { byHand: true });
-    turn.queue.push({ instanceId: row!.id, element: startAt, flow: null });
+    turn.queue.push({ instanceId: row!.id, element: startAt, flow: null, scope: null });
     return live;
   }
 
   /**
-   * Move tokens until each waits or ends. A sub-process that nothing runs inside any more ends, and
-   * an instance whose last token ended completes; a called one then lets its caller go on.
+   * Move tokens until each waits or ends. A run of a sub-process that nothing runs inside any more
+   * ends, and an instance whose last token ended completes; a called one then lets its caller go on.
    */
   async #drain(turn: Turn): Promise<void> {
     for (;;) {
       while (turn.queue.length) {
         if (++turn.moves > MAX_MOVES) throw unprocessable('process_loops', `A process moved ${MAX_MOVES} times without waiting: check its flows for a loop that waits for nothing`);
-        const { instanceId, element, flow } = turn.queue.shift()!;
+        const { instanceId, element, flow, scope } = turn.queue.shift()!;
         const live = await this.#live(turn, instanceId);
-        if (!live.ended) await this.#arrive(turn, live, element, flow);
+        if (!live.ended) await this.#arrive(turn, live, element, flow, scope);
       }
       // A path that ended may be what an inclusive join waited for: try the joins that wait again.
       let joined = false;
       for (const live of turn.live.values()) {
         if (live.ended) continue;
-        const waiting = await turn.tx.db.select({ element: processTokens.element }).from(processTokens).where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.state, 'waiting')));
-        for (const element of new Set(waiting.map((token) => token.element))) {
-          if (live.process.elements[element]?.type === 'inclusiveGateway' && (await this.#tryJoin(turn, live, element))) joined = true;
-        }
+        const waiting = await turn.tx.db
+          .select({ element: processTokens.element, scope: processTokens.scope })
+          .from(processTokens)
+          .where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.state, 'waiting')));
+        const joins = new Map(waiting.filter((token) => live.process.elements[token.element]?.type === 'inclusiveGateway').map((token) => [`${token.element} ${token.scope ?? ''}`, token]));
+        for (const token of joins.values()) if (await this.#tryJoin(turn, live, token.element, token.scope)) joined = true;
       }
       if (joined || (await this.#finishScopes(turn))) continue;
       for (const live of [...turn.live.values()]) {
@@ -668,38 +687,33 @@ export class ProcessEngine implements ProcessHooks {
     }
   }
 
-  /** What a sub-process holds, at any depth. */
-  #inside(live: Live, scope: string): Set<string> {
-    let inside = live.inside.get(scope);
-    if (!inside) {
-      inside = insideOf(live.process, scope);
-      live.inside.set(scope, inside);
-    }
-    return inside;
+  /** Queue a token's move to an element, in a run of a sub-process or in the process itself. */
+  #move(turn: Turn, live: Live, element: string, flow: string | null, scope: string | null): void {
+    turn.queue.push({ instanceId: live.row.id, element, flow, scope });
+  }
+
+  /** Make a token wait at an element. */
+  async #wait(turn: Turn, live: Live, element: string, flow: string | null, scope: string | null, extra: { readonly voters?: string[] } = {}): Promise<string> {
+    const id = uuidv7(turn.now.getTime());
+    await turn.tx.db.insert(processTokens).values({ id, instanceId: live.row.id, element, scope, arrivedBy: flow, state: 'waiting', createdAt: turn.now, ...extra });
+    return id;
   }
 
   /**
-   * A sub-process starts: a token waits at it for as long as anything runs inside it, the timers on
-   * its boundary start, and a path starts at its start event.
+   * A sub-process starts a run of its own: a token waits at it for as long as anything runs inside
+   * that run, the timers on its boundary start, and a path starts at its start event. Each arrival
+   * starts another run, beside any that runs already.
    */
-  async #enter(turn: Turn, live: Live, id: string, flow: string | null): Promise<void> {
-    const db = turn.tx.db;
-    const name = elementName(live.process, id);
-    const [running] = await db
-      .select({ id: processTokens.id })
-      .from(processTokens)
-      .where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.element, id), eq(processTokens.state, 'waiting')));
-    if (running) return this.#stuck(turn, live, id, flow, `${name} already runs: an instance runs a sub-process once at a time`);
+  async #enter(turn: Turn, live: Live, id: string, flow: string | null, scope: string | null): Promise<void> {
     const start = startEventsOf(live.process, id)[0];
-    if (!start) return this.#stuck(turn, live, id, flow, `${name} has no start event inside it`);
-    const tokenId = uuidv7(turn.now.getTime());
-    await db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
-    await this.#boundaryTimers(turn, live, id, { tokenId }, (await this.#record(turn, live)) ?? {});
+    if (!start) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)} has no start event inside it`, scope);
+    const run = await this.#wait(turn, live, id, flow, scope);
+    await this.#boundaryTimers(turn, live, id, { tokenId: run }, (await this.#record(turn, live)) ?? {});
     await this.#event(turn, live, 'entered', id, null);
-    turn.queue.push({ instanceId: live.row.id, element: start, flow: null });
+    this.#move(turn, live, start, null, run);
   }
 
-  /** The sub-processes that nothing runs inside any more end, and their paths go on. Returns whether one did. */
+  /** The runs of sub-processes that nothing runs inside any more end, and their paths go on. Returns whether one did. */
   async #finishScopes(turn: Turn): Promise<boolean> {
     let finished = false;
     for (const live of [...turn.live.values()]) {
@@ -707,33 +721,35 @@ export class ProcessEngine implements ProcessHooks {
       const tokens = await turn.tx.db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id));
       for (const token of tokens) {
         if (token.state !== 'waiting' || live.process.elements[token.element]?.type !== 'subProcess') continue;
-        const inside = this.#inside(live, token.element);
-        if (tokens.some((other) => inside.has(other.element))) continue;
+        if (tokens.some((other) => other.scope === token.id)) continue;
         await turn.tx.db.delete(processTokens).where(eq(processTokens.id, token.id));
         await turn.tx.db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
         await this.#event(turn, live, 'exited', token.element, null);
-        await this.#leave(turn, live, token.element);
+        await this.#leave(turn, live, token.element, token.scope);
         finished = true;
       }
     }
     return finished;
   }
 
-  /** End what runs inside a sub-process: the paths on their way in it, and what waits in it. */
-  async #clearScope(turn: Turn, live: Live, scope: string, reason: CloseReason): Promise<void> {
-    const inside = this.#inside(live, scope);
+  /** End what runs inside a run of a sub-process: the paths on their way in it, and what waits in it. */
+  async #clearScope(turn: Turn, live: Live, run: string, reason: CloseReason): Promise<void> {
     for (let index = turn.queue.length - 1; index >= 0; index--) {
       const move = turn.queue[index]!;
-      if (move.instanceId === live.row.id && inside.has(move.element)) turn.queue.splice(index, 1);
+      if (move.instanceId === live.row.id && move.scope === run) turn.queue.splice(index, 1);
     }
-    const tokens = await turn.tx.db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id));
-    await this.#dropTokens(turn, live, tokens.filter((token) => inside.has(token.element)), reason);
+    const tokens = await turn.tx.db.select().from(processTokens).where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.scope, run)));
+    await this.#dropTokens(turn, live, tokens, reason);
   }
 
-  /** Drop tokens that wait: the tasks they hold close, their timers stop, and the processes they called are cancelled. */
+  /**
+   * Drop tokens that wait: the tasks they hold close, their timers stop, what runs inside a run of a
+   * sub-process ends, and the processes they called are cancelled.
+   */
   async #dropTokens(turn: Turn, live: Live, tokens: readonly TokenRow[], reason: CloseReason): Promise<void> {
     const db = turn.tx.db;
     for (const token of tokens) {
+      if (live.process.elements[token.element]?.type === 'subProcess' && token.state === 'waiting') await this.#clearScope(turn, live, token.id, reason);
       const open = await db.select().from(processTasks).where(and(eq(processTasks.tokenId, token.id), eq(processTasks.status, 'open')));
       for (const task of open) await this.#closeTask(turn, live, task, reason);
       await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
@@ -742,9 +758,8 @@ export class ProcessEngine implements ProcessHooks {
     if (tokens.length) await db.delete(processTokens).where(inArray(processTokens.id, tokens.map((token) => token.id)));
   }
 
-  /** End a sub-process or a call where it waits, from an event on its boundary: what runs inside it, or the process it called, ends too. */
+  /** End what waits at a token, from an event on its boundary: a run of a sub-process with what runs inside it, a call with the process it called, or a task. */
   async #interrupt(turn: Turn, live: Live, token: TokenRow, reason: CloseReason): Promise<void> {
-    if (live.process.elements[token.element]?.type === 'subProcess') await this.#clearScope(turn, live, token.element, reason);
     await this.#dropTokens(turn, live, [token], reason);
   }
 
@@ -752,30 +767,28 @@ export class ProcessEngine implements ProcessHooks {
    * A call activity: start the process it calls, on this record or on the one a reference field of
    * it names, and wait until that instance ends.
    */
-  async #call(turn: Turn, live: Live, id: string, flow: string | null, element: CallActivityElement): Promise<void> {
+  async #call(turn: Turn, live: Live, id: string, flow: string | null, element: CallActivityElement, scope: string | null): Promise<void> {
     const db = turn.tx.db;
+    const stuck = (message: string) => this.#stuck(turn, live, id, flow, `${element.name}: ${message}`, scope);
     const called = turn.loaded.definition.processes?.[element.process];
-    if (!called) return this.#stuck(turn, live, id, flow, `${element.name}: the app has no process ${element.process}`);
+    if (!called) return stuck(`the app has no process ${element.process}`);
     const start = plainStartOf(called);
-    if (!start) return this.#stuck(turn, live, id, flow, `${element.name}: ${called.label} has no start event`);
+    if (!start) return stuck(`${called.label} has no start event`);
     const record = (await this.#record(turn, live)) ?? {};
     let recordId = live.row.recordId;
     if (element.record) {
       const value = record[element.record];
-      if (typeof value !== 'string') return this.#stuck(turn, live, id, flow, `${element.name}: the record has no ${element.record}`);
+      if (typeof value !== 'string') return stuck(`the record has no ${element.record}`);
       recordId = value;
       // Another record: lock it, as an action on it would, before its process moves.
-      if (recordId !== live.row.recordId && !(await this.#runtime.lockRecord(turn.tx, turn.loaded, called.entity, recordId))) {
-        return this.#stuck(turn, live, id, flow, `${element.name}: the ${element.record} it names no longer exists`);
-      }
+      if (recordId !== live.row.recordId && !(await this.#runtime.lockRecord(turn.tx, turn.loaded, called.entity, recordId))) return stuck(`the ${element.record} it names no longer exists`);
     }
     const [running] = await db
       .select({ id: processInstances.id })
       .from(processInstances)
       .where(and(eq(processInstances.environmentId, turn.loaded.env.id), eq(processInstances.process, element.process), eq(processInstances.recordId, recordId), eq(processInstances.status, 'running')));
-    if (running) return this.#stuck(turn, live, id, flow, `${element.name}: ${called.label} already runs for that record`);
-    const tokenId = uuidv7(turn.now.getTime());
-    await db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
+    if (running) return stuck(`${called.label} already runs for that record`);
+    const tokenId = await this.#wait(turn, live, id, flow, scope);
     await this.#boundaryTimers(turn, live, id, { tokenId }, record);
     const child = await this.#start(turn, element.process, start, recordId, null, { instanceId: live.row.id, tokenId, startedBy: live.row.startedBy });
     await this.#event(turn, live, 'called', id, { process: element.process, instance: child.row.id, recordId });
@@ -807,12 +820,12 @@ export class ProcessEngine implements ProcessHooks {
     await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, tokenId), eq(processTimers.status, 'waiting')));
     if (status === 'completed') {
       await this.#event(turn, live, 'returned', token.element, { instance: called.row.id });
-      return this.#leave(turn, live, token.element);
+      return this.#leave(turn, live, token.element, token.scope);
     }
-    await this.#stuck(turn, live, token.element, token.arrivedBy, `${called.process.label} was cancelled: try again to start it anew`);
+    await this.#stuck(turn, live, token.element, token.arrivedBy, `${called.process.label} was cancelled: try again to start it anew`, token.scope);
   }
 
-  /** Start the timers on an element's boundary: a task's by the task, a sub-process's or a call's by the token that waits at it. */
+  /** Start the timers on an element's boundary: a task's by the task, and the others' by the token that waits at the element. */
   async #boundaryTimers(turn: Turn, live: Live, id: string, holder: { readonly taskId: string } | { readonly tokenId: string }, record: RecordValues): Promise<void> {
     for (const boundary of live.graph.boundaries.get(id) ?? []) {
       const event = live.process.elements[boundary];
@@ -823,87 +836,210 @@ export class ProcessEngine implements ProcessHooks {
     }
   }
 
-  async #arrive(turn: Turn, live: Live, id: string, flow: string | null): Promise<void> {
+  async #arrive(turn: Turn, live: Live, id: string, flow: string | null, scope: string | null): Promise<void> {
     const element = live.process.elements[id];
-    if (!element) return this.#stuck(turn, live, id, flow, `The process has no element ${id}`);
+    if (!element) return this.#stuck(turn, live, id, flow, `The process has no element ${id}`, scope);
     switch (element.type) {
       case 'endEvent': {
-        // Inside a sub-process, an end ends a path in it; a terminate end ends all of the sub-process, which then goes on.
-        const scope = scopeOf(live.process, id);
-        if (scope === undefined) live.reached = id;
+        // An end that sends a message sends it first; if that fails, the path waits there.
+        if (element.message && !(await this.#send(turn, live, id, element.message, scope))) return;
+        // Inside a sub-process, an end ends a path in its run; a terminate end ends all of the run, which then goes on.
+        if (scope === null) live.reached = id;
         if (element.terminate) {
-          if (scope === undefined) await this.#end(turn, live, 'completed', id);
+          if (scope === null) await this.#end(turn, live, 'completed', id);
           else await this.#clearScope(turn, live, scope, 'ended');
         }
         return;
       }
       case 'subProcess':
-        return this.#enter(turn, live, id, flow);
+        return this.#enter(turn, live, id, flow, scope);
       case 'callActivity':
-        return this.#call(turn, live, id, flow, element);
+        return this.#call(turn, live, id, flow, element, scope);
       case 'userTask':
-        return this.#openTask(turn, live, id, element);
+        return this.#openTask(turn, live, id, element, scope);
       case 'serviceTask':
-        return this.#serve(turn, live, id, element);
+        return this.#serve(turn, live, id, element, scope);
+      case 'scriptTask':
+        return this.#script(turn, live, id, element, scope);
+      case 'businessRuleTask':
+        return this.#checkRules(turn, live, id, element, scope);
+      case 'sendTask':
+        if (await this.#send(turn, live, id, element.message, scope)) await this.#leave(turn, live, id, scope);
+        return;
+      case 'receiveTask': {
+        // A message, as a task: the token waits until the action commits on the record, and the timers on its boundary run.
+        const tokenId = await this.#wait(turn, live, id, flow, scope);
+        await this.#boundaryTimers(turn, live, id, { tokenId }, (await this.#record(turn, live)) ?? {});
+        return;
+      }
+      case 'intermediateThrowEvent': {
+        if (element.link !== undefined) {
+          const target = linkTarget(live.process, id);
+          if (!target) return this.#stuck(turn, live, id, flow, `No catch link named ${element.link} is where ${elementName(live.process, id)} is`, scope);
+          this.#move(turn, live, target, null, scope);
+          return;
+        }
+        if (element.message) {
+          if (await this.#send(turn, live, id, element.message, scope)) await this.#leave(turn, live, id, scope);
+          return;
+        }
+        // A milestone: the history marks it, and the path goes on.
+        await this.#event(turn, live, 'reached', id, null);
+        return this.#leave(turn, live, id, scope);
+      }
       case 'intermediateCatchEvent': {
+        if (element.link !== undefined) return this.#leave(turn, live, id, scope);
         if (!element.timer) {
           // A message: the token waits until the action commits on the record.
-          await turn.tx.db.insert(processTokens).values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
+          await this.#wait(turn, live, id, flow, scope);
           return;
         }
         const fireAt = timerFiresAt(element.timer, turn.now, (await this.#record(turn, live)) ?? {});
-        if (!fireAt) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: the record has no ${'date' in element.timer ? element.timer.date : 'date'}`);
-        const tokenId = uuidv7(turn.now.getTime());
-        await turn.tx.db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
+        if (!fireAt) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: the record has no ${'date' in element.timer ? element.timer.date : 'date'}`, scope);
+        const tokenId = await this.#wait(turn, live, id, flow, scope);
         await turn.tx.db.insert(processTimers).values({ id: uuidv7(turn.now.getTime()), orgId: this.#ctx.org.id, instanceId: live.row.id, element: id, tokenId, fireAt, nextAttemptAt: fireAt, createdAt: turn.now });
         return;
       }
       case 'inclusiveGateway': {
-        if ((live.graph.incoming.get(id) ?? []).length < 2) return this.#leave(turn, live, id);
-        await turn.tx.db.insert(processTokens).values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
-        await this.#tryJoin(turn, live, id);
+        if ((live.graph.incoming.get(id) ?? []).length < 2) return this.#leave(turn, live, id, scope);
+        await this.#wait(turn, live, id, flow, scope);
+        await this.#tryJoin(turn, live, id, scope);
         return;
       }
       case 'parallelGateway': {
         const incoming = live.graph.incoming.get(id) ?? [];
         if (incoming.length > 1) {
-          // A join waits for a token from each flow in, then they go on as one.
+          // A join waits for a token from each flow in, in the same run, then they go on as one.
           const waiting = await turn.tx.db
             .select()
             .from(processTokens)
             .where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.element, id), eq(processTokens.state, 'waiting')));
-          const others = incoming.filter((each) => each !== flow).map((each) => waiting.find((token) => token.arrivedBy === each));
+          const same = waiting.filter((token) => token.scope === scope);
+          const others = incoming.filter((each) => each !== flow).map((each) => same.find((token) => token.arrivedBy === each));
           if (others.some((token) => !token)) {
-            await turn.tx.db.insert(processTokens).values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element: id, arrivedBy: flow, state: 'waiting', createdAt: turn.now });
+            await this.#wait(turn, live, id, flow, scope);
             return;
           }
           await turn.tx.db.delete(processTokens).where(inArray(processTokens.id, others.map((token) => token!.id)));
         }
-        return this.#leave(turn, live, id);
+        return this.#leave(turn, live, id, scope);
       }
       default:
-        return this.#leave(turn, live, id);
+        return this.#leave(turn, live, id, scope);
     }
   }
 
-  /** Send a token on along the flows out of an element: for a user task, those of its outcome. */
-  async #leave(turn: Turn, live: Live, id: string, outcome?: string): Promise<void> {
+  /** Send a token on along the flows out of an element: for a user task or a rule check, those of its outcome. */
+  async #leave(turn: Turn, live: Live, id: string, scope: string | null, outcome?: string): Promise<void> {
     const type = live.process.elements[id]?.type;
     const decides = type === 'exclusiveGateway' || type === 'inclusiveGateway';
     const state = { record: decides ? ((await this.#record(turn, live)) ?? {}) : {}, outcomes: live.outcomes };
     const out = flowsOut(live.process, live.graph, id, state, outcome);
-    if (!out.ok) return this.#stuck(turn, live, id, null, out.message);
-    for (const flow of out.flows) turn.queue.push({ instanceId: live.row.id, element: live.process.flows[flow]!.to, flow });
+    if (!out.ok) return this.#stuck(turn, live, id, null, out.message, scope);
+    for (const flow of out.flows) this.#move(turn, live, live.process.flows[flow]!.to, flow, scope);
   }
 
-  async #stuck(turn: Turn, live: Live, element: string, flow: string | null, message: string): Promise<void> {
-    await turn.tx.db.insert(processTokens).values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element, arrivedBy: flow, state: 'stuck', error: message.slice(0, 1000), createdAt: turn.now });
+  async #stuck(turn: Turn, live: Live, element: string, flow: string | null, message: string, scope: string | null): Promise<void> {
+    await turn.tx.db
+      .insert(processTokens)
+      .values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element, scope, arrivedBy: flow, state: 'stuck', error: message.slice(0, 1000), createdAt: turn.now });
     await this.#event(turn, live, 'stuck', element, { error: message });
   }
 
-  async #openTask(turn: Turn, live: Live, id: string, element: UserTaskElement): Promise<void> {
+  /**
+   * An action that a task ran failed: an error event on the task catches it; or else the nearest
+   * run of a sub-process around it with an error event, which then ends with what runs inside it.
+   * Without one, the path waits for an operator where it failed.
+   */
+  async #failed(turn: Turn, live: Live, id: string, flow: string | null, message: string, scope: string | null): Promise<void> {
+    const handlerOf = (host: string) =>
+      (live.graph.boundaries.get(host) ?? []).find((boundary) => {
+        const event = live.process.elements[boundary];
+        return event?.type === 'boundaryEvent' && event.error;
+      });
+    const own = handlerOf(id);
+    if (own) {
+      await this.#event(turn, live, 'error_caught', own, { task: id, error: message });
+      return this.#leave(turn, live, own, scope);
+    }
+    for (let current = scope; current !== null; ) {
+      const [run] = await turn.tx.db.select().from(processTokens).where(eq(processTokens.id, current));
+      if (!run) break;
+      const handler = handlerOf(run.element);
+      if (handler) {
+        await this.#interrupt(turn, live, run, 'error');
+        await this.#event(turn, live, 'error_caught', handler, { task: id, error: message });
+        return this.#leave(turn, live, handler, run.scope);
+      }
+      current = run.scope;
+    }
+    return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: ${message}`, scope);
+  }
+
+  /** A script task: its steps change the record, with the app's authority, through the action pipeline. */
+  async #script(turn: Turn, live: Live, id: string, element: ScriptTaskElement, scope: string | null): Promise<void> {
+    if (turn.loaded.app.movedTo) return this.#stuck(turn, live, id, null, `${element.name}: the app moved to a team space, so it changes no records here`, scope);
+    const origin: ProcessOrigin = { kind: 'process', instanceId: live.row.id, process: live.row.process, element: id, onBehalfOf: turn.by ?? live.row.startedBy };
+    const script = { name: `${live.row.process}.${id}`, label: element.name, entity: live.entity, steps: element.steps };
+    const ran = await this.#runtime.runScriptForProcess(turn.tx, turn.loaded, script, live.row.recordId, origin);
+    if (!ran.ok) return this.#failed(turn, live, id, null, ran.message, scope);
+    turn.records.delete(live.row.recordId);
+    await this.#event(turn, live, 'ran', id, { steps: element.steps.length });
+    return this.#leave(turn, live, id, scope);
+  }
+
+  /** A rule check: the record against the app's rules, all or those named. What it finds is its outcome, which chooses the flow out. */
+  async #checkRules(turn: Turn, live: Live, id: string, element: BusinessRuleTaskElement, scope: string | null): Promise<void> {
+    const findings = await this.#runtime.checkRules(turn.tx, turn.loaded, live.entity, live.row.recordId, element.rules);
+    if (!findings) return this.#stuck(turn, live, id, null, `${element.name}: the record no longer exists`, scope);
+    const outcome = findings.some((finding) => finding.severity === 'error') ? 'failed' : findings.length ? 'warned' : 'passed';
+    live.outcomes[id] = outcome;
+    await turn.tx.db.update(processInstances).set({ outcomes: live.outcomes }).where(eq(processInstances.id, live.row.id));
+    await this.#event(turn, live, 'checked', id, { outcome, rules: [...new Set(findings.map((finding) => finding.rule))] });
+    return this.#leave(turn, live, id, scope, outcome);
+  }
+
+  /**
+   * Send a message: run its update action, with the app's authority, on the record or on the one a
+   * reference field names; the processes on that record hear it. Returns whether it was sent: if
+   * the action fails, the failure goes where the task's or sub-process's error event leads.
+   */
+  async #send(turn: Turn, live: Live, id: string, message: Message, scope: string | null): Promise<boolean> {
+    const name = elementName(live.process, id);
+    if (turn.loaded.app.movedTo) {
+      await this.#stuck(turn, live, id, null, `${name}: the app moved to a team space, so it changes no records here`, scope);
+      return false;
+    }
+    let recordId = live.row.recordId;
+    if (message.record) {
+      const value = ((await this.#record(turn, live)) ?? {})[message.record];
+      const action = turn.loaded.definition.actions[message.action];
+      if (typeof value !== 'string' || !action) {
+        await this.#stuck(turn, live, id, null, `${name}: the record has no ${message.record}`, scope);
+        return false;
+      }
+      recordId = value;
+      // Another record: lock it, as an action on it would.
+      if (recordId !== live.row.recordId && !(await this.#runtime.lockRecord(turn.tx, turn.loaded, action.entity, recordId))) {
+        await this.#stuck(turn, live, id, null, `${name}: the ${message.record} it names no longer exists`, scope);
+        return false;
+      }
+    }
+    const origin: ProcessOrigin = { kind: 'process', instanceId: live.row.id, process: live.row.process, element: id, onBehalfOf: turn.by ?? live.row.startedBy };
+    const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, message.action, recordId, origin);
+    if (!ran.ok) {
+      await this.#failed(turn, live, id, null, ran.message, scope);
+      return false;
+    }
+    turn.records.delete(recordId);
+    await this.#event(turn, live, 'sent', id, { action: message.action, recordId });
+    await this.#actionCommitted(turn, message.action, recordId, null);
+    return true;
+  }
+
+  async #openTask(turn: Turn, live: Live, id: string, element: UserTaskElement, scope: string | null): Promise<void> {
     const record = (await this.#record(turn, live)) ?? {};
-    if (element.several) return this.#openVotes(turn, live, id, element, record);
+    if (element.several) return this.#openVotes(turn, live, id, element, record, scope);
     const db = turn.tx.db;
     const person = (field: string): string | null => {
       const value = record[field];
@@ -921,8 +1057,7 @@ export class ProcessEngine implements ProcessHooks {
     // Someone who left, or a line that ends, sends the task to the role; someone away sends it to their cover.
     const assignee = routed ? await coverFor(db, routed, turn.now) : null;
     const departmentOfTask = !assignee && element.department ? await this.#departmentOfField(db, person(element.department.of)) : null;
-    const tokenId = uuidv7(turn.now.getTime());
-    await turn.tx.db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, state: 'waiting', createdAt: turn.now });
+    const tokenId = await this.#wait(turn, live, id, null, scope);
     const taskId = uuidv7(turn.now.getTime());
     await turn.tx.db.insert(processTasks).values({
       id: taskId,
@@ -1008,13 +1143,12 @@ export class ProcessEngine implements ProcessHooks {
   }
 
   /** Open a task that several people decide: one waiting token with its voters, and a vote for each, or for the first of them. */
-  async #openVotes(turn: Turn, live: Live, id: string, element: UserTaskElement, record: RecordValues): Promise<void> {
+  async #openVotes(turn: Turn, live: Live, id: string, element: UserTaskElement, record: RecordValues, scope: string | null): Promise<void> {
     const voters = await this.#voters(turn, live, element, record);
-    if (!voters.length) return this.#stuck(turn, live, id, null, `${element.name}: nobody can vote`);
+    if (!voters.length) return this.#stuck(turn, live, id, null, `${element.name}: nobody can vote`, scope);
     const needed = votesNeeded(element.several!.decide, voters.length);
-    if (needed !== null && needed > voters.length) return this.#stuck(turn, live, id, null, `${element.name} needs ${needed} votes, but only ${voters.length} people can vote`);
-    const tokenId = uuidv7(turn.now.getTime());
-    await turn.tx.db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, state: 'waiting', voters, createdAt: turn.now });
+    if (needed !== null && needed > voters.length) return this.#stuck(turn, live, id, null, `${element.name} needs ${needed} votes, but only ${voters.length} people can vote`, scope);
+    const tokenId = await this.#wait(turn, live, id, null, scope, { voters });
     for (const person of element.several!.sequential ? voters.slice(0, 1) : voters) await this.#openVote(turn, live, id, element, tokenId, person);
     await this.#boundaryTimers(turn, live, id, { tokenId }, record);
   }
@@ -1082,7 +1216,7 @@ export class ProcessEngine implements ProcessHooks {
     await db.update(processInstances).set({ outcomes: live.outcomes }).where(eq(processInstances.id, live.row.id));
     await this.#event(turn, live, 'task_completed', task.element, { outcome: decided, votes: cast.length }, by);
     await this.#audit(turn, live, 'process.task.complete', { outcome: decided, votes: cast.length }, { type: 'process_task', id: task.id, name: task.name });
-    if (!live.ended) await this.#leave(turn, live, task.element, decided);
+    if (!live.ended) await this.#leave(turn, live, task.element, token?.scope ?? null, decided);
   }
 
   /** Close the votes still open on a task that several people decide. */
@@ -1096,6 +1230,7 @@ export class ProcessEngine implements ProcessHooks {
 
   async #completeTask(turn: Turn, task: TaskRow, outcome: string, by: string | null): Promise<void> {
     const live = await this.#live(turn, task.instanceId);
+    const scope = await this.#scopeOf(turn, task.tokenId);
     await turn.tx.db.update(processTasks).set({ status: 'completed', outcome, completedBy: by, tokenId: null, closedAt: turn.now }).where(eq(processTasks.id, task.id));
     if (task.tokenId) await turn.tx.db.delete(processTokens).where(eq(processTokens.id, task.tokenId));
     await turn.tx.db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.taskId, task.id), eq(processTimers.status, 'waiting')));
@@ -1103,7 +1238,7 @@ export class ProcessEngine implements ProcessHooks {
     await turn.tx.db.update(processInstances).set({ outcomes: live.outcomes }).where(eq(processInstances.id, live.row.id));
     await this.#event(turn, live, 'task_completed', task.element, { task: task.id, outcome, ...(by ? {} : { byProcess: true }) }, by);
     await this.#audit(turn, live, 'process.task.complete', { task: task.id, outcome }, { type: 'process_task', id: task.id, name: task.name });
-    if (!live.ended) await this.#leave(turn, live, task.element, outcome);
+    if (!live.ended) await this.#leave(turn, live, task.element, scope, outcome);
   }
 
   /** Close an open task without an outcome: an event interrupted it, or its instance ended. */
@@ -1115,49 +1250,22 @@ export class ProcessEngine implements ProcessHooks {
   }
 
   /** A service task: run the app's action on the record with the app's authority, or start an a7c skill. */
-  async #serve(turn: Turn, live: Live, id: string, element: Extract<Process['elements'][string], { type: 'serviceTask' }>): Promise<void> {
+  async #serve(turn: Turn, live: Live, id: string, element: Extract<Process['elements'][string], { type: 'serviceTask' }>, scope: string | null): Promise<void> {
     const origin: ProcessOrigin = { kind: 'process', instanceId: live.row.id, process: live.row.process, element: id, onBehalfOf: turn.by ?? live.row.startedBy };
     if (element.action) {
-      if (turn.loaded.app.movedTo) return this.#stuck(turn, live, id, null, `${element.name}: the app moved to a team space, so it changes no records here`);
+      if (turn.loaded.app.movedTo) return this.#stuck(turn, live, id, null, `${element.name}: the app moved to a team space, so it changes no records here`, scope);
       const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, element.action, live.row.recordId, origin);
-      if (!ran.ok) {
-        // An error event on the task catches the failure and leads elsewhere; without one, the instance waits for an operator.
-        const caught = (live.graph.boundaries.get(id) ?? []).find((boundary) => {
-          const event = live.process.elements[boundary];
-          return event?.type === 'boundaryEvent' && event.error;
-        });
-        if (!caught) {
-          // Further out, a sub-process with an error event catches what fails inside it.
-          for (const scope of scopesOf(live.process, id)) {
-            const handler = (live.graph.boundaries.get(scope) ?? []).find((boundary) => {
-              const event = live.process.elements[boundary];
-              return event?.type === 'boundaryEvent' && event.error;
-            });
-            if (!handler) continue;
-            const [token] = await turn.tx.db
-              .select()
-              .from(processTokens)
-              .where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.element, scope), eq(processTokens.state, 'waiting')));
-            if (!token) break;
-            await this.#interrupt(turn, live, token, 'error');
-            await this.#event(turn, live, 'error_caught', handler, { task: id, error: ran.message });
-            return this.#leave(turn, live, handler);
-          }
-          return this.#stuck(turn, live, id, null, `${element.name}: ${ran.message}`);
-        }
-        await this.#event(turn, live, 'error_caught', caught, { task: id, error: ran.message });
-        return this.#leave(turn, live, caught);
-      }
+      if (!ran.ok) return this.#failed(turn, live, id, null, ran.message, scope);
       turn.records.delete(live.row.recordId);
       await this.#event(turn, live, 'ran', id, { action: element.action });
       await this.#actionCommitted(turn, element.action, live.row.recordId, null);
     } else if (element.skill) {
-      if (!this.#ctx.config.A7C_URL) return this.#stuck(turn, live, id, null, `${element.name}: this installation doesn't connect a7c`);
+      if (!this.#ctx.config.A7C_URL) return this.#stuck(turn, live, id, null, `${element.name}: this installation doesn't connect a7c`, scope);
       const record = (await this.#record(turn, live)) ?? {};
       const input: Record<string, ExpressionValue> = {};
       for (const [name, expression] of Object.entries(element.input ?? {})) {
         const value = evaluateExpression(expression, { record, principal: {}, now: turn.now });
-        if (!value.ok) return this.#stuck(turn, live, id, null, `${element.name}: ${name}: ${value.message}`);
+        if (!value.ok) return this.#stuck(turn, live, id, null, `${element.name}: ${name}: ${value.message}`, scope);
         input[name] = value.value;
       }
       await this.#runtime.queueSkills(processWriter(this.#ctx.org.id, origin), turn.loaded, turn.tx, {
@@ -1168,7 +1276,7 @@ export class ProcessEngine implements ProcessHooks {
       });
       await this.#event(turn, live, 'skill_queued', id, { skill: element.skill });
     }
-    return this.#leave(turn, live, id);
+    return this.#leave(turn, live, id, scope);
   }
 
   /** End an instance: what still waits in it goes, with the processes it called. A called instance then goes back to its caller. */

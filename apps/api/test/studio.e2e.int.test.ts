@@ -402,7 +402,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     // The label's background takes the click: React Flow lets the text itself ignore the pointer.
     await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
     await visible(page.getByRole('heading', { name: 'Flow', exact: true }));
-    await page.getByRole('button', { name: 'Inclusive', exact: true }).click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('inclusiveGateway');
     await visible(page.getByRole('heading', { name: 'Inclusive', exact: true }));
     await shot(page, '15c-process-inclusive');
     await page.getByTestId('process-canvas').click({ position: { x: 12, y: 12 } });
@@ -471,7 +471,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
 
     // An event that waits for an action, drawn and taken away again: the path joins up around it.
     await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
-    await page.getByRole('button', { name: 'Message', exact: true }).click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('messageEvent');
     await visible(page.getByLabel('Until it is saved'));
     await shot(page, '15d-process-events');
     await page.getByRole('button', { name: 'Remove message', exact: true }).click();
@@ -484,6 +484,38 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.elements['system_1']).toMatchObject({ type: 'serviceTask', action: 'tell_payroll' });
     expect(saved.elements['error_1']).toEqual({ type: 'boundaryEvent', name: 'Error', attachedTo: 'system_1', interrupting: true, error: true });
     expect(saved.flows['on_reject']).toMatchObject({ from: 'decide', to: 'rejected' });
+  });
+
+  it('designs a script with a step, a rule check and a link', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a script', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    await visible(page.getByTestId('process-canvas'));
+    // Once approved, a script notes the decision on the record.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('scriptTask');
+    await visible(page.getByRole('heading', { name: 'Script task', exact: true }));
+    const steps = page.getByRole('region', { name: 'Steps' });
+    await steps.getByRole('button', { name: 'Set a value', exact: true }).click();
+    // On rejection, a rule check first, and a link to the end.
+    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('businessRuleTask');
+    await visible(page.getByRole('heading', { name: 'Rule check', exact: true }));
+    await page.getByTestId('rf__node-check_1').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('link');
+    await visible(page.getByRole('heading', { name: 'Link', exact: true }));
+    await shot(page, '15f-process-script-check-link');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['script_1']).toMatchObject({ type: 'scriptTask', steps: [{ type: 'set' }] });
+    expect(saved.elements['check_1']).toEqual({ type: 'businessRuleTask', name: 'Check the rules' });
+    expect(saved.elements['link_1']).toMatchObject({ type: 'intermediateThrowEvent', link: 'link_1' });
+    expect(saved.elements['land_1']).toMatchObject({ type: 'intermediateCatchEvent', link: 'link_1' });
   });
 
   it('designs a sub-process with a task inside it, and a call to another process of the app', async () => {
@@ -508,17 +540,17 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(canvas.getByText('Decide on the leave', { exact: true }));
     // A rejection calls the second look.
     await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
-    await page.getByRole('button', { name: 'Call process', exact: true }).click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('callActivity');
     await visible(page.getByRole('heading', { name: 'Call process', exact: true }));
     await visible(page.getByRole('button', { name: 'Open Second look', exact: true }));
     // Once approved, a review runs as a sub-process, with its own start and end.
     await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByRole('button', { name: 'Sub-process', exact: true }).click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('subProcess');
     await visible(page.getByRole('heading', { name: 'Sub-process', exact: true }));
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Review');
     // After the start event inside it, a task goes inside it too.
     await page.getByTestId('rf__node-start_1').click();
-    await page.getByRole('button', { name: 'Manual task', exact: true }).click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('manualTask');
     await visible(page.getByRole('heading', { name: 'Manual task', exact: true }));
     await shot(page, '15e-process-sub-and-call');
 

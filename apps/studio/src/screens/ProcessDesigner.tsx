@@ -1,6 +1,7 @@
 import {
   conditionText,
   eventKind,
+  RULE_OUTCOMES,
   scopeOf,
   scopesOf,
   validateDefinition,
@@ -24,6 +25,7 @@ import {
   BOUNDARY_HOSTS,
   callChoices,
   connect,
+  sendChoices,
   durationOf,
   durationParts,
   durationWords,
@@ -44,6 +46,8 @@ import {
   type ElementKind,
 } from '../model/processes.js';
 import type { Definition } from '../types.js';
+import type { Message } from '@platform/app-model';
+import { StepsEditor } from './StepsEditor.js';
 
 type Selection = { readonly kind: 'element' | 'flow'; readonly id: string } | null;
 
@@ -60,17 +64,30 @@ const ICON_PATH: Partial<Record<ProcessElement['type'], string>> = {
   userTask: 'M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-5 6a5 5 0 0 1 10 0',
   serviceTask: 'M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5ZM8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M3 13l1.5-1.5M11.5 4.5 13 3',
   manualTask: 'M4 9V4.5a1 1 0 0 1 2 0V8m0-4a1 1 0 0 1 2 0v4m0-3a1 1 0 0 1 2 0v3m0-2a1 1 0 0 1 2 0v4a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V9',
+  scriptTask: 'M4.5 2h7.5l-1.5 3 1.5 3-1.5 3 1.5 3H4.5L6 11 4.5 8 6 5ZM7 5h3M7.5 8h3M7 11h3',
+  businessRuleTask: 'M2 3h12v10H2ZM2 6h12M2 9.5h12M5.5 6v7',
+  receiveTask: 'M2 4h12v8.5H2ZM2.5 4.5 8 9l5.5-4.5',
+};
+/** Markers BPMN fills: a send task's envelope. */
+const FILLED_PATH: Partial<Record<ProcessElement['type'], string>> = {
+  sendTask: 'M2 4h12v8.5H2Z',
 };
 
-/** BPMN's markers for what an event waits for: a clock for a time, an envelope for a message, a lightning bolt for an error. */
-function EventIcon({ kind, size = 16 }: { kind: 'timer' | 'message' | 'error'; size?: number }) {
+/**
+ * BPMN's markers for what an event waits for or throws: a clock for a time, an envelope for a
+ * message, a lightning bolt for an error, an arrow for a link. A throw event's marker is filled.
+ */
+function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'message' | 'error' | 'link'; size?: number; filled?: boolean }) {
+  const fill = filled ? 'currentColor' : 'none';
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden className="text-text">
       {kind === 'message' ? (
         <>
-          <rect x="2" y="4" width="12" height="8.5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3" />
-          <path d="m2.5 4.5 5.5 4.5 5.5-4.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+          <rect x="2" y="4" width="12" height="8.5" rx="1" fill={fill} stroke="currentColor" strokeWidth="1.3" />
+          <path d="m2.5 4.5 5.5 4.5 5.5-4.5" fill="none" stroke={filled ? 'var(--surface)' : 'currentColor'} strokeWidth="1.3" strokeLinejoin="round" />
         </>
+      ) : kind === 'link' ? (
+        <path d="M2.5 6h6.5V3.5L13.5 8 9 12.5V10H2.5Z" fill={fill} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       ) : kind === 'error' ? (
         <path d="M3 13.5 6 6l3.5 3.5L13 2.5 10 10 6.5 6.5Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       ) : (
@@ -88,11 +105,12 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
   const { element, boundaries, problems } = data;
   const ring = selected ? 'ring-2 ring-focus' : '';
   const hasIn = element.type !== 'startEvent';
-  const hasOut = element.type !== 'endEvent';
+  const hasOut = element.type !== 'endEvent' && !(element.type === 'intermediateThrowEvent' && element.link !== undefined);
+  const hasInHandle = !(element.type === 'intermediateCatchEvent' && element.link !== undefined);
   const label = 'name' in element && element.name ? element.name : undefined;
   const handles = (
     <>
-      {hasIn ? <Handle type="target" position={Position.Left} className="!size-2 !border-line-strong !bg-surface" /> : null}
+      {hasIn && hasInHandle ? <Handle type="target" position={Position.Left} className="!size-2 !border-line-strong !bg-surface" /> : null}
       {hasOut ? <Handle type="source" position={Position.Right} className="!size-2 !border-line-strong !bg-surface" /> : null}
     </>
   );
@@ -108,9 +126,15 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         <div className={cx('grid size-9 place-items-center rounded-full bg-surface', end ? 'border-[3px] border-text' : 'border-[1.5px] border-text', ring)}>
           {element.type === 'intermediateCatchEvent' ? (
             <div className="grid size-7 place-items-center rounded-full border border-text">
-              <EventIcon kind={eventKind(element)} />
+              <EventIcon kind={element.link !== undefined ? 'link' : eventKind(element)} />
             </div>
           ) : null}
+          {element.type === 'intermediateThrowEvent' ? (
+            <div className="grid size-7 place-items-center rounded-full border border-text">
+              {element.message ? <EventIcon kind="message" filled /> : element.link !== undefined ? <EventIcon kind="link" filled /> : null}
+            </div>
+          ) : null}
+          {end && element.message ? <EventIcon kind="message" size={14} filled /> : null}
           {end && element.terminate ? <div className="size-4 rounded-full bg-text" /> : null}
         </div>
         {label ? <span className="absolute top-10 left-1/2 w-28 -translate-x-1/2 text-center text-[11px] leading-tight text-muted">{label}</span> : null}
@@ -154,11 +178,18 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
     );
   }
   const icon = ICON_PATH[element.type];
+  const filled = FILLED_PATH[element.type];
   return (
     <div className={cx('relative h-20 w-[100px] rounded-lg border-text bg-surface', element.type === 'callActivity' ? 'border-[3px]' : 'border-[1.5px]', ring)}>
       {icon ? (
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden className="absolute top-1.5 left-1.5 text-muted">
           <path d={icon} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : null}
+      {filled ? (
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden className="absolute top-1.5 left-1.5 text-muted">
+          <path d={filled} fill="currentColor" />
+          <path d="M2.5 4.5 8 9l5.5-4.5" fill="none" stroke="var(--surface)" strokeWidth="1.2" strokeLinejoin="round" />
         </svg>
       ) : null}
       <span className="grid h-full place-items-center px-2 pt-2 text-center text-xs leading-tight">{label}</span>
@@ -338,6 +369,9 @@ export function ProcessDesigner({
     if (kind === 'userTask' && !Object.keys(definition.roles).length) return 'Add a role first: a role does each task';
     if (kind === 'messageEvent' && !updateActions(definition, process.entity).length) return 'Add an action that changes the record first: the process waits until it is saved';
     if (kind === 'callActivity' && !callChoices(definition, name).length) return "Add another process first: a call runs one of the app's processes";
+    if ((kind === 'sendTask' || kind === 'messageThrow') && !sendChoices(definition, name).length) return 'Add an action that changes a record first: the process runs it as a message';
+    if (kind === 'receiveTask' && !updateActions(definition, process.entity).length) return 'Add an action that changes the record first: the process waits until it is saved';
+    if (kind === 'businessRuleTask' && !Object.values(definition.rules).some((rule) => rule.entity === process.entity)) return 'Add a rule for these records first: a rule check checks them';
     return null;
   };
 
@@ -371,14 +405,34 @@ export function ProcessDesigner({
         {readOnly ? null : (
           <Card className="grid content-start gap-1.5 p-2">
             <p className="m-0 text-xs text-muted">{selection?.kind === 'flow' ? 'Add on the flow' : selection ? 'Add after it' : 'Add'}</p>
-            {PALETTE.map((item, index) => (
-              <div key={item.kind} className="contents">
-                {item.more && !PALETTE[index - 1]?.more ? <p className="m-0 mt-2 text-xs text-muted">More BPMN</p> : null}
-                <Button size="sm" className="justify-start" title={missing(item.kind) ?? item.hint} onClick={() => add(item.kind)} disabled={missing(item.kind) !== null}>
-                  {item.label}
-                </Button>
-              </div>
+            {PALETTE.filter((item) => !item.group).map((item) => (
+              <Button key={item.kind} size="sm" className="justify-start" title={missing(item.kind) ?? item.hint} onClick={() => add(item.kind)} disabled={missing(item.kind) !== null}>
+                {item.label}
+              </Button>
             ))}
+            <Field label="More BPMN">
+              {(inputId) => (
+                <Select
+                  id={inputId}
+                  value=""
+                  onChange={(event) => {
+                    const chosen = PALETTE.find((item) => item.kind === event.target.value);
+                    if (chosen) add(chosen.kind);
+                  }}
+                >
+                  <option value="">Add…</option>
+                  {(['Tasks', 'Gateways', 'Events', 'Parts'] as const).map((group) => (
+                    <optgroup key={group} label={group}>
+                      {PALETTE.filter((item) => item.group === group).map((item) => (
+                        <option key={item.kind} value={item.kind} disabled={missing(item.kind) !== null} title={missing(item.kind) ?? item.hint}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </Select>
+              )}
+            </Field>
           </Card>
         )}
         <Canvas
@@ -694,13 +748,20 @@ const TYPE_LABELS: Readonly<Record<ProcessElement['type'], string>> = {
   parallelGateway: 'Parallel',
   inclusiveGateway: 'Inclusive',
   intermediateCatchEvent: 'Timer',
+  intermediateThrowEvent: 'Milestone',
   subProcess: 'Sub-process',
   callActivity: 'Call process',
+  scriptTask: 'Script task',
+  businessRuleTask: 'Rule check',
+  sendTask: 'Send task',
+  receiveTask: 'Receive task',
   boundaryEvent: 'Deadline',
 };
 
 /** What the panel calls an element: an event by what it waits for. */
 function typeLabel(element: ProcessElement): string {
+  if ((element.type === 'intermediateCatchEvent' || element.type === 'intermediateThrowEvent') && element.link !== undefined) return 'Link';
+  if (element.type === 'intermediateThrowEvent' && element.message) return 'Send a message';
   if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
     const kind = eventKind(element);
     if (kind === 'message') return 'Message';
@@ -709,9 +770,65 @@ function typeLabel(element: ProcessElement): string {
   return TYPE_LABELS[element.type];
 }
 
+/** The message an element sends: an action that the process runs on its record, or on the one a reference field names. */
+function SendPicker({ definition, name, value, onChange }: { definition: Definition; name: string; value: Message; onChange: (message: Message) => void }) {
+  const choices = sendChoices(definition, name);
+  const key = `${value.action}|${value.record ?? ''}`;
+  return (
+    <Field label="Runs, as a message" hint="With the app's authority. The processes on that record hear it, as when a person saves it.">
+      {(inputId) => (
+        <Select
+          id={inputId}
+          value={key}
+          onChange={(event) => {
+            const [action = '', record] = event.target.value.split('|');
+            onChange({ action, ...(record ? { record } : {}) });
+          }}
+        >
+          {choices.some((choice) => `${choice.action}|${choice.record ?? ''}` === key) ? null : (
+            <option value={key} disabled>
+              Choose an action
+            </option>
+          )}
+          {choices.map((choice) => (
+            <option key={`${choice.action}|${choice.record ?? ''}`} value={`${choice.action}|${choice.record ?? ''}`}>
+              {choice.label}
+            </option>
+          ))}
+        </Select>
+      )}
+    </Field>
+  );
+}
+
+/** A script task's steps, in the steps editor of actions: the editor works on an action, so the steps travel as one that only the panel has. */
+function ScriptSteps({ definition, name, id, onChange }: { definition: Definition; name: string; id: string; onChange: (definition: Definition) => void }) {
+  const process = definition.processes![name]!;
+  const element = process.elements[id];
+  if (element?.type !== 'scriptTask') return null;
+  const key = `__script_${id}`;
+  const action: Definition['actions'][string] = { label: element.name, description: element.name, entity: process.entity, operation: 'update', input: [], set: {}, confirm: 'none', steps: element.steps };
+  const shown: Definition = { ...definition, actions: { ...definition.actions, [key]: action } };
+  return (
+    <section aria-label="Steps" className="grid gap-2">
+      <p className="m-0 text-sm text-muted">The steps change the record by themselves, with the app's authority. The record's rules still apply, and a check that fails stops the task.</p>
+      <StepsEditor
+        definition={shown}
+        action={key}
+        kinds={['set', 'add_line', 'check']}
+        onChange={(next) => {
+          const steps = next.actions[key]?.steps ?? [];
+          onChange(updateElement(definition, name, id, (current) => (current.type === 'scriptTask' ? { ...current, steps } : current)));
+        }}
+      />
+    </section>
+  );
+}
+
 /** What the panel says of an event on a host's boundary, by the host. */
 const ENDS: Readonly<Record<string, { readonly interrupts: string; readonly open: string }>> = {
   userTask: { interrupts: 'It takes the task away', open: 'while the task is open' },
+  receiveTask: { interrupts: 'It stops the wait', open: 'while the task waits' },
   subProcess: { interrupts: 'It ends all of the sub-process', open: 'while the sub-process runs' },
   callActivity: { interrupts: 'It cancels the process it called', open: 'while the called process runs' },
 };
@@ -870,6 +987,7 @@ function ElementPanel(props: {
   const actions = updateActions(definition, process.entity);
   const dates = (entity?.fields ?? []).filter((field) => field.type === 'date' || field.type === 'datetime');
   const calls = callChoices(definition, name);
+  const links = Object.values(process.elements).flatMap((candidate) => (candidate.type === 'intermediateCatchEvent' && candidate.link !== undefined ? [candidate.link] : []));
   // The action a catch event waits for, kept apart: the narrowing of the element doesn't reach a field's render function.
   const awaited = element.type === 'intermediateCatchEvent' ? element.message?.action : undefined;
 
@@ -908,7 +1026,128 @@ function ElementPanel(props: {
         </fieldset>
       ) : null}
       {element.type === 'endEvent' ? (
-        <Checkbox label="End the whole process here, other paths too" checked={element.terminate} onChange={(terminate) => set((current) => ({ ...current, terminate }) as ProcessElement)} />
+        <>
+          <Checkbox
+            label="End the whole process here, other paths too"
+            checked={element.terminate}
+            onChange={(terminate) =>
+              set((current) => {
+                if (current.type !== 'endEvent') return current;
+                const { message: _message, ...rest } = current;
+                return { ...rest, terminate };
+              })
+            }
+          />
+          <Checkbox
+            label="Send a message as it ends"
+            checked={element.message !== undefined}
+            disabled={!sendChoices(definition, name).length}
+            onChange={(on) =>
+              set((current) => {
+                if (current.type !== 'endEvent') return current;
+                const { message: _message, ...rest } = current;
+                const first = sendChoices(definition, name)[0];
+                return on && first ? { ...rest, terminate: false, message: { action: first.action, ...(first.record ? { record: first.record } : {}) } } : rest;
+              })
+            }
+          />
+          {element.message ? <SendPicker definition={definition} name={name} value={element.message} onChange={(message) => set((current) => ({ ...current, message }) as ProcessElement)} /> : null}
+        </>
+      ) : null}
+      {element.type === 'scriptTask' ? <ScriptSteps definition={definition} name={name} id={id} onChange={onChange} /> : null}
+      {element.type === 'scriptTask' || element.type === 'sendTask' ? <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} /> : null}
+      {element.type === 'sendTask' || (element.type === 'intermediateThrowEvent' && element.message) ? (
+        <SendPicker definition={definition} name={name} value={element.message!} onChange={(message) => set((current) => ({ ...current, message }) as ProcessElement)} />
+      ) : null}
+      {element.type === 'businessRuleTask' ? (
+        <fieldset className="m-0 grid gap-1 rounded-md border border-line p-3">
+          <legend className="px-1 text-sm text-muted">Checks the rules</legend>
+          <Checkbox
+            label="All the rules of these records"
+            checked={!element.rules}
+            onChange={(all) =>
+              set((current) => {
+                if (current.type !== 'businessRuleTask') return current;
+                const { rules: _rules, ...rest } = current;
+                return all ? rest : { ...rest, rules: Object.keys(definition.rules).filter((rule) => definition.rules[rule]!.entity === process.entity).slice(0, 1) };
+              })
+            }
+          />
+          {element.rules
+            ? Object.entries(definition.rules)
+                .filter(([, rule]) => rule.entity === process.entity)
+                .map(([rule, spec]) => (
+                  <Checkbox
+                    key={rule}
+                    label={spec.message}
+                    checked={element.rules!.includes(rule)}
+                    onChange={(on) =>
+                      set((current) =>
+                        current.type === 'businessRuleTask' ? { ...current, rules: on ? [...(current.rules ?? []), rule] : (current.rules ?? []).filter((each) => each !== rule) } : current,
+                      )
+                    }
+                  />
+                ))
+            : null}
+          <p className="m-0 text-xs text-muted">What it finds is its outcome: passed, warned or failed. Select a flow out of it to say which outcome it follows.</p>
+        </fieldset>
+      ) : null}
+      {element.type === 'receiveTask' ? (
+        <>
+          <Field label="Waits until it is saved" hint="Someone saves the action on the record, and the process goes on.">
+            {(inputId) => (
+              <Select id={inputId} value={element.message.action} onChange={(event) => set((current) => ({ ...current, message: { action: event.target.value } }) as ProcessElement)}>
+                {actions.includes(element.message.action) ? null : (
+                  <option value={element.message.action} disabled>
+                    Choose an action
+                  </option>
+                )}
+                {actions.map((action) => (
+                  <option key={action} value={action}>
+                    {definition.actions[action]!.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} />
+        </>
+      ) : null}
+      {element.type === 'intermediateThrowEvent' && element.link !== undefined ? (
+        <Field label="Goes on at" hint="The catch link of the same name, where the path goes on.">
+          {(inputId) => (
+            <Select id={inputId} value={element.link} onChange={(event) => set((current) => ({ ...current, link: event.target.value }) as ProcessElement)}>
+              {[...new Set([element.link!, ...links])].map((link) => (
+                <option key={link} value={link}>
+                  {link}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      ) : null}
+      {element.type === 'intermediateCatchEvent' && element.link !== undefined ? (
+        <Field label="Link name" hint="Throw links of this name go on here.">
+          {(inputId) => (
+            <TextInput
+              id={inputId}
+              value={element.link}
+              onChange={(event) => {
+                // The throw links of the old name follow the new one.
+                const was = element.link;
+                const named = event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                let next = updateElement(definition, name, id, (current) => ({ ...current, link: named }) as ProcessElement);
+                for (const [other, candidate] of Object.entries(process.elements)) {
+                  if (candidate.type === 'intermediateThrowEvent' && candidate.link === was) next = updateElement(next, name, other, (current) => ({ ...current, link: named }) as ProcessElement);
+                }
+                onChange(next);
+              }}
+            />
+          )}
+        </Field>
+      ) : null}
+      {element.type === 'intermediateThrowEvent' && element.link === undefined && !element.message ? (
+        <p className="m-0 text-sm text-muted">A milestone: the instance's history marks when a path passes it.</p>
       ) : null}
       {element.type === 'userTask' ? (
         <>
@@ -1154,7 +1393,7 @@ function ElementPanel(props: {
           <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} />
         </>
       ) : null}
-      {element.type === 'intermediateCatchEvent' ? (
+      {element.type === 'intermediateCatchEvent' && element.link === undefined ? (
         <>
           <Field label="Wait">
             {(inputId) => (
@@ -1306,6 +1545,29 @@ function FlowPanel(props: {
           />
         )}
       </Field>
+      {from?.type === 'businessRuleTask' ? (
+        <Field label="Follows what the check finds">
+          {(inputId) => (
+            <Select
+              id={inputId}
+              value={flow.outcome ?? ''}
+              onChange={(event) =>
+                set((current) => {
+                  const { outcome: _outcome, ...rest } = current;
+                  return event.target.value ? { ...rest, outcome: event.target.value } : rest;
+                })
+              }
+            >
+              <option value="">Any outcome</option>
+              {RULE_OUTCOMES.map((outcome) => (
+                <option key={outcome} value={outcome}>
+                  {outcome === 'passed' ? 'Every rule holds' : outcome === 'warned' ? 'Only warnings' : 'An error'}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      ) : null}
       {from?.type === 'userTask' ? (
         <Field label="Follows the outcome">
           {(inputId) => (

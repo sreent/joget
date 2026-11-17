@@ -269,13 +269,14 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
     const [b, h] = [baseProcesses[name], headProcesses[name]];
     if (!b && h) {
       const starts = startingActions(h);
-      const { actions, skills, calls } = processWork(h);
+      const { actions, skills, calls, scripts } = processWork(h);
       const called = Object.values(headProcesses).some((other) => processWork(other).calls.includes(name));
       const texts = [
         `New process ${h.label}, on ${entityLabel(h.entity)}: ${starts.length ? `${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it` : called ? 'another process calls it' : 'people start it by hand'}`,
         ...(actions.length ? [`It runs ${actions.join(', ')} by itself`] : []),
         ...(skills.length ? [`It starts the a7c skill${skills.length > 1 ? 's' : ''} ${skills.join(', ')}`] : []),
         ...(calls.length ? [`It calls ${calls.join(', ')}`] : []),
+        ...(scripts.length ? [`It changes the record by itself in ${scripts.join(', ')}`] : []),
       ];
       changes.push({ tool: name, change: 'added', text: texts.join('. ') });
     } else if (b && !h) {
@@ -305,6 +306,8 @@ function processChanges(b: Process, h: Process): string[] {
   for (const skill of before.skills) if (!after.skills.includes(skill)) texts.push(`${h.label} no longer starts the a7c skill ${skill}`);
   for (const call of after.calls) if (!before.calls.includes(call)) texts.push(`${h.label} now calls ${call}`);
   for (const call of before.calls) if (!after.calls.includes(call)) texts.push(`${h.label} no longer calls ${call}`);
+  for (const script of after.scripts) if (!before.scripts.includes(script)) texts.push(`${h.label} now changes the record by itself in ${script}`);
+  for (const script of before.scripts) if (!after.scripts.includes(script)) texts.push(`${h.label} no longer changes the record in ${script}`);
   if (!texts.length && !same({ ...b, diagram: undefined }, { ...h, diagram: undefined })) texts.push(`The flow of ${h.label} changed`);
   return texts;
 }

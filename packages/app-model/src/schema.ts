@@ -483,6 +483,14 @@ export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in I
 export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name })]);
 export type Timer = z.infer<typeof Timer>;
 
+/**
+ * A message, as Ambit's processes hear one: one of the app's update actions committing on the
+ * record, such as the requester withdrawing. A process that sends one runs the action itself: on
+ * its own record, or on the record that a reference field names, whose processes then hear it.
+ */
+export const Message = z.strictObject({ action: Name, record: Name.optional() });
+export type Message = z.infer<typeof Message>;
+
 /** The sub-process an element is in. Without it, the element is in the process itself. An event on a boundary is where its host is. */
 const In = ElementId.optional();
 
@@ -497,8 +505,11 @@ const StartEvent = z.strictObject({
   /** Without actions, a person whose role may start the process starts it on a record, or another process calls it. */
   actions: z.array(Name).max(10).default([]),
 });
-/** Where a path ends. A terminate end event ends the whole instance, other paths included; inside a sub-process, the sub-process. */
-const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optional(), in: In, terminate: z.boolean().default(false) });
+/**
+ * Where a path ends. A terminate end event ends the whole instance, other paths included; inside a
+ * sub-process, the sub-process. One with a message sends it as the path ends.
+ */
+const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optional(), in: In, terminate: z.boolean().default(false), message: Message.optional() });
 
 /** A choice that completes a user task, such as approve. It can run one of the app's actions on the record, as the person who decides. */
 const Outcome = z.strictObject({ name: Name, label: Label, action: Name.optional() });
@@ -576,6 +587,34 @@ const ServiceTask = z.strictObject({
   /** The skill's input, worked out from the record. */
   input: z.record(SkillInputName, ExpressionSchema).optional(),
 });
+/**
+ * Changes the record by itself, with the app's authority: Ambit's steps, as an action's steps,
+ * not code. The record's checks and rules still apply, and a failed check stops the task.
+ */
+const ScriptTask = z.strictObject({
+  type: z.literal('scriptTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  steps: z.array(Step).max(MAX_STEPS).default([]),
+});
+/** What a rule check finds: every rule holds, only warnings fail, or an error fails. */
+export const RULE_OUTCOMES = ['passed', 'warned', 'failed'] as const;
+/**
+ * Checks the record against the app's rules for its entity, all or those it names. Its outcome,
+ * passed, warned or failed, chooses the flow out, as a user task's outcome does.
+ */
+const BusinessRuleTask = z.strictObject({
+  type: z.literal('businessRuleTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  rules: z.array(Name).max(50).optional(),
+});
+/** Sends a message: runs an update action, with the app's authority, on the record or on the one a reference field names. */
+const SendTask = z.strictObject({ type: z.literal('sendTask'), name: Label, description: Description.optional(), in: In, message: Message });
+/** Waits for a message, an action committing on the record, as a task: deadlines and other events can sit on its boundary. */
+const ReceiveTask = z.strictObject({ type: z.literal('receiveTask'), name: Label, description: Description.optional(), in: In, message: Message });
 /** A task with nothing to run, which passes straight on: work that is only drawn. */
 const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional(), in: In });
 /** Work done away from any system, such as posting a letter: the process passes straight on. */
@@ -584,14 +623,23 @@ const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, 
 const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), name: Label.optional(), in: In });
 /** Takes every flow out at once; with several flows in, waits for a token from each. */
 const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), name: Label.optional(), in: In });
-/** A message, as Ambit's processes hear one: one of the app's actions committing on the record, such as the requester withdrawing. */
-export const Message = z.strictObject({ action: Name });
-export type Message = z.infer<typeof Message>;
 
 /** Takes every flow out whose condition holds, or else its default; with several flows in, waits for every path that can still arrive. */
 const InclusiveGateway = z.strictObject({ type: z.literal('inclusiveGateway'), name: Label.optional(), in: In });
-/** Waits until a timer fires, or a message comes: one of the two. */
-const CatchEvent = z.strictObject({ type: z.literal('intermediateCatchEvent'), name: Label.optional(), in: In, timer: Timer.optional(), message: Message.optional() });
+/** Waits until a timer fires or a message comes; or, as a link, takes over from the throw link of the same name. One of these. */
+const CatchEvent = z.strictObject({
+  type: z.literal('intermediateCatchEvent'),
+  name: Label.optional(),
+  in: In,
+  timer: Timer.optional(),
+  message: Message.optional(),
+  link: Name.optional(),
+});
+/**
+ * A point that a path passes: a milestone that the history marks; a message that it sends on the
+ * way; or a link, which goes on at the catch link of the same name, to spare a long flow.
+ */
+const ThrowEvent = z.strictObject({ type: z.literal('intermediateThrowEvent'), name: Label.optional(), in: In, message: Message.optional(), link: Name.optional() });
 /**
  * A part of the process with its own start and end, drawn open on the canvas: the elements in it
  * name it with `in`. It ends when no path is left inside it, and an event on its boundary acts on
@@ -633,12 +681,17 @@ export const ProcessElement = z.discriminatedUnion('type', [
   EndEvent,
   UserTask,
   ServiceTask,
+  ScriptTask,
+  BusinessRuleTask,
+  SendTask,
+  ReceiveTask,
   PlainTask,
   ManualTask,
   ExclusiveGateway,
   ParallelGateway,
   InclusiveGateway,
   CatchEvent,
+  ThrowEvent,
   SubProcess,
   CallActivity,
   BoundaryEvent,
@@ -649,6 +702,8 @@ export type UserTaskElement = Extract<ProcessElement, { type: 'userTask' }>;
 export type ServiceTaskElement = Extract<ProcessElement, { type: 'serviceTask' }>;
 export type BoundaryEventElement = Extract<ProcessElement, { type: 'boundaryEvent' }>;
 export type CatchEventElement = Extract<ProcessElement, { type: 'intermediateCatchEvent' }>;
+export type ScriptTaskElement = Extract<ProcessElement, { type: 'scriptTask' }>;
+export type BusinessRuleTaskElement = Extract<ProcessElement, { type: 'businessRuleTask' }>;
 export type SubProcessElement = Extract<ProcessElement, { type: 'subProcess' }>;
 export type CallActivityElement = Extract<ProcessElement, { type: 'callActivity' }>;
 

@@ -50,10 +50,10 @@ const nameOf = (place: StepPlace) => (place.side === undefined ? `Step ${place.i
  * (design §6.2). A branch holds two short lists. Work in other systems is an a7c skill, which a
  * step starts once the change is saved.
  */
-export function StepsEditor({ definition, onChange, action }: Props & { action: string }) {
+export function StepsEditor({ definition, onChange, action, kinds }: Props & { action: string; /** The kinds of step it offers, where fewer fit, such as in a script task. */ kinds?: StepType[] }) {
   // a7c is left out until the installation connects it: until then, no new skill steps.
   const features = useQuery({ queryKey: ['features'], queryFn: api.features, staleTime: Infinity });
-  const simple: StepType[] = features.data?.a7c ? ['set', 'add_line', 'check', 'skill'] : ['set', 'add_line', 'check'];
+  const simple: StepType[] = kinds ?? (features.data?.a7c ? ['set', 'add_line', 'check', 'skill'] : ['set', 'add_line', 'check']);
   const current = definition.actions[action]!;
   const steps = (current.steps ?? []) as Step[];
   const [open, setOpen] = useState<string | null>(null);

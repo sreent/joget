@@ -9,6 +9,7 @@ import {
   arrange,
   callChoices,
   connect,
+  sendChoices,
   durationOf,
   durationParts,
   durationWords,
@@ -179,6 +180,32 @@ describe('editing a process', () => {
     const call = addElement(definition, 'leave_approval', 'callActivity', { on: 'on_reject' });
     expect(leave(call.definition).elements[call.id]).toEqual({ type: 'callActivity', name: 'Second look', process: 'second_look' });
     expect(valid(call.definition)).toEqual([]);
+  });
+
+  it('adds a link as a throw and a catch of one name, where a long flow was', () => {
+    const added = addElement(app(), 'leave_approval', 'link', { on: 'on_approve' });
+    const process = leave(added.definition);
+    expect(process.elements[added.id]).toEqual({ type: 'intermediateThrowEvent', name: 'Go on', link: 'link_1' });
+    expect(process.elements['land_1']).toEqual({ type: 'intermediateCatchEvent', name: 'Go on', link: 'link_1' });
+    expect(process.flows['on_approve']).toMatchObject({ from: 'decide', to: added.id, outcome: 'approve' });
+    expect(Object.values(process.flows).find((flow) => flow.from === 'land_1')).toMatchObject({ to: 'approved' });
+    expect(valid(added.definition)).toEqual([]);
+  });
+
+  it('adds a script that needs a step, a rule check, and a receive task with a deadline', () => {
+    let definition = addElement(app(), 'leave_approval', 'scriptTask', { on: 'on_approve' }).definition;
+    expect(valid(definition)).toEqual(['processes.leave_approval.elements.script_1.steps: New script needs a step']);
+    definition = updateElement(definition, 'leave_approval', 'script_1', (element) =>
+      element.type === 'scriptTask' ? { ...element, steps: [{ type: 'set', field: 'reason', value: 'Approved' }] } : element,
+    );
+    expect(valid(definition)).toEqual([]);
+    definition = addElement(definition, 'leave_approval', 'businessRuleTask', { on: 'on_reject' }).definition;
+    expect(valid(definition)).toEqual([]);
+    expect(sendChoices(definition, 'leave_approval').map((choice) => choice.action).sort()).toEqual(['approve_leave', 'reject_leave']);
+    const receive = addElement(definition, 'leave_approval', 'receiveTask', { after: 'script_1' });
+    definition = addBoundary(receive.definition, 'leave_approval', receive.id, 'timer').definition;
+    expect(leave(definition).elements[receive.id]).toMatchObject({ type: 'receiveTask', message: { action: 'approve_leave' } });
+    expect(Object.values(leave(definition).elements).filter((element) => element.type === 'boundaryEvent' && element.attachedTo === receive.id)).toHaveLength(1);
   });
 
   it('lets go of an action or a field that the app no longer has', () => {

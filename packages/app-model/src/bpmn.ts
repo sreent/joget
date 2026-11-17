@@ -2,8 +2,8 @@ import { isRef } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { messageActions, processGraph, scopeOf, scopesOf } from './processes.js';
-import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Process, type ProcessElement, type Several, type Timer } from './schema.js';
+import { messageActions, processGraph, scopeOf, scopesOf, sentMessages } from './processes.js';
+import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Several, type Step, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
 
@@ -230,12 +230,17 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
   endEvent: 'bpmn:endEvent',
   userTask: 'bpmn:userTask',
   serviceTask: 'bpmn:serviceTask',
+  scriptTask: 'bpmn:scriptTask',
+  businessRuleTask: 'bpmn:businessRuleTask',
+  sendTask: 'bpmn:sendTask',
+  receiveTask: 'bpmn:receiveTask',
   task: 'bpmn:task',
   manualTask: 'bpmn:manualTask',
   exclusiveGateway: 'bpmn:exclusiveGateway',
   parallelGateway: 'bpmn:parallelGateway',
   inclusiveGateway: 'bpmn:inclusiveGateway',
   intermediateCatchEvent: 'bpmn:intermediateCatchEvent',
+  intermediateThrowEvent: 'bpmn:intermediateThrowEvent',
   subProcess: 'bpmn:subProcess',
   callActivity: 'bpmn:callActivity',
   boundaryEvent: 'bpmn:boundaryEvent',
@@ -243,6 +248,10 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
 
 /** The ID of the BPMN message that stands for an action committing on the record. */
 const messageId = (action: string) => `Message_${action}`;
+/** The language of a script task's script: Ambit's steps, as JSON. Ambit runs no other script. */
+export const STEPS_FORMAT = 'urn:ambit:steps';
+/** The implementation of a business rule task that checks the app's rules. */
+export const RULES_IMPLEMENTATION = 'urn:ambit:rules';
 
 const formal = (name: string, language: string, text: string): XmlOut => ({ name, attributes: { 'xsi:type': 'bpmn:tFormalExpression', language }, text });
 
@@ -259,6 +268,10 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     children: ['duration' in definitionOf ? formal('bpmn:timeDuration', LANGUAGES.duration, definitionOf.duration) : formal('bpmn:timeDate', LANGUAGES.field, definitionOf.date)],
   });
 
+  const messageDefinition = (id: string, message: Message): XmlOut => ({
+    name: 'bpmn:messageEventDefinition',
+    attributes: { id: `${id}_message`, messageRef: messageId(message.action), 'ambit:record': message.record },
+  });
   const elementXml = (id: string, element: ProcessElement): XmlOut => {
     const children: XmlOut[] = [];
     if ('description' in element && element.description) children.push({ name: 'bpmn:documentation', text: element.description });
@@ -307,6 +320,18 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         attributes['calledElement'] = element.process;
         attributes['ambit:record'] = element.record;
         break;
+      case 'scriptTask':
+        attributes['scriptFormat'] = STEPS_FORMAT;
+        break;
+      case 'businessRuleTask':
+        attributes['implementation'] = RULES_IMPLEMENTATION;
+        attributes['ambit:rules'] = element.rules?.join(' ');
+        break;
+      case 'sendTask':
+      case 'receiveTask':
+        attributes['messageRef'] = messageId(element.message.action);
+        attributes['ambit:record'] = element.message.record;
+        break;
       default:
         break;
     }
@@ -325,11 +350,14 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         },
       });
     }
+    // A script task's script comes after what every activity has.
+    if (element.type === 'scriptTask') children.push({ name: 'bpmn:script', text: JSON.stringify(element.steps) });
     if (element.type === 'endEvent' && element.terminate) children.push({ name: 'bpmn:terminateEventDefinition', attributes: { id: `${id}_terminate` } });
-    if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
-      if (element.timer) children.push(timer(id, element.timer));
-      if (element.message) children.push({ name: 'bpmn:messageEventDefinition', attributes: { id: `${id}_message`, messageRef: messageId(element.message.action) } });
+    if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'intermediateThrowEvent' || element.type === 'endEvent') {
+      if ('timer' in element && element.timer) children.push(timer(id, element.timer));
+      if (element.message) children.push(messageDefinition(id, element.message));
       if (element.type === 'boundaryEvent' && element.error) children.push({ name: 'bpmn:errorEventDefinition', attributes: { id: `${id}_error` } });
+      if ('link' in element && element.link !== undefined) children.push({ name: 'bpmn:linkEventDefinition', attributes: { id: `${id}_link`, name: element.link } });
     }
     return { name: TAGS[element.type], attributes, children };
   };
@@ -380,7 +408,10 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     },
     children: [
       // A message is an action of the app committing on the record: each one the process waits for.
-      ...messageActions(process).map((action) => ({ name: 'bpmn:message', attributes: { id: messageId(action), name: action, 'ambit:action': action } })),
+      ...[...new Set([...messageActions(process), ...sentMessages(process).map((message) => message.action)])].map((action) => ({
+        name: 'bpmn:message',
+        attributes: { id: messageId(action), name: action, 'ambit:action': action },
+      })),
       {
         name: 'bpmn:process',
         attributes: { id: name, name: process.label, isExecutable: 'true', 'ambit:entity': process.entity },
@@ -411,15 +442,10 @@ const DOCUMENTING = new Set(['textAnnotation', 'association', 'group', 'dataObje
 const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteristics', 'standardLoopCharacteristics']);
 /** The elements Ambit doesn't run yet, as a sentence names them. */
 const KINDS: Readonly<Record<string, string>> = {
-  scriptTask: 'a script task',
-  businessRuleTask: 'a business rule task',
-  sendTask: 'a send task',
-  receiveTask: 'a receive task',
   adHocSubProcess: 'an ad hoc sub-process',
   transaction: 'a transaction',
   eventBasedGateway: 'an event-based gateway',
   complexGateway: 'a complex gateway',
-  intermediateThrowEvent: 'a throw event',
 };
 const EVENT_KINDS: Readonly<Record<string, string>> = {
   messageEventDefinition: 'message',
@@ -599,9 +625,17 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           refuse('A timer runs after an ISO 8601 duration, such as P3D, or on a date field of the record');
           return undefined;
         };
-        /** The action a message event waits for: the message's own setting, or a message named after one of the app's actions. */
-        const messageOf = (): string | undefined => {
-          const ref = attribute(bpmn(node, 'messageEventDefinition')[0]!, 'messageRef');
+        /**
+         * The message of an event or a task: the action of the message it names, from the message's
+         * own setting, or a message named after one of the app's actions; and, for one it sends,
+         * the reference field of the record it goes to.
+         */
+        const messageFrom = (holder: XmlElement): Message | undefined => {
+          const action = messageOf(attribute(holder, 'messageRef'));
+          const record = attribute(holder, 'record', AMBIT_BPMN) ?? attribute(node, 'record', AMBIT_BPMN);
+          return action ? { action, ...(record ? { record } : {}) } : undefined;
+        };
+        const messageOf = (ref = attribute(bpmn(node, 'messageEventDefinition')[0]!, 'messageRef')): string | undefined => {
           const message = ref ? messages.get(ref) : undefined;
           const action = message?.action ?? (message?.name && definition.actions[message.name] ? message.name : undefined);
           if (!action || !definition.actions[action]) {
@@ -610,15 +644,73 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           }
           return action;
         };
+        const linkName = () => attribute(bpmn(node, 'linkEventDefinition')[0]!, 'name')?.trim() || undefined;
         switch (node.local) {
-          case 'startEvent':
-            if (kinds.length) refuse(`Ambit doesn't start a process on a ${kinds.join(' or ')} event yet`);
-            else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: (ambit(node, 'actions') ?? '').split(/\s+/).filter(Boolean) };
+          case 'startEvent': {
+            const actions = (ambit(node, 'actions') ?? '').split(/\s+/).filter(Boolean);
+            if (kinds.length === 1 && kinds[0] === 'message') {
+              // A message starts a process when its action commits on a record: the start event names the action.
+              const action = messageOf();
+              if (action) elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [...new Set([...actions, action])] };
+            } else if (kinds.length) refuse(`Ambit doesn't start a process on a ${kinds.join(' or ')} event yet`);
+            else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions };
             break;
+          }
           case 'endEvent':
-            if (kinds.some((kind) => kind !== 'terminate')) refuse(`Ambit doesn't end a process with a ${kinds.join(' or ')} event yet`);
-            else elements[id] = { type: 'endEvent', ...(name ? { name } : {}), terminate: kinds.includes('terminate') };
+            if (kinds.length > 1 || kinds.some((kind) => kind !== 'terminate' && kind !== 'message')) refuse(`Ambit doesn't end a process with a ${kinds.join(' or ')} event yet`);
+            else if (kinds[0] === 'message') {
+              const message = messageFrom(bpmn(node, 'messageEventDefinition')[0]!);
+              if (message) elements[id] = { type: 'endEvent', ...(name ? { name } : {}), terminate: false, message };
+            } else elements[id] = { type: 'endEvent', ...(name ? { name } : {}), terminate: kinds.includes('terminate') };
             break;
+          case 'scriptTask': {
+            const format = attribute(node, 'scriptFormat');
+            const script = bpmn(node, 'script')[0];
+            let steps: unknown;
+            try {
+              steps = format === STEPS_FORMAT && script ? JSON.parse(textOf(script)) : undefined;
+            } catch {
+              steps = undefined;
+            }
+            if (!Array.isArray(steps)) {
+              refuse(
+                format === STEPS_FORMAT
+                  ? "The script isn't a list of Ambit's steps"
+                  : `Ambit runs no code${format ? ` in ${format}` : ''}: write the script as Ambit's steps (scriptFormat ${STEPS_FORMAT}), or run one of the app's actions with a service task`,
+              );
+              break;
+            }
+            // The definition's checks read the steps when the process is saved.
+            elements[id] = { type: 'scriptTask', name: name ?? id, ...(documentation ? { description: documentation } : {}), steps: steps as Step[] };
+            break;
+          }
+          case 'businessRuleTask': {
+            const rules = (ambit(node, 'rules') ?? '').split(/\s+/).filter(Boolean);
+            if (attribute(node, 'implementation') !== RULES_IMPLEMENTATION) notes.add(`Read ${describe(node)} as a check of the record against all the app's rules: Ambit has no DMN decisions`);
+            elements[id] = { type: 'businessRuleTask', name: name ?? id, ...(documentation ? { description: documentation } : {}), ...(rules.length ? { rules } : {}) };
+            break;
+          }
+          case 'sendTask':
+          case 'receiveTask': {
+            const message = messageFrom(node);
+            if (message) elements[id] = { type: node.local, name: name ?? id, ...(documentation ? { description: documentation } : {}), message };
+            break;
+          }
+          case 'intermediateThrowEvent': {
+            if (kinds.length > 1 || (kinds.length === 1 && kinds[0] !== 'message' && kinds[0] !== 'link')) {
+              refuse(`Ambit doesn't throw a ${kinds.join(' or ')} event yet`);
+              break;
+            }
+            if (kinds[0] === 'message') {
+              const message = messageFrom(bpmn(node, 'messageEventDefinition')[0]!);
+              if (message) elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), message };
+            } else if (kinds[0] === 'link') {
+              const link = linkName();
+              if (link && NAME_PATTERN.test(link)) elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), link };
+              else refuse('Name a link with lowercase letters, digits and underscores');
+            } else elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}) };
+            break;
+          }
           case 'userTask': {
             const role = ambit(node, 'role') ?? roleByLane.get(attribute(node, 'id') ?? '');
             if (!role) {
@@ -688,13 +780,17 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             if (node.local !== 'parallelGateway' && attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
             break;
           case 'intermediateCatchEvent': {
-            if (kinds.length !== 1 || (kinds[0] !== 'timer' && kinds[0] !== 'message')) {
+            if (kinds.length !== 1 || (kinds[0] !== 'timer' && kinds[0] !== 'message' && kinds[0] !== 'link')) {
               refuse(`Ambit doesn't wait for a ${kinds.join(' or ') || 'plain'} event yet`);
               break;
             }
             if (kinds[0] === 'timer') {
               const timer = timerOf();
               if (timer) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), timer };
+            } else if (kinds[0] === 'link') {
+              const link = linkName();
+              if (link && NAME_PATTERN.test(link)) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), link };
+              else refuse('Name a link with lowercase letters, digits and underscores');
             } else {
               const action = messageOf();
               if (action) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), message: { action } };

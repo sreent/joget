@@ -268,6 +268,72 @@ describe('BPMN 2.0 files', () => {
     expect(back.ok && back.processes['leave_approval']!.diagram).toEqual(layoutProcess(definition.processes!['leave_approval']!));
   });
 
+  it('carry script, rule check, send and receive tasks, throw events and links out and back', () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    definition['entities'].team = { label: 'Team', pluralLabel: 'Teams', titleField: 'name', fields: [{ name: 'name', label: 'Name', type: 'text', required: true }] };
+    definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
+    const update = (entity: string, label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity, operation: 'update', input: [], set, confirm: 'none' });
+    definition['actions'].confirm_leave = update('leave_request', 'Confirm', { reason: 'Confirmed' });
+    definition['actions'].rename_team = update('team', 'Rename the team', { name: 'Away' });
+    definition['processes'].leave_approval = {
+      label: 'Leave approval',
+      entity: 'leave_request',
+      elements: {
+        start: { type: 'startEvent', actions: ['request_leave'] },
+        check: { type: 'businessRuleTask', name: 'Check the rules', rules: ['long_leave'] },
+        flag: { type: 'scriptTask', name: 'Flag it', steps: [{ type: 'set', field: 'reason', value: 'Long leave' }] },
+        tell: { type: 'sendTask', name: 'Tell the team', message: { action: 'rename_team', record: 'team' } },
+        milestone: { type: 'intermediateThrowEvent', name: 'Checked' },
+        jump: { type: 'intermediateThrowEvent', link: 'on' },
+        land: { type: 'intermediateCatchEvent', link: 'on' },
+        wait: { type: 'receiveTask', name: 'Wait for the confirmation', message: { action: 'confirm_leave' } },
+        end: { type: 'endEvent', message: { action: 'confirm_leave' } },
+      },
+      flows: {
+        f1: { from: 'start', to: 'check' },
+        passed: { from: 'check', to: 'milestone', outcome: 'passed' },
+        warned: { from: 'check', to: 'flag', outcome: 'warned' },
+        failed: { from: 'check', to: 'tell', outcome: 'failed' },
+        f2: { from: 'flag', to: 'milestone' },
+        f3: { from: 'tell', to: 'milestone' },
+        f4: { from: 'milestone', to: 'jump' },
+        f5: { from: 'land', to: 'wait' },
+        f6: { from: 'wait', to: 'end' },
+      },
+    };
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:scriptTask id="flag" name="Flag it" scriptFormat="urn:ambit:steps">');
+    expect(xml).toContain('<bpmn:script>[{"type":"set","field":"reason","value":"Long leave"}]</bpmn:script>');
+    expect(xml).toContain('<bpmn:businessRuleTask id="check" name="Check the rules" implementation="urn:ambit:rules" ambit:rules="long_leave">');
+    expect(xml).toContain('<bpmn:sendTask id="tell" name="Tell the team" messageRef="Message_rename_team" ambit:record="team">');
+    expect(xml).toContain('<bpmn:linkEventDefinition id="jump_link" name="on" />');
+    expect(xml).toContain('<bpmn:message id="Message_rename_team" name="rename_team" ambit:action="rename_team" />');
+    const back = bpmnToProcesses(xml, { ...app, processes: {} });
+    const { diagram: _diagram, ...process } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    expect(process).toEqual(app.processes!['leave_approval']);
+  });
+
+  it("read another tool's message start, and its business rule task as a check of the app's rules", () => {
+    const xml = `<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:ambit="urn:ambit:bpmn:1">
+  <message id="m1" name="request_leave" />
+  <process id="p" ambit:entity="leave_request">
+    <startEvent id="s"><messageEventDefinition messageRef="m1" /></startEvent>
+    <businessRuleTask id="r" name="Decide" implementation="##unspecified" />
+    <endEvent id="e" />
+    <sequenceFlow id="f1" sourceRef="s" targetRef="r" />
+    <sequenceFlow id="f2" sourceRef="r" targetRef="e" />
+  </process>
+</definitions>`;
+    const read = bpmnToProcesses(xml, leave);
+    expect(read.ok && read.processes['p']!.elements).toEqual({
+      s: { type: 'startEvent', actions: ['request_leave'] },
+      r: { type: 'businessRuleTask', name: 'Decide' },
+      e: { type: 'endEvent', terminate: false },
+    });
+    expect(read.ok && read.notes).toContain('Read "Decide" (r) as a check of the record against all the app\'s rules: Ambit has no DMN decisions');
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);
@@ -340,8 +406,9 @@ describe('BPMN 2.0 files', () => {
     const xml = `<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:ambit="urn:ambit:bpmn:1">
   <process id="p" ambit:entity="leave_request">
     <startEvent id="s"><messageEventDefinition /></startEvent>
-    <scriptTask id="t1" name="Compute" />
+    <scriptTask id="t1" name="Compute" scriptFormat="javascript"><script>x = 1</script></scriptTask>
     <inclusiveGateway id="g" />
+    <transaction id="tx" />
     <userTask id="u" name="Everyone decides" ambit:role="manager"><multiInstanceLoopCharacteristics /></userTask>
     <sequenceFlow id="f" sourceRef="s" targetRef="t1"><conditionExpression>amount &gt; 5</conditionExpression></sequenceFlow>
   </process>
@@ -349,8 +416,12 @@ describe('BPMN 2.0 files', () => {
     expect(bpmnToProcesses(xml, leave)).toEqual({
       ok: false,
       issues: [
-        { element: 's', message: "Ambit doesn't start a process on a message event yet: (s)" },
-        { element: 't1', message: 'Ambit doesn\'t run a script task yet: "Compute" (t1)' },
+        { element: 's', message: "A message is one of the app's actions committing on the record: name the action, with ambit:action on the message: (s)" },
+        {
+          element: 't1',
+          message: 'Ambit runs no code in javascript: write the script as Ambit\'s steps (scriptFormat urn:ambit:steps), or run one of the app\'s actions with a service task: "Compute" (t1)',
+        },
+        { element: 'tx', message: "Ambit doesn't run a transaction yet: (tx)" },
         { element: 'u', message: 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide: "Everyone decides" (u)' },
         { element: 'f', message: 'Ambit can\'t read the condition "amount > 5" of (f): Unknown name amount. Write it as a condition on the record\'s fields' },
       ],

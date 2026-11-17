@@ -232,7 +232,7 @@ describe('BPMN 2.0 files', () => {
 
     const script = exported.body.replace('<bpmn:task ', '<bpmn:task ').replace(/<bpmn:userTask id="decide"[^>]*>/, '<bpmn:scriptTask id="decide" name="Compute">').replace('</bpmn:userTask>', '</bpmn:scriptTask>');
     const refused = await inject({ method: 'POST', url: `/v1/apps/${bare}/processes/import`, ...as(alice), payload: { xml: script, as: 'leave_approval' } }, 422);
-    expect(refused.json()).toMatchObject({ error: 'invalid_bpmn', details: { issues: [{ path: 'bpmn.decide', message: 'Ambit doesn\'t run a script task yet: "Compute" (decide)' }] } });
+    expect(refused.json()).toMatchObject({ error: 'invalid_bpmn', details: { issues: [{ path: 'bpmn.decide', message: 'Ambit runs no code: write the script as Ambit\'s steps (scriptFormat urn:ambit:steps), or run one of the app\'s actions with a service task: "Compute" (decide)' }] } });
   });
 });
 
@@ -659,6 +659,174 @@ describe('sub-processes and call activities', () => {
     expect(await planTask()).toEqual([]);
     running = (await teamProcesses()).filter((instance: { status: string }) => instance.status === 'running');
     expect(running).toEqual([]);
+  });
+});
+
+describe('rule checks, scripts, messages that a process sends, receive tasks and links', () => {
+  it('checks the rules, changes the record by script, tells payroll and the team, and waits for the confirmation', async () => {
+    const app = await leaveApp('Leave, with checks', (definition) => {
+      definition['entities'].team = {
+        label: 'Team',
+        pluralLabel: 'Teams',
+        titleField: 'name',
+        fields: [
+          { name: 'name', label: 'Name', type: 'text', required: true },
+          { name: 'note', label: 'Note', type: 'text' },
+        ],
+      };
+      definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
+      definition['actions'].request_leave.input.push('team');
+      const update = (entity: string, label: string, set: Record<string, string>, where?: unknown) => ({
+        label,
+        description: `${label}.`,
+        entity,
+        operation: 'update',
+        input: [],
+        set,
+        confirm: 'none',
+        ...(where ? { where } : {}),
+      });
+      definition['actions'].add_team = { label: 'Add a team', description: 'Add a team.', entity: 'team', operation: 'create', input: ['name'], set: {}, confirm: 'none' };
+      definition['actions'].note_team = update('team', 'Note the team', { note: 'Someone is away' });
+      definition['actions'].confirm_leave = update('leave_request', 'Confirm the leave', { decided_on: '2027-01-04' });
+      definition['actions'].tell_payroll = update('leave_request', 'Tell payroll', { status: 'approved' });
+      definition['actions'].withdraw_leave = update('leave_request', 'Withdraw the leave', { status: 'rejected' }, { eq: [{ ref: 'record.status' }, 'submitted'] });
+      definition['roles'].employee.entities.team = { read: true, create: true };
+      definition['roles'].employee.actions.push('add_team', 'confirm_leave', 'withdraw_leave');
+      // The team's process waits until a leave request of the team sends it a note.
+      definition['processes'].team_watch = {
+        label: 'Team watch',
+        entity: 'team',
+        elements: {
+          added: { type: 'startEvent', actions: ['add_team'] },
+          noted: { type: 'intermediateCatchEvent', name: 'Until noted', message: { action: 'note_team' } },
+          end: { type: 'endEvent', name: 'Told' },
+        },
+        flows: { f1: { from: 'added', to: 'noted' }, f2: { from: 'noted', to: 'end' } },
+      };
+      definition['processes'].leave_approval = {
+        label: 'Leave, with checks',
+        entity: 'leave_request',
+        elements: {
+          requested: { type: 'startEvent', actions: ['request_leave'] },
+          check: { type: 'businessRuleTask', name: 'Check the rules', rules: ['long_leave'] },
+          note: { type: 'scriptTask', name: 'Note the check', steps: [{ type: 'set', field: 'reason', value: 'Checked' }] },
+          flag: { type: 'scriptTask', name: 'Flag long leave', steps: [{ type: 'set', field: 'reason', value: 'Long leave' }] },
+          checked: { type: 'intermediateThrowEvent', name: 'Checked' },
+          tell_team: { type: 'intermediateThrowEvent', name: 'Tell the team', message: { action: 'note_team', record: 'team' } },
+          jump: { type: 'intermediateThrowEvent', link: 'on' },
+          land: { type: 'intermediateCatchEvent', link: 'on' },
+          wait: { type: 'receiveTask', name: 'Wait for the confirmation', message: { action: 'confirm_leave' } },
+          withdrawn: { type: 'boundaryEvent', name: 'Withdrawn', attachedTo: 'wait', message: { action: 'withdraw_leave' } },
+          gone: { type: 'endEvent', name: 'Withdrawn' },
+          told: { type: 'sendTask', name: 'Tell payroll', message: { action: 'tell_payroll' } },
+          done: { type: 'endEvent', name: 'Done' },
+        },
+        flows: {
+          f1: { from: 'requested', to: 'check' },
+          passed: { from: 'check', to: 'note', outcome: 'passed' },
+          warned: { from: 'check', to: 'flag', outcome: 'warned' },
+          failed: { from: 'check', to: 'done', outcome: 'failed' },
+          f2: { from: 'note', to: 'checked' },
+          f3: { from: 'flag', to: 'checked' },
+          f4: { from: 'checked', to: 'tell_team' },
+          f5: { from: 'tell_team', to: 'jump' },
+          f6: { from: 'land', to: 'wait' },
+          f7: { from: 'wait', to: 'told' },
+          f8: { from: 'told', to: 'done' },
+          f9: { from: 'withdrawn', to: 'gone' },
+        },
+      };
+    });
+    const team = await json({ method: 'POST', url: `/v1/apps/${app}/actions/add_team/run`, ...as(alice), payload: { values: { name: 'Payments' } } }, 201);
+    const teamInstances = async () => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/team/records/${team.record.id}/processes`, ...as(alice) }, 200)).instances;
+    expect((await teamInstances())[0]).toMatchObject({ process: 'team_watch', status: 'running' });
+    const record = (id: string) => json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200);
+
+    // Short leave passes the check: the script notes it, the team hears of it, and the process waits for the confirmation.
+    const short = await ask(app, { days: 2, team: team.record.id, starts: '2027-06-07', ends: '2027-06-08' });
+    let [leave] = await processesOf(app, short.record.id);
+    expect(leave).toMatchObject({ status: 'running', waiting: [{ element: 'wait', name: 'Wait for the confirmation' }] });
+    expect(leave.events.map((event: { kind: string; element: string | null }) => [event.kind, event.element])).toEqual([
+      ['started', 'requested'],
+      ['checked', 'check'],
+      ['ran', 'note'],
+      ['reached', 'checked'],
+      ['sent', 'tell_team'],
+    ]);
+    expect(leave.events[1].detail).toEqual({ outcome: 'passed', rules: [] });
+    expect((await record(short.record.id)).values.reason).toBe('Checked');
+    expect((await teamInstances())[0]).toMatchObject({ status: 'completed' });
+
+    // The confirmation moves it on: it tells payroll, and ends.
+    await inject({ method: 'POST', url: `/v1/apps/${app}/actions/confirm_leave/run`, ...as(alice), payload: { recordId: short.record.id } }, 200);
+    [leave] = await processesOf(app, short.record.id);
+    expect(leave.status).toBe('completed');
+    expect(leave.events.slice(-3).map((event: { kind: string; element: string | null }) => [event.kind, event.element])).toEqual([
+      ['message', 'wait'],
+      ['sent', 'told'],
+      ['ended', 'done'],
+    ]);
+    expect((await record(short.record.id)).values.status).toBe('approved');
+
+    // Long leave warns: the script flags it. Withdrawn while the process waits, the receive task ends.
+    const long = await ask(app, { days: 12, team: team.record.id, starts: '2027-07-05', ends: '2027-07-20' });
+    expect((await record(long.record.id)).values.reason).toBe('Long leave');
+    await inject({ method: 'POST', url: `/v1/apps/${app}/actions/withdraw_leave/run`, ...as(alice), payload: { recordId: long.record.id } }, 200);
+    [leave] = await processesOf(app, long.record.id);
+    expect(leave.status).toBe('completed');
+    expect(leave.events.find((event: { kind: string }) => event.kind === 'checked').detail).toEqual({ outcome: 'warned', rules: ['long_leave'] });
+    expect(leave.events.at(-1)).toMatchObject({ kind: 'ended', element: 'gone' });
+  });
+
+  it('runs one sub-process twice at once, and a failed check in a script takes its error path', async () => {
+    const app = await leaveApp('Leave, reviewed twice', (definition) => {
+      definition['processes'].leave_approval = {
+        label: 'Leave, reviewed twice',
+        entity: 'leave_request',
+        elements: {
+          requested: { type: 'startEvent', actions: ['request_leave'] },
+          split: { type: 'parallelGateway' },
+          review: { type: 'subProcess', name: 'Review' },
+          review_start: { type: 'startEvent', in: 'review' },
+          look: { type: 'userTask', name: 'Look at it', in: 'review', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          review_end: { type: 'endEvent', in: 'review' },
+          guard: {
+            type: 'scriptTask',
+            name: 'Guard short leave',
+            steps: [{ type: 'check', assert: { lte: [{ ref: 'record.days' }, 5] }, message: 'Leave is long' }],
+          },
+          too_long: { type: 'boundaryEvent', attachedTo: 'guard', error: true },
+          done: { type: 'endEvent', name: 'Done' },
+          long: { type: 'endEvent', name: 'Too long' },
+        },
+        flows: {
+          f1: { from: 'requested', to: 'split' },
+          a: { from: 'split', to: 'review' },
+          b: { from: 'split', to: 'review' },
+          c: { from: 'split', to: 'guard' },
+          r1: { from: 'review_start', to: 'look' },
+          r2: { from: 'look', to: 'review_end' },
+          out: { from: 'review', to: 'done' },
+          g: { from: 'guard', to: 'done' },
+          e: { from: 'too_long', to: 'long' },
+        },
+      };
+    });
+    const asked = await ask(app, { days: 8, starts: '2027-08-02', ends: '2027-08-11' });
+    const tasks = async () => (await inbox(bob)).filter((task: { recordId: string }) => task.recordId === asked.record.id);
+    let [instance] = await processesOf(app, asked.record.id);
+    expect(instance.waiting.filter((at: { element: string }) => at.element === 'review')).toHaveLength(2);
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught')).toMatchObject({ element: 'too_long', detail: { task: 'guard', error: 'Leave is long' } });
+    expect(await tasks()).toHaveLength(2);
+    // Each run ends on its own.
+    await complete(bob, (await tasks())[0].id, 'done');
+    [instance] = await processesOf(app, asked.record.id);
+    expect(instance).toMatchObject({ status: 'running', waiting: [{ element: 'review', name: 'Review' }, { element: 'look', name: 'Look at it' }] });
+    await complete(bob, (await tasks())[0].id, 'done');
+    [instance] = await processesOf(app, asked.record.id);
+    expect(instance.status).toBe('completed');
+    expect(instance.events.filter((event: { kind: string }) => event.kind === 'exited')).toHaveLength(2);
   });
 });
 

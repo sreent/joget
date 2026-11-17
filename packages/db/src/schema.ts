@@ -748,6 +748,11 @@ export const processTokens = pgTable(
       .notNull()
       .references(() => processInstances.id, { onDelete: 'cascade' }),
     element: text('element').notNull(),
+    /**
+     * The run of the sub-process it is in: the token that waits at the sub-process while it runs.
+     * Null in the process itself. Each run of a sub-process has its own tokens.
+     */
+    scope: uuid('scope'),
     /** The flow it came by: a parallel gateway waits for a token from each flow in. */
     arrivedBy: text('arrived_by'),
     state: text('state', { enum: ['waiting', 'stuck'] }).notNull(),
@@ -874,6 +879,9 @@ export const processEvents = pgTable(
         'ran',
         'error_caught',
         'skill_queued',
+        'sent',
+        'checked',
+        'reached',
         'entered',
         'exited',
         'called',

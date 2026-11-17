@@ -1,6 +1,7 @@
 import {
   insideOf,
   layoutProcess,
+  RULE_OUTCOMES,
   processGraph,
   routeFlow,
   scopeOf,
@@ -24,23 +25,36 @@ import { toName } from './edit.js';
 export type ProcessElementType = ProcessElement['type'];
 type Shape = Diagram['shapes'][string];
 
-/** What the palette adds: an element of a type, or a catch event that waits for an action instead of a time. */
-export type ElementKind = Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent'> | 'messageEvent';
+/**
+ * What the palette adds: an element of a type; a catch event that waits for an action instead of
+ * a time; or a throw event that marks a milestone, sends a message, or links to a catch link.
+ */
+export type ElementKind = Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent' | 'intermediateThrowEvent'> | 'messageEvent' | 'milestone' | 'messageThrow' | 'link';
 
-/** What the palette offers: first what most processes need, as Mendix does; then the rest of what Ambit runs. */
-export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label: string; readonly hint: string; readonly more?: true }> = [
+/** Where the rest of BPMN stands in the palette. */
+export type PaletteGroup = 'Tasks' | 'Gateways' | 'Events' | 'Parts';
+
+/** What the palette offers: first what most processes need, as Mendix does; then the rest of what Ambit runs, by group. */
+export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label: string; readonly hint: string; readonly group?: PaletteGroup }> = [
   { kind: 'userTask', label: 'User task', hint: 'A person decides, in their inbox' },
   { kind: 'exclusiveGateway', label: 'Decision', hint: 'One path, chosen by the record' },
   { kind: 'parallelGateway', label: 'Parallel', hint: 'Paths at once, then wait for them all' },
   { kind: 'intermediateCatchEvent', label: 'Timer', hint: 'Wait for a time' },
   { kind: 'serviceTask', label: 'System task', hint: 'Run an action by itself' },
   { kind: 'endEvent', label: 'End', hint: 'The path ends here' },
-  { kind: 'inclusiveGateway', label: 'Inclusive', hint: 'Each path whose condition holds, then wait for them', more: true },
-  { kind: 'messageEvent', label: 'Message', hint: 'Wait until an action is saved on the record', more: true },
-  { kind: 'subProcess', label: 'Sub-process', hint: 'A part with its own start and end, and deadlines for all of it', more: true },
-  { kind: 'callActivity', label: 'Call process', hint: 'Run another process of the app, and wait until it ends', more: true },
-  { kind: 'task', label: 'Task', hint: 'Work that is only drawn', more: true },
-  { kind: 'manualTask', label: 'Manual task', hint: 'Work away from any system', more: true },
+  { kind: 'scriptTask', label: 'Script task', hint: 'Change the record with steps, by itself', group: 'Tasks' },
+  { kind: 'businessRuleTask', label: 'Rule check', hint: "Check the record against the app's rules, and go on by what it finds", group: 'Tasks' },
+  { kind: 'sendTask', label: 'Send task', hint: 'Run an action on this record or one it refers to, as a message', group: 'Tasks' },
+  { kind: 'receiveTask', label: 'Receive task', hint: 'Wait until an action is saved on the record, with deadlines', group: 'Tasks' },
+  { kind: 'task', label: 'Task', hint: 'Work that is only drawn', group: 'Tasks' },
+  { kind: 'manualTask', label: 'Manual task', hint: 'Work away from any system', group: 'Tasks' },
+  { kind: 'inclusiveGateway', label: 'Inclusive', hint: 'Each path whose condition holds, then wait for them', group: 'Gateways' },
+  { kind: 'messageEvent', label: 'Message', hint: 'Wait until an action is saved on the record', group: 'Events' },
+  { kind: 'messageThrow', label: 'Send a message', hint: 'Run an action as a message, and go on', group: 'Events' },
+  { kind: 'milestone', label: 'Milestone', hint: 'A point that the history marks', group: 'Events' },
+  { kind: 'link', label: 'Link', hint: 'Jump from here to a catch link, to spare a long flow', group: 'Events' },
+  { kind: 'subProcess', label: 'Sub-process', hint: 'A part with its own start and end, and deadlines for all of it', group: 'Parts' },
+  { kind: 'callActivity', label: 'Call process', hint: 'Run another process of the app, and wait until it ends', group: 'Parts' },
 ];
 
 const PREFIX: Readonly<Record<ElementKind, string>> = {
@@ -56,11 +70,19 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   messageEvent: 'wait',
   subProcess: 'sub',
   callActivity: 'call',
+  scriptTask: 'script',
+  businessRuleTask: 'check',
+  sendTask: 'send',
+  receiveTask: 'receive',
+  milestone: 'milestone',
+  messageThrow: 'send',
+  link: 'link',
 };
 
 const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 }, sub: { width: 340, height: 180 } } as const;
+const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'milestone', 'messageThrow', 'link']);
 export const sizeOf = (type: ProcessElementType | ElementKind) =>
-  type === 'subProcess' ? SIZE.sub : type.endsWith('Event') ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
+  type === 'subProcess' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -111,6 +133,30 @@ export function callChoices(definition: Definition, name: string): Array<{ reado
       field.type === 'reference' && field.entity === process.entity ? [{ process: other, record: field.name, label: `${process.label}, on the record's ${field.label.toLowerCase()}` }] : [],
     );
   });
+}
+
+/**
+ * The messages a process can send: an update action on its own record, or on the record that a
+ * reference field of it names, for an action about that entity.
+ */
+export function sendChoices(definition: Definition, name: string): Array<{ readonly action: string; readonly record?: string; readonly label: string }> {
+  const process = definition.processes?.[name];
+  if (!process) return [];
+  const fields = definition.entities[process.entity]?.fields ?? [];
+  return [
+    ...updateActions(definition, process.entity).map((action) => ({ action, label: definition.actions[action]!.label })),
+    ...fields.flatMap((field) =>
+      field.type === 'reference'
+        ? updateActions(definition, field.entity).map((action) => ({ action, record: field.name, label: `${definition.actions[action]!.label}, on the record's ${field.label.toLowerCase()}` }))
+        : [],
+    ),
+  ];
+}
+
+/** A link name that no link of the process has yet. */
+function freeLink(process: Process): string {
+  const taken = new Set(Object.values(process.elements).flatMap((element) => ('link' in element && element.link ? [element.link] : [])));
+  for (let n = 1; ; n++) if (!taken.has(`link_${n}`)) return `link_${n}`;
 }
 
 /** An ID that no element or flow of the process has yet: `task_2`, `flow_7`. */
@@ -192,7 +238,23 @@ export function updateProcess(definition: Definition, name: string, patch: Parti
 
 /** A new element of a kind, with values that pass the checks where the app allows it. `self` is the process's name. */
 export function newElement(definition: Definition, process: Process, type: ElementKind, self = ''): ProcessElement {
+  const action = updateActions(definition, process.entity)[0] ?? 'action';
+  const label = definition.actions[action]?.label ?? action;
   switch (type) {
+    case 'scriptTask':
+      return { type, name: 'New script', steps: [] };
+    case 'businessRuleTask':
+      return { type, name: 'Check the rules' };
+    case 'sendTask':
+      return { type, name: label, message: { action } };
+    case 'receiveTask':
+      return { type, name: `Until ${label.toLowerCase()}`, message: { action } };
+    case 'milestone':
+      return { type: 'intermediateThrowEvent', name: 'Milestone' };
+    case 'messageThrow':
+      return { type: 'intermediateThrowEvent', name: label, message: { action } };
+    case 'link':
+      return { type: 'intermediateThrowEvent', name: 'Go on', link: freeLink(process) };
     case 'subProcess':
       return { type, name: 'New sub-process' };
     case 'callActivity': {
@@ -217,10 +279,8 @@ export function newElement(definition: Definition, process: Process, type: Eleme
       return { type };
     case 'intermediateCatchEvent':
       return { type, name: 'Wait', timer: { duration: 'P1D' } };
-    case 'messageEvent': {
-      const action = updateActions(definition, process.entity)[0] ?? 'action';
-      return { type: 'intermediateCatchEvent', name: definition.actions[action]?.label ?? action, message: { action } };
-    }
+    case 'messageEvent':
+      return { type: 'intermediateCatchEvent', name: label, message: { action } };
     case 'endEvent':
       return { type, name: 'End', terminate: false };
     case 'task':
@@ -250,6 +310,10 @@ export function addElement(
     const diagram = process.diagram!;
     const size = sizeOf(type);
     const on = options.on ? process.flows[options.on] : undefined;
+    if (type === 'link') {
+      linkUp(process, id, options);
+      return;
+    }
     if (on) {
       // On a flow: between the shapes it joins, and the path runs through the new element.
       const from = diagram.shapes[on.from];
@@ -301,6 +365,34 @@ export function addElement(
   return { definition: next, id };
 }
 
+/**
+ * Add a link where a path runs: on a flow, or after an element on its one way out. The path runs
+ * into the throw link, and a catch link of the same name, where the path went, goes on from there.
+ */
+function linkUp(process: Process, id: string, options: { readonly after?: string; readonly on?: string }): void {
+  const diagram = process.diagram!;
+  const thrower = process.elements[id];
+  if (thrower?.type !== 'intermediateThrowEvent' || thrower.link === undefined) return;
+  const flowId = options.on ?? (options.after ? (processGraph(process).outgoing.get(options.after) ?? [])[0] : undefined);
+  const flow = flowId ? process.flows[flowId] : undefined;
+  const catcher = freeId(process, 'land');
+  process.elements[catcher] = { type: 'intermediateCatchEvent', name: thrower.name, link: thrower.link, ...(thrower.in !== undefined ? { in: thrower.in } : {}) };
+  const from = flow ? diagram.shapes[flow.from] : options.after ? diagram.shapes[options.after] : undefined;
+  const to = flow ? diagram.shapes[flow.to] : undefined;
+  const throwAt = from ? { x: from.x + from.width + 50, y: from.y + from.height / 2 - 18 } : { x: 100, y: 100 };
+  diagram.shapes[id] = clear(process, diagram, id, { ...throwAt, width: 36, height: 36 });
+  const catchAt = to ? { x: to.x - 86, y: to.y + to.height / 2 - 18 } : { x: throwAt.x + 120, y: throwAt.y };
+  diagram.shapes[catcher] = clear(process, diagram, catcher, { ...catchAt, width: 36, height: 36 });
+  if (flow) {
+    process.flows[freeId(process, 'flow')] = { from: catcher, to: flow.to };
+    flow.to = id;
+  } else if (options.after) {
+    process.flows[freeId(process, 'flow')] = withOutcome(process, options.after, { from: options.after, to: id });
+  }
+  finish(process, id);
+  finish(process, catcher);
+}
+
 /** What adding an element ends with: a sub-process gets its own start and end, the sub-processes it is in grow to hold it, and the flows follow. */
 function finish(process: Process, id: string): void {
   const shapes = process.diagram!.shapes;
@@ -323,10 +415,11 @@ function finish(process: Process, id: string): void {
 function withOutcome(process: Process, from: string, flow: Flow): Flow {
   const source = process.elements[from];
   const out = Object.values(process.flows).filter((existing) => existing.from === from);
-  if (source?.type === 'userTask' && (source.outcomes.length > 1 || out.length)) {
-    for (const existing of out) if (existing.outcome === undefined) existing.outcome = source.outcomes.find((outcome) => !out.some((o) => o.outcome === outcome.name))?.name;
-    const free = source.outcomes.find((outcome) => !out.some((existing) => existing.outcome === outcome.name));
-    return free ? { ...flow, outcome: free.name } : flow;
+  const outcomes = source?.type === 'userTask' ? source.outcomes.map((outcome) => outcome.name) : source?.type === 'businessRuleTask' ? [...RULE_OUTCOMES] : [];
+  if (outcomes.length && (outcomes.length > 1 || out.length) && (source?.type === 'userTask' || out.length)) {
+    for (const existing of out) if (existing.outcome === undefined) existing.outcome = outcomes.find((outcome) => !out.some((o) => o.outcome === outcome));
+    const free = outcomes.find((outcome) => !out.some((existing) => existing.outcome === outcome));
+    return free ? { ...flow, outcome: free } : flow;
   }
   if ((source?.type === 'exclusiveGateway' || source?.type === 'inclusiveGateway') && out.length && !out.some((existing) => existing.default)) return { ...flow, default: true };
   return flow;
@@ -454,9 +547,9 @@ export type BoundaryKind = 'timer' | 'message' | 'error';
 
 /** The elements whose boundary takes an event of a kind. */
 export const BOUNDARY_HOSTS: Readonly<Record<BoundaryKind, readonly ProcessElementType[]>> = {
-  timer: ['userTask', 'subProcess', 'callActivity'],
-  message: ['userTask', 'subProcess', 'callActivity'],
-  error: ['serviceTask', 'subProcess'],
+  timer: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
+  message: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
+  error: ['serviceTask', 'scriptTask', 'sendTask', 'subProcess'],
 };
 
 const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonly end: string; readonly endPrefix: string }>> = {
@@ -477,6 +570,8 @@ export function messageChoices(definition: Definition, process: Process, task: s
   const taken = new Set([
     ...deciding.flatMap((each) => each.outcomes.flatMap((outcome) => (outcome.action ? [outcome.action] : []))),
     ...Object.values(process.elements).flatMap((element) => (element.type === 'boundaryEvent' && element.attachedTo === task && element.message ? [element.message.action] : [])),
+    // A receive task waits for its own message: the same action can't also interrupt it.
+    ...(host.type === 'receiveTask' ? [host.message.action] : []),
   ]);
   return updateActions(definition, process.entity).filter((action) => !taken.has(action));
 }

@@ -42,12 +42,17 @@ const TYPE_WORDS: Readonly<Record<ProcessElementType, string>> = {
   endEvent: 'End event',
   userTask: 'User task',
   serviceTask: 'Service task',
+  scriptTask: 'Script task',
+  businessRuleTask: 'Business rule task',
+  sendTask: 'Send task',
+  receiveTask: 'Receive task',
   task: 'Task',
   manualTask: 'Manual task',
   exclusiveGateway: 'Exclusive gateway',
   parallelGateway: 'Parallel gateway',
   inclusiveGateway: 'Inclusive gateway',
   intermediateCatchEvent: 'Event',
+  intermediateThrowEvent: 'Event',
   subProcess: 'Sub-process',
   callActivity: 'Call activity',
   boundaryEvent: 'Boundary event',
@@ -146,7 +151,8 @@ export type FlowsOut = { readonly ok: true; readonly flows: readonly string[] } 
 /**
  * The flows a token takes out of an element. An exclusive gateway takes the first flow, in the
  * process's order, whose condition holds, or else its default. A user task takes the flow of the
- * outcome chosen. A parallel gateway takes every flow; other elements have one flow out.
+ * outcome chosen, and a rule check the flow of what it found. A parallel gateway takes every
+ * flow; other elements have one flow out.
  */
 export function flowsOut(process: Process, graph: ProcessGraph, id: string, state: ProcessState, outcome?: string): FlowsOut {
   const element = process.elements[id];
@@ -174,7 +180,7 @@ export function flowsOut(process: Process, graph: ProcessGraph, id: string, stat
     const fallback = out.find((flowId) => process.flows[flowId]!.default);
     return fallback ? { ok: true, flows: [fallback] } : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
   }
-  if (element.type === 'userTask') {
+  if (element.type === 'userTask' || element.type === 'businessRuleTask') {
     const named = out.filter((flowId) => process.flows[flowId]!.outcome !== undefined);
     if (!named.length) return { ok: true, flows: out };
     const taken = named.filter((flowId) => process.flows[flowId]!.outcome === outcome);
@@ -189,12 +195,25 @@ export interface ProcessStart {
   readonly element: string;
 }
 
-/** Every element a token at an element could still reach, through flows and the events on a task's boundary. */
+/** The catch link that a throw link goes on at: the one of the same name, in the same sub-process or in the process itself. */
+export function linkTarget(process: Process, id: string): string | undefined {
+  const element = process.elements[id];
+  if (element?.type !== 'intermediateThrowEvent' || element.link === undefined) return undefined;
+  const scope = scopeOf(process, id);
+  return Object.entries(process.elements).find(([other, candidate]) => candidate.type === 'intermediateCatchEvent' && candidate.link === element.link && scopeOf(process, other) === scope)?.[0];
+}
+
+/** Every element a token at an element could still reach, through flows, links and the events on a task's boundary. */
 export function reachable(process: Process, graph: ProcessGraph, from: string): Set<string> {
   const seen = new Set<string>();
   const queue = [from];
   while (queue.length) {
     const id = queue.pop()!;
+    const jump = linkTarget(process, id);
+    if (jump !== undefined && !seen.has(jump)) {
+      seen.add(jump);
+      queue.push(jump);
+    }
     for (const flowId of graph.outgoing.get(id) ?? []) {
       const to = process.flows[flowId]!.to;
       if (!seen.has(to)) {
@@ -218,13 +237,24 @@ export function eventKind(event: CatchEventElement | BoundaryEventElement): 'tim
   return event.type === 'boundaryEvent' && event.error ? 'error' : 'timer';
 }
 
-/** The actions whose commit a process waits for at a message: at a catch event, or on a task's boundary. */
+/** The actions whose commit a process waits for at a message: at a catch event, a receive task, or on a boundary. */
 export function messageActions(process: Process): string[] {
   return [
     ...new Set(
-      Object.values(process.elements).flatMap((element) => ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && element.message ? [element.message.action] : [])),
+      Object.values(process.elements).flatMap((element) =>
+        (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'receiveTask') && element.message ? [element.message.action] : [],
+      ),
     ),
   ];
+}
+
+/** The messages a process sends: from send tasks, and from throw and end events. */
+export function sentMessages(process: Process): Array<{ readonly element: string; readonly action: string; readonly record?: string }> {
+  return Object.entries(process.elements).flatMap(([id, element]) =>
+    (element.type === 'sendTask' || element.type === 'intermediateThrowEvent' || element.type === 'endEvent') && element.message
+      ? [{ element: id, action: element.message.action, ...(element.message.record ? { record: element.message.record } : {}) }]
+      : [],
+  );
 }
 
 /** The start events of the app's processes that an action starts. */
@@ -250,13 +280,23 @@ export function decisionsBy(definition: Pick<StoredDefinition, 'processes'>, act
   );
 }
 
-/** The actions a process's service tasks run by themselves, the a7c skills they start, and the processes it calls. */
-export function processWork(process: Process): { readonly actions: readonly string[]; readonly skills: readonly string[]; readonly calls: readonly string[] } {
+/**
+ * What a process does by itself, which a change request names: the actions its service tasks run
+ * and its messages send, the a7c skills it starts, the processes it calls, and its script tasks,
+ * which change the record with steps.
+ */
+export function processWork(process: Process): {
+  readonly actions: readonly string[];
+  readonly skills: readonly string[];
+  readonly calls: readonly string[];
+  readonly scripts: readonly string[];
+} {
   const tasks = Object.values(process.elements).filter((element): element is Extract<ProcessElement, { type: 'serviceTask' }> => element.type === 'serviceTask');
   return {
-    actions: [...new Set(tasks.flatMap((task) => (task.action ? [task.action] : [])))],
+    actions: [...new Set([...tasks.flatMap((task) => (task.action ? [task.action] : [])), ...sentMessages(process).map((message) => message.action)])],
     skills: [...new Set(tasks.flatMap((task) => (task.skill ? [task.skill] : [])))],
     calls: [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'callActivity' ? [element.process] : [])))],
+    scripts: Object.values(process.elements).flatMap((element) => (element.type === 'scriptTask' ? [element.name] : [])),
   };
 }
 

@@ -8,6 +8,7 @@ import {
   diffDefinitions,
   flowsOut,
   insideOf,
+  linkTarget,
   LEAVE_APP,
   lintDefinition,
   messageActions,
@@ -17,6 +18,7 @@ import {
   processWork,
   reachable,
   scopeOf,
+  sentMessages,
   skillStepIssues,
   startsOf,
   timerFiresAt,
@@ -158,9 +160,9 @@ describe('inclusive gateways, messages and errors', () => {
         }),
       ),
     ).toEqual([
-      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll can't have a timer or a message on its boundary: they sit on a user task, a sub-process or a call activity",
+      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll can't have a timer or a message on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
       'processes.leave_approval.elements.failed.interrupting: An error always ends what it sits on',
-      'processes.leave_approval.elements.wait: Until withdrawn waits for a timer or a message: one of the two',
+      'processes.leave_approval.elements.wait: Until withdrawn waits for a timer or a message, or is a link: one of these',
       "processes.leave_approval.elements.also.message.action: approve_leave decides Decide on the leave, so it can't also interrupt it",
     ]);
   });
@@ -307,6 +309,128 @@ describe('sub-processes and call activities', () => {
   });
 });
 
+/**
+ * The leave app with the other tasks and the simple events: a rule check first, a script that
+ * flags long leave, a milestone, messages sent to payroll and to the team the request names, a
+ * link, and a receive task that waits for the confirmation with a deadline.
+ */
+function tasks(edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined): Record<string, any> {
+  return leave((process, definition) => {
+    definition['entities'].team = {
+      label: 'Team',
+      pluralLabel: 'Teams',
+      titleField: 'name',
+      fields: [
+        { name: 'name', label: 'Name', type: 'text', required: true },
+        { name: 'note', label: 'Note', type: 'text' },
+      ],
+    };
+    definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
+    const update = (entity: string, label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity, operation: 'update', input: [], set, confirm: 'none' });
+    definition['actions'].tell_payroll = update('leave_request', 'Tell payroll', { reason: 'Payroll knows' });
+    definition['actions'].confirm_leave = update('leave_request', 'Confirm the leave', { reason: 'Confirmed' });
+    definition['actions'].note_team = update('team', 'Note the team', { note: 'Someone is away' });
+    Object.assign(process.elements, {
+      rules_check: { type: 'businessRuleTask', name: 'Check the rules', rules: ['long_leave'] },
+      flag: { type: 'scriptTask', name: 'Flag long leave', steps: [{ type: 'set', field: 'reason', value: 'Long leave' }] },
+      milestone: { type: 'intermediateThrowEvent', name: 'Approved' },
+      tell: { type: 'sendTask', name: 'Tell payroll', message: { action: 'tell_payroll' } },
+      team_note: { type: 'intermediateThrowEvent', name: 'Tell the team', message: { action: 'note_team', record: 'team' } },
+      jump: { type: 'intermediateThrowEvent', link: 'finish' },
+      land: { type: 'intermediateCatchEvent', link: 'finish' },
+      confirm: { type: 'receiveTask', name: 'Wait for the confirmation', message: { action: 'confirm_leave' } },
+      late: { type: 'boundaryEvent', attachedTo: 'confirm', timer: { duration: 'P2D' } },
+    });
+    process.elements.rejected.message = { action: 'tell_payroll' };
+    process.flows.to_decide.to = 'rules_check';
+    process.flows.on_approve.to = 'milestone';
+    Object.assign(process.flows, {
+      passed: { from: 'rules_check', to: 'decide', outcome: 'passed' },
+      warned: { from: 'rules_check', to: 'flag', outcome: 'warned' },
+      failed: { from: 'rules_check', to: 'rejected', outcome: 'failed' },
+      flagged: { from: 'flag', to: 'decide' },
+      m1: { from: 'milestone', to: 'tell' },
+      m2: { from: 'tell', to: 'team_note' },
+      m3: { from: 'team_note', to: 'jump' },
+      m4: { from: 'land', to: 'confirm' },
+      m5: { from: 'confirm', to: 'approved' },
+      m6: { from: 'late', to: 'approved' },
+    });
+    delete process.diagram;
+    edit(process, definition);
+  });
+}
+
+describe('script, rule check, send and receive tasks, and simple events', () => {
+  it('pass the checks, and a rule check chooses its flow by what it finds', () => {
+    const definition = valid(tasks());
+    const process = definition.processes!['leave_approval']!;
+    const graph = processGraph(process);
+    expect(flowsOut(process, graph, 'rules_check', { record: {}, outcomes: {} }, 'warned')).toEqual({ ok: true, flows: ['warned'] });
+    expect(linkTarget(process, 'jump')).toBe('land');
+    expect(reachable(process, graph, 'tell')).toContain('confirm');
+    expect(messageActions(process)).toEqual(['confirm_leave']);
+    expect(sentMessages(process)).toEqual([
+      { element: 'rejected', action: 'tell_payroll' },
+      { element: 'tell', action: 'tell_payroll' },
+      { element: 'team_note', action: 'note_team', record: 'team' },
+    ]);
+    expect(processWork(process)).toMatchObject({ actions: ['tell_payroll', 'note_team'], scripts: ['Flag long leave'] });
+  });
+
+  it('are checked: what a script, a rule check, a message and a link may do', () => {
+    const issues = issuesOf(
+      tasks((process, definition) => {
+        process.elements.flag.steps = [{ type: 'set', field: 'reason', value: { ref: 'principal.id' } }];
+        process.elements.rules_check.rules = ['no_such_rule'];
+        process.elements.tell.message = { action: 'note_team' };
+        process.elements.team_note.message = { action: 'note_team', record: 'manager' };
+        process.elements.confirm.message = { action: 'confirm_leave', record: 'team' };
+        process.elements.jump.link = 'elsewhere';
+        definition['rules'].other = { entity: 'team', assert: { exists: 'record.name' }, severity: 'warning', message: 'Name the team' };
+      }),
+    );
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        "processes.leave_approval.elements.flag.steps: Flag long leave reads the person who runs it, but a process runs it with no person",
+        'processes.leave_approval.elements.rules_check.rules[0]: No rule named no_such_rule',
+        'processes.leave_approval.elements.tell.message.action: note_team works on team, not on leave_request',
+        "processes.leave_approval.elements.team_note.message.record: manager doesn't refer to a record",
+        'processes.leave_approval.elements.confirm.message.record: A process hears actions on its own record only',
+        'processes.leave_approval.elements.jump.link: No catch link named elsewhere is where Event jump is',
+      ]),
+    );
+    expect(issuesOf(tasks((process) => void (process.elements.flag.steps = [])))).toEqual(expect.arrayContaining(['processes.leave_approval.elements.flag.steps: Flag long leave needs a step']));
+    expect(
+      issuesOf(
+        tasks((process) => {
+          process.flows.into_land = { from: 'milestone', to: 'land' };
+          process.elements.again = { type: 'intermediateCatchEvent', link: 'finish' };
+          process.flows.again_out = { from: 'again', to: 'approved' };
+        }),
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        'processes.leave_approval.elements.land: Event land takes over from its throw link: no flow leads into it',
+        'processes.leave_approval.elements.again.link: Another catch link here is already named finish',
+      ]),
+    );
+  });
+
+  it('carry a renamed reference field into a message, and a renamed field into a script', () => {
+    const before = valid(tasks());
+    const renamed = structuredClone(before) as unknown as Record<string, any>;
+    const fields = renamed['entities'].leave_request.fields as Array<{ name: string }>;
+    fields.find((field) => field.name === 'team')!.name = 'squad';
+    fields.find((field) => field.name === 'reason')!.name = 'why';
+    const result = validateDefinition(renamed, before, ids());
+    if (!result.ok) throw new Error(JSON.stringify(result.issues));
+    const process = result.definition.processes!['leave_approval']!;
+    expect(process.elements['team_note']).toMatchObject({ message: { action: 'note_team', record: 'squad' } });
+    expect(process.elements['flag']).toMatchObject({ steps: [{ type: 'set', field: 'why', value: 'Long leave' }] });
+  });
+});
+
 describe('votes, when several people decide', () => {
   const all = { count: 'all', outcome: 'approve', otherwise: 'reject' } as const;
   it('decide as soon as the outcome is sure, either way', () => {
@@ -436,7 +560,7 @@ describe('the checks of a process', () => {
       'processes.leave_approval.flows.self.from: End event island_end is an end event: no flow leaves it',
       'processes.leave_approval.flows.bare: A flow out of Exclusive gateway which needs a condition, or must be its default',
       "processes.leave_approval.elements.wait.timer.date: reason isn't a date or a time",
-      "processes.leave_approval.elements.late.attachedTo: Event wait can't have a timer or a message on its boundary: they sit on a user task, a sub-process or a call activity",
+      "processes.leave_approval.elements.late.attachedTo: Event wait can't have a timer or a message on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
       "processes.leave_approval.elements.island: Island can't be reached from a start event",
       "processes.leave_approval.elements.island_end: End event island_end can't be reached from a start event",
       'processes.leave_approval.diagram.shapes.gone: No element gone',

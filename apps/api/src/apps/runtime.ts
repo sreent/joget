@@ -1219,6 +1219,32 @@ export class AppRuntime {
     }
   }
 
+  /**
+   * Run a script task's steps on a record, as an update that only the process has: the same
+   * pipeline as an action, with its checks, rules and history, under the app's authority.
+   */
+  async runScriptForProcess(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    script: { readonly name: string; readonly label: string; readonly entity: string; readonly steps: readonly Step[] },
+    recordId: string,
+    origin: ProcessOrigin,
+  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+    const action: Action = { label: script.label, description: script.label, entity: script.entity, operation: 'update', input: [], set: {}, confirm: 'none', steps: [...script.steps] };
+    const inline: LoadedApp = { ...loaded, definition: { ...loaded.definition, actions: { ...loaded.definition.actions, [script.name]: action } } };
+    return this.runForProcess(tx, inline, script.name, recordId, origin);
+  }
+
+  /** Check a record and its lines against the app's rules for its entity: all of them, or those named. */
+  async checkRules(tx: AppTransaction, loaded: LoadedApp, entityName: string, id: string, only?: readonly string[]): Promise<Finding[] | null> {
+    const entity = this.entity(loaded, entityName);
+    const values = await this.recordIn(tx, loaded, entityName, id);
+    if (!values) return null;
+    const lines = await this.#currentLines(tx, loaded, entity, id, linesFieldsOf(entity).map((field) => field.name));
+    const findings = evaluateRules(loaded.definition, entityName, values, { principal: {} }, lines);
+    return only ? findings.filter((finding) => only.includes(finding.rule)) : findings;
+  }
+
   /** Check an action's input and decide whether its caller may run it at all, before any transaction. */
   async #prepareAction(origin: ActionOrigin, loaded: LoadedApp, name: string, input: ActionInput, options: { readonly revises?: ProposalRow }): Promise<ActionRun> {
     const ctx = this.#ctx;
