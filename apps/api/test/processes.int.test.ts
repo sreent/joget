@@ -1,4 +1,4 @@
-import { LEAVE_APP } from '@platform/app-model';
+import { LEAVE_PROCESS_APP } from '@platform/app-model';
 import { auditEvents } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
@@ -6,10 +6,12 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vites
 import { startTestApp, type Session, type TestApp } from './helpers.js';
 
 /**
- * Business processes in BPMN 2.0 (design §6.10): an action starts one, a task waits in the inbox of
- * the person it names, and their decision, wherever they make it, moves the process on. A service
- * task acts by itself, a gateway decides by the record, a stuck instance waits for an operator, and
- * a deadline that passes takes a task away.
+ * The process engine (design §6.10), which runs a flow that waits (§6.11): an action starts a
+ * process, a task waits in the inbox of the person it names, and their decision, wherever they make
+ * it, moves the process on. A service task acts by itself, a gateway decides by the record, a stuck
+ * instance waits for an operator, and a deadline that passes takes a task away. These tests build
+ * on the leave app with its approval written out as a process, as apps from before flows could
+ * wait have it.
  */
 
 let t: TestApp;
@@ -26,9 +28,9 @@ async function inject(options: InjectOptions, expected?: number) {
 }
 const json = async (options: InjectOptions, expected: number) => (await inject(options, expected)).json();
 
-/** A leave app in Alice's personal space, from the template changed by `edit`, with Bob as a manager and Carol in HR. */
+/** A leave app in Alice's personal space, with its approval as a process changed by `edit`, Bob as a manager and Carol in HR. */
 async function leaveApp(name: string, edit: (definition: Record<string, any>) => void = () => undefined): Promise<string> {
-  const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+  const definition = structuredClone(LEAVE_PROCESS_APP) as unknown as Record<string, any>;
   definition['roles'].hr = {
     label: 'HR',
     description: 'Decides on leave when a manager is late.',
@@ -222,29 +224,6 @@ describe('a process that works by itself', () => {
     const retried = await json({ method: 'POST', url: `/v1/apps/${fast}/process-instances/${stuck[0].id}/retry`, ...as(alice) }, 200);
     expect(retried).toMatchObject({ stuck: [], waiting: [{ element: 'decide', name: 'Decide on the leave' }] });
     expect((await inbox(bob)).map((task: { recordId: string }) => task.recordId)).toContain(middle.record.id);
-  });
-});
-
-describe('BPMN 2.0 files', () => {
-  it('carry a process from one app to another, and refuse what Ambit cannot run', async () => {
-    const exported = await inject({ method: 'GET', url: `/v1/apps/${appId}/processes/leave_approval/bpmn`, ...as(alice) }, 200);
-    expect(exported.headers['content-type']).toMatch(/^application\/xml/);
-    expect(exported.headers['content-disposition']).toBe('attachment; filename="leave_approval.bpmn"');
-    expect(exported.body).toMatch(/^<\?xml version="1.0" encoding="UTF-8"\?>\n<bpmn:definitions /);
-    await inject({ method: 'GET', url: `/v1/apps/${appId}/processes/leave_approval/bpmn`, ...as(bob) }, 403);
-
-    // An app without the process takes it in from the file, as it was.
-    const bare = await leaveApp('Leave, imported', (definition) => void delete definition['processes']);
-    const imported = await json({ method: 'POST', url: `/v1/apps/${bare}/processes/import`, ...as(alice), payload: { xml: exported.body } }, 200);
-    expect(imported).toMatchObject({ processes: ['leave_approval'], notes: [] });
-    const [source, copy] = await Promise.all(
-      [appId, bare].map(async (id) => (await json({ method: 'GET', url: `/v1/apps/${id}/definition`, ...as(alice) }, 200)).definition.processes.leave_approval),
-    );
-    expect(copy).toEqual(source);
-
-    const script = exported.body.replace('<bpmn:task ', '<bpmn:task ').replace(/<bpmn:userTask id="decide"[^>]*>/, '<bpmn:scriptTask id="decide" name="Compute">').replace('</bpmn:userTask>', '</bpmn:scriptTask>');
-    const refused = await inject({ method: 'POST', url: `/v1/apps/${bare}/processes/import`, ...as(alice), payload: { xml: script, as: 'leave_approval' } }, 422);
-    expect(refused.json()).toMatchObject({ error: 'invalid_bpmn', details: { issues: [{ path: 'bpmn.decide', message: 'Ambit runs no code: write the script as Ambit\'s steps (scriptFormat urn:ambit:steps), or run one of the app\'s actions with a service task: "Compute" (decide)' }] } });
   });
 });
 

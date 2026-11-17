@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EXPENSE_APP, validateDefinition, type FlowStep } from '@platform/app-model';
+import { EXPENSE_APP, LEAVE_APP, validateDefinition, type FlowStep } from '@platform/app-model';
 import type { Definition } from '../types.js';
 import { normalize } from './edit.js';
 import {
@@ -250,5 +250,75 @@ describe('the flow canvas', () => {
     const index = Number(/\[(\d+)\]/.exec(first.id)![1]);
     expect(edges.find((edge) => edge.target === first.id)?.insert).toMatchObject({ list: 'steps', index });
     expect(places(definition, name, 760)).toEqual(Array.from({ length: 9 }, (_, i) => `steps@${i}`).sort());
+  });
+
+  /** The leave template, as the studio has it: with what its parts leave out filled in. */
+  const leave = (): Definition => {
+    const result = validateDefinition(LEAVE_APP);
+    if (!result.ok) throw new Error(JSON.stringify(result.issues));
+    return result.definition as unknown as Definition;
+  };
+
+  it('draws a flow that waits: a task with a way on for each outcome, a deadline below it, waits as rings, and a bar where it saves', () => {
+    const definition = leave();
+    const flow = definition.flows!['leave_approval']!;
+    const task = flow.steps[0] as Extract<FlowStep, { type: 'task' }>;
+    const steps: FlowStep[] = [
+      { ...task, deadline: { after: 'P3D', steps: [] } },
+      { type: 'wait', for: { date: 'starts' } },
+      { type: 'first_of', ways: [{ for: { action: 'reject_leave' }, steps: [{ type: 'return' }] }, { for: { duration: 'P2D' }, steps: [] }] },
+      { type: 'all_at_once', ways: [{ steps: [] }, { steps: [] }] },
+    ];
+    const waits = { ...definition, flows: { leave_approval: { ...flow, steps } } };
+    const { nodes, edges } = layoutFlow(waits, waits.flows.leave_approval, 5000);
+    const at = (id: string) => nodes.find((node) => node.id === id)!;
+    expect(at('steps[0]')).toMatchObject({ kind: 'step', kindLabel: "Person's task", label: 'Decide on the leave', about: 'within 3 days', who: { kind: 'person', initial: 'M', words: 'the manager' } });
+    // A way on for each outcome, which meet again; the deadline hangs below the task by a dashed line.
+    expect(edges.filter((edge) => edge.source === 'steps[0]' && edge.label).map((edge) => edge.label!.text)).toEqual(['Approve', 'Reject']);
+    expect(at('steps[0]:deadline')).toMatchObject({ kind: 'wait', label: 'After 3 days', caption: 'below', path: 'steps[0]' });
+    expect(at('steps[0]:deadline').y).toBeGreaterThan(at('steps[0]').y + at('steps[0]').height);
+    expect(edges.find((edge) => edge.target === 'steps[0]:deadline')).toMatchObject({ dashed: true });
+    expect(at('steps[0]:merge').kind).toBe('merge');
+    // Waits are rings; the first of starts each of its ways with what it waits for.
+    expect(at('steps[1]')).toMatchObject({ kind: 'wait', label: 'Waits until First day', icon: 'clock' });
+    expect(at('steps[2]')).toMatchObject({ kind: 'frame', label: 'The first of' });
+    expect(at('steps[2].ways[0]')).toMatchObject({ kind: 'wait', label: 'Waits for Reject the leave', icon: 'message' });
+    expect(at('steps[3]')).toMatchObject({ kind: 'frame', label: 'All at once', about: 'when both are done' });
+    // The flow saves before each place where it waits: the task, the wait, and the first of.
+    expect(edges.filter((edge) => edge.save).map((edge) => edge.target).sort()).toEqual(['steps[0]', 'steps[1]', 'steps[2]:in']);
+    // Every way takes a step; what a way of the first of waits for is not a step.
+    expect(places(waits, 'leave_approval')).toEqual(
+      [
+        'steps@0',
+        'steps@1',
+        'steps@2',
+        'steps@3',
+        'steps@4',
+        'steps[0].deadline.steps@0',
+        'steps[0].outcomes[0].steps@0',
+        'steps[0].outcomes[1].steps@0',
+        'steps[2].ways[0].steps@0',
+        'steps[2].ways[1].steps@0',
+        'steps[3].ways[0].steps@0',
+        'steps[3].ways[1].steps@0',
+      ].sort(),
+    );
+  });
+
+  it('adds steps that wait only where a flow can keep its place on a record', () => {
+    const definition = leave();
+    const scope = scopeAt(definition, 'leave_approval', { list: 'steps', index: 1 });
+    expect(newStep(definition, 'leave_approval', scope, 'first_of')).toEqual({
+      type: 'first_of',
+      ways: [
+        { for: { action: 'approve_leave' }, steps: [] },
+        { for: { duration: 'P3D' }, steps: [] },
+      ],
+    });
+    expect(newStep(definition, 'leave_approval', scope, 'task')).toMatchObject({ type: 'task', role: 'employee', outcomes: [{ name: 'approve' }, { name: 'reject' }] });
+    // Steps on a task's way are found by their paths, as any other.
+    const next = insertStep(definition, 'leave_approval', 'steps[0].outcomes[1].steps', 0, { type: 'change', record: 'leave', values: { reason: 'Rejected' } });
+    expect(stepAt(next.flows!['leave_approval']!, 'steps[0].outcomes[1].steps[0]')).toMatchObject({ type: 'change' });
+    expect(issues(next)).toEqual([]);
   });
 });

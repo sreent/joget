@@ -26,7 +26,7 @@ export type Attachment = z.infer<typeof Attachment>;
 
 /** What the builder looks at in the studio, which the chat changes first. */
 export const Focus = z.strictObject({
-  kind: z.enum(['entity', 'form', 'page', 'navigation', 'dashboard', 'rule', 'action', 'query', 'card', 'role', 'process']),
+  kind: z.enum(['entity', 'form', 'page', 'navigation', 'dashboard', 'rule', 'action', 'query', 'card', 'role', 'flow', 'process']),
   name: z.string().trim().min(1).max(100),
 });
 

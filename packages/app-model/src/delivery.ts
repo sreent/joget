@@ -165,7 +165,7 @@ export function accessChanges(base: StoredDefinition, head: StoredDefinition): A
   const labelOf = (permission: string, target: string): string => {
     if (permission === 'action.run') return head.actions[target]?.label ?? base.actions[target]?.label ?? target;
     if (permission === 'query.run') return head.queries[target]?.label ?? base.queries[target]?.label ?? target;
-    if (permission === 'process.start') return head.processes?.[target]?.label ?? base.processes?.[target]?.label ?? target;
+    if (permission === 'process.start') return head.processes?.[target]?.label ?? base.processes?.[target]?.label ?? head.flows?.[target]?.label ?? base.flows?.[target]?.label ?? target;
     if (permission === 'flow.run') return head.flows?.[target]?.label ?? base.flows?.[target]?.label ?? target;
     return (entityById(head, target) ?? entityById(base, target))?.label ?? target;
   };
@@ -297,6 +297,7 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
         ...(work.changes.length ? [`changes ${work.changes.map(entityLabel).join(', ')}`] : []),
         ...(work.deletes.length ? [`deletes ${work.deletes.map(entityLabel).join(', ')}`] : []),
         ...(work.calls.length ? [`calls ${work.calls.join(', ')}`] : []),
+        ...(work.asks.length ? [`waits for ${work.asks.join(', ')}`] : []),
       ];
       changes.push({ tool: name, change: 'added', text: `New flow ${h.label}${does.length ? `: it ${does.join('; ')}` : ''}` });
     } else if (b && !h) {
@@ -311,6 +312,8 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       }
       for (const flow of after.calls) if (!before.calls.includes(flow)) texts.push(`${h.label} now calls ${flow}`);
       for (const flow of before.calls) if (!after.calls.includes(flow)) texts.push(`${h.label} no longer calls ${flow}`);
+      for (const ask of after.asks) if (!before.asks.includes(ask)) texts.push(`${h.label} now waits for ${ask}`);
+      for (const ask of before.asks) if (!after.asks.includes(ask)) texts.push(`${h.label} no longer waits for ${ask}`);
       if (!texts.length) texts.push(`${h.label} runs different steps`);
       for (const text of texts) changes.push({ tool: name, change: 'changed', text });
     }

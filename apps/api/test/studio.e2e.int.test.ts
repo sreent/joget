@@ -380,7 +380,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.actions.approve_claim.steps.at(-1)).toEqual({ type: 'check', assert: { exists: 'record.title' }, message: 'A claim needs a title', severity: 'warning' });
   });
 
-  it('designs a process on a canvas, and the manager decides in their inbox', async () => {
+  it('designs a flow that waits on its canvas, and the manager decides in their inbox', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/`);
     await visible(page.getByRole('heading', { name: 'Your apps' }));
@@ -390,35 +390,38 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.waitForURL(/\/build\/data$/);
     const leaveId = page.url().split('/apps/')[1]!.split('/')[0]!;
 
-    // The template's process, drawn in BPMN 2.0: it passes the checks as it is.
-    await page.getByRole('link', { name: 'Processes', exact: true }).click();
-    await visible(page.getByTestId('process-canvas'));
-    await visible(page.getByText('The process passes the checks.'));
-    await shot(page, '14-process');
-    // The manager has three days; then HR's way of doing it takes over. Here: a deadline that ends the path.
-    await page.getByTestId('process-canvas').getByText('Decide on the leave', { exact: true }).click();
-    await visible(page.getByRole('heading', { name: 'User task' }));
-    await page.getByRole('button', { name: 'Add a deadline' }).click();
-    await visible(page.getByText('Unsaved changes.'));
-    // Both of the app's update actions decide the task, so neither can also interrupt it as a message.
-    expect(await page.getByRole('button', { name: 'Add an action', exact: true }).isDisabled()).toBe(true);
-    await shot(page, '15-process-deadline');
-    // An inclusive gateway on the approved path: it takes each flow out whose condition holds.
-    // The label's background takes the click: React Flow lets the text itself ignore the pointer.
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await visible(page.getByRole('heading', { name: 'Flow', exact: true }));
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('inclusiveGateway');
-    await visible(page.getByRole('heading', { name: 'Inclusive', exact: true }));
-    await shot(page, '15c-process-inclusive');
-    await page.getByTestId('process-canvas').click({ position: { x: 12, y: 12 } });
-    await visible(page.getByText('The process passes the checks.'));
+    // The template's approval is a flow that waits: a person's task with a way on for each outcome.
+    await page.getByRole('link', { name: 'Flows', exact: true }).click();
+    const canvas = page.getByTestId('flow-canvas');
+    await visible(canvas.getByTestId('flow-step-steps[0]').getByText('Decide on the leave'));
+    await visible(canvas.getByTestId('flow-step-steps[0]').getByText('the manager'));
+    await visible(canvas.getByText('Approve', { exact: true }));
+    await visible(canvas.getByText('Reject', { exact: true }));
+    // The flow saves where it waits, and the action that asks for leave starts it.
+    await visible(canvas.getByText('saves', { exact: true }).first());
+    await visible(page.getByText('Ask for leave starts it, as it saves its record.'));
+    await shot(page, '14-flow-waits');
+
+    // The manager has three days: then the task ends, and the flow goes on by the deadline's way.
+    await canvas.getByTestId('flow-step-steps[0]').click();
+    await visible(page.getByRole('heading', { name: "Person's task" }));
+    await page.getByLabel('It has a deadline').check();
+    await visible(canvas.getByTestId('flow-wait-steps[0]:deadline').getByText('After 3 days'));
+    await page.getByRole('button', { name: 'Close the step' }).click();
+    // Once the manager decides, the flow waits for the first day of the leave.
+    await page.getByRole('button', { name: 'Add a step at steps[1]' }).click();
+    await page.getByRole('button', { name: 'Wait', exact: true }).click();
+    await visible(canvas.getByTestId('flow-wait-steps[1]').getByText('Waits 1 day'));
+    await page.getByLabel('Wait for').selectOption('date');
+    await visible(canvas.getByTestId('flow-wait-steps[1]').getByText('Waits until First day'));
+    await shot(page, '15-flow-wait');
     await page.getByRole('button', { name: 'Review and save' }).click();
     await page.getByRole('button', { name: 'Save as revision 2' }).click();
     await hidden(page.getByText('Unsaved changes.'));
     const dark = await open(alice, 'dark');
-    await dark.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    await visible(dark.getByTestId('process-canvas'));
-    await shot(dark, '15b-process-dark');
+    await dark.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    await visible(dark.getByTestId('flow-canvas').getByText('Decide on the leave'));
+    await shot(dark, '15b-flow-waits-dark');
 
     // Alice asks for leave, naming Bob; the decision waits in his inbox.
     await t.app.inject({ method: 'POST', url: `/v1/apps/${leaveId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'manager' } });
@@ -436,385 +439,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await inbox.getByRole('button', { name: 'Approve', exact: true }).click();
     await visible(inbox.getByText('Nothing waits for you'));
 
-    // The record shows that its process is done.
+    // The record shows its flow waiting for the first day of the leave.
     const record = await open(alice);
     await record.goto(`${BASE}/studio/apps/${leaveId}/leave_request/${asked.json().record.id}`);
-    await visible(record.getByText('Leave approval'));
-    await visible(record.getByText('Done', { exact: true }));
-    await shot(record, '17-record-process');
-  });
-
-  it('designs a message that withdraws a request, and a system task whose failure has a path', async () => {
-    // The leave template, with an action that withdraws a request and one that tells payroll.
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with withdrawal', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
-    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
-    current.definition.actions.withdraw_leave = update('Withdraw', { status: 'rejected' });
-    current.definition.actions.tell_payroll = update('Tell payroll', { reason: 'Payroll knows' });
-    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
-    expect(put.statusCode, put.body).toBe(200);
-
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await visible(canvas);
-    // While the manager decides, the employee can withdraw the request: the task goes, and the path ends.
-    await canvas.getByText('Decide on the leave', { exact: true }).click();
-    await page.getByRole('button', { name: 'Add an action', exact: true }).click();
-    await page.getByLabel('The action that is saved').selectOption('withdraw_leave');
-    await visible(canvas.getByText('Stopped', { exact: true }));
-
-    // Once approved, a system task tells payroll; if its action fails, the path leads on.
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByRole('button', { name: 'System task', exact: true }).click();
-    await page.getByLabel("The action, with the app's authority").selectOption('tell_payroll');
-    await page.getByRole('button', { name: 'Catch the failure', exact: true }).click();
-    await visible(page.getByText("The process leads on by the error's path."));
-    await visible(canvas.getByText('Failed', { exact: true }));
-
-    // An event that waits for an action, drawn and taken away again: the path joins up around it.
-    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('messageEvent');
-    await visible(page.getByLabel('Until it is saved'));
-    await shot(page, '15d-process-events');
-    await page.getByRole('button', { name: 'Remove message', exact: true }).click();
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 3' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['message_1']).toEqual({ type: 'boundaryEvent', name: 'Withdraw', attachedTo: 'decide', interrupting: true, message: { action: 'withdraw_leave' } });
-    expect(saved.elements['system_1']).toMatchObject({ type: 'serviceTask', action: 'tell_payroll' });
-    expect(saved.elements['error_1']).toEqual({ type: 'boundaryEvent', name: 'Error', attachedTo: 'system_1', interrupting: true, error: true });
-    expect(saved.flows['on_reject']).toMatchObject({ from: 'decide', to: 'rejected' });
-  });
-
-  it('designs a script with a step, a rule check and a link', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a script', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    await visible(page.getByTestId('process-canvas'));
-    // Once approved, a script notes the decision on the record.
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('scriptTask');
-    await visible(page.getByRole('heading', { name: 'Script task', exact: true }));
-    const steps = page.getByRole('region', { name: 'Steps' });
-    await steps.getByRole('button', { name: 'Set a value', exact: true }).click();
-    // On rejection, a rule check first, and a link to the end.
-    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('businessRuleTask');
-    await visible(page.getByRole('heading', { name: 'Rule check', exact: true }));
-    await page.getByTestId('rf__node-check_1').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('link');
-    await visible(page.getByRole('heading', { name: 'Link', exact: true }));
-    await shot(page, '15f-process-script-check-link');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 2' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['script_1']).toMatchObject({ type: 'scriptTask', steps: [{ type: 'set' }] });
-    expect(saved.elements['check_1']).toEqual({ type: 'businessRuleTask', name: 'Check the rules' });
-    expect(saved.elements['link_1']).toMatchObject({ type: 'intermediateThrowEvent', link: 'link_1' });
-    expect(saved.elements['land_1']).toMatchObject({ type: 'intermediateCatchEvent', link: 'link_1' });
-  });
-
-  it('designs an event-based gateway, and a process that starts when a condition comes to hold', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with waits', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await visible(canvas);
-    // Once approved, wait for the first of a day or the next decision.
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('eventBasedGateway');
-    await visible(page.getByRole('heading', { name: 'Event-based gateway', exact: true }));
-    await visible(canvas.getByText('One day', { exact: true }));
-    // The process starts by itself on long leave.
-    await canvas.getByText('Leave requested', { exact: true }).click();
-    await page.getByLabel('Starts', { exact: true }).selectOption('condition');
-    await visible(page.getByRole('group', { name: 'Starts when this comes to hold' }));
-    await shot(page, '15g-process-event-gateway');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 2' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['first_1']).toEqual({ type: 'eventBasedGateway', name: 'What comes first?' });
-    expect(saved.elements['requested']).toMatchObject({ type: 'startEvent', actions: [], condition: { exists: 'record.kind' } });
-  });
-
-  it('designs a sub-process with a task inside it, and a call to another process of the app', async () => {
-    // The leave template, with a second process on the same requests, for the first to call.
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a review', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
-    current.definition.processes.second_look = {
-      label: 'Second look',
-      entity: 'leave_request',
-      elements: { start: { type: 'startEvent', name: 'Start' }, end: { type: 'endEvent', name: 'Seen' } },
-      flows: { through: { from: 'start', to: 'end' } },
-    };
-    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
-    expect(put.statusCode, put.body).toBe(200);
-
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await page.getByLabel('Process', { exact: true }).selectOption('leave_approval');
-    await visible(canvas.getByText('Decide on the leave', { exact: true }));
-    // A rejection calls the second look.
-    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('callActivity');
-    await visible(page.getByRole('heading', { name: 'Call process', exact: true }));
-    await visible(page.getByRole('button', { name: 'Open Second look', exact: true }));
-    // Once approved, a review runs as a sub-process, with its own start and end.
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('subProcess');
-    await visible(page.getByRole('heading', { name: 'Sub-process', exact: true }));
-    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Review');
-    // After the start event inside it, a task goes inside it too.
-    await page.getByTestId('rf__node-start_1').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('manualTask');
-    await visible(page.getByRole('heading', { name: 'Manual task', exact: true }));
-    await shot(page, '15e-process-sub-and-call');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 3' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['sub_1']).toEqual({ type: 'subProcess', name: 'Review' });
-    expect(saved.elements['manual_1']).toMatchObject({ type: 'manualTask', in: 'sub_1' });
-    expect(saved.elements['call_1']).toEqual({ type: 'callActivity', name: 'Second look', process: 'second_look' });
-
-    // The called process opens from the call.
-    await page.getByTestId('process-canvas').getByText('Second look', { exact: true }).click();
-    await page.getByRole('button', { name: 'Open Second look', exact: true }).click();
-    await visible(page.getByTestId('process-canvas').getByText('Seen', { exact: true }));
-  });
-
-  it('designs a transaction that books a room and frees it again, with a cancel and an escalation', async () => {
-    // The leave template, with an action that books a room and one that frees it.
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a room', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
-    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
-    current.definition.actions.book_room = update('Book a room', { reason: 'Room booked' });
-    current.definition.actions.free_room = update('Free the room', { reason: 'Room freed' });
-    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
-    expect(put.statusCode, put.body).toBe(200);
-
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await visible(canvas.getByText('Decide on the leave', { exact: true }));
-    // Once approved, a transaction books a room, which freeing it undoes.
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('transaction');
-    await visible(page.getByRole('heading', { name: 'Transaction', exact: true }));
-    await page.getByTestId('rf__node-start_1').click();
-    await page.getByRole('button', { name: 'System task', exact: true }).click();
-    await page.getByLabel("The action, with the app's authority").selectOption('book_room');
-    await page.getByLabel('Undone by', { exact: true }).selectOption('free_room');
-    // Its end cancels it: the transaction gets a cancel event to leave by.
-    await page.getByTestId('rf__node-end_1').click();
-    await page.getByLabel('As it ends', { exact: true }).selectOption('cancel');
-    await visible(canvas.getByText('Cancelled', { exact: true }));
-    // The transaction also hears an escalation of the code "late".
-    await canvas.getByText('New transaction', { exact: true }).click();
-    await page.getByRole('button', { name: 'Hear an escalation', exact: true }).click();
-    await page.getByLabel('Hears the escalation', { exact: true }).fill('late');
-    await shot(page, '15h-process-transaction');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 3' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['transaction_1']).toEqual({ type: 'subProcess', name: 'New transaction', transaction: true });
-    expect(saved.elements['system_1']).toMatchObject({ type: 'serviceTask', in: 'transaction_1', action: 'book_room', undo: 'free_room' });
-    expect(saved.elements['end_1']).toEqual({ type: 'endEvent', in: 'transaction_1', terminate: false, cancel: true });
-    expect(saved.elements['cancel_1']).toEqual({ type: 'boundaryEvent', name: 'Cancelled', attachedTo: 'transaction_1', interrupting: true, cancel: true });
-    expect(saved.elements['escalation_1']).toEqual({ type: 'boundaryEvent', name: 'Escalation', attachedTo: 'transaction_1', interrupting: false, escalation: { code: 'late' } });
-  });
-
-  it('designs a signal that takes the task away, and one that a rejection throws', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with signals', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await visible(canvas.getByText('Decide on the leave', { exact: true }));
-    // A rejection tells every process of the app that waits for it.
-    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('signalThrow');
-    await visible(page.getByRole('heading', { name: 'Throw a signal', exact: true }));
-    await page.getByLabel('Signal', { exact: true }).fill('leave_rejected');
-    // When the office closes, the manager's task goes.
-    await canvas.getByText('Decide on the leave', { exact: true }).click();
-    await page.getByRole('button', { name: 'Hear a signal', exact: true }).click();
-    await page.getByLabel('The signal', { exact: true }).fill('office_closed');
-    await visible(canvas.getByText('Signalled', { exact: true }));
-    await shot(page, '15i-process-signals');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 2' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['signal_1']).toEqual({ type: 'intermediateThrowEvent', name: 'Signal', signal: 'leave_rejected' });
-    expect(saved.elements['signal_2']).toEqual({ type: 'boundaryEvent', name: 'Signal', attachedTo: 'decide', interrupting: true, signal: 'office_closed' });
-  });
-
-  it('designs an event sub-process that a withdrawal starts, and that ends all that runs beside it', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a withdrawal', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
-    current.definition.actions.withdraw_leave = { label: 'Withdraw', description: 'Withdraw.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' }, confirm: 'none' };
-    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
-    expect(put.statusCode, put.body).toBe(200);
-
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await visible(canvas.getByText('Decide on the leave', { exact: true }));
-    // An event sub-process stands apart, with a start that waits a day by default.
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('eventSubProcess');
-    await visible(page.getByRole('heading', { name: 'Event sub-process', exact: true }));
-    // A withdrawal starts it instead, and it ends all that runs beside it.
-    await page.getByTestId('rf__node-start_1').click();
-    await page.getByLabel('Starts', { exact: true }).selectOption('actions');
-    await page.getByLabel('The action', { exact: true }).selectOption('withdraw_leave');
-    await page.getByLabel('It ends all that runs beside it', { exact: true }).check();
-    await shot(page, '15j-process-event-sub');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 3' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['when_1']).toEqual({ type: 'subProcess', name: 'New event sub-process', event: true });
-    expect(saved.elements['start_1']).toEqual({ type: 'startEvent', in: 'when_1', actions: ['withdraw_leave'], interrupting: true });
-  });
-
-  it('designs an ad hoc sub-process, whose work starts at once and which ends on a condition', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with checks', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await visible(canvas.getByText('Decide on the leave', { exact: true }));
-    // Once approved, checks that people do in any order.
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('adHocSubProcess');
-    await visible(page.getByRole('heading', { name: 'Ad hoc sub-process', exact: true }));
-    // With it selected, a user task goes in it, with no flow.
-    await page.getByRole('button', { name: 'User task', exact: true }).click();
-    await visible(page.getByRole('heading', { name: 'User task', exact: true }));
-    // It ends early once a condition holds.
-    await canvas.getByText('New ad hoc sub-process', { exact: true }).click();
-    await page.getByLabel('It ends early, once a condition holds', { exact: true }).check();
-    await visible(page.getByRole('group', { name: 'It ends once this holds' }));
-    await shot(page, '15k-process-ad-hoc');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 2' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['adhoc_1']).toMatchObject({ type: 'subProcess', name: 'New ad hoc sub-process', adHoc: true, completeWhen: { exists: 'record.kind' } });
-    expect(saved.elements['manual_1']).toEqual({ type: 'manualTask', name: 'Some work', in: 'adhoc_1' });
-    expect(saved.elements['task_1']).toMatchObject({ type: 'userTask', in: 'adhoc_1' });
-    expect(Object.values(saved.flows).filter((flow: any) => flow.to === 'task_1' || flow.from === 'task_1')).toEqual([]);
-  });
-
-  it('designs a complex gateway that goes on once enough paths have arrived', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a complex gateway', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    await visible(page.getByTestId('process-canvas').getByText('Decide on the leave', { exact: true }));
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('complexGateway');
-    await visible(page.getByRole('heading', { name: 'Complex gateway', exact: true }));
-    expect(await page.getByLabel('Goes on once this many paths have arrived', { exact: true }).inputValue()).toBe('1');
-    await shot(page, '15l-process-complex-gateway');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 2' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['complex_1']).toEqual({ type: 'complexGateway', name: 'Enough paths', waitFor: 1 });
-  });
-
-  it('designs a task that repeats while a condition holds', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a loop', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await visible(canvas.getByText('Decide on the leave', { exact: true }));
-    await canvas.getByText('Decide on the leave', { exact: true }).click();
-    await page.getByLabel('It runs again while a condition holds', { exact: true }).check();
-    await visible(page.getByRole('group', { name: 'Again while this holds' }));
-    // Its flows follow its outcomes, so it checks after it runs.
-    expect(await page.getByLabel('Check before each time, so it may not run at all', { exact: true }).isDisabled()).toBe(true);
-    await visible(canvas.getByLabel('Repeats'));
-    await shot(page, '15m-process-loop');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 2' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['decide']).toMatchObject({ repeat: { while: { exists: 'record.kind' }, max: 3 } });
-  });
-
-  it('designs a call that runs a process for each day of a request, one after another', async () => {
-    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with days', template: 'leave' } });
-    expect(started.statusCode, started.body).toBe(201);
-    const leaveId: string = started.json().app.id;
-    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
-    current.definition.entities.leave_day = {
-      label: 'Leave day',
-      pluralLabel: 'Leave days',
-      fields: [{ name: 'request', label: 'Request', type: 'reference', entity: 'leave_request', required: true }],
-    };
-    current.definition.processes.day_check = {
-      label: 'Day check',
-      entity: 'leave_day',
-      elements: { start: { type: 'startEvent', name: 'Start' }, end: { type: 'endEvent', name: 'Checked' } },
-      flows: { through: { from: 'start', to: 'end' } },
-    };
-    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
-    expect(put.statusCode, put.body).toBe(200);
-
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
-    const canvas = page.getByTestId('process-canvas');
-    await page.getByLabel('Process', { exact: true }).selectOption('leave_approval');
-    await visible(canvas.getByText('Decide on the leave', { exact: true }));
-    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
-    await page.getByLabel('More BPMN', { exact: true }).selectOption('callActivity');
-    await visible(page.getByRole('heading', { name: 'Call process', exact: true }));
-    await page.getByLabel('Runs the process', { exact: true }).selectOption('day_check||request');
-    await page.getByLabel('One record after another, not all at once', { exact: true }).check();
-    await visible(canvas.getByLabel('For each record, one after another'));
-    await shot(page, '15n-process-call-each');
-
-    await page.getByRole('button', { name: 'Review and save' }).click();
-    await page.getByRole('button', { name: 'Save as revision 3' }).click();
-    await hidden(page.getByText('Unsaved changes.'));
-    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
-    expect(saved.elements['call_1']).toMatchObject({ type: 'callActivity', process: 'day_check', each: { field: 'request', sequential: true } });
+    await visible(record.getByText('Leave approval', { exact: true }));
+    await visible(record.getByText('Waits until First day'));
+    await shot(record, '17-record-flow');
   });
 
   it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {

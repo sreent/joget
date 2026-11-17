@@ -1,4 +1,4 @@
-import { NAME_PATTERN } from '@platform/app-model';
+import { flowWaits, NAME_PATTERN } from '@platform/app-model';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { checkPermission, principalEnv } from '../access/check.js';
@@ -9,7 +9,7 @@ import type { AppRuntime } from '../apps/runtime.js';
 import { AppParams, EnvQuery } from '../apps/schemas.js';
 import { withAppTransaction } from '../apps/transaction.js';
 import type { AppContext } from '../context.js';
-import { notFound } from '../errors.js';
+import { conflict, notFound } from '../errors.js';
 import type { FlowEngine, FlowResult } from './engine.js';
 
 const FlowOut = z.object({
@@ -29,7 +29,7 @@ class DryRun {
 /**
  * Running an app's flows through the API (design §6.2): for the roles that name them, and for the
  * owner of a personal app, who tries them while building. A dry run shows what a flow would do,
- * and undoes it.
+ * and undoes it. A flow that waits starts on a record instead, as a process does (§6.11).
  */
 export function flowRoutes(ctx: AppContext, runtime: AppRuntime, flows: FlowEngine): FastifyPluginAsyncZod {
   return async (app) => {
@@ -53,6 +53,10 @@ export function flowRoutes(ctx: AppContext, runtime: AppRuntime, flows: FlowEngi
         const flow = loaded.definition.flows?.[name];
         if (!flow) throw notFound('Flow');
         await checkPermission(ctx, request, auth, 'flow.run', flowResource(ctx.org.id, loaded, name), { policy: await runtime.policy(loaded) });
+        // A flow that waits keeps its place on a record, so it starts there, as a process does.
+        if (flowWaits(flow, loaded.definition.flows)) {
+          throw conflict('flow_waits', `${flow.label} waits for people or for time, so it runs on a record: start it with POST /v1/apps/${loaded.app.id}/processes/${name}/start`);
+        }
         const { dryRun } = request.body;
         const caller = {
           writer: runtime.writerFor(request, auth),

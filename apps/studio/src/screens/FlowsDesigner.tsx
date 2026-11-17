@@ -1,4 +1,4 @@
-import type { AppFlow, FlowStep, FlowType, VarKind } from '@platform/app-model';
+import { flowSubject, flowWaits, type AppFlow, type FlowStep, type FlowType, type Several, type VarKind, type WaitFor } from '@platform/app-model';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import { useEffect, useMemo, useState } from 'react';
@@ -9,6 +9,7 @@ import { Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInpu
 import { recordChoices, type RefChoice } from '../model/conditions.js';
 import {
   addFlow,
+  canWait,
   flowEntities,
   insertStep,
   layoutFlow,
@@ -20,43 +21,29 @@ import {
   removeStep,
   replaceStep,
   scopeAt,
+  STEP_GROUPS,
   STEP_NAMES,
-  STEP_TYPES,
   stepAt,
   typeText,
+  updateActionsOf,
   updateFlow,
   variableChoices,
   type CanvasEdge,
   type CanvasNode,
   type StepType,
 } from '../model/flows.js';
+import { durationOf, durationParts } from '../model/waits.js';
 import type { Definition, Field as FieldDef } from '../types.js';
 import { ValueEditor, type ValueMode, type ValueSources } from './StepsEditor.js';
 
 /*
- * The flow designer (design §6.2). A flow's steps go down the canvas, as a Mendix microflow's do;
- * each arrow takes a new step, and each step opens on the right. "Try it" runs the saved flow on
- * real records, and undoes what it did.
+ * The flow designer (design §6.2, §6.11). A flow's steps go left to right across the canvas, as a
+ * Mendix microflow's do; each arrow takes a new step, and each step opens on the right. A flow
+ * that waits is built the same way, with people's tasks, waits, and ways at once. "Try it" runs a
+ * saved flow that runs in one go on real records, and undoes what it did.
  */
 
 type Props = { appId: string; definition: Definition; onChange: (definition: Definition) => void; readOnly?: boolean; dirty?: boolean };
-
-/** The edge colour of a step's box: green for new records, blue for others, red for deletes, amber for checks. */
-const STEP_EDGES: Readonly<Record<StepType, string>> = {
-  set: 'border-l-line-strong',
-  find: 'border-l-accent',
-  create: 'border-l-good',
-  change: 'border-l-accent',
-  delete: 'border-l-bad',
-  add_line: 'border-l-accent',
-  each: 'border-l-line-strong',
-  if: 'border-l-warn',
-  check: 'border-l-warn',
-  call: 'border-l-line-strong',
-  try: 'border-l-line-strong',
-  total: 'border-l-line-strong',
-  return: 'border-l-line-strong',
-};
 
 export function FlowsDesigner({ appId, definition, onChange, readOnly = false, dirty = false }: Props) {
   const flows = definition.flows ?? {};
@@ -130,7 +117,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
         ) : (
           <div className="flow grid h-[40rem] place-items-center p-6">
             <EmptyState title="Add a flow to design it">
-              A flow is what happens in an app: it finds, creates and changes records, decides and loops, as a Mendix microflow does. Actions run flows, and so can process tasks and roles, through the API.
+              A flow is what happens in an app: it finds, creates and changes records, decides and loops, as a Mendix microflow does. It can wait for people and for time too. Actions run flows, and so can roles, through the API.
             </EmptyState>
           </div>
         )}
@@ -139,6 +126,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
         <div className="grid content-start gap-4">
           {adding && !readOnly ? (
             <AddStep
+              waits={canWait(flow) && !insideLoop(flow, adding.list)}
               onCancel={() => setAdding(null)}
               onAdd={(type) => {
                 const scope = scopeAt(definition, name, adding);
@@ -171,13 +159,25 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
                   select(null);
                 }}
               />
-              <TryFlow appId={appId} definition={definition} name={name} flow={flow} dirty={dirty} />
+              {flowWaits(flow, definition.flows) ? <HowItStarts definition={definition} name={name} /> : <TryFlow appId={appId} definition={definition} name={name} flow={flow} dirty={dirty} />}
+              <EarlierProcesses definition={definition} readOnly={readOnly} onChange={onChange} />
             </>
           )}
         </div>
-      ) : null}
+      ) : (
+        <EarlierProcesses definition={definition} readOnly={readOnly} onChange={onChange} />
+      )}
     </div>
   );
+}
+
+/** Whether a list of steps is inside a loop or an error handler, where a flow can't wait yet. */
+function insideLoop(flow: AppFlow, list: string): boolean {
+  const holders = [...list.matchAll(/\]/g)].map((match) => list.slice(0, match.index + 1));
+  return holders.some((holder) => {
+    const type = /\]$/.test(holder) && /^steps(\[\d+\]\.[a-z_]+)*\[\d+\]$/.test(holder) ? stepAt(flow, holder)?.type : undefined;
+    return type === 'each' || type === 'try';
+  });
 }
 
 // ---- The canvas: a3t's flows as Ocean's LogicNode draws them (sreent/ocean, components/LogicNode)
@@ -198,8 +198,8 @@ const STEP_ICONS: Readonly<Partial<Record<StepType, IconName>>> = {
   check: 'shield',
   call: 'studio',
   total: 'total',
+  task: 'people',
 };
-const WRITES = new Set<StepType>(['create', 'change', 'delete', 'add_line']);
 
 /** React Flow needs a handle at each end of an edge; the arrows are the layout's own, so these stay hidden. */
 const Handles = () => (
@@ -224,13 +224,17 @@ function StepNode({ data }: NodeProps<FlowNode>) {
           {node.about}
         </span>
       ) : null}
-      {/* A flow writes with the app's authority, in the name of whoever started it. */}
-      {WRITES.has(type) ? (
+      {/* Who acts: a person with the task's role, or the app's own authority for what a flow writes. */}
+      {node.who ? (
         <span className="logic-who">
-          <b className="own">
-            <Icon name="audit" />
-          </b>
-          the app
+          {node.who.kind === 'own' ? (
+            <b className="own">
+              <Icon name="audit" />
+            </b>
+          ) : (
+            <b>{node.who.initial}</b>
+          )}
+          {node.who.words}
         </span>
       ) : null}
       <Handles />
@@ -266,12 +270,29 @@ function RingNode({ data }: NodeProps<FlowNode>) {
   );
 }
 
+/** A wait's ring: a clock for time, a message for an action, a tick for a condition, a bell for a signal. */
+function WaitNode({ data }: NodeProps<FlowNode>) {
+  const { node, selected } = data;
+  return (
+    <div className={cx('logic-ring wait', selected && 'ring-2 ring-focus')} role="img" aria-label={node.about ? `${node.label}: ${node.about}` : node.label} data-testid={`flow-wait-${node.id}`}>
+      <Icon name={node.icon ?? 'clock'} />
+      <span className={cx('logic-caption', node.caption ?? 'above')}>
+        <strong>{node.label}</strong>
+        {node.about ? <span>{node.about}</span> : null}
+      </span>
+      <Handles />
+    </div>
+  );
+}
+
+const FRAME_ICONS: Readonly<Partial<Record<StepType, IconName>>> = { each: 'sync', try: 'guard', first_of: 'wait', all_at_once: 'studio' };
+
 function FrameNode({ data }: NodeProps<FlowNode>) {
   const { node, selected } = data;
   return (
     <div className={cx('logic-frame', selected && 'ring-2 ring-focus')}>
       <button type="button" className="logic-frame-head nodrag" onClick={() => node.path && data.onSelect(node.path)} data-testid={`flow-step-${node.path}`}>
-        <Icon name={node.step?.type === 'try' ? 'guard' : 'sync'} />
+        <Icon name={FRAME_ICONS[node.step?.type ?? 'each'] ?? 'sync'} />
         {node.label}
         {node.about ? <span className="note"> · {node.about}</span> : null}
       </button>
@@ -281,7 +302,7 @@ function FrameNode({ data }: NodeProps<FlowNode>) {
 
 function SlotNode({ data }: NodeProps<FlowNode>) {
   return (
-    <div className="grid h-full w-full place-items-center rounded-md border border-dashed border-line-strong">
+    <div className="grid h-full w-full place-items-center rounded-md border border-dashed border-line-strong" data-testid={`flow-slot-${data.node.list}`}>
       <Handles />
       {data.readOnly ? (
         <span className="text-xs text-faint">No steps</span>
@@ -315,9 +336,16 @@ function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
     : null;
   return (
     <>
-      <BaseEdge path={edge.d} />
+      {/* A deadline hangs below its task by a dashed line, as Ocean's logic edges draw one. */}
+      <BaseEdge path={edge.d} {...(edge.dashed ? { style: { strokeDasharray: '4 4' } } : {})} />
       {triangle ? <path d={triangle} style={{ fill: 'var(--faint)' }} /> : null}
       <EdgeLabelRenderer>
+        {edge.save ? (
+          // Where the flow waits, it saves: what came before commits, and a failure after can't undo it.
+          <span className="logic-save" style={{ left: edge.save.x, top: edge.save.y }} title="The flow saves here, before it waits">
+            <span>saves</span>
+          </span>
+        ) : null}
         {edge.label ? (
           <span className="flow-label" style={{ left: edge.label.x, top: edge.label.y }}>
             {edge.label.text}
@@ -341,7 +369,7 @@ function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
   );
 }
 
-const NODE_TYPES = { step: StepNode, decision: DecisionNode, merge: DecisionNode, start: RingNode, end: RingNode, frame: FrameNode, slot: SlotNode, port: PortNode };
+const NODE_TYPES = { step: StepNode, decision: DecisionNode, merge: DecisionNode, start: RingNode, end: RingNode, frame: FrameNode, slot: SlotNode, port: PortNode, wait: WaitNode };
 const EDGE_TYPES = { wire: WireEdge };
 
 function FlowCanvas(props: {
@@ -420,7 +448,7 @@ function FlowCanvas(props: {
 
 // ---- Adding and editing steps
 
-function AddStep({ onAdd, onCancel }: { onAdd: (type: StepType) => void; onCancel: () => void }) {
+function AddStep({ waits, onAdd, onCancel }: { waits: boolean; onAdd: (type: StepType) => void; onCancel: () => void }) {
   return (
     <Card className="grid gap-3 p-4">
       <div className="flex items-center justify-between">
@@ -429,13 +457,21 @@ function AddStep({ onAdd, onCancel }: { onAdd: (type: StepType) => void; onCance
           Cancel
         </Button>
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        {STEP_TYPES.map((type) => (
-          <Button key={type} size="sm" onClick={() => onAdd(type)}>
-            {STEP_NAMES[type]}
-          </Button>
-        ))}
-      </div>
+      {STEP_GROUPS.map((group) => (
+        <div key={group.label} className="grid gap-1.5">
+          <span className="text-xs font-semibold uppercase tracking-wide text-faint">{group.label}</span>
+          <div className="grid grid-cols-2 gap-2">
+            {group.types.map((type) => (
+              <Button key={type} size="sm" disabled={group.waits && !waits} onClick={() => onAdd(type)}>
+                {STEP_NAMES[type]}
+              </Button>
+            ))}
+          </div>
+          {group.waits && !waits ? (
+            <p className="m-0 text-xs text-muted">A flow waits on one record, and not inside a loop or an error handler: give the flow one input, a record, in its settings.</p>
+          ) : null}
+        </div>
+      ))}
     </Card>
   );
 }
@@ -739,11 +775,370 @@ function StepFields(props: {
       );
     }
     case 'return': {
-      const output = definition.flows?.[name]?.output;
+      const flow = definition.flows?.[name];
+      const output = flow?.output;
+      if (flow && flowWaits(flow, definition.flows)) return <p className="m-0 text-sm text-muted">The flow ends here, and so does each of its ways that still runs.</p>;
       if (!output) return <p className="m-0 text-sm text-muted">The flow ends here. It gives no result: give it one in its settings.</p>;
       return <InputValue definition={definition} input="Result" type={output} value={step.value} scope={scope} sources={sources} onChange={(value) => set({ ...step, value })} />;
     }
+    case 'task':
+      return <TaskFields definition={definition} name={name} step={step} set={set} />;
+    case 'wait':
+      return <WaitForEditor definition={definition} name={name} label="Wait for" variables={variables} value={step.for} onChange={(wait) => set({ ...step, for: wait })} />;
+    case 'first_of':
+      return (
+        <>
+          <p className="m-0 text-sm text-muted">The flow waits for all of these at once. The first that happens takes its way, and the others no longer wait.</p>
+          {step.ways.map((way, index) => (
+            <fieldset key={index} className="m-0 grid gap-2 rounded-md border border-line p-3">
+              <legend className="px-1 text-sm text-muted">Way {index + 1}</legend>
+              <WaitForEditor definition={definition} name={name} label={`Way ${index + 1} waits for`} variables={variables} value={way.for} onChange={(wait) => set({ ...step, ways: step.ways.map((each, i) => (i === index ? { ...each, for: wait } : each)) })} />
+              <Button size="sm" variant="ghost" className="justify-self-start" disabled={step.ways.length <= 2} onClick={() => set({ ...step, ways: step.ways.filter((_, i) => i !== index) })}>
+                Remove way {index + 1}
+              </Button>
+            </fieldset>
+          ))}
+          <Button size="sm" className="justify-self-start" disabled={step.ways.length >= 10} onClick={() => set({ ...step, ways: [...step.ways, { for: { duration: 'P1D' }, steps: [] }] })}>
+            Add a way
+          </Button>
+        </>
+      );
+    case 'all_at_once':
+      return (
+        <>
+          <p className="m-0 text-sm text-muted">Each way runs at once, as people's tasks in different inboxes do. The flow goes on when every way has ended.</p>
+          {step.ways.map((way, index) => (
+            <div key={index} className="flex items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-sm">
+              <span>
+                Way {index + 1}: {way.steps.length ? `${way.steps.length} step${way.steps.length > 1 ? 's' : ''}` : 'no steps yet'}
+              </span>
+              <Button size="sm" variant="ghost" disabled={step.ways.length <= 2} onClick={() => set({ ...step, ways: step.ways.filter((_, i) => i !== index) })}>
+                Remove way {index + 1}
+              </Button>
+            </div>
+          ))}
+          <Button size="sm" className="justify-self-start" disabled={step.ways.length >= 10} onClick={() => set({ ...step, ways: [...step.ways, { steps: [] }] })}>
+            Add a way
+          </Button>
+        </>
+      );
   }
+}
+
+// ---- People and time: a person's task, and what a flow waits for
+
+/** A duration set with a number and a unit, or its ISO 8601 text when it has another shape. */
+function DurationInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const parts = durationParts(value);
+  if (!parts) {
+    return <Field label={label} hint="ISO 8601, such as P3D">{(id) => <TextInput id={id} value={value} onChange={(event) => onChange(event.target.value)} />}</Field>;
+  }
+  return (
+    <Field label={label}>
+      {(id) => (
+        <div className="flex gap-2">
+          <TextInput id={id} type="number" min={1} className="w-20" value={parts.amount} onChange={(event) => onChange(durationOf(Number(event.target.value) || 1, parts.unit))} />
+          <Select aria-label={`${label}: unit`} className="w-auto" value={parts.unit} onChange={(event) => onChange(durationOf(parts.amount, event.target.value === 'hours' ? 'hours' : event.target.value === 'weeks' ? 'weeks' : 'days'))}>
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+            <option value="weeks">weeks</option>
+          </Select>
+        </div>
+      )}
+    </Field>
+  );
+}
+
+/** The user fields of the record a flow that waits is about: whom its tasks can go to. */
+function peopleOf(definition: Definition, entity: string | undefined): Array<{ name: string; label: string }> {
+  return (entity ? (definition.entities[entity]?.fields ?? []) : []).filter((field) => field.type === 'user').map((field) => ({ name: field.name, label: field.label }));
+}
+
+type TaskStep = Extract<FlowStep, { type: 'task' }>;
+
+/** A step without one of its parts. */
+function without<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> {
+  const { [key]: _gone, ...rest } = value;
+  return rest;
+}
+
+function TaskFields({ definition, name, step, set }: { definition: Definition; name: string; step: TaskStep; set: (step: FlowStep) => void }) {
+  const entity = flowSubject(definition.flows![name]!)?.entity;
+  const people = peopleOf(definition, entity);
+  const actions = updateActionsOf(definition, entity);
+  const cards = Object.entries(definition.cards).filter(([, card]) => card.entity === entity);
+  const assignee = !step.assignee ? '' : 'field' in step.assignee ? `field:${step.assignee.field}` : `manager:${step.assignee.managerOf}:${step.assignee.levels}`;
+  const outcome = (index: number, change: (outcome: TaskStep['outcomes'][number]) => TaskStep['outcomes'][number]) => set({ ...step, outcomes: step.outcomes.map((each, i) => (i === index ? change(each) : each)) });
+  return (
+    <>
+      <Field label="What the inbox calls it">{(id) => <TextInput id={id} value={step.label} onChange={(e) => set({ ...step, label: e.target.value })} />}</Field>
+      <Field label="Done by people with the role" hint="A role grants; whom the task goes to only narrows it.">
+        {(id) => (
+          <Select id={id} value={step.role} onChange={(e) => set({ ...step, role: e.target.value })}>
+            <option value="" disabled>
+              Choose a role
+            </option>
+            {Object.entries(definition.roles).map(([role, spec]) => (
+              <option key={role} value={role}>
+                {spec.label}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      <SeveralEditor several={step.several} outcomes={step.outcomes} people={people} onChange={(several) => set(several ? { ...without(step, 'assignee'), several } : without(step, 'several'))} />
+      {step.several ? null : (
+        <Field label="Goes to">
+          {(id) => (
+            <Select
+              id={id}
+              value={assignee}
+              onChange={(e) => {
+                const [kind, field, levels] = e.target.value.split(':');
+                const rest = without(step, 'assignee');
+                if (kind === 'field' && field) set({ ...without(rest, 'department'), assignee: { field } });
+                else if (kind === 'manager' && field) set({ ...without(rest, 'department'), assignee: { managerOf: field, levels: Number(levels) || 1 } });
+                else set(rest);
+              }}
+            >
+              <option value="">Anyone with the role</option>
+              {people.map((person) => (
+                <option key={`field:${person.name}`} value={`field:${person.name}`}>
+                  The record's {person.label.toLowerCase()}
+                </option>
+              ))}
+              {people.map((person) => (
+                <option key={`manager:${person.name}`} value={`manager:${person.name}:1`}>
+                  The manager of the record's {person.label.toLowerCase()}
+                </option>
+              ))}
+              {people.map((person) => (
+                <option key={`manager2:${person.name}`} value={`manager:${person.name}:2`}>
+                  The manager's manager of the record's {person.label.toLowerCase()}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      )}
+      {step.assignee || step.several ? null : (
+        <Field label="In the department of" hint="Only people with the role in that department see and decide the task.">
+          {(id) => (
+            <Select id={id} value={step.department?.of ?? ''} onChange={(e) => set(e.target.value ? { ...step, department: { of: e.target.value } } : without(step, 'department'))}>
+              <option value="">Any department</option>
+              {people.map((person) => (
+                <option key={person.name} value={person.name}>
+                  The record's {person.label.toLowerCase()}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      )}
+      <Checkbox label="It has a due date" checked={step.due !== undefined} onChange={(on) => set(on ? { ...step, due: 'P3D' } : without(step, 'due'))} />
+      {step.due ? <DurationInput label="Due within" value={step.due} onChange={(due) => set({ ...step, due })} /> : null}
+      <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+        <legend className="px-1 text-sm text-muted">Outcomes: a way on for each</legend>
+        {step.outcomes.map((each, index) => (
+          <div key={each.name} className="grid gap-1.5 rounded-md bg-sunken p-2">
+            <div className="flex gap-2">
+              <TextInput aria-label={`Outcome ${index + 1}`} value={each.label} onChange={(e) => outcome(index, (current) => ({ ...current, label: e.target.value }))} />
+              <Button size="sm" variant="ghost" disabled={step.outcomes.length === 1} onClick={() => set({ ...step, outcomes: step.outcomes.filter((_, i) => i !== index) })}>
+                Remove
+              </Button>
+            </div>
+            <Select aria-label={`What ${each.label} runs`} value={each.action ?? ''} onChange={(e) => outcome(index, (current) => (e.target.value ? { ...current, action: e.target.value } : without(current, 'action')))}>
+              <option value="">Runs no action</option>
+              {actions.map((action) => (
+                <option key={action} value={action}>
+                  Runs {definition.actions[action]!.label}, as the person who decides
+                </option>
+              ))}
+            </Select>
+          </div>
+        ))}
+        <Button
+          size="sm"
+          className="justify-self-start"
+          disabled={step.outcomes.length >= 10}
+          onClick={() => {
+            let n = step.outcomes.length + 1;
+            while (step.outcomes.some((each) => each.name === `outcome_${n}`)) n++;
+            set({ ...step, outcomes: [...step.outcomes, { name: `outcome_${n}`, label: `Outcome ${n}`, steps: [] }] });
+          }}
+        >
+          Add an outcome
+        </Button>
+      </fieldset>
+      <Checkbox label="It has a deadline" checked={Boolean(step.deadline)} onChange={(on) => set(on ? { ...step, deadline: { after: 'P3D', steps: [] } } : without(step, 'deadline'))} />
+      {step.deadline ? (
+        <>
+          <DurationInput label="The task ends after" value={step.deadline.after} onChange={(after) => set({ ...step, deadline: { ...step.deadline!, after } })} />
+          <p className="m-0 text-xs text-muted">Once that time passes, the task leaves the inbox, and the flow goes on by the deadline's way, below the task.</p>
+        </>
+      ) : null}
+      <Field label="Review card">
+        {(id) => (
+          <Select id={id} value={step.card ?? ''} onChange={(e) => set(e.target.value ? { ...step, card: e.target.value } : without(step, 'card'))}>
+            <option value="">None</option>
+            {cards.map(([card, spec]) => (
+              <option key={card} value={card}>
+                {spec.title}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+    </>
+  );
+}
+
+/** Several people decide a task, each with a vote: who votes, in turn or at once, and what decides it. */
+function SeveralEditor({ several, outcomes, people, onChange }: { several: Several | undefined; outcomes: TaskStep['outcomes']; people: ReadonlyArray<{ name: string; label: string }>; onChange: (several: Several | undefined) => void }) {
+  const voters = several?.people;
+  const decide = several?.decide;
+  return (
+    <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+      <legend className="px-1 text-sm text-muted">Several people</legend>
+      <Checkbox
+        label="Several people decide, each with a vote"
+        checked={Boolean(several)}
+        onChange={(on) =>
+          onChange(on ? { people: { everyone: true }, sequential: false, decide: outcomes.length > 1 ? { count: 'all', outcome: outcomes[0]!.name, otherwise: outcomes[1]!.name } : { first: true } } : undefined)
+        }
+      />
+      {several && voters && decide ? (
+        <>
+          <Field label="Who votes">
+            {(id) => (
+              <Select
+                id={id}
+                value={'everyone' in voters ? 'everyone' : 'fields' in voters ? 'fields' : `line:${voters.lineOf}`}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  const next: Several['people'] = value === 'everyone' ? { everyone: true } : value === 'fields' ? { fields: people.slice(0, 2).map((person) => person.name) } : { lineOf: value.slice('line:'.length), levels: 2 };
+                  onChange({ ...several, people: next });
+                }}
+              >
+                <option value="everyone">Everyone with the role</option>
+                <option value="fields" disabled={people.length < 2}>
+                  The people some fields of the record name
+                </option>
+                {people.map((person) => (
+                  <option key={person.name} value={`line:${person.name}`}>
+                    Up the reporting line from the record's {person.label.toLowerCase()}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          {'fields' in voters
+            ? people.map((person) => (
+                <Checkbox
+                  key={person.name}
+                  label={`The record's ${person.label.toLowerCase()}`}
+                  checked={voters.fields.includes(person.name)}
+                  onChange={(on) => onChange({ ...several, people: { fields: on ? [...voters.fields, person.name] : voters.fields.filter((field) => field !== person.name) } })}
+                />
+              ))
+            : null}
+          <Checkbox label="One after another, in order" checked={several.sequential} onChange={(sequential) => onChange({ ...several, sequential })} />
+          <Field label="Decided by">
+            {(id) => (
+              <Select
+                id={id}
+                value={'first' in decide ? 'first' : String(decide.count)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === 'first') return onChange({ ...several, decide: { first: true } });
+                  const count = value === 'all' || value === 'majority' ? value : Number(value);
+                  const base = 'first' in decide ? { outcome: outcomes[0]!.name, otherwise: (outcomes[1] ?? outcomes[0])!.name } : decide;
+                  onChange({ ...several, decide: { count, outcome: base.outcome, otherwise: base.otherwise } });
+                }}
+              >
+                <option value="first">The first vote</option>
+                <option value="all" disabled={outcomes.length < 2}>
+                  Everyone's votes for one outcome
+                </option>
+                <option value="majority" disabled={outcomes.length < 2}>
+                  A majority's votes for one outcome
+                </option>
+              </Select>
+            )}
+          </Field>
+          <p className="m-0 text-xs text-muted">Once the votes decide, the outcome's action runs with the app's authority: no one person made the decision.</p>
+        </>
+      ) : null}
+    </fieldset>
+  );
+}
+
+/** What a wait waits for: a time, a date of the record, an action on it, a condition on it, or a signal. */
+function WaitForEditor(props: { definition: Definition; name: string; label: string; variables: RefChoice[]; value: WaitFor; onChange: (wait: WaitFor) => void }) {
+  const { definition, name, label, variables, value, onChange } = props;
+  const entity = flowSubject(definition.flows![name]!)?.entity;
+  const dates = (entity ? (definition.entities[entity]?.fields ?? []) : []).filter((field) => field.type === 'date' || field.type === 'datetime');
+  const actions = updateActionsOf(definition, entity);
+  const kind = 'duration' in value ? 'duration' : 'date' in value ? 'date' : 'action' in value ? 'action' : 'condition' in value ? 'condition' : 'signal';
+  const fresh = (next: string): WaitFor => {
+    if (next === 'date' && dates[0]) return { date: dates[0].name };
+    if (next === 'action' && actions[0]) return { action: actions[0] };
+    if (next === 'condition') return { condition: { exists: variables[0]?.ref ?? 'id' } };
+    if (next === 'signal') return { signal: 'go' };
+    return { duration: 'P1D' };
+  };
+  return (
+    <>
+      <Field label={label}>
+        {(id) => (
+          <Select id={id} value={kind} onChange={(e) => onChange(fresh(e.target.value))}>
+            <option value="duration">A time</option>
+            <option value="date" disabled={!dates.length}>
+              A date of the record
+            </option>
+            <option value="action" disabled={!actions.length}>
+              An action on the record
+            </option>
+            <option value="condition">A condition on the record</option>
+            <option value="signal">A signal</option>
+          </Select>
+        )}
+      </Field>
+      {'duration' in value ? <DurationInput label="For" value={value.duration} onChange={(duration) => onChange({ duration })} /> : null}
+      {'date' in value ? (
+        <Field label="Until">
+          {(id) => (
+            <Select id={id} value={value.date} onChange={(e) => onChange({ date: e.target.value })}>
+              {dates.map((field) => (
+                <option key={field.name} value={field.name}>
+                  The record's {field.label.toLowerCase()}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      ) : null}
+      {'action' in value ? (
+        <Field label="Until someone runs" hint="An update action on the record, such as withdrawing it.">
+          {(id) => (
+            <Select id={id} value={value.action} onChange={(e) => onChange({ action: e.target.value })}>
+              {actions.map((action) => (
+                <option key={action} value={action}>
+                  {definition.actions[action]!.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      ) : null}
+      {'condition' in value ? <ConditionEditor label="Until it holds that" value={value.condition} choices={variables} compareWith={variables} onChange={(condition) => onChange({ condition: condition ?? value.condition })} /> : null}
+      {'signal' in value ? (
+        <Field label="The signal" hint="An operator, or another flow, throws it by name.">
+          {(id) => <TextInput id={id} className="font-mono" value={value.signal} onChange={(e) => onChange({ signal: e.target.value.trim() })} />}
+        </Field>
+      ) : null}
+    </>
+  );
 }
 
 /** A value for an input or a result: a value, or a variable that holds a record or a list of the type. */
@@ -926,12 +1321,67 @@ function FlowSettings({ definition, name, readOnly, onChange, onRemove }: { defi
           </div>
         )}
       </div>
-      <Field label="Result">{() => <TypePicker definition={definition} label="Result" value={flow.output} none="No result" onChange={(output) => onChange(updateFlow(definition, name, { output }))} />}</Field>
+      {flowWaits(flow, definition.flows) ? null : (
+        <Field label="Result">{() => <TypePicker definition={definition} label="Result" value={flow.output} none="No result" onChange={(output) => onChange(updateFlow(definition, name, { output }))} />}</Field>
+      )}
       {readOnly ? null : (
         <Button variant="danger" className="justify-self-start" onClick={onRemove}>
           Delete the flow
         </Button>
       )}
+    </Card>
+  );
+}
+
+/** How a flow that waits starts on a record: the actions that run it, and the roles that may start it by hand. */
+function HowItStarts({ definition, name }: { definition: Definition; name: string }) {
+  const flow = definition.flows![name]!;
+  const subject = flowSubject(flow);
+  const actions = Object.values(definition.actions).filter((action) => action.flow?.flow === name);
+  const roles = Object.values(definition.roles).filter((role) => role.flows?.includes(name));
+  return (
+    <Card className="grid gap-2 p-4" aria-label="How it starts">
+      <h3 className="m-0 text-base font-semibold">How it starts</h3>
+      <p className="m-0 text-sm text-muted">
+        This flow waits for people and for time, so it keeps its place on one {subject ? (definition.entities[subject.entity]?.label.toLowerCase() ?? subject.entity) : 'record'}. A bar on the canvas marks each place where it saves before it waits.
+      </p>
+      {actions.length ? (
+        <p className="m-0 text-sm">
+          {actions.map((action) => action.label).join(', ')} start{actions.length === 1 ? 's' : ''} it, as {actions.length === 1 ? 'it saves its' : 'they save their'} record.
+        </p>
+      ) : null}
+      {roles.length ? <p className="m-0 text-sm">{roles.map((role) => role.label).join(', ')} may start it on a record by hand.</p> : null}
+      {!actions.length && !roles.length ? <Notice tone="warn">Nothing starts it yet: have an action run it, or let a role run it.</Notice> : null}
+    </Card>
+  );
+}
+
+/** Processes from before flows could wait: they still run, and a builder rebuilds each as a flow that waits. */
+function EarlierProcesses({ definition, readOnly, onChange }: { definition: Definition; readOnly: boolean; onChange: (definition: Definition) => void }) {
+  const processes = Object.entries(definition.processes ?? {});
+  if (!processes.length) return null;
+  return (
+    <Card className="grid gap-2 p-4" aria-label="Processes from before">
+      <h3 className="m-0 text-base font-semibold">Processes from before</h3>
+      <p className="m-0 text-sm text-muted">This app has processes from before flows could wait. They still run, but a3t no longer draws them: rebuild each as a flow that waits, then remove it.</p>
+      {processes.map(([name, process]) => (
+        <div key={name} className="flex items-center justify-between gap-2 text-sm">
+          <span>{process.label}</span>
+          {readOnly ? null : (
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => {
+                const rest = Object.fromEntries(Object.entries(definition.processes ?? {}).filter(([other]) => other !== name));
+                const roles = Object.fromEntries(Object.entries(definition.roles).map(([role, spec]) => [role, spec.processes ? { ...spec, processes: spec.processes.filter((each) => each !== name) } : spec]));
+                onChange({ ...definition, processes: rest, roles });
+              }}
+            >
+              Remove {process.label}
+            </Button>
+          )}
+        </div>
+      ))}
     </Card>
   );
 }

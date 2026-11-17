@@ -81,7 +81,7 @@ describe('the operators\' MCP server', () => {
   it('lists the apps the caller operates, and where each instance waits', async () => {
     expect((await ok(operator, 'list_apps')).apps).toEqual([{ id: appId, name: 'Leave', kind: 'personal', environments: ['sandbox'] }]);
     const { instances } = await ok(operator, 'list_instances', { app_id: appId, status: 'running' });
-    expect(instances).toMatchObject([{ id: instanceId, process: 'leave_approval', stuck: [], waiting: [{ element: 'decide', name: 'Decide on the leave' }] }]);
+    expect(instances).toMatchObject([{ id: instanceId, process: 'leave_approval', stuck: [], waiting: [{ element: 'steps_0', name: 'Decide on the leave' }] }]);
     const instance = await ok(operator, 'get_instance', { app_id: appId, instance_id: instanceId });
     expect(instance.tasks).toMatchObject([{ name: 'Decide on the leave', status: 'open', assignee: { id: bob.userId } }]);
     taskId = instance.tasks[0].id;

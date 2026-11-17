@@ -17,7 +17,7 @@ import {
   isAdHoc,
   isEventSub,
   linkTarget,
-  LEAVE_APP,
+  LEAVE_PROCESS_APP,
   lintDefinition,
   messageActions,
   mergeDefinitions,
@@ -53,9 +53,9 @@ function issuesOf(input: unknown): string[] {
   return result.ok ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
 }
 
-/** The leave template, with its process changed by `edit`. */
+/** The leave app with its approval as a process, changed by `edit`. */
 function leave(edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined): Record<string, any> {
-  const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+  const definition = structuredClone(LEAVE_PROCESS_APP) as unknown as Record<string, any>;
   edit(definition['processes'].leave_approval, definition);
   return definition;
 }

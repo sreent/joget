@@ -1,7 +1,7 @@
 import type { Definition } from '../types.js';
 import { isName, lineOwner, toName } from './edit.js';
 import { forgetRole, renameRowAction } from './pages.js';
-import { forgetInProcesses } from './processes.js';
+import { forgetInWaits } from './waits.js';
 
 /**
  * Pure edits of rules, actions, queries, review cards and roles in a draft. Each returns a new
@@ -109,9 +109,9 @@ export function removeItem(definition: Definition, section: Section, name: strin
   if (section === 'queries') for (const role of Object.values(next.roles)) role.queries = (role.queries ?? []).filter((q) => q !== name);
   if (section === 'cards') {
     for (const action of Object.values(next.actions)) if (action.card === name) delete action.card;
-    for (const process of Object.values(next.processes ?? {})) for (const element of Object.values(process.elements)) if (element.type === 'userTask' && element.card === name) delete element.card;
+    return forgetInWaits(next, { card: name });
   }
-  if (section === 'actions') return forgetInProcesses(next, { action: name });
+  if (section === 'actions') return forgetInWaits(next, { action: name });
   return next;
 }
 

@@ -138,7 +138,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   const processes = new ProcessEngine(ctx, runtime, flows);
   await app.register(appRoutes(ctx, builder, runtime));
   await app.register(runtimeRoutes(ctx, runtime));
-  await app.register(processRoutes(ctx, runtime, processes, builder));
+  await app.register(processRoutes(ctx, runtime, processes));
   await app.register(flowRoutes(ctx, runtime, flows));
   await app.register(proposalRoutes(ctx, runtime));
   const delivery = new Delivery(ctx, builder, runtime);

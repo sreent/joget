@@ -163,7 +163,7 @@ export const api = {
   runFlow: (target: string | AppAt, flow: string, body: { input: Record<string, unknown>; dryRun?: boolean }) =>
     call<FlowRunResult>('POST', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/run${envParams(target)}`, body),
 
-  // Business processes (design §6.10).
+  // People's tasks, and the flows that wait on records (design §6.10, §6.11).
   tasks: (status: 'open' | 'closed' = 'open') => call<{ tasks: Task[] }>('GET', `/v1/me/tasks?status=${status}`),
   completeTask: (id: string, outcome: string, values?: Record<string, unknown>) =>
     call<{ task: Task; result: { status: 'done' } | { status: 'needs_confirmation'; proposal: { reviewUrl: string } } | null }>(
@@ -185,22 +185,6 @@ export const api = {
     call<{ instances: ProcessInstance[] }>('GET', `${app(at(target).id)}/process-instances${envParams(target, stuck ? { stuck: 'true' } : {})}`),
   retryInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/retry${envParams(target)}`),
   cancelInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/cancel${envParams(target)}`),
-  /** A process as a BPMN 2.0 file, saved by the browser. */
-  downloadBpmn: async (appId: string, process: string) => {
-    const response = await fetch(`${app(appId)}/processes/${encodeURIComponent(process)}/bpmn`, { credentials: 'same-origin' });
-    if (!response.ok) {
-      const data = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
-      throw new ApiError(response.status, data.error ?? 'error', data.message ?? response.statusText);
-    }
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${process}.bpmn`;
-    link.click();
-    URL.revokeObjectURL(url);
-  },
-  importBpmn: (appId: string, xml: string, options: { entity?: string; as?: string } = {}) =>
-    call<{ plan: Plan; processes: string[]; notes: string[] }>('POST', `${app(appId)}/processes/import`, { xml, ...options }),
 
   // Governed delivery for team apps.
   spaces: () => call<{ spaces: Space[] }>('GET', '/v1/spaces'),

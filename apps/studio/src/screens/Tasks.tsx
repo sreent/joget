@@ -225,7 +225,7 @@ const EVENTS: Readonly<Record<string, string>> = {
   cancelled: 'Cancelled',
 };
 
-/** Where a record's processes are, who they wait for, and the person's own decisions on it. */
+/** Where the flows that wait on a record are, who and what they wait for, and the person's own decisions on it. */
 export function ProcessCard({ at, entity, recordId }: { at: AppAt; entity: string; recordId: string }) {
   const processes = useQuery({ queryKey: ['processes', at.id, at.env, entity, recordId], queryFn: () => api.recordProcesses(at, entity, recordId) });
   const mine = useQuery({ queryKey: ['tasks', 'open'], queryFn: () => api.tasks('open') });
@@ -234,7 +234,7 @@ export function ProcessCard({ at, entity, recordId }: { at: AppAt; entity: strin
   const myTasks = new Set((mine.data?.tasks ?? []).map((task) => task.id));
   return (
     <Card className="grid content-start gap-3">
-      <h3 className="m-0 text-sm font-semibold text-muted">Process</h3>
+      <h3 className="m-0 text-sm font-semibold text-muted">Flows</h3>
       {instances.map((instance) => (
         <InstanceView key={instance.id} instance={instance} myTasks={myTasks} />
       ))}
@@ -244,6 +244,8 @@ export function ProcessCard({ at, entity, recordId }: { at: AppAt; entity: strin
 
 function InstanceView({ instance, myTasks }: { instance: ProcessInstance; myTasks: ReadonlySet<string> }) {
   const open = (instance.tasks ?? []).filter((task) => task.status === 'open');
+  // What it waits for besides people's tasks: a time, an action, a condition, or the first of several.
+  const waits = instance.status === 'running' ? instance.waiting.filter((wait) => !open.some((task) => task.name === wait.name)) : [];
   return (
     <div className="grid gap-2 border-t border-line pt-2 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -260,6 +262,11 @@ function InstanceView({ instance, myTasks }: { instance: ProcessInstance; myTask
           </p>
           {myTasks.has(task.id) ? <TaskOutcomes task={task} /> : null}
         </div>
+      ))}
+      {waits.map((wait) => (
+        <p key={wait.element} className="m-0 text-sm text-muted">
+          {wait.name}
+        </p>
       ))}
       {instance.stuck.map((stuck) => (
         <Notice key={stuck.element} tone="bad">

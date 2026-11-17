@@ -4,7 +4,7 @@ import { createElement, useSyncExternalStore, type AnchorHTMLAttributes, type Re
  * The studio's pages. Building needs `app.read`; using an app needs only `app.run`. A team app has
  * delivery tabs too: its change requests, and its releases and environments.
  */
-export type BuildTab = 'delivery' | 'changes' | 'data' | 'forms' | 'pages' | 'menu' | 'rules' | 'actions' | 'queries' | 'cards' | 'roles' | 'flows' | 'processes' | 'share' | 'history' | 'advanced';
+export type BuildTab = 'delivery' | 'changes' | 'data' | 'forms' | 'pages' | 'menu' | 'rules' | 'actions' | 'queries' | 'cards' | 'roles' | 'flows' | 'share' | 'history' | 'advanced';
 export type Route =
   | { readonly name: 'home' }
   /** The person's tasks across apps. */
@@ -19,7 +19,7 @@ export type Route =
   | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string; readonly appPage?: string; readonly env?: string };
 
 const BASE = '/studio';
-const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'flows', 'processes', 'share', 'history', 'advanced'];
+const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'flows', 'share', 'history', 'advanced'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function parse(pathname: string, search = ''): Route {

@@ -13,7 +13,6 @@ import { FlowsDesigner } from './FlowsDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
 import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from './LogicDesigners.js';
 import { MenuDesigner, PagesDesigner } from './PagesDesigner.js';
-import { ProcessDesigner } from './ProcessDesigner.js';
 import { RolesDesigner } from './RolesDesigner.js';
 
 const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
@@ -27,7 +26,6 @@ const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
   { tab: 'cards', label: 'Review cards' },
   { tab: 'roles', label: 'Roles' },
   { tab: 'flows', label: 'Flows' },
-  { tab: 'processes', label: 'Processes' },
 ];
 const TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [...DESIGNERS, { tab: 'share', label: 'Share' }, { tab: 'history', label: 'History' }, { tab: 'advanced', label: 'Advanced' }];
 /** A team app: delivery first, then its main line, read-only, in the designers. */
@@ -162,9 +160,6 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} /> : null}
-        {tab === 'processes' ? (
-          <ProcessDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} saved={Object.keys(saved.data.definition.processes ?? {})} />
-        ) : null}
         {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
         </div>
       </fieldset>

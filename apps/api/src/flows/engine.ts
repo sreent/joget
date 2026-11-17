@@ -1,6 +1,6 @@
 import { uuidv7 } from '@platform/audit';
 import { evaluateCondition, partialEvaluate, type Condition } from '@platform/authz';
-import { evaluateExpression, roundTo, type AppFlow, type Expression, type FlowRun, type FlowStep, type FlowType, type RecordValues } from '@platform/app-model';
+import { evaluateExpression, flowWaits, roundTo, type AppFlow, type Expression, type FlowRun, type FlowStep, type FlowType, type RecordValues } from '@platform/app-model';
 import { requirePerson } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
 import type { AppRuntime, FlowHooks, Writer } from '../apps/runtime.js';
@@ -111,10 +111,11 @@ export class FlowEngine implements FlowHooks {
     runtime.attachFlows(this);
   }
 
-  /** An action's flow, once the action writes its record. */
+  /** An action's flow, once the action writes its record. A flow that waits is the process engine's to start. */
   async afterAction(...[tx, loaded, event]: Parameters<FlowHooks['afterAction']>): Promise<void> {
     const run = loaded.definition.actions[event.action]?.flow;
-    if (!run) return;
+    const flow = run ? loaded.definition.flows?.[run.flow] : undefined;
+    if (!run || (flow && flowWaits(flow, loaded.definition.flows))) return;
     const input = this.inputFrom(loaded, run, event.entity, event.record, event.principal);
     await this.run(tx, loaded, run.flow, input, { writer: event.writer, principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action } });
   }

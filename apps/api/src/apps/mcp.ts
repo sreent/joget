@@ -1,4 +1,4 @@
-import { applyEdits, DefinitionEdits, MAX_EDITS, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { applyEdits, DefinitionEdits, MAX_EDITS, runnable, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
 import { spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -147,7 +147,7 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
       throw error;
     });
     if (!loaded) continue;
-    if (Object.keys(loaded.definition.processes ?? {}).length) processes = true;
+    if (Object.keys(runnable(loaded.definition).processes ?? {}).length) processes = true;
     const policy = await runtime.policy(loaded);
     const allowed = async (kind: 'action' | 'query', name: string) =>
       (await ctx.policy.authorize(auth.principal, `${kind}.run`, runtime.capability(loaded, kind, name), undefined, policy)).allowed;

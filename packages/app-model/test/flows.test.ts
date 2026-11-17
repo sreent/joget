@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bpmnToProcesses, capabilityChanges, compileAppPolicy, EXPENSE_APP, LEAVE_APP, lintDefinition, processToBpmn, validateDefinition, type StoredDefinition } from '@platform/app-model';
+import { capabilityChanges, compileAppPolicy, EXPENSE_APP, LEAVE_PROCESS_APP, lintDefinition, validateDefinition, type StoredDefinition } from '@platform/app-model';
 
 const ids = () => {
   let n = 0;
@@ -175,7 +175,7 @@ describe('flows', () => {
       'actions.approve_claim.flow.input.who: Record the spend takes no who',
     ]);
 
-    const leave = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    const leave = structuredClone(LEAVE_PROCESS_APP) as unknown as Record<string, any>;
     leave.flows = {
       note: { label: 'Note', input: { days: { type: 'number' }, by: { type: 'text' } }, steps: [{ type: 'check', assert: { gt: [{ ref: 'days' }, 0] }, message: 'Days' }] },
     };
@@ -224,21 +224,5 @@ describe('flows', () => {
     expect(lintDefinition(valid(withFlows((d) => void (d.actions.approve_claim.flow = undefined))))).toEqual(
       expect.arrayContaining(['Nothing runs the flow Record the spend: no action, process task, other flow or role names it']),
     );
-  });
-
-  it('go through BPMN files: a service task that runs a flow, with its input', () => {
-    const leave = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
-    leave.flows = { note: { label: 'Note', input: { days: { type: 'number' } }, steps: [{ type: 'check', assert: { gt: [{ ref: 'days' }, 0] }, message: 'Days' }] } };
-    leave.processes.leave_approval.elements.noting = { type: 'serviceTask', name: 'Note it', flow: { flow: 'note', input: { days: { ref: 'record.days' } } } };
-    leave.processes.leave_approval.flows.on_approve.to = 'noting';
-    leave.processes.leave_approval.flows.noted = { from: 'noting', to: 'approved' };
-    delete leave.processes.leave_approval.diagram;
-    const definition = valid(leave);
-    const xml = processToBpmn(definition, 'leave_approval');
-    expect(xml).toContain('implementation="urn:ambit:flow"');
-    expect(xml).toContain('ambit:flow="note"');
-    const back = bpmnToProcesses(xml, definition);
-    if (!back.ok) throw new Error(JSON.stringify(back.issues));
-    expect(Object.values(back.processes)[0]!.elements['noting']).toEqual({ type: 'serviceTask', name: 'Note it', flow: { flow: 'note', input: { days: { ref: 'record.days' } } } });
   });
 });

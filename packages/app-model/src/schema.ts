@@ -215,9 +215,61 @@ export type Step = z.infer<typeof Step>;
 export const MAX_STEPS = 20;
 
 /*
- * Flows (design §6.2): an app's logic, as a Mendix microflow is. A flow finds, creates, changes and
- * deletes records, loops, decides, calls other flows and handles errors, in one transaction. It
- * never waits for a person: work that waits for people is a process.
+ * People and time: who a task waits for, and how long. A flow's tasks and waits use them, and so
+ * does the process engine that runs a flow that waits.
+ */
+
+/** An ISO 8601 duration, as BPMN 2.0's timers use: P3D is three days, PT4H four hours. */
+export const DURATION_PATTERN = /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
+export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in ISO 8601, for example P3D for three days or PT4H for four hours');
+
+/** When a timer fires: after a duration, or on a date or time field of the record, such as the first day of a leave. */
+export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name })]);
+export type Timer = z.infer<typeof Timer>;
+
+/**
+ * Who of a role's holders a task waits for. Routing narrows; the role grants: whoever it names
+ * still decides under the role's permissions.
+ */
+export const Routing = z.union([
+  /** Whoever a user field of the record names, such as the manager the requester chose. */
+  z.strictObject({ field: Name }),
+  /** The manager of whoever a user field names, from the directory, `levels` up the reporting line. */
+  z.strictObject({ managerOf: Name, levels: z.int().min(1).max(5).default(1) }),
+]);
+export type Routing = z.infer<typeof Routing>;
+
+/** Who votes, when several people decide a task. */
+export const Voters = z.union([
+  /** Everyone with the task's role, in its department where it has one. */
+  z.strictObject({ everyone: z.literal(true) }),
+  /** The people some user fields of the record name, such as two reviewers. */
+  z.strictObject({ fields: z.array(Name).min(2).max(10) }),
+  /** The reporting line up from whoever a user field names: their manager, that manager's, and so on. */
+  z.strictObject({ lineOf: Name, levels: z.int().min(2).max(5) }),
+]);
+export type Voters = z.infer<typeof Voters>;
+
+/**
+ * What decides a task that several people decide: the first vote; or a number of votes for one
+ * outcome, all of them, or a majority, and the other outcome once that can no longer happen.
+ */
+export const VoteRule = z.union([
+  z.strictObject({ first: z.literal(true) }),
+  z.strictObject({ count: z.union([z.int().min(1).max(50), z.enum(['all', 'majority'])]), outcome: Name, otherwise: Name }),
+]);
+export type VoteRule = z.infer<typeof VoteRule>;
+
+/** Several people decide a task, each with a vote in their own inbox: at once, or one after another. */
+export const Several = z.strictObject({ people: Voters, sequential: z.boolean().default(false), decide: VoteRule });
+export type Several = z.infer<typeof Several>;
+
+/*
+ * Flows (design §6.2, §6.11): what happens in an app, as a Mendix microflow is. A flow finds,
+ * creates, changes and deletes records, loops, decides, calls other flows and handles errors. It
+ * runs in one go, in one transaction; or it waits for people and for time, and keeps its place on
+ * one record while it waits. A flow that waits runs on the process engine (§6.10), which it
+ * compiles to.
  */
 
 /** The kind of value that a flow's input, variable or result holds. */
@@ -281,6 +333,20 @@ const FlowTotal = z.strictObject({
 });
 /** End the flow, with its result. */
 const FlowReturn = z.strictObject({ type: z.literal('return'), value: ExpressionSchema.optional() });
+/**
+ * What a wait waits for: a time, a date or time field of the record, an update action committing
+ * on the record (such as the requester withdrawing), a condition on the record, or a signal.
+ */
+export const WaitFor = z.union([
+  z.strictObject({ duration: Duration }),
+  z.strictObject({ date: Name }),
+  z.strictObject({ action: Name }),
+  z.strictObject({ condition: ConditionSchema }),
+  z.strictObject({ signal: Name }),
+]);
+export type WaitFor = z.infer<typeof WaitFor>;
+/** Wait, then go on. */
+const FlowWait = z.strictObject({ type: z.literal('wait'), for: WaitFor });
 /** A step of a flow. Written out, because a step can hold steps, and declarations keep only what is written. */
 export type FlowStep =
   | { readonly type: 'set'; readonly var: string; readonly value: Expression }
@@ -303,7 +369,23 @@ export type FlowStep =
   | { readonly type: 'call'; readonly flow: string; readonly input: Record<string, Expression>; readonly var?: string | undefined }
   | { readonly type: 'try'; readonly steps: FlowStep[]; readonly catch: FlowStep[]; readonly rollback: boolean; readonly error?: string | undefined }
   | { readonly type: 'total'; readonly var: string; readonly of: string; readonly op: 'count' | 'sum' | 'avg' | 'min' | 'max'; readonly field?: string | undefined }
-  | { readonly type: 'return'; readonly value?: Expression | undefined };
+  | { readonly type: 'return'; readonly value?: Expression | undefined }
+  | {
+      readonly type: 'task';
+      readonly label: string;
+      readonly description?: string | undefined;
+      readonly role: string;
+      readonly assignee?: Routing | undefined;
+      readonly department?: { readonly of: string } | undefined;
+      readonly several?: Several | undefined;
+      readonly outcomes: Array<{ readonly name: string; readonly label: string; readonly action?: string | undefined; readonly steps: FlowStep[] }>;
+      readonly due?: string | undefined;
+      readonly card?: string | undefined;
+      readonly deadline?: { readonly after: string; readonly steps: FlowStep[] } | undefined;
+    }
+  | { readonly type: 'wait'; readonly for: WaitFor }
+  | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps: FlowStep[] }> }
+  | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps: FlowStep[] }> };
 
 /** A step as it is written, before defaults fill in. */
 export type FlowStepInput =
@@ -314,7 +396,16 @@ export type FlowStepInput =
   | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStepInput[]; readonly else?: FlowStepInput[] | undefined }
   | (Omit<Extract<FlowStep, { type: 'check' }>, 'severity'> & { readonly severity?: 'error' | 'warning' | undefined })
   | (Omit<Extract<FlowStep, { type: 'call' }>, 'input'> & { readonly input?: Record<string, Expression> | undefined })
-  | { readonly type: 'try'; readonly steps: FlowStepInput[]; readonly catch?: FlowStepInput[] | undefined; readonly rollback?: boolean | undefined; readonly error?: string | undefined };
+  | { readonly type: 'try'; readonly steps: FlowStepInput[]; readonly catch?: FlowStepInput[] | undefined; readonly rollback?: boolean | undefined; readonly error?: string | undefined }
+  | (Omit<Extract<FlowStep, { type: 'task' }>, 'assignee' | 'several' | 'outcomes' | 'deadline'> & {
+      readonly assignee?: z.input<typeof Routing> | undefined;
+      readonly several?: z.input<typeof Several> | undefined;
+      readonly outcomes: Array<{ readonly name: string; readonly label: string; readonly action?: string | undefined; readonly steps?: FlowStepInput[] | undefined }>;
+      readonly deadline?: { readonly after: string; readonly steps?: FlowStepInput[] | undefined } | undefined;
+    })
+  | Extract<FlowStep, { type: 'wait' }>
+  | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps?: FlowStepInput[] | undefined }> }
+  | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps?: FlowStepInput[] | undefined }> };
 
 /** A list of steps, which a loop, a branch or an error handler holds. */
 const flowSteps = (min = 0) => z.array(z.lazy(() => FlowStep)).min(min).max(MAX_FLOW_BLOCK);
@@ -340,6 +431,39 @@ const FlowTry = z.strictObject({
   rollback: z.boolean().default(true),
   error: Name.optional(),
 });
+/**
+ * Work a person does, such as deciding on a leave: the flow waits until they choose an outcome,
+ * and goes on by the way of that outcome. An outcome can run one of the app's update actions on
+ * the record, as the person who decides. A deadline ends the task once it waits too long, and
+ * goes on by its own way.
+ */
+const FlowTask = z.strictObject({
+  type: z.literal('task'),
+  /** What the inbox calls the task. */
+  label: Label,
+  description: Description.optional(),
+  /** The app role whose holders may do the task. A role grants; routing only narrows. */
+  role: Name,
+  assignee: Routing.optional(),
+  department: z.strictObject({ of: Name }).optional(),
+  several: Several.optional(),
+  outcomes: z.array(z.strictObject({ name: Name, label: Label, action: Name.optional(), steps: flowSteps().default([]) })).min(1).max(10),
+  /** How long the task may stay open, from when it opens: its due date in the inbox. */
+  due: Duration.optional(),
+  /** The review card the task shows. */
+  card: Name.optional(),
+  deadline: z.strictObject({ after: Duration, steps: flowSteps().default([]) }).optional(),
+});
+/** Wait for the first of several things, and go on by its way: the others no longer wait. */
+const FlowFirstOf = z.strictObject({
+  type: z.literal('first_of'),
+  ways: z.array(z.strictObject({ for: WaitFor, steps: flowSteps().default([]) })).min(1).max(10),
+});
+/** Run several ways at once, and go on once each has ended. */
+const FlowAllAtOnce = z.strictObject({
+  type: z.literal('all_at_once'),
+  ways: z.array(z.strictObject({ steps: flowSteps().default([]) })).min(1).max(10),
+});
 export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion('type', [
   FlowSet,
   FlowFind,
@@ -354,6 +478,10 @@ export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion
   FlowTry,
   FlowTotal,
   FlowReturn,
+  FlowTask,
+  FlowWait,
+  FlowFirstOf,
+  FlowAllAtOnce,
 ]);
 
 export const AppFlow = z.strictObject({
@@ -617,14 +745,6 @@ export type Navigation = z.infer<typeof Navigation>;
 export const ELEMENT_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/;
 export const ElementId = z.string().regex(ELEMENT_ID_PATTERN, 'Use letters, digits, hyphens and underscores, starting with a letter or an underscore');
 
-/** An ISO 8601 duration, as BPMN 2.0's timers use: P3D is three days, PT4H four hours. */
-export const DURATION_PATTERN = /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
-export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in ISO 8601, for example P3D for three days or PT4H for four hours');
-
-/** When a timer fires: after a duration, or on a date or time field of the record, such as the first day of a leave. */
-export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name })]);
-export type Timer = z.infer<typeof Timer>;
-
 /**
  * A message, as Ambit's processes hear one: one of the app's update actions committing on the
  * record, such as the requester withdrawing. A process that sends one runs the action itself: on
@@ -694,43 +814,6 @@ const EndEvent = z.strictObject({
 /** A choice that completes a user task, such as approve. It can run one of the app's actions on the record, as the person who decides. */
 const Outcome = z.strictObject({ name: Name, label: Label, action: Name.optional() });
 export type Outcome = z.infer<typeof Outcome>;
-
-/**
- * Who of a role's holders a task waits for. Routing narrows; the role grants: whoever it names
- * still decides under the role's permissions.
- */
-export const Routing = z.union([
-  /** Whoever a user field of the record names, such as the manager the requester chose. */
-  z.strictObject({ field: Name }),
-  /** The manager of whoever a user field names, from the directory, `levels` up the reporting line. */
-  z.strictObject({ managerOf: Name, levels: z.int().min(1).max(5).default(1) }),
-]);
-export type Routing = z.infer<typeof Routing>;
-
-/** Who votes, when several people decide a task. */
-export const Voters = z.union([
-  /** Everyone with the task's role, in its department where it has one. */
-  z.strictObject({ everyone: z.literal(true) }),
-  /** The people some user fields of the record name, such as two reviewers. */
-  z.strictObject({ fields: z.array(Name).min(2).max(10) }),
-  /** The reporting line up from whoever a user field names: their manager, that manager's, and so on. */
-  z.strictObject({ lineOf: Name, levels: z.int().min(2).max(5) }),
-]);
-export type Voters = z.infer<typeof Voters>;
-
-/**
- * What decides a task that several people decide: the first vote; or a number of votes for one
- * outcome, all of them, or a majority, and the other outcome once that can no longer happen.
- */
-export const VoteRule = z.union([
-  z.strictObject({ first: z.literal(true) }),
-  z.strictObject({ count: z.union([z.int().min(1).max(50), z.enum(['all', 'majority'])]), outcome: Name, otherwise: Name }),
-]);
-export type VoteRule = z.infer<typeof VoteRule>;
-
-/** Several people decide a task, each with a vote in their own inbox: at once, or one after another. */
-export const Several = z.strictObject({ people: Voters, sequential: z.boolean().default(false), decide: VoteRule });
-export type Several = z.infer<typeof Several>;
 
 /**
  * An activity that repeats: once it ends, it runs again while this condition holds, on the record

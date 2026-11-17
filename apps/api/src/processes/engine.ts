@@ -36,6 +36,7 @@ import {
   type UserTaskElement,
   messageActions,
   reachable,
+  runnable,
   votesNeeded,
 } from '@platform/app-model';
 import { apps, bindings, groupMembers, processEvents, processInstances, processSignals, processStartTimers, processTasks, processTimers, processTokens, users, type Database } from '@platform/db';
@@ -50,6 +51,15 @@ import type { AppContext, AuthContext } from '../context.js';
 import { conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
 import type { FlowEngine } from '../flows/engine.js';
 import { coverFor, departmentOf, managerUp } from '../people/directory.js';
+
+/**
+ * The app as the engine runs it: each flow that waits is a process under its own name, and the
+ * steps between two of its waits are flows of their own (design §6.11).
+ */
+function running(loaded: LoadedApp): LoadedApp {
+  const definition = runnable(loaded.definition);
+  return definition === loaded.definition ? loaded : { ...loaded, definition };
+}
 
 /** Wait before the next try: 10 seconds, doubling, at most an hour. */
 function backoffSeconds(attempts: number): number {
@@ -230,7 +240,7 @@ export class ProcessEngine implements ProcessHooks {
     loaded: LoadedApp,
     event: { readonly action: string; readonly recordId: string; readonly by: AuthContext['actor']; readonly writer: Writer; readonly before: RecordValues | null },
   ): Promise<void> {
-    const decides = (loaded.definition.processes && Object.keys(loaded.definition.processes).length) || (await this.#hasOpenTasks(tx.db, loaded, event.recordId));
+    const decides = Object.keys(runnable(loaded.definition).processes ?? {}).length || (await this.#hasOpenTasks(tx.db, loaded, event.recordId));
     if (!decides) return;
     const turn = this.#turn(tx, loaded, event.writer.scope, event.by.type === 'user' ? event.by.id : null);
     await this.#actionCommitted(turn, event.action, event.recordId, event.by.type === 'user' ? event.by.id : null);
@@ -243,7 +253,7 @@ export class ProcessEngine implements ProcessHooks {
 
   /** Start a process on a record by hand, for someone whose role may start it. */
   async start(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, processName: string, recordId: string): Promise<InstanceView> {
-    const process = loaded.definition.processes?.[processName];
+    const process = runnable(loaded.definition).processes?.[processName];
     if (!process) throw notFound('Process');
     // The person must be able to see the record they start it on.
     await this.#runtime.get(request, auth, loaded, process.entity, recordId);
@@ -272,7 +282,7 @@ export class ProcessEngine implements ProcessHooks {
   ): Promise<{ readonly task: TaskView; readonly result: Awaited<ReturnType<AppRuntime['runAction']>> | null }> {
     const task = await this.#taskRow(taskId);
     if (!task) throw notFound('Task');
-    const loaded = await this.#ctx.apps.load(task.appId, { id: task.environmentId });
+    const loaded = running(await this.#ctx.apps.load(task.appId, { id: task.environmentId }));
     await this.#mayDo(auth, task);
     if (task.status !== 'open') throw conflict('task_closed', `${task.name} is already ${task.status}`);
     const outcome = task.outcomes.find((candidate) => candidate.name === input.outcome);
@@ -336,7 +346,7 @@ export class ProcessEngine implements ProcessHooks {
     if (!held.some((binding) => binding.scope.type === 'env' && binding.scope.id === task.environmentId && binding.roleId && appRoleName(task.appId, binding.roleId) === task.role)) {
       throw unprocessable('not_in_role', `They don't hold the role ${task.role} here, so they couldn't decide the task`);
     }
-    const loaded = await this.#ctx.apps.load(task.appId, { id: task.environmentId });
+    const loaded = running(await this.#ctx.apps.load(task.appId, { id: task.environmentId }));
     await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       await this.#runtime.lockRecord(tx, loaded, task.entity, task.recordId);
       const [locked] = await tx.db.select().from(processTasks).where(eq(processTasks.id, task.id)).for('update');
@@ -560,7 +570,7 @@ export class ProcessEngine implements ProcessHooks {
    * transaction does it all, and takes the records in one order, so two signals can't deadlock.
    */
   async #deliverSignal(signal: SignalRow): Promise<void> {
-    const loaded = await this.#ctx.apps.load(signal.appId, { id: signal.environmentId });
+    const loaded = running(await this.#ctx.apps.load(signal.appId, { id: signal.environmentId }));
     const scope = (now: Date): AuditScope => ({ orgId: this.#ctx.org.id, actor: SYSTEM_ACTOR, now, context: { signal: signal.id } });
     await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       const [current] = await tx.db.select().from(processSignals).where(eq(processSignals.id, signal.id)).for('update');
@@ -660,7 +670,7 @@ export class ProcessEngine implements ProcessHooks {
       await this.#ctx.db.update(processTimers).set({ status: 'cancelled' }).where(eq(processTimers.id, timer.id));
       return;
     }
-    const loaded = await this.#ctx.apps.load(row.appId, { id: row.environmentId });
+    const loaded = running(await this.#ctx.apps.load(row.appId, { id: row.environmentId }));
     const scope = (now: Date): AuditScope => ({ orgId: this.#ctx.org.id, actor: SYSTEM_ACTOR, now, context: { timer: timer.id } });
     await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       // The record first, then the instance: the order an action takes them in.
@@ -721,7 +731,7 @@ export class ProcessEngine implements ProcessHooks {
   // ---- The engine
 
   #turn(tx: AppTransaction, loaded: LoadedApp, scope: (now: Date) => AuditScope, by: string | null): Turn {
-    return { tx, loaded, scope, by, now: this.#ctx.now(), live: new Map(), queue: [], records: new Map(), moves: 0 };
+    return { tx, loaded: running(loaded), scope, by, now: this.#ctx.now(), live: new Map(), queue: [], records: new Map(), moves: 0 };
   }
 
   async #withInstance(request: FastifyRequest, loaded: LoadedApp, id: string, work: (turn: Turn, live: Live) => Promise<void>): Promise<void> {
@@ -762,7 +772,7 @@ export class ProcessEngine implements ProcessHooks {
   }
 
   async #processOf(row: InstanceRow, executor: Database = this.#ctx.db): Promise<Process | undefined> {
-    return (await this.#ctx.apps.definition(row.appId, row.revision, executor)).processes?.[row.process];
+    return runnable(await this.#ctx.apps.definition(row.appId, row.revision, executor)).processes?.[row.process];
   }
 
   async #record(turn: Turn, live: Live): Promise<RecordValues | null> {
@@ -1021,7 +1031,7 @@ export class ProcessEngine implements ProcessHooks {
 
   /** Start a process that a timer starts, on its record, when the time comes. */
   async #fireStart(timer: StartTimerRow): Promise<void> {
-    const loaded = await this.#ctx.apps.load(timer.appId, { id: timer.environmentId });
+    const loaded = running(await this.#ctx.apps.load(timer.appId, { id: timer.environmentId }));
     const scope = (now: Date): AuditScope => ({ orgId: this.#ctx.org.id, actor: SYSTEM_ACTOR, now, context: { startTimer: timer.id } });
     await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       const [current] = await tx.db.select().from(processStartTimers).where(eq(processStartTimers.id, timer.id)).for('update');

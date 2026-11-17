@@ -1,18 +1,16 @@
-import { bpmnToProcesses, NAME_PATTERN, processToBpmn } from '@platform/app-model';
+import { NAME_PATTERN } from '@platform/app-model';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { checkPermission } from '../access/check.js';
 import { once, requireAuth } from '../access/rules.js';
-import { auditScopeFor, recordAudit } from '../audit/writer.js';
-import { changeRequestRequired, type AppBuilder } from '../apps/builder.js';
-import { isTeamApp, type LoadedApp } from '../apps/catalog.js';
-import { appResource, processResource } from '../apps/resources.js';
+import type { LoadedApp } from '../apps/catalog.js';
+import { processResource } from '../apps/resources.js';
 import { envOf } from '../apps/routes.js';
 import type { AppRuntime } from '../apps/runtime.js';
-import { ActionResultOut, AppParams, EnvQuery, PlanOut } from '../apps/schemas.js';
+import { ActionResultOut, AppParams, EnvQuery } from '../apps/schemas.js';
 import type { AppContext } from '../context.js';
-import { notFound, unprocessable } from '../errors.js';
+import { unprocessable } from '../errors.js';
 import type { ProcessEngine } from './engine.js';
 import { reassignTask, requireOperator, type Operation } from './operators.js';
 
@@ -76,85 +74,17 @@ const SignalOut = z.object({
 });
 
 /**
- * Business processes (design §6.10): people's tasks across apps, starting a process by hand,
- * and the instances of an app for whoever runs it: its owner in a personal space, operators in a
- * team space, who see where each instance waits and try a stuck one again.
+ * Business processes (design §6.10), which flows that wait run as (§6.11): people's tasks across
+ * apps, starting one on a record by hand, and the instances of an app for whoever runs it: its
+ * owner in a personal space, operators in a team space, who see where each instance waits and try
+ * a stuck one again.
  */
-export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: ProcessEngine, builder: AppBuilder): FastifyPluginAsyncZod {
+export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: ProcessEngine): FastifyPluginAsyncZod {
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
   // The check needs the space's kind, so the handler makes it, with the same audited refusal an access rule gives.
   const operate = (request: FastifyRequest, loaded: LoadedApp, operation: Operation) => requireOperator(ctx, runtime, request, requireAuth(request), loaded, operation);
 
-  const appRule = (action: string) => ({
-    kind: 'permission' as const,
-    action,
-    resource: async (request: FastifyRequest) => appResource(ctx.org.id, await ctx.apps.ref((request.params as { appId: string }).appId)),
-  });
-
   return async (app) => {
-    app.get(
-      '/v1/apps/:appId/processes/:process/bpmn',
-      {
-        config: { access: appRule('app.export') },
-        schema: {
-          tags: ['processes'],
-          summary: "Download one of an app's processes as a BPMN 2.0 file, with its diagram: from the app's main line",
-          params: AppParams.extend({ process: z.string().min(1).max(63) }),
-        },
-      },
-      async (request, reply) => {
-        const ref = await ctx.apps.ref(request.params.appId);
-        const definition = await ctx.apps.mainDefinition(ref);
-        if (!definition.processes?.[request.params.process]) throw notFound('Process');
-        await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
-          action: 'app.export',
-          target: { type: 'app', id: ref.app.id, name: ref.app.name },
-          spaceId: ref.space.id,
-          appId: ref.app.id,
-          reason: { revision: ref.app.currentRevision, process: request.params.process, format: 'bpmn' },
-        });
-        return reply
-          .type('application/xml; charset=utf-8')
-          .header('content-disposition', `attachment; filename="${request.params.process}.bpmn"`)
-          .send(processToBpmn(definition, request.params.process));
-      },
-    );
-
-    app.post(
-      '/v1/apps/:appId/processes/import',
-      {
-        config: { access: appRule('app.edit') },
-        schema: {
-          tags: ['processes'],
-          summary: "Add the processes of a BPMN 2.0 file to a personal app, or a working copy of a team app. Anything Ambit can't run is refused, by name",
-          params: AppParams,
-          body: z.object({
-            xml: z.string().min(1).max(5_000_000),
-            entity: z.string().regex(NAME_PATTERN).optional().describe("The entity whose records the processes are about, unless the file names it or the app has one"),
-            as: z.string().regex(NAME_PATTERN).optional().describe('The name for the one process of the file: it replaces a process of that name'),
-          }),
-          response: { 200: z.object({ plan: PlanOut, processes: z.array(z.string()), notes: z.array(z.string()) }) },
-        },
-      },
-      async (request) => {
-        const ref = await ctx.apps.ref(request.params.appId);
-        if (isTeamApp(ref)) throw changeRequestRequired(ref);
-        const loaded = await ctx.apps.load(ref.app.id);
-        const current = loaded.definition;
-        const { as, entity, xml } = request.body;
-        const others = Object.fromEntries(Object.entries(current.processes ?? {}).filter(([name]) => name !== as));
-        const read = bpmnToProcesses(xml, { ...current, processes: others }, entity ? { entity } : {});
-        if (!read.ok) {
-          throw unprocessable('invalid_bpmn', "The file has parts Ambit can't run", { issues: read.issues.map((issue) => ({ path: issue.element ? `bpmn.${issue.element}` : 'bpmn', message: issue.message })) });
-        }
-        const found = Object.values(read.processes);
-        if (as && found.length !== 1) throw unprocessable('one_process', `The file holds ${found.length} processes: give a name only for a file with one`);
-        const imported = as ? { [as]: found[0]! } : read.processes;
-        const plan = await builder.save(request, requireAuth(request), loaded, { ...current, processes: { ...others, ...imported } }, { confirmDestructive: false });
-        return { plan, processes: Object.keys(imported), notes: [...read.notes] };
-      },
-    );
-
     app.get(
       '/v1/me/tasks',
       {

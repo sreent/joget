@@ -7,7 +7,7 @@ const RELEASE = '0193a7c4-0000-7000-8000-0000000000b1';
 const DEPLOYMENT = '0193a7c4-0000-7000-8000-0000000000c1';
 
 /** A stand-in for Ambit: answers by method and path, and keeps every request. */
-function fake(routes: Record<string, (body: unknown) => { status?: number; body: unknown; raw?: boolean }>, env: Record<string, string> = { AMBIT_TOKEN: 'a-test-token', AMBIT_URL: 'https://ambit.test' }) {
+function fake(routes: Record<string, (body: unknown) => { status?: number; body: unknown }>, env: Record<string, string> = { AMBIT_TOKEN: 'a-test-token', AMBIT_URL: 'https://ambit.test' }) {
   const requests: Array<{ method: string; path: string; body: unknown; authorization: string | null }> = [];
   const out: string[] = [];
   const err: string[] = [];
@@ -21,7 +21,6 @@ function fake(routes: Record<string, (body: unknown) => { status?: number; body:
       requests.push({ method: init?.method ?? 'GET', path: url.pathname, body, authorization: new Headers(init?.headers).get('authorization') });
       const route = routes[`${init?.method ?? 'GET'} ${url.pathname}`];
       const answer = route ? route(body) : { status: 404, body: { error: 'not_found', message: 'Not found' } };
-      if ('raw' in answer && answer.raw) return new Response(String(answer.body), { status: answer.status ?? 200, headers: { 'content-type': 'application/xml' } });
       return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200, headers: { 'content-type': 'application/json' } });
     },
     out: (text) => out.push(text),
@@ -135,23 +134,6 @@ describe('ambit', () => {
     });
     expect(await run(['deploy', 'expenses', '--release', '2', '--env', 'prod'], waiting.io)).toBe(0);
     expect(waiting.out).toEqual(['Deploying release 2 to Prod waits for 1 approval(s) in Ambit.']);
-  });
-
-  it('saves a process as a BPMN file, and adds the processes of one to an app', async () => {
-    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<bpmn:definitions />\n';
-    const world = fake({
-      'GET /v1/apps': () => ({ body: apps }),
-      [`GET /v1/apps/${APP}/processes/approval/bpmn`]: () => ({ body: xml, raw: true }),
-      [`POST /v1/apps/${APP}/processes/import`]: () => ({ body: { plan: {}, processes: ['approval'], notes: ['Left out the lanes'] } }),
-    });
-    expect(await run(['bpmn', 'export', 'expenses', 'approval'], world.io)).toBe(0);
-    expect(world.files.get('approval.bpmn')).toBe(xml);
-    expect(world.out.at(-1)).toBe('Saved the process approval to approval.bpmn, with its diagram.');
-    world.files.set('from-camunda.bpmn', '<definitions />');
-    expect(await run(['bpmn', 'import', 'expenses', 'from-camunda.bpmn', '--as', 'approval'], world.io)).toBe(0);
-    expect(world.requests.at(-1)).toMatchObject({ method: 'POST', body: { xml: '<definitions />', as: 'approval' } });
-    expect(world.out.at(-1)).toBe('Added the process approval to expenses.\n  Left out the lanes');
-    expect(await run(['bpmn', 'publish', 'expenses', 'approval'], world.io)).toBe(2);
   });
 
   it('passes on what Ambit says when it refuses', async () => {

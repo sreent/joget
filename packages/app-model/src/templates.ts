@@ -6,9 +6,9 @@ const me = { ref: 'principal.id' } as const;
 const status = { ref: 'record.status' } as const;
 
 /**
- * Leave requests: an employee asks for days off, and their manager approves or rejects them, in a
- * BPMN process that puts the decision in the manager's inbox. The manager's decision records the
- * day it was made; an overview counts the days taken.
+ * Leave requests: an employee asks for days off, and their manager approves or rejects them. The
+ * request runs a flow that waits for the manager's decision, in their inbox. The decision records
+ * the day it was made; an overview counts the days taken.
  */
 export const LEAVE_APP = {
   entities: {
@@ -55,6 +55,7 @@ export const LEAVE_APP = {
       set: { status: 'submitted' },
       confirm: 'review',
       card: 'leave_review',
+      flow: { flow: 'leave_approval', input: { leave: { ref: 'record' } } },
     },
     approve_leave: {
       label: 'Approve the leave',
@@ -207,6 +208,37 @@ export const LEAVE_APP = {
     home: 'my_leave',
     items: [{ page: 'my_leave' }, { form: 'leave_form' }, { heading: 'Managers' }, { page: 'to_decide' }, { page: 'overview' }],
   },
+  flows: {
+    leave_approval: {
+      label: 'Leave approval',
+      description: 'The manager the employee names decides on the leave, within three days.',
+      input: { leave: { type: 'record', entity: 'leave_request' } },
+      steps: [
+        {
+          type: 'task',
+          label: 'Decide on the leave',
+          role: 'manager',
+          assignee: { field: 'manager' },
+          outcomes: [
+            { name: 'approve', label: 'Approve', action: 'approve_leave' },
+            { name: 'reject', label: 'Reject', action: 'reject_leave' },
+          ],
+          due: 'P3D',
+          card: 'leave_review',
+        },
+      ],
+    },
+  },
+} as const satisfies AppDefinitionInput;
+
+/**
+ * The leave app with its approval written out as a process for the engine (design §6.10), as an
+ * app built before flows could wait has it. The engine's tests build on it. The leave template
+ * builds the same approval as a flow that waits, which compiles to a process like this one.
+ */
+export const LEAVE_PROCESS_APP = {
+  ...without(LEAVE_APP, 'flows'),
+  actions: { ...LEAVE_APP.actions, request_leave: without(LEAVE_APP.actions.request_leave, 'flow') },
   processes: {
     leave_approval: {
       label: 'Leave approval',
@@ -250,6 +282,10 @@ export const LEAVE_APP = {
     },
   },
 } as const satisfies AppDefinitionInput;
+
+function without<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> {
+  return Object.fromEntries(Object.entries(value).filter(([name]) => name !== key)) as Omit<T, K>;
+}
 
 /**
  * Purchase requests: a requester asks to buy something, an approver approves it, and procurement

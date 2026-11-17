@@ -191,23 +191,14 @@ describe('flows', () => {
     expect(Object.keys(await budgets())).not.toContain('parking');
   });
 
-  it('run from a process task, with the app\'s authority, and leave nothing behind when they fail', async () => {
+  it("run between the waits of a flow that waits, with the app's authority, and leave nothing behind when they fail", async () => {
     const leave = structuredClone(LEAVE_APP) as unknown as Json;
     leave.entities.leave_request.fields.push({ name: 'remark', label: 'Remark', type: 'text' });
-    leave.flows = {
-      stamp: {
-        label: 'Stamp the request',
-        input: { request: { type: 'record', entity: 'leave_request' }, days: { type: 'number' } },
-        steps: [
-          { type: 'change', record: 'request', values: { remark: { concat: ['Approved for ', { ref: 'days' }, ' days'] } } },
-          { type: 'check', assert: { lt: [{ ref: 'days' }, 20] }, message: 'Long leave needs HR' },
-        ],
-      },
-    };
-    leave.processes.leave_approval.elements.stamp = { type: 'serviceTask', name: 'Stamp it', flow: { flow: 'stamp', input: { request: { ref: 'record' }, days: { ref: 'record.days' } } } };
-    leave.processes.leave_approval.flows.on_approve.to = 'stamp';
-    leave.processes.leave_approval.flows.stamped = { from: 'stamp', to: 'approved' };
-    delete leave.processes.leave_approval.diagram;
+    // Once the manager approves, the flow stamps the request, and checks it in the same go.
+    leave.flows.leave_approval.steps[0].outcomes[0].steps = [
+      { type: 'change', record: 'leave', values: { remark: { concat: ['Approved for ', { ref: 'leave.days' }, ' days'] } } },
+      { type: 'check', assert: { lt: [{ ref: 'leave.days' }, 20] }, message: 'Long leave needs HR' },
+    ];
     const leaveId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave', definition: leave } }, 201)).app.id;
     await inject({ method: 'POST', url: `/v1/apps/${leaveId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'manager' } }, 201);
 
@@ -226,6 +217,8 @@ describe('flows', () => {
     await decide(long.id);
     expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.remark).toBeNull();
     const [stuck] = (await inject({ method: 'GET', url: `/v1/apps/${leaveId}/process-instances?stuck=true`, ...as(alice) }, 200)).instances;
-    expect(stuck).toMatchObject({ recordId: long.id, stuck: [{ element: 'stamp', error: 'Stamp it: Long leave needs HR' }] });
+    expect(stuck).toMatchObject({ recordId: long.id, stuck: [{ element: 'steps_0_outcomes_0_steps_0', error: 'Leave approval: change and check: Long leave needs HR' }] });
+    // The decision before the stamp stays: a failure after the flow saves can't undo it.
+    expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.status).toBe('approved');
   });
 });
