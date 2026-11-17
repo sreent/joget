@@ -38,7 +38,7 @@ export function DataDesigner({ definition, onChange }: Props) {
   const entity = entityName ? definition.entities[entityName] : undefined;
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)_21rem]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[15rem_minmax(0,1fr)_21rem]">
       <Card className="grid content-start gap-3 p-4">
         <h2 className="m-0 text-sm font-semibold text-muted">Entities</h2>
         <ul className="m-0 grid list-none gap-1 p-0">

@@ -69,6 +69,26 @@ a7c:
   # Secret; the API reads the file at each call.
   tokenSecret: ""
 
+# The model that the studio's chat builds apps with (design §6.5). Without a provider, the chat is
+# off. The API reads the key file at each request, so a renewed Secret needs no restart.
+ai:
+  # anthropic, or empty to leave the chat off.
+  provider: ""
+  # The model's ID at the provider. Ambit names no default: the installation chooses.
+  model: ""
+  # A Secret with the provider's API key under the key `key`.
+  keySecret: ""
+  # A gateway in front of the provider, over https. Empty: the provider's own address.
+  baseUrl: ""
+  # How much effort the model puts into each turn: low, medium, high, xhigh or max; off for a model
+  # that takes no effort setting.
+  effort: high
+  # default: a turn that the model declines goes on with the provider's fallback model. off: for a
+  # model or gateway that refuses the setting.
+  fallback: default
+  # The most turns of the model in one request to the chat.
+  maxTurns: 12
+
 telemetry:
   # An OTLP/HTTP endpoint, for example http://otel-collector.observability:4318. Empty disables export.
   otlpEndpoint: ""
@@ -124,7 +144,7 @@ networkPolicy:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
   # Where the API may connect: the database, the identity provider, the OTLP collector, the malware
-  # scanner and, over HTTPS, an object store.
+  # scanner and, over HTTPS, an object store, a7c and the model provider of the studio's chat.
   # Narrow these with `to:` selectors or CIDRs for your environment.
   egress:
     - ports:

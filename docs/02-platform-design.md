@@ -657,8 +657,16 @@ sequenceDiagram
   - **Steps for actions (built in phase 2).** The action designer lists an action's steps in order, with the two sides of a branch beneath it. Each step opens in place: the field a step sets and where its value comes from (a fixed value, a field, the person, today, a calculation, or text joined from parts); the condition of a check or a branch; or a skill and its input. A value too complex to show stays as it is, and the JSON editor changes it. When a field goes, the steps that set it go too.
   - The studio is a static web app, served by the API on its own origin. So it shares the sign-in, needs no cross-origin access, and has no permissions of its own: the API decides everything, and what the studio hides, the API refuses anyway.
 - **An AI copilot works alongside the designers.** It drafts entities, rules, actions and cards from a description, for example "employees claim travel expenses with receipts, and hotels are capped at SGD 250 a night". The builder then refines the draft visually.
+  - **Build by chat (built in phase 3).** This is the vibe composition of Joget DX 9. The builder tells the studio's chat what the app needs, and can add up to three pictures or PDFs, such as a photo of a paper form. Ambit calls the model that an admin set up for the installation. The chat is off until they do.
+    - The model changes the definition with small edits: JSON Patch operations that add, replace or remove a value at a JSON pointer. The definition's checks run after each edit, and their problems go back to the model, which fixes them before it finishes.
+    - The result is a draft in the builder's designers, not a saved change. The builder sees the change at once. They can undo it, change it further, or review its plan and save it, as any other change. A draft that doesn't fit the definition format never reaches the designers.
+    - The model sees the app's definition, the conversation and the files. It never sees the app's records. Ambit keeps the conversation, and sends all of it with each turn, so nothing stays with the provider between requests.
+    - The `app.compose` permission allows the chat, because the chat spends the organisation's model budget. Builder roles hold it, and an admin can take it away without taking away editing. A team app changes through a working copy, where the chat works too. A moved app, or an app in a frozen space, refuses it.
+    - The audit log records each request: who asked, the model, the first 500 characters of the request, the names of the files, and how many edits, turns and tokens it took.
+    - The installation sets the provider, the model, a file that holds the API key, how much effort the model puts into each turn, and how many turns a request may take. Ambit reads the key file at each request, so whatever issues the key can renew it. Ambit names no model of its own. The first provider is Anthropic, and an OpenAI-compatible provider follows.
 - **The builder API is also an MCP server.** Any AI client can build through it with the builder's permissions: Claude Code, Claude Desktop or the studio's own copilot. Through it, a client can:
   - list apps and read their definitions;
+  - change a definition with the same small edits as the studio's chat (`edit_definition`), instead of sending all of it again;
   - validate a change, and see its migration plan and permission diff;
   - apply the change to the personal sandbox;
   - run scenario tests;
@@ -1261,6 +1269,13 @@ Phases 0–3 are the MVP: the point where an employee can claim expenses through
 | Business processes | BPMN 2.0 is the notation and the interchange format. The studio offers the common elements first, like Mendix. Ambit imports and exports BPMN 2.0 XML with its diagram, and refuses what it can't run | Models move between Ambit and other BPMN tools. The part of BPMN 2.0 that runs grows release by release (§6.10) |
 | The process engine | Ambit's own, with its state in PostgreSQL, not Temporal | A process advances in the same transaction as the change that moves it, and there is no second system to run (§12) |
 | Processes and automation | A business process, where people decide on an app's records, is Ambit's. Automation, where machines do work across systems, is a7c's | A process's service task can start an a7c skill. A skill never holds a person's task |
+
+**Decided while building vibe composition (2026-11-17):**
+
+| Decision | Outcome | Consequence |
+|---|---|---|
+| Who calls the model | Ambit calls the model for the studio's chat itself, on a provider that the installation sets up: Anthropic first, then OpenAI-compatible. It is off until an admin turns it on | The chat drafts and the builder saves, through the same checks, plans and gates as any change. The `app.compose` permission and the audit log govern its use (§6.5) |
+| How AI changes a definition | With small, checked edits (JSON Patch), in the studio's chat and through MCP alike | A client changes a few values instead of sending the whole definition, and the checks report problems after each edit (§6.5) |
 
 **Still open:**
 

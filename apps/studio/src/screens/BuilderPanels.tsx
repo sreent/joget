@@ -26,7 +26,7 @@ export function SharePanel({ at, definition, team = false }: { at: AppAt; defini
     return <EmptyState title="This app has no roles yet">A role says what the people you share with may do. Add roles on the Roles tab, then share.</EmptyState>;
   }
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[minmax(0,1fr)_22rem]">
       <Card className="grid content-start gap-3">
         <h2 className="m-0 text-lg font-semibold">{team ? 'Who may use it here' : 'Shared with'}</h2>
         {shares.data?.shares.length === 0 ? <p className="m-0 text-muted">{team ? 'Nobody holds a role here yet.' : 'Only you can use this app so far.'}</p> : null}

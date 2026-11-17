@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { callTool, modelMessage, say, scriptedModel, type ScriptedModel } from './scripted-model.js';
 
 /**
  * The studio in a real browser, end to end: build an app from the example, rename a field, save,
@@ -52,6 +53,8 @@ const enabled = process.env['STUDIO_E2E'] === '1';
 const SHOTS = process.env['SCREENSHOT_DIR'];
 const PORT = 3917;
 const BASE = `http://127.0.0.1:${PORT}`;
+/** A picture of one pixel, for a file that the builder gives the chat. */
+const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
 describe.skipIf(!enabled)('the studio, in a browser', () => {
   let t: TestApp;
@@ -60,9 +63,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   let carol: Session;
   let browser: Browser;
   let appId: string;
+  let model: ScriptedModel;
 
   beforeAll(async () => {
-    t = await startTestApp({ PUBLIC_BASE_URL: BASE });
+    // The installation's model, scripted: the chat that builds apps is on.
+    model = scriptedModel();
+    t = await startTestApp({ PUBLIC_BASE_URL: BASE, AI_PROVIDER: 'anthropic', AI_MODEL: 'test-model', AI_API_KEY_FILE: '/run/secrets/unused' }, { models: model.client });
     await t.app.listen({ host: '127.0.0.1', port: PORT });
     [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
     const { chromium } = createRequire(import.meta.url)('playwright') as { chromium: { launch(): Promise<Browser> } };
@@ -811,5 +817,54 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
     expect(saved.elements['call_1']).toMatchObject({ type: 'callActivity', process: 'day_check', each: { field: 'request', sequential: true } });
+  });
+
+  it('builds by chat: the chat changes the draft, and the builder undoes it or reviews and saves it', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/data`);
+    await page.getByRole('button', { name: 'Build by chat' }).click();
+    const chat = panel(page, 'Build by chat');
+    const prompt = chat.getByLabel('What should the app do?');
+    await visible(chat.getByText('never its records'));
+
+    // The provider is busy: what the builder wrote comes back, to send again.
+    model.reply({ status: 429, error: { type: 'rate_limit_error', message: 'Slow down' } });
+    await prompt.fill('Claims need a cost centre, as on the paper form');
+    await chat.getByRole('button', { name: 'Send' }).click();
+    await visible(chat.getByText('The model is busy: try again in a minute'));
+    expect(await prompt.inputValue()).toBe('Claims need a cost centre, as on the paper form');
+
+    // With a photo of the paper form, the chat adds the field to the draft, and the designers show it.
+    model.requests.length = 0;
+    const costCentre = { op: 'add', path: '/entities/expense_claim/fields/-', value: { name: 'cost_centre', label: 'Cost centre', type: 'text' } };
+    model.reply(modelMessage([callTool('edit_definition', { edits: [costCentre] })], 'tool_use'), modelMessage([say('I added a Cost centre field to claims.')]));
+    await chat.getByLabel('Add a picture or PDF').setInputFiles({ name: 'paper-form.png', mimeType: 'image/png', buffer: Buffer.from(PIXEL, 'base64') });
+    await visible(chat.getByRole('button', { name: 'Remove paper-form.png' }));
+    await chat.getByRole('button', { name: 'Send' }).click();
+    await visible(chat.getByText('I added a Cost centre field to claims.'));
+    await visible(chat.getByText('Changed the draft: 1 edit.'));
+    await visible(page.getByText('Unsaved changes.'));
+    await visible(page.getByRole('button', { name: /^Cost centre/ }));
+    expect(model.requests[0]!.body['messages'][0].content[1]).toEqual({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PIXEL } });
+    await shot(page, '16-build-by-chat');
+
+    // Undo takes the change back. Asked again, the chat adds it again, and the builder saves it.
+    await chat.getByRole('button', { name: 'Undo' }).click();
+    await visible(chat.getByText('You undid this change.'));
+    await hidden(page.getByText('Unsaved changes.'));
+    model.reply(modelMessage([callTool('edit_definition', { edits: [costCentre] })], 'tool_use'), modelMessage([say('I added it again.')]));
+    await prompt.fill('Add it after all');
+    await chat.getByRole('button', { name: 'Send' }).click();
+    await visible(chat.getByText('I added it again.'));
+    // The chat hears what the builder undid, and which files it saw before.
+    const history = JSON.stringify(model.requests.at(-2)!.body['messages']);
+    expect(history).toContain('The builder undid this change.');
+    expect(history).toContain('Files given here, not sent again: paper-form.png');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await visible(page.getByText('Add expense_claim.cost_centre'));
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.entities.expense_claim.fields.at(-1)).toMatchObject({ name: 'cost_centre', label: 'Cost centre', type: 'text' });
   });
 });

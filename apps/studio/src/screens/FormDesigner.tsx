@@ -47,7 +47,7 @@ export function FormDesigner({ definition, onChange }: Props) {
   const formName = selected && definition.forms[selected] ? selected : (forms[0] ?? null);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)_19rem]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[15rem_minmax(0,1fr)_19rem]">
       <Card className="grid content-start gap-3 p-4">
         <h2 className="m-0 text-sm font-semibold text-muted">Forms</h2>
         <ul className="m-0 grid list-none gap-1 p-0">

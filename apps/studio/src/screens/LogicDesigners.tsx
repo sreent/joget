@@ -27,7 +27,7 @@ function ItemsLayout(props: Props & { section: Exclude<Section, 'roles'>; descri
   const current = selected && selected in definition[section] ? selected : (names[0] ?? null);
   const words = ADD_LABEL[section];
   return (
-    <div className="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[16rem_minmax(0,1fr)]">
       <Card className="grid content-start gap-3 p-4">
         <ul className="m-0 grid list-none gap-1 p-0">
           {names.map((name) => (
@@ -612,7 +612,7 @@ function CardPanel({ definition, onChange, name }: Props & { name: string }) {
   const lineFields = tableOf?.type === 'lines' ? fieldsOf(definition, tableOf.entity) : [];
   const label = (field: string) => single.find((f) => f.name === field)?.label ?? field;
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+    <div className="grid gap-4 @min-[78rem]:grid-cols-[minmax(0,1fr)_18rem]">
       <div className="grid content-start gap-4">
         <Field label="Shows">
           {(id) => (

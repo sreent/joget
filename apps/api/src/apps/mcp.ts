@@ -1,4 +1,4 @@
-import { EXPENSE_APP, skillSteps, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { applyEdits, DefinitionEdits, MAX_EDITS, skillSteps, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
 import { spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -14,7 +14,8 @@ import { isTeamApp, type LoadedApp } from './catalog.js';
 import type { Delivery } from '../delivery/service.js';
 import type { ProcessEngine } from '../processes/engine.js';
 import { appResource } from './resources.js';
-import { definitionJsonSchema, describeApp, isNotLive, visibleApps } from './routes.js';
+import { definitionGuide } from './guide.js';
+import { describeApp, isNotLive, visibleApps } from './routes.js';
 import type { AppRuntime } from './runtime.js';
 
 /**
@@ -330,21 +331,7 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
         'The JSON Schema of app definitions, a complete example (an expense-claim app), and notes on conditions. Read it before writing a definition.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true },
-      run: async () => ({
-        schema: definitionJsonSchema(),
-        example: EXPENSE_APP,
-        notes: [
-          'Conditions are JSON: {"eq": [a, b]}, "ne", "lt", "lte", "gt", "gte", {"in": [needle, [list]]}, {"exists": "record.field"}, {"all": [...]}, {"any": [...]}, {"not": c}. Operands are literals or {"ref": "record.<field>" | "principal.id" | "input.<parameter>"}.',
-          'An empty field is missing: it never equals anything. Test for emptiness with exists.',
-          'Entities and fields get stable IDs when first saved. Keep them when you edit a definition: a field that keeps its ID under a new name is a rename, and renames carry through to every reference.',
-          'Actions need a description written for agents, and a confirmation level: none, preview or review.',
-          'Processes are BPMN 2.0, each about one record of an entity. Elements go by ID: a startEvent names the actions that start it; a userTask names the role that may do it, its outcomes and the action each runs; a serviceTask runs an update action, with no person; exclusiveGateway, parallelGateway, intermediateCatchEvent and boundaryEvent (with a timer: an ISO 8601 duration or a date field) and endEvent. Flows join elements: a flow out of a user task names an outcome, and one out of an exclusive gateway has a condition or is its default. Conditions read record.<field> and tasks.<task>.outcome. The leave template has a process to start from.',
-          'Pages lay out lists of records, text and buttons for people in screens, and navigation is the menu. Neither protects data: roles do, and each person sees only what their role can use.',
-          'An action can have steps, which run after its input and its set values, in order: {"type": "set", "field", "value"}, {"type": "add_line", "field": "<lines field>", "values": {...}}, {"type": "check", "assert": <condition>, "message", "severity": "error" | "warning"}, {"type": "if", "when": <condition>, "then": [...], "else": [...]} (one level deep), and {"type": "skill", "label", "skill": "<project>/<skill>", "input": {...}} to start an a7c skill once the change is saved.',
-          ctx.config.A7C_URL ? 'This installation connects a7c, so actions may start a7c skills.' : "This installation doesn't connect a7c: leave skill steps out, or the definition is refused.",
-          'Step values are expressions: a literal, {"ref": "record.<field>" | "principal.id"}, {"today": true}, {"now": true}, {"add": [a, b, ...]}, {"sub": [a, b]}, {"mul": [a, b, ...]}, {"div": [a, b]}, {"round": [a, digits]} or {"concat": [a, b, ...]}. A number is rounded to its field\'s decimal places. Steps set only fields the person running the action may write.',
-        ],
-      }),
+      run: async () => definitionGuide(ctx.config),
     },
     {
       name: 'list_apps',
@@ -421,6 +408,46 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
       run: async (args) => {
         const loaded = await sandbox(args);
         const plan = await builder.save(request, auth, loaded, args['definition'], {
+          ...(typeof args['base_revision'] === 'number' ? { baseRevision: args['base_revision'] } : {}),
+          confirmDestructive: false,
+        });
+        return { plan };
+      },
+    },
+    {
+      name: 'edit_definition',
+      title: 'Change a definition with small edits',
+      description:
+        "Change an app's definition with JSON Patch edits: add, replace or remove a value at a JSON pointer, such as /entities/claim/fields/- for a new last field. They apply in order to the current definition, all or none, so you needn't send all of it. Without apply, the edits are only checked: the problems the checks find, or what saving would do. With apply, they are saved to the app's sandbox, as apply_change saves.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...appId,
+          edits: {
+            type: 'array',
+            minItems: 1,
+            maxItems: MAX_EDITS,
+            items: {
+              type: 'object',
+              properties: { op: { enum: ['add', 'replace', 'remove'] }, path: { type: 'string', description: 'A JSON pointer' }, value: { description: 'The value, for add and replace' } },
+              required: ['op', 'path'],
+              additionalProperties: false,
+            },
+          },
+          apply: { type: 'boolean', description: 'Save the edits to the sandbox; without it, only check them' },
+          base_revision: { type: 'integer', description: 'The revision you edited, from get_definition' },
+        },
+        required: ['app_id', 'edits'],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const loaded = await sandbox(args);
+        const edits = DefinitionEdits.safeParse(args['edits']);
+        if (!edits.success) throw new HttpError(400, 'invalid_arguments', 'edits are add, replace or remove edits, each with a JSON pointer path');
+        const result = applyEdits(loaded.definition, edits.data);
+        if (!result.ok) throw unprocessable('edit_failed', `Nothing changed: edit ${result.index + 1} failed: ${result.message}`);
+        if (args['apply'] !== true) return { plan: (await builder.plan(loaded, result.definition)).plan };
+        const plan = await builder.save(request, auth, loaded, result.definition, {
           ...(typeof args['base_revision'] === 'number' ? { baseRevision: args['base_revision'] } : {}),
           confirmDestructive: false,
         });

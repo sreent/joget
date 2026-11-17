@@ -23,6 +23,8 @@ import { runtimeRoutes } from './apps/runtime-routes.js';
 import { skillRoutes } from './skills/routes.js';
 import { ProcessEngine } from './processes/engine.js';
 import { processRoutes } from './processes/routes.js';
+import { Composer, type ModelClient } from './compose/composer.js';
+import { composeRoutes } from './compose/routes.js';
 import { bundleRoutes } from './apps/bundles.js';
 import { authRoutes } from './auth/routes.js';
 import { designRoutes } from './design/routes.js';
@@ -47,7 +49,7 @@ export interface Server {
   readonly processes: ProcessEngine;
 }
 
-export async function buildServer(ctx: AppContext, options: { logger?: FastifyServerOptions['logger'] } = {}): Promise<Server> {
+export async function buildServer(ctx: AppContext, options: { logger?: FastifyServerOptions['logger']; models?: ModelClient } = {}): Promise<Server> {
   const app = Fastify({
     logger: options.logger ?? {
       level: ctx.config.LOG_LEVEL,
@@ -141,6 +143,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(deliveryRoutes(ctx, delivery, runtime));
   await app.register(bundleRoutes(ctx, builder, delivery, runtime));
   await app.register(mcpRoutes(ctx, builder, runtime, delivery, processes));
+  await app.register(composeRoutes(ctx, new Composer(ctx.config, options.models)));
   await app.register(designRoutes());
   await app.register(agentRoutes(ctx));
   await app.register(peopleRoutes(ctx));

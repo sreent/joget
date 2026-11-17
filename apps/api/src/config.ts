@@ -133,6 +133,23 @@ export const ConfigSchema = z
     A7C_URL: z.url().optional(),
     /** A file that holds Ambit's bearer token for a7c. It is read at each call, so whatever issues the token can renew it. */
     A7C_TOKEN_FILE: z.string().min(1).optional(),
+    /**
+     * The model provider that the studio's chat builds apps with (vibe composition). Without it, the
+     * chat is off. Only Anthropic for now.
+     */
+    AI_PROVIDER: z.enum(['anthropic']).optional(),
+    /** The model the chat uses, as the provider names it. The installation chooses it: Ambit names none. */
+    AI_MODEL: z.string().min(1).max(200).optional(),
+    /** A file that holds the provider's API key. It is read at each request, so whatever issues the key can renew it. */
+    AI_API_KEY_FILE: z.string().min(1).optional(),
+    /** Another address for the provider's API, such as a gateway that the installation runs. */
+    AI_BASE_URL: z.url().optional(),
+    /** How much effort the model puts into each turn; off for a model that takes no effort setting. */
+    AI_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'off']).default('high'),
+    /** Whether a turn that the model declines goes on with the provider's fallback model: default, or off for a model or gateway that refuses the setting. */
+    AI_FALLBACK: z.enum(['default', 'off']).default('default'),
+    /** The most turns of the model in one request to the chat: each turn can read or change the definition. */
+    AI_MAX_TURNS: z.coerce.number().int().min(1).max(30).default(12),
     /** How often the dispatcher starts the skill calls that are due. 0 disables it (for example, when a worker does it). */
     SKILL_DISPATCH_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How many times a skill call is tried before it fails for good. */
@@ -153,6 +170,7 @@ export const ConfigSchema = z
       [!config.AUDIT_SIGNING_KEY_PEM, 'AUDIT_SIGNING_KEY_PEM', 'AUDIT_SIGNING_KEY_PEM is required in production'],
       [!config.PUBLIC_BASE_URL.startsWith('https://'), 'PUBLIC_BASE_URL', 'PUBLIC_BASE_URL must use https in production'],
       [Boolean(config.A7C_URL) && !config.A7C_URL!.startsWith('https://'), 'A7C_URL', 'A7C_URL must use https in production'],
+      [Boolean(config.AI_BASE_URL) && !config.AI_BASE_URL!.startsWith('https://'), 'AI_BASE_URL', 'AI_BASE_URL must use https in production'],
     ];
     for (const [broken, path, message] of rules) {
       if (broken) ctx.addIssue({ code: 'custom', message, path: [path] });
@@ -165,6 +183,9 @@ export const ConfigSchema = z
     }
     if (Boolean(config.A7C_URL) !== Boolean(config.A7C_TOKEN_FILE)) {
       ctx.addIssue({ code: 'custom', message: 'Set both A7C_URL and A7C_TOKEN_FILE, or neither', path: ['A7C_URL'] });
+    }
+    if (config.AI_PROVIDER && (!config.AI_MODEL || !config.AI_API_KEY_FILE)) {
+      ctx.addIssue({ code: 'custom', message: 'AI_PROVIDER needs AI_MODEL and AI_API_KEY_FILE', path: ['AI_PROVIDER'] });
     }
     if (config.FILE_UNATTACHED_TTL_HOURS < config.PROPOSAL_TTL_HOURS) {
       ctx.addIssue({ code: 'custom', message: 'FILE_UNATTACHED_TTL_HOURS must be at least PROPOSAL_TTL_HOURS, so files outlive the proposals that name them', path: ['FILE_UNATTACHED_TTL_HOURS'] });

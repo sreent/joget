@@ -494,7 +494,7 @@ export function ProcessDesigner({
         )}
         <DownloadBpmn appId={appId} process={name} available={saved.includes(name) && !dirty} />
       </div>
-      <div className={cx('grid gap-3', readOnly ? 'lg:grid-cols-[1fr_20rem]' : 'lg:grid-cols-[9rem_1fr_20rem]')}>
+      <div className={cx('grid gap-3', readOnly ? '@min-[62rem]:grid-cols-[1fr_20rem]' : '@min-[62rem]:grid-cols-[9rem_1fr_20rem]')}>
         {readOnly ? null : (
           <Card className="grid content-start gap-1.5 p-2">
             <p className="m-0 text-xs text-muted">{selection?.kind === 'flow' ? 'Add on the flow' : selection ? 'Add after it' : 'Add'}</p>

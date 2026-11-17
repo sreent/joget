@@ -8,6 +8,7 @@ import { createAppContext } from '../src/app.js';
 import { IdpUnavailableError, InvalidSubjectTokenError, type OidcIdentity, type OidcProvider } from '../src/auth/oidc.js';
 import { loadConfig } from '../src/config.js';
 import type { AppContext } from '../src/context.js';
+import type { ModelClient } from '../src/compose/composer.js';
 import { buildServer, type Server } from '../src/server.js';
 
 export function identity(subject: string, overrides: Partial<OidcIdentity> = {}): OidcIdentity {
@@ -77,7 +78,7 @@ export interface TestApp {
   close(): Promise<void>;
 }
 
-export async function startTestApp(env: Record<string, string> = {}): Promise<TestApp> {
+export async function startTestApp(env: Record<string, string> = {}, options: { readonly models?: ModelClient } = {}): Promise<TestApp> {
   const database = await createTestDatabase();
   const handle = createDatabase(database.url);
   await migrateDatabase(handle.pool);
@@ -106,7 +107,7 @@ export async function startTestApp(env: Record<string, string> = {}): Promise<Te
     auditSigningKeyPem: generateEd25519KeyPair().privateKeyPem,
     now: () => new Date(Date.now() + clock.offsetMs),
   });
-  const server = await buildServer(ctx, { logger: false });
+  const server = await buildServer(ctx, { logger: false, ...(options.models ? { models: options.models } : {}) });
   const { app } = server;
 
   return {

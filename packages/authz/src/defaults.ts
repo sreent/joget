@@ -72,7 +72,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'connection.manage',
   ]),
   permissionSet('ps.space.view', 'Space view', 'space', ['space.read', 'app.read', 'deploy.read', 'ops.monitor.read']),
-  permissionSet('ps.space.build', 'Build apps', 'space', ['app.create', 'app.read', 'app.edit', 'app.export', 'change.open', 'connection.use']),
+  permissionSet('ps.space.build', 'Build apps', 'space', ['app.create', 'app.read', 'app.edit', 'app.compose', 'app.export', 'change.open', 'connection.use']),
   permissionSet('ps.space.review', 'Review changes', 'space', ['change.review', 'change.approve', 'deploy.approve']),
   permissionSet('ps.space.release', 'Release management', 'space', [
     'change.merge',
@@ -97,6 +97,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'app.create',
     'app.read',
     'app.edit',
+    'app.compose',
     'app.share',
     'app.export',
     'app.delete',
@@ -206,6 +207,7 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
       'space.service_account.manage',
       'app.create',
       'app.edit',
+      'app.compose',
       'app.share',
       'app.delete',
       'action.run',
@@ -227,7 +229,7 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
     id: 'gr.app.moved-read-only',
     name: 'An app that moved to a team space is read-only where it was',
     // Its people keep reading what they did here; they work on in the team space's app (design §3).
-    actions: ['app.edit', 'app.share', 'action.run', 'record.create', 'record.update', 'record.delete', 'change.*'],
+    actions: ['app.edit', 'app.compose', 'app.share', 'action.run', 'record.create', 'record.update', 'record.delete', 'change.*'],
     effect: 'deny',
     when: { eq: [{ ref: 'resource.moved' }, true] },
     managed: true,

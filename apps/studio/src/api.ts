@@ -16,7 +16,7 @@ import type {
   Revision,
   Share,
   Space,
-  UiManifest, ProcessInstance, Task } from './types.js';
+  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest } from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -128,6 +128,8 @@ export const api = {
     ),
   definition: (id: string) => call<{ revision: number; definition: Definition }>('GET', `${app(id)}/definition`),
   plan: (id: string, definition: Definition) => call<{ plan: Plan; definition: Definition }>('POST', `${app(id)}/definition/plan`, { definition }),
+  composeEnabled: () => call<{ enabled: boolean }>('GET', '/v1/compose'),
+  compose: (id: string, request: ComposeRequest) => call<ComposeReply>('POST', `${app(id)}/compose`, request),
   save: (id: string, definition: Definition, baseRevision: number, confirmDestructive: boolean) =>
     call<{ plan: Plan }>('PUT', `${app(id)}/definition${confirmDestructive ? '?confirmDestructive=true' : ''}`, { definition, baseRevision }),
   revisions: (id: string) => call<{ revisions: Revision[] }>('GET', `${app(id)}/revisions`),

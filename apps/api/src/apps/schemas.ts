@@ -74,6 +74,8 @@ export const AppOut = z.object({
     share: z.boolean(),
     /** Change the definition: for a team app, make a working copy and submit changes. */
     edit: z.boolean(),
+    /** Change the definition by chat, on the installation's model (design §6.5). */
+    compose: z.boolean(),
     roles: z.array(z.string()),
     /** On a team app: the delivery steps the caller's roles allow. Separation of duties is checked when they act. */
     delivery: z

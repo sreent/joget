@@ -88,11 +88,13 @@ export async function describeApp(ctx: AppContext, runtime: AppRuntime, auth: Au
     }
     return false;
   };
-  const [build, run, edit, share] = await Promise.all([
+  const [build, run, edit, share, compose] = await Promise.all([
     can('app.read'),
     team ? runIn() : loaded ? can('app.run') : false,
     can('app.edit'),
     can(team ? 'env.binding.manage' : 'app.share'),
+    // A team app changes through a working copy, where the chat works too.
+    team ? false : can('app.compose'),
   ]);
   const held = await ctx.policy.bindingsFor(auth.principal);
   const roles = loaded
@@ -190,7 +192,7 @@ export async function describeApp(ctx: AppContext, runtime: AppRuntime, auth: Au
     ...(myWorkingCopyId !== undefined ? { myWorkingCopyId } : {}),
     ...(movedTo !== undefined ? { movedTo, promotion } : {}),
     ...(team ? { promotedFrom: app.promotedFrom } : {}),
-    access: { build, run, share, edit, roles, ...(delivery ? { delivery } : {}) },
+    access: { build, run, share, edit, compose, roles, ...(delivery ? { delivery } : {}) },
   };
 }
 

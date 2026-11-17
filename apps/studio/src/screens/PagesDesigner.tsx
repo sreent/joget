@@ -90,7 +90,7 @@ export function PagesDesigner({ definition, onChange }: Props) {
   const current = selected && definition.pages[selected] ? selected : (pages[0] ?? null);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)_22rem]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[15rem_minmax(0,1fr)_22rem]">
       <Card className="grid content-start gap-3 p-4">
         <h2 className="m-0 text-sm font-semibold text-muted">Pages</h2>
         <ul className="m-0 grid list-none gap-1 p-0">
@@ -531,7 +531,7 @@ export function MenuDesigner({ definition, onChange }: Props) {
   const ids = (navigation?.items ?? []).map((_, index) => `item:${index}`);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[minmax(0,1fr)_18rem]">
       <Card className="grid content-start gap-4">
         <Choice
           label="The menu"

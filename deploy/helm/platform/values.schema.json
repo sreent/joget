@@ -27,6 +27,19 @@
         "tokenSecret": { "type": "string", "description": "A Secret with Ambit's a7c token under the key token." }
       }
     },
+    "ai": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "enum": ["", "anthropic"], "description": "The model provider of the studio's chat. Empty: the chat is off." },
+        "model": { "type": "string", "description": "The model's ID at the provider." },
+        "keySecret": { "type": "string", "description": "A Secret with the provider's API key under the key key." },
+        "baseUrl": { "type": "string", "pattern": "^(https://.+)?$", "description": "A gateway in front of the provider. Empty: the provider's own address." },
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max", "off"] },
+        "fallback": { "enum": ["default", "off"] },
+        "maxTurns": { "type": "integer", "minimum": 1, "maximum": 30 }
+      }
+    },
     "config": {
       "type": "object",
       "required": ["PUBLIC_BASE_URL", "OIDC_ISSUER", "OIDC_CLIENT_ID"],
@@ -53,7 +66,9 @@
           { "required": ["S3_ACCESS_KEY_ID"] },
           { "required": ["S3_SECRET_ACCESS_KEY"] },
           { "required": ["A7C_URL"], "description": "Set a7c.url instead, so the token Secret is mounted with it." },
-          { "required": ["A7C_TOKEN_FILE"] }
+          { "required": ["A7C_TOKEN_FILE"] },
+          { "required": ["AI_PROVIDER"], "description": "Set ai.provider instead, so the key Secret is mounted with it." },
+          { "required": ["AI_API_KEY_FILE"] }
         ]
       },
       "additionalProperties": { "type": ["string", "number", "boolean"] }

@@ -145,7 +145,7 @@ describe('sharing with colleagues', () => {
 
   it('lets colleagues use the app, but not build or reshare it', async () => {
     const listed = (await inject({ method: 'GET', url: '/v1/apps', ...as(bob) }, 200)).json().apps;
-    expect(listed).toEqual([expect.objectContaining({ id: appId, access: { build: false, run: true, share: false, edit: false, roles: ['requester'] } })]);
+    expect(listed).toEqual([expect.objectContaining({ id: appId, access: { build: false, run: true, share: false, edit: false, compose: false, roles: ['requester'] } })]);
     await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(bob) }, 403);
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(bob), payload: { email: 'carol@example.com', role: 'requester' } }, 403);
   });
@@ -586,6 +586,27 @@ describe('building with an AI client', () => {
 
     const asToken = await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition?confirmDestructive=true`, ...bearer(builderToken), payload: { definition: dropping } }, 403);
     expect(asToken.json().error).toBe('session_required');
+  });
+
+  it('changes a definition with small edits: checked first, and saved on request', async () => {
+    const edit = (args: Record<string, unknown>) => rpc(builderToken, '/mcp/build', 'tools/call', { name: 'edit_definition', arguments: { app_id: appId, ...args } });
+    const fieldsNow = async () => {
+      const current = (await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'get_definition', arguments: { app_id: appId } })).result.structuredContent;
+      return { revision: current.revision, names: current.definition.entities.expense_claim.fields.map((field: { name: string }) => field.name) };
+    };
+    const edits = [{ op: 'add', path: '/entities/expense_claim/fields/-', value: { name: 'cost_centre', label: 'Cost centre', type: 'text' } }];
+    const checked = await edit({ edits });
+    expect(checked.result.isError).toBeUndefined();
+    expect(checked.result.structuredContent.plan).toMatchObject({ steps: [{ kind: 'add_field' }] });
+    const before = await fieldsNow();
+    expect(before.names).not.toContain('cost_centre');
+    const saved = await edit({ edits, apply: true, base_revision: before.revision });
+    expect(saved.result.structuredContent.plan).toMatchObject({ steps: [{ kind: 'add_field' }] });
+    expect((await fieldsNow()).names).toContain('cost_centre');
+
+    // An edit that leads nowhere changes nothing, and one that the checks refuse names the problem.
+    expect((await edit({ edits: [{ op: 'replace', path: '/entities/nothing/label', value: 'x' }] })).result).toMatchObject({ isError: true, structuredContent: { error: 'edit_failed' } });
+    expect((await edit({ edits: [{ op: 'replace', path: '/entities/expense_claim/label', value: '' }] })).result).toMatchObject({ isError: true, structuredContent: { error: 'invalid_definition' } });
   });
 
   it("can't reach apps the person can't build", async () => {

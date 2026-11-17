@@ -6,6 +6,7 @@ import { normalize } from '../model/edit.js';
 import { Link, type BuildTab } from '../router.js';
 import type { Definition, Issue, Plan } from '../types.js';
 import { AccessPanel, AdvancedPanel, HistoryPanel, MovedNotice, MovePanel, SharePanel } from './BuilderPanels.js';
+import { ComposePanel } from './Compose.js';
 import { ChangesPanel, DeliveryPanel, TeamAppNotice, WorkingCopyBar } from './Delivery.js';
 import { DataDesigner } from './DataDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
@@ -46,6 +47,10 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
   const [draft, setDraft] = useState<Definition | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [confirmLoss, setConfirmLoss] = useState(false);
+  // The chat that builds the app (design §6.5), when an admin set up a model for it.
+  const composing = useQuery({ queryKey: ['compose'], queryFn: api.composeEnabled, staleTime: Infinity });
+  const [chat, setChat] = useState(false);
+  const [chatBusy, setChatBusy] = useState(false);
 
   useEffect(() => {
     if (saved.data) setDraft(normalize(saved.data.definition));
@@ -94,9 +99,13 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
   const tabs = team ? TEAM_TABS : TABS;
   const designing = DESIGNERS.some((item) => item.tab === tab) || tab === 'advanced';
   const live = team ? app.environments?.find((env) => env.kind === 'prod') : app.environment;
+  const canChat = !!composing.data?.enabled && app.access.compose && !team && !app.movedTo;
+  const chatting = canChat && chat;
 
   return (
-    <div className="grid gap-5 pb-24">
+    // With the chat beside them, the page widens: the designers lay themselves out by the room they have.
+    <div data-wide={chatting || undefined} className={chatting ? 'grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]' : undefined}>
+    <div className="grid min-w-0 gap-5 pb-24">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="m-0 text-sm text-muted">
@@ -107,6 +116,11 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         <div className="flex items-center gap-2">
           {team ? <Badge tone="accent">Team app</Badge> : null}
           <Badge>revision {saved.data.revision}</Badge>
+          {canChat ? (
+            <Button aria-expanded={chat} onClick={() => setChat(!chat)}>
+              {chat ? 'Hide the chat' : 'Build by chat'}
+            </Button>
+          ) : null}
           {live ? (
             <Link to={{ name: 'use', appId }} className="no-underline">
               <Button tabIndex={-1}>{team ? 'Open in Prod' : 'Open the app'}</Button>
@@ -133,7 +147,9 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
 
       {team && designing ? <TeamAppNotice app={app} /> : null}
       {/* A team app's main line is read-only here: a disabled fieldset disables every control in the designers. */}
-      <fieldset disabled={team} className="m-0 min-w-0 border-0 p-0">
+      {/* While the chat works, the designers wait: its draft replaces the one it was given. */}
+      <fieldset disabled={team || chatBusy} className="m-0 min-w-0 border-0 p-0">
+        <div className="@container">
         {tab === 'data' ? <DataDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'forms' ? <FormDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'pages' ? <PagesDesigner definition={draft} onChange={setDraft} /> : null}
@@ -144,9 +160,10 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'processes' ? (
-          <ProcessDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team} dirty={dirty} saved={Object.keys(saved.data.definition.processes ?? {})} />
+          <ProcessDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} saved={Object.keys(saved.data.definition.processes ?? {})} />
         ) : null}
         {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
+        </div>
       </fieldset>
       {tab === 'share' && team ? <AccessPanel app={app} definition={saved.data.definition} /> : null}
       {tab === 'share' && !team && app.access.share ? <SharePanel at={{ id: appId }} definition={saved.data.definition} /> : null}
@@ -157,14 +174,16 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
 
       {dirty && !team ? (
         <div className="fixed inset-x-0 bottom-0 z-10 border-t border-line bg-surface/95 backdrop-blur">
-          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
+          <div className={`mx-auto flex items-center justify-between gap-3 px-4 py-3 ${chatting ? 'max-w-[110rem]' : 'max-w-7xl'}`}>
             <p className="m-0 text-sm">
               <strong>Unsaved changes.</strong>{' '}
               <span className="text-muted">{app.workingCopyOf ? 'They apply to your working copy once saved; submit them for review after.' : 'They apply to your sandbox once saved.'}</span>
             </p>
             <div className="flex gap-2">
-              <Button onClick={() => setDraft(normalize(saved.data.definition))}>Discard</Button>
-              <Button variant="primary" onClick={() => check.mutate()} disabled={check.isPending}>
+              <Button onClick={() => setDraft(normalize(saved.data.definition))} disabled={chatBusy}>
+                Discard
+              </Button>
+              <Button variant="primary" onClick={() => check.mutate()} disabled={check.isPending || chatBusy}>
                 {check.isPending ? 'Checking…' : 'Review and save'}
               </Button>
             </div>
@@ -221,6 +240,13 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
           </>
         ) : null}
       </Dialog>
+    </div>
+      {canChat ? (
+        // Beside the designers on a wide screen; over them on a narrow one. Hidden, it keeps the conversation.
+        <aside hidden={!chat} className="fixed inset-0 z-30 bg-page p-2 xl:sticky xl:inset-auto xl:top-[4.5rem] xl:z-auto xl:h-[calc(100vh-9.5rem)] xl:bg-transparent xl:p-0">
+          <ComposePanel appId={appId} definition={draft} onDraft={setDraft} onBusy={setChatBusy} onClose={() => setChat(false)} />
+        </aside>
+      ) : null}
     </div>
   );
 }

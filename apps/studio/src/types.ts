@@ -62,7 +62,7 @@ export interface AppSummary {
   promotion?: { appId: string; name: string; changeRequest: { id: string; number: number; status: 'open' | 'merged' | 'closed' } | null } | null;
   /** On a team app made by promotion: the personal app it came from. */
   promotedFrom?: string | null;
-  access: { build: boolean; run: boolean; share: boolean; edit: boolean; roles: string[]; delivery?: DeliveryAccess };
+  access: { build: boolean; run: boolean; share: boolean; edit: boolean; compose: boolean; roles: string[]; delivery?: DeliveryAccess };
 }
 
 export interface Space {
@@ -409,4 +409,31 @@ export interface ProcessInstance {
   endedAt: string | null;
   tasks?: Task[];
   events?: Array<{ at: string; kind: string; element: string | null; name: string | null; by: string | null; detail: unknown }>;
+}
+
+/** A file that the builder gives the chat: a picture of a form, or a PDF. */
+export interface ComposeAttachment {
+  readonly name: string;
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'application/pdf';
+  readonly data: string;
+}
+
+/** What the builder asks the chat that builds apps. */
+export interface ComposeRequest {
+  readonly prompt: string;
+  readonly definition: Definition;
+  readonly history: ReadonlyArray<{ readonly role: 'user' | 'assistant'; readonly text: string }>;
+  readonly attachments: readonly ComposeAttachment[];
+}
+
+/** What the chat answers: its reply, and the draft when it changed the definition. */
+export interface ComposeReply {
+  readonly reply: string;
+  readonly changed: boolean;
+  readonly definition: Definition | null;
+  /** How many problems the checks still find in the draft. */
+  readonly problems: number;
+  readonly edits: number;
+  readonly turns: number;
+  readonly stopped: 'turns' | 'length' | 'declined' | null;
 }

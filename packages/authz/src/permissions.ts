@@ -38,6 +38,7 @@ export const PLATFORM_PERMISSIONS = {
   'app.create': 'Create apps',
   'app.read': 'Read app definitions',
   'app.edit': 'Edit app definitions in a working copy',
+  'app.compose': "Build apps by chat with the installation's AI model, which drafts changes for review",
   'app.share': 'Share a personal app with named users',
   'app.export': 'Export app definitions',
   'app.delete': 'Delete apps',

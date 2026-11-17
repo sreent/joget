@@ -28,7 +28,7 @@ function App() {
           {me.data ? <span className="text-sm text-muted">{me.data.displayName ?? me.data.email}</span> : null}
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-4 py-6">
+      <main className="mx-auto max-w-7xl px-4 py-6 has-[[data-wide]]:max-w-[110rem]">
         {me.isError ? (
           <p className="text-bad">Ambit can't be reached right now.</p>
         ) : !me.data ? null : route.name === 'home' ? (
