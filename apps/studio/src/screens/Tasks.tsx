@@ -208,6 +208,8 @@ const EVENTS: Readonly<Record<string, string>> = {
   ran: 'Ran',
   error_caught: 'Error caught',
   escalated: 'Escalated',
+  signalled: 'Signal thrown',
+  signal: 'Signal heard',
   compensated: 'Undone',
   transaction_cancelled: 'Transaction cancelled',
   skill_queued: 'Started work in a7c',

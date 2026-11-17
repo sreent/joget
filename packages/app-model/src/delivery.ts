@@ -301,6 +301,7 @@ function automaticStarts(process: Process): string[] {
     if (element.type !== 'startEvent' || element.in) return [];
     if (element.timer) return ['date' in element.timer ? `on each record's ${element.timer.date}` : `${element.timer.duration} after each record is created`];
     if (element.condition) return [`when ${conditionText(element.condition)} comes to hold`];
+    if (element.signal) return [`on a record when the signal ${element.signal} is thrown for it`];
     return [];
   });
 }
@@ -388,7 +389,7 @@ export function lintDefinition(definition: StoredDefinition): string[] {
   const called = new Set(Object.values(definition.processes ?? {}).flatMap((process) => processWork(process).calls));
   for (const [name, process] of Object.entries(definition.processes ?? {})) {
     if (!startingActions(process).length && !automaticStarts(process).length && !roles.some((role) => role.processes?.includes(name)) && !called.has(name)) {
-      findings.push(`Nothing starts the process ${process.label}: no start event names an action, a timer or a condition, no role may start it, and no process calls it`);
+      findings.push(`Nothing starts the process ${process.label}: no start event names an action, a timer, a condition or a signal, no role may start it, and no process calls it`);
     }
   }
   for (const [name, role] of Object.entries(definition.roles)) {

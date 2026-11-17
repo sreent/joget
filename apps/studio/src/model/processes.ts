@@ -39,6 +39,8 @@ export type ElementKind =
   | 'link'
   | 'escalationThrow'
   | 'undoThrow'
+  | 'signalEvent'
+  | 'signalThrow'
   | 'transaction';
 
 /** Where the rest of BPMN stands in the palette. */
@@ -65,6 +67,8 @@ export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label
   { kind: 'messageThrow', label: 'Send a message', hint: 'Run an action as a message, and go on', group: 'Events' },
   { kind: 'milestone', label: 'Milestone', hint: 'A point that the history marks', group: 'Events' },
   { kind: 'link', label: 'Link', hint: 'Jump from here to a catch link, to spare a long flow', group: 'Events' },
+  { kind: 'signalEvent', label: 'Signal', hint: 'Wait until a process of the app, or an operator, throws a signal', group: 'Events' },
+  { kind: 'signalThrow', label: 'Throw a signal', hint: 'Tell every process of the app that waits for the signal, and go on', group: 'Events' },
   { kind: 'escalationThrow', label: 'Escalate', hint: 'Tell the sub-process or call around it, which can take a path for it', group: 'Events' },
   { kind: 'undoThrow', label: 'Undo', hint: 'Undo what completed here, newest first, with each task\'s undo action', group: 'Events' },
   { kind: 'subProcess', label: 'Sub-process', hint: 'A part with its own start and end, and deadlines for all of it', group: 'Parts' },
@@ -95,12 +99,14 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   eventBasedGateway: 'first',
   conditionEvent: 'wait',
   escalationThrow: 'escalate',
+  signalEvent: 'wait',
+  signalThrow: 'signal',
   undoThrow: 'undo',
   transaction: 'transaction',
 };
 
 const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 }, sub: { width: 340, height: 180 } } as const;
-const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'conditionEvent', 'milestone', 'messageThrow', 'link', 'escalationThrow', 'undoThrow']);
+const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'conditionEvent', 'milestone', 'messageThrow', 'link', 'escalationThrow', 'undoThrow', 'signalEvent', 'signalThrow']);
 export const sizeOf = (type: ProcessElementType | ElementKind) =>
   type === 'subProcess' || type === 'transaction' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
 
@@ -287,6 +293,10 @@ export function newElement(definition: Definition, process: Process, type: Eleme
       return { type: 'subProcess', name: 'New transaction', transaction: true };
     case 'escalationThrow':
       return { type: 'intermediateThrowEvent', name: 'Escalate', escalation: true };
+    case 'signalEvent':
+      return { type: 'intermediateCatchEvent', name: 'Until signalled', signal: signalChoices(definition)[0] ?? 'signal' };
+    case 'signalThrow':
+      return { type: 'intermediateThrowEvent', name: 'Signal', signal: signalChoices(definition)[0] ?? 'signal' };
     case 'undoThrow':
       return { type: 'intermediateThrowEvent', name: 'Undo', compensate: true };
     case 'callActivity': {
@@ -613,13 +623,14 @@ export function arrange(definition: Definition, name: string): Definition {
  * What a boundary can wait for: a deadline or an action saved on the record, on a user task, a
  * sub-process or a call; the failure of an action, on a system task or a sub-process.
  */
-export type BoundaryKind = 'timer' | 'message' | 'condition' | 'error' | 'escalation' | 'cancel';
+export type BoundaryKind = 'timer' | 'message' | 'condition' | 'signal' | 'error' | 'escalation' | 'cancel';
 
 /** The elements whose boundary takes an event of a kind. A cancel event sits on a transaction only. */
 export const BOUNDARY_HOSTS: Readonly<Record<BoundaryKind, readonly ProcessElementType[]>> = {
   timer: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
   message: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
   condition: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
+  signal: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
   error: ['serviceTask', 'scriptTask', 'sendTask', 'subProcess', 'callActivity'],
   escalation: ['subProcess', 'callActivity'],
   cancel: ['subProcess'],
@@ -636,10 +647,19 @@ const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonl
   timer: { prefix: 'deadline', end: 'Too late', endPrefix: 'too_late' },
   message: { prefix: 'message', end: 'Stopped', endPrefix: 'stopped' },
   condition: { prefix: 'condition', end: 'Changed', endPrefix: 'changed' },
+  signal: { prefix: 'signal', end: 'Signalled', endPrefix: 'signalled' },
   error: { prefix: 'error', end: 'Failed', endPrefix: 'failed' },
   escalation: { prefix: 'escalation', end: 'Escalated', endPrefix: 'escalated' },
   cancel: { prefix: 'cancel', end: 'Cancelled', endPrefix: 'cancelled' },
 };
+
+/** The signals that the app's processes throw or wait for, which a new signal event can name. */
+export function signalChoices(definition: Definition): string[] {
+  const names = Object.values(definition.processes ?? {}).flatMap((process) =>
+    Object.values(process.elements).flatMap((element) => ('signal' in element && element.signal !== undefined ? [element.signal] : [])),
+  );
+  return [...new Set(names)].sort();
+}
 
 /**
  * The update actions that can undo what a task changed: on the record the process is about, or for
@@ -687,6 +707,7 @@ export function addBoundary(definition: Definition, name: string, task: string, 
     else if (kind === 'condition') event = { type: 'boundaryEvent', name: 'When it holds', attachedTo: task, interrupting: false, condition: startingCondition(definition, process.entity) };
     else if (kind === 'error') event = { type: 'boundaryEvent', name: 'Error', attachedTo: task, interrupting: true, error: true };
     else if (kind === 'escalation') event = { type: 'boundaryEvent', name: 'Escalation', attachedTo: task, interrupting: false, escalation: true };
+    else if (kind === 'signal') event = { type: 'boundaryEvent', name: 'Signal', attachedTo: task, interrupting: true, signal: signalChoices(definition)[0] ?? 'signal' };
     else if (kind === 'cancel') event = { type: 'boundaryEvent', name: 'Cancelled', attachedTo: task, interrupting: true, cancel: true };
     else {
       const action = messageChoices(definition, process, task)[0];

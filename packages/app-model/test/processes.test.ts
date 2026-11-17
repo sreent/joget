@@ -3,6 +3,7 @@ import {
   accessChanges,
   addDuration,
   automaticStarts,
+  caughtSignals,
   capabilityChanges,
   decideVotes,
   decisionsBy,
@@ -20,8 +21,10 @@ import {
   reachable,
   scopeOf,
   sentMessages,
+  signalStarts,
   skillStepIssues,
   startsOf,
+  thrownSignals,
   timerFiresAt,
   validateDefinition,
   votesNeeded,
@@ -161,9 +164,9 @@ describe('inclusive gateways, messages and errors', () => {
         }),
       ),
     ).toEqual([
-      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll can't have a timer, a message or a condition on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
+      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll can't have a timer, a message, a condition or a signal on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
       'processes.leave_approval.elements.failed.interrupting: An error always ends what it sits on',
-      'processes.leave_approval.elements.wait: Until withdrawn waits for a timer, a message or a condition, or is a link: one of these',
+      'processes.leave_approval.elements.wait: Until withdrawn waits for a timer, a message, a condition or a signal, or is a link: one of these',
       "processes.leave_approval.elements.also.message.action: approve_leave decides Decide on the leave, so it can't also interrupt it",
     ]);
   });
@@ -259,7 +262,7 @@ describe('sub-processes and call activities', () => {
     expect(issues).toEqual(
       expect.arrayContaining([
         "processes.leave_approval.flows.out_of_it: A flow can't cross the edge of a sub-process: Start event review_start is in Review, and Leave rejected is in the process itself",
-        "processes.leave_approval.elements.review_start: A start event inside a sub-process starts when the sub-process does: it names no action, timer or condition",
+        "processes.leave_approval.elements.review_start: A start event inside a sub-process starts when the sub-process does: it names no action, timer, condition or signal",
         "processes.leave_approval.elements.stray.in: Decide on the leave isn't a sub-process: only a sub-process holds other elements",
         "processes.leave_approval.elements.look.record: manager doesn't refer to a record",
         'processes.leave_approval.elements.look.process: Second look has no start event without actions, where a call starts it',
@@ -503,9 +506,9 @@ describe('conditions, event-based gateways and starts by themselves', () => {
     );
     expect(issues).toEqual(
       expect.arrayContaining([
-        'processes.first_day.elements.start: Start event start starts on actions, a timer or a condition: one of these',
+        'processes.first_day.elements.start: Start event start starts on actions, a timer, a condition or a signal: one of these',
         'processes.long_review.elements.start.condition: tasks.decide.outcome: the process has no user task decide',
-        "processes.leave_approval.flows.g3: Tell the team doesn't wait: after What comes first? come events that wait for a timer, a message or a condition, or receive tasks",
+        "processes.leave_approval.flows.g3: Tell the team doesn't wait: after What comes first? come events that wait for a timer, a message, a condition or a signal, or receive tasks",
         'processes.leave_approval.elements.two_days: Two days waits after What comes first? only: no other flow leads into it',
       ]),
     );
@@ -597,6 +600,52 @@ describe('errors, escalations, undo and transactions', () => {
         'processes.leave_approval.elements.coded.error: Boundary event coded catches only the error full, but a task that fails raises no code: leave the code out',
       ]),
     );
+  });
+});
+
+describe('signals', () => {
+  /** The leave app where closing the office takes the manager's task away, and a follow-up on each request starts when its leave closes. */
+  const signalled = (edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined) =>
+    leave((process, definition) => {
+      Object.assign(process.elements, {
+        closed: { type: 'boundaryEvent', name: 'Office closed', attachedTo: 'decide', signal: 'office_closed' },
+        shut: { type: 'endEvent', name: 'Closed', signal: 'leave_closed' },
+      });
+      process.flows.on_closed = { from: 'closed', to: 'shut' };
+      delete process.diagram;
+      definition['processes'].follow_up = {
+        label: 'Follow-up',
+        entity: 'leave_request',
+        elements: {
+          start: { type: 'startEvent', signal: 'leave_closed' },
+          wait: { type: 'intermediateCatchEvent', name: 'Until it opens', signal: 'office_open' },
+          end: { type: 'endEvent' },
+        },
+        flows: { f1: { from: 'start', to: 'wait' }, f2: { from: 'wait', to: 'end' } },
+      };
+      edit(process, definition);
+    });
+
+  it('pass the checks where a process throws one, waits for one, or starts on one', () => {
+    const definition = valid(signalled());
+    expect(caughtSignals(definition.processes!['follow_up']!)).toEqual(['leave_closed', 'office_open']);
+    expect(thrownSignals(definition.processes!['leave_approval']!)).toEqual(['leave_closed']);
+    expect(signalStarts(definition, 'leave_closed', 'leave_request')).toEqual([{ process: 'follow_up', element: 'start' }]);
+    expect(signalStarts(definition, 'leave_closed', 'team')).toEqual([]);
+    expect(lintDefinition(definition)).toEqual([]);
+  });
+
+  it('are checked: a start has one trigger, and a signal waits on what waits', () => {
+    const issues = issuesOf(
+      signalled((process, definition) => {
+        definition['processes'].follow_up.elements.start.timer = { duration: 'P1D' };
+        process.elements.closed.attachedTo = 'requested';
+      }),
+    );
+    expect(issues).toEqual([
+      "processes.leave_approval.elements.closed.attachedTo: Leave requested can't have a timer, a message, a condition or a signal on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
+      'processes.follow_up.elements.start: Start event start starts on actions, a timer, a condition or a signal: one of these',
+    ]);
   });
 });
 
@@ -729,7 +778,7 @@ describe('the checks of a process', () => {
       'processes.leave_approval.flows.self.from: End event island_end is an end event: no flow leaves it',
       'processes.leave_approval.flows.bare: A flow out of Exclusive gateway which needs a condition, or must be its default',
       "processes.leave_approval.elements.wait.timer.date: reason isn't a date or a time",
-      "processes.leave_approval.elements.late.attachedTo: Event wait can't have a timer, a message or a condition on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
+      "processes.leave_approval.elements.late.attachedTo: Event wait can't have a timer, a message, a condition or a signal on its boundary: they sit on a user task, a receive task, a sub-process or a call activity",
       "processes.leave_approval.elements.island: Island can't be reached from a start event",
       "processes.leave_approval.elements.island_end: End event island_end can't be reached from a start event",
       'processes.leave_approval.diagram.shapes.gone: No element gone',

@@ -1199,11 +1199,11 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         case 'startEvent':
           if (element.in === undefined) {
             starts++;
-            if ([element.actions.length > 0, element.timer, element.condition].filter(Boolean).length > 1) {
-              issues.push({ path, message: `${label(id)} starts on actions, a timer or a condition: one of these` });
+            if ([element.actions.length > 0, element.timer, element.condition, element.signal].filter(Boolean).length > 1) {
+              issues.push({ path, message: `${label(id)} starts on actions, a timer, a condition or a signal: one of these` });
             }
-          } else if (element.actions.length || element.timer || element.condition) {
-            issues.push({ path, message: 'A start event inside a sub-process starts when the sub-process does: it names no action, timer or condition' });
+          } else if (element.actions.length || element.timer || element.condition || element.signal) {
+            issues.push({ path, message: 'A start event inside a sub-process starts when the sub-process does: it names no action, timer, condition or signal' });
           }
           if (element.timer) checkTimer(element.timer, path);
           // A start's condition reads the record: no task has an outcome yet.
@@ -1218,8 +1218,8 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           break;
         case 'endEvent': {
           if (element.in === undefined) ends++;
-          const ways = [element.terminate, element.message, element.error, element.escalation, element.compensate, element.cancel].filter(Boolean).length;
-          if (ways > 1) issues.push({ path, message: `${label(id)} ends in one way: for all, or with a message, an error, an escalation, an undo or a cancel` });
+          const ways = [element.terminate, element.message, element.error, element.escalation, element.compensate, element.cancel, element.signal].filter(Boolean).length;
+          if (ways > 1) issues.push({ path, message: `${label(id)} ends in one way: for all, or with a message, an error, an escalation, an undo, a cancel or a signal` });
           if (element.message) sent(element.message, `${path}.message`);
           if (element.error && !caughtAround(id, 'error', raisedCode(element.error))) {
             issues.push({
@@ -1279,8 +1279,8 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           oneOut();
           break;
         case 'intermediateThrowEvent': {
-          if ([element.message, element.link, element.escalation, element.compensate].filter((kind) => kind !== undefined).length > 1) {
-            issues.push({ path, message: `${label(id)} sends a message, escalates, undoes, or is a link: one of these` });
+          if ([element.message, element.link, element.escalation, element.compensate, element.signal].filter((kind) => kind !== undefined).length > 1) {
+            issues.push({ path, message: `${label(id)} sends a message, escalates, undoes, throws a signal, or is a link: one of these` });
           }
           if (element.message) sent(element.message, `${path}.message`);
           if (element.link !== undefined) {
@@ -1426,8 +1426,8 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           break;
         case 'intermediateCatchEvent':
           oneOut();
-          if ([element.timer, element.message, element.link, element.condition].filter((kind) => kind !== undefined).length !== 1) {
-            issues.push({ path, message: `${label(id)} waits for a timer, a message or a condition, or is a link: one of these` });
+          if ([element.timer, element.message, element.link, element.condition, element.signal].filter((kind) => kind !== undefined).length !== 1) {
+            issues.push({ path, message: `${label(id)} waits for a timer, a message, a condition or a signal, or is a link: one of these` });
           }
           if (element.timer) checkTimer(element.timer, path);
           if (element.condition) checkCondition(element.condition, scope, `${path}.condition`, issues);
@@ -1460,15 +1460,15 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
             const target = process.flows[flowId]!.to;
             const event = process.elements[target];
             const waits = (event?.type === 'intermediateCatchEvent' && event.link === undefined) || event?.type === 'receiveTask';
-            if (!waits) issues.push({ path: `${base}.flows.${flowId}`, message: `${label(target)} doesn't wait: after ${label(id)} come events that wait for a timer, a message or a condition, or receive tasks` });
+            if (!waits) issues.push({ path: `${base}.flows.${flowId}`, message: `${label(target)} doesn't wait: after ${label(id)} come events that wait for a timer, a message, a condition or a signal, or receive tasks` });
             else if ((graph.incoming.get(target) ?? []).length !== 1) issues.push({ path: `${base}.elements.${target}`, message: `${label(target)} waits after ${label(id)} only: no other flow leads into it` });
           }
           break;
         }
         case 'boundaryEvent': {
           const host = process.elements[element.attachedTo];
-          const kinds = [element.timer, element.message, element.error, element.condition, element.escalation, element.cancel].filter(Boolean).length;
-          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message, a condition, an error, an escalation or a cancel: one of these` });
+          const kinds = [element.timer, element.message, element.error, element.condition, element.escalation, element.cancel, element.signal].filter(Boolean).length;
+          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message, a condition, a signal, an error, an escalation or a cancel: one of these` });
           if (element.condition) checkCondition(element.condition, scope, `${path}.condition`, issues);
           if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
           else if (element.escalation) {
@@ -1500,7 +1500,7 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           } else if (!['userTask', 'receiveTask', 'subProcess', 'callActivity'].includes(host.type)) {
             issues.push({
               path: `${path}.attachedTo`,
-              message: `${label(element.attachedTo)} can't have a timer, a message or a condition on its boundary: they sit on a user task, a receive task, a sub-process or a call activity`,
+              message: `${label(element.attachedTo)} can't have a timer, a message, a condition or a signal on its boundary: they sit on a user task, a receive task, a sub-process or a call activity`,
             });
           }
           if (element.timer) checkTimer(element.timer, path);

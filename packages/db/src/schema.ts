@@ -895,6 +895,49 @@ export const processStartTimers = pgTable(
   ],
 );
 
+/**
+ * A signal that a process or an operator threw, until the timer workers deliver it to every process
+ * of the app's environment that waits for it. Delivery is a transaction of its own, so a signal
+ * never holds up the change that threw it.
+ */
+export const processSignals = pgTable(
+  'process_signals',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    name: text('name').notNull(),
+    /** The record it was thrown for, if any: a process that the signal starts starts on that record. */
+    entity: text('entity'),
+    recordId: uuid('record_id'),
+    /** The instance and the element that threw it. An operator's signal has neither. */
+    instanceId: uuid('instance_id').references(() => processInstances.id, { onDelete: 'set null' }),
+    element: text('element'),
+    /** The person who threw it by hand. */
+    thrownBy: uuid('thrown_by').references(() => users.id),
+    /** What waited for it then hears it: what starts waiting later doesn't. */
+    thrownAt: timestamp('thrown_at', tz).notNull(),
+    status: text('status', { enum: ['waiting', 'delivered'] })
+      .notNull()
+      .default('waiting'),
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    deliveredAt: timestamp('delivered_at', tz),
+    /** How many instances heard it, and how many processes it started. */
+    heard: integer('heard'),
+    started: integer('started'),
+  },
+  (t) => [index('process_signals_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`)],
+);
+
 export const processEvents = pgTable(
   'process_events',
   {
@@ -918,6 +961,8 @@ export const processEvents = pgTable(
         'condition',
         'ran',
         'error_caught',
+        'signalled',
+        'signal',
         'escalated',
         'compensated',
         'transaction_cancelled',

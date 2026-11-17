@@ -99,7 +99,7 @@ export function plainStartOf(process: Process): string | undefined {
   const starts = startEventsOf(process);
   return starts.find((id) => {
     const element = process.elements[id];
-    return element?.type === 'startEvent' && !element.actions.length && !element.timer && !element.condition;
+    return element?.type === 'startEvent' && !element.actions.length && !element.timer && !element.condition && !element.signal;
   }) ?? starts[0];
 }
 
@@ -252,7 +252,8 @@ export function reachable(process: Process, graph: ProcessGraph, from: string): 
 }
 
 /** What an event waits for: a time, an action saved on the record (a message), a condition on the record, an error, an escalation, a cancel, or a link. */
-export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' | 'condition' | 'link' | 'escalation' | 'cancel' {
+export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' | 'condition' | 'link' | 'escalation' | 'cancel' | 'signal' {
+  if (event.signal !== undefined) return 'signal';
   if (event.message) return 'message';
   if (event.condition) return 'condition';
   if (event.type === 'intermediateCatchEvent' && event.link !== undefined) return 'link';
@@ -275,6 +276,29 @@ export function catcherOn(process: Process, graph: ProcessGraph, host: string, k
     return raised !== undefined && catches(raised, code) ? [{ boundary, all: raised === true }] : [];
   });
   return (catchers.find((catcher) => !catcher.all) ?? catchers[0])?.boundary;
+}
+
+/** The start events of the app's processes about an entity that a signal starts. */
+export function signalStarts(definition: Pick<StoredDefinition, 'processes'>, signal: string, entity: string): ProcessStart[] {
+  return Object.entries(definition.processes ?? {}).flatMap(([process, model]) =>
+    model.entity !== entity ? [] : Object.entries(model.elements).flatMap(([element, el]) => (el.type === 'startEvent' && !el.in && el.signal === signal ? [{ process, element }] : [])),
+  );
+}
+
+/** The signals that a process waits for: at a catch event, on a boundary, or at a start event. */
+export function caughtSignals(process: Process): string[] {
+  return [
+    ...new Set(
+      Object.values(process.elements).flatMap((element) =>
+        (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'startEvent') && element.signal !== undefined ? [element.signal] : [],
+      ),
+    ),
+  ];
+}
+
+/** The signals that a process throws: at throw events and end events. */
+export function thrownSignals(process: Process): string[] {
+  return [...new Set(Object.values(process.elements).flatMap((element) => ((element.type === 'intermediateThrowEvent' || element.type === 'endEvent') && element.signal !== undefined ? [element.signal] : [])))];
 }
 
 /** The actions whose commit a process waits for at a message: at a catch event, a receive task, or on a boundary. */

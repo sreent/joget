@@ -1109,6 +1109,85 @@ describe('errors with codes, escalations, undo and transactions', () => {
   });
 });
 
+describe('signals', () => {
+  it('reach every process of the app that waits for them, start processes on a record, and reach only what waited', async () => {
+    const app = await leaveApp('Leave, with signals', (definition) => {
+      const process = definition['processes'].leave_approval;
+      // Closing the office takes each manager's task away, and the request's leave closes.
+      Object.assign(process.elements, {
+        closed: { type: 'boundaryEvent', name: 'Office closed', attachedTo: 'decide', signal: 'office_closed' },
+        shut: { type: 'endEvent', name: 'Closed', signal: 'leave_closed' },
+      });
+      process.flows.on_closed = { from: 'closed', to: 'shut' };
+      delete process.diagram;
+      // On each request whose leave closed, a follow-up waits until the office opens.
+      definition['processes'].follow_up = {
+        label: 'Follow-up',
+        entity: 'leave_request',
+        elements: {
+          start: { type: 'startEvent', signal: 'leave_closed' },
+          wait: { type: 'intermediateCatchEvent', name: 'Until it opens', signal: 'office_open' },
+          end: { type: 'endEvent', name: 'Followed up' },
+        },
+        flows: { f1: { from: 'start', to: 'wait' }, f2: { from: 'wait', to: 'end' } },
+      };
+    });
+    const signal = (session: Session, payload: Record<string, unknown>, expected = 201) => inject({ method: 'POST', url: `/v1/apps/${app}/signals`, ...as(session), payload }, expected);
+    const of = async (recordId: string, process: string) => (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
+    const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
+
+    const first = await ask(app, { starts: '2028-03-06', ends: '2028-03-07', days: 2 });
+    const second = await ask(app, { starts: '2028-03-13', ends: '2028-03-14', days: 2 });
+    // Only an operator throws a signal by hand.
+    await signal(bob, { name: 'office_closed' }, 403);
+    await signal(alice, { name: 'office_closed', entity: 'leave_request' }, 422);
+
+    // The office closes: both managers' tasks go, and each request's leave closes with a signal of its own.
+    expect((await signal(alice, { name: 'office_closed' })).json()).toMatchObject({ name: 'office_closed', status: 'delivered', heard: 2, started: 0 });
+    let leave = await of(first.record.id, 'leave_approval');
+    expect(leave.status).toBe('completed');
+    expect(kinds(leave).slice(-3)).toEqual([
+      ['signal', 'closed'],
+      ['signalled', 'shut'],
+      ['ended', 'shut'],
+    ]);
+    expect((await inbox(bob)).filter((task: { recordId: string }) => [first.record.id, second.record.id].includes(task.recordId))).toEqual([]);
+    // The timer workers deliver those: the follow-up starts on each request, and waits until the office opens.
+    expect(await of(first.record.id, 'follow_up')).toBeUndefined();
+    await t.server.processes.fireDue();
+    let follow = await of(first.record.id, 'follow_up');
+    expect(follow).toMatchObject({ status: 'running', waiting: [{ element: 'wait', name: 'Until it opens' }] });
+    expect(follow.events[0]).toMatchObject({ kind: 'started', element: 'start', detail: { signal: true } });
+    expect(await of(second.record.id, 'follow_up')).toMatchObject({ status: 'running' });
+
+    // A signal reaches only what waited when it was thrown: one thrown an hour ago goes unheard.
+    const [where] = (await t.handle.pool.query('select org_id, app_id, environment_id from process_instances where id = $1', [follow.id])).rows;
+    const anHourAgo = new Date(Date.now() + t.clock.offsetMs - 3_600_000);
+    await t.handle.pool.query(
+      `insert into process_signals (id, org_id, app_id, environment_id, name, thrown_at, next_attempt_at) values (gen_random_uuid(), $1, $2, $3, 'office_open', $4, $4)`,
+      [where.org_id, where.app_id, where.environment_id, anHourAgo],
+    );
+    await t.server.processes.fireDue();
+    expect((await of(first.record.id, 'follow_up')).status).toBe('running');
+
+    // The office opens: both follow-ups hear it and end.
+    expect((await signal(alice, { name: 'office_open' })).json()).toMatchObject({ status: 'delivered', heard: 2 });
+    follow = await of(first.record.id, 'follow_up');
+    expect(follow.status).toBe('completed');
+    expect(kinds(follow).slice(-2)).toEqual([
+      ['signal', 'wait'],
+      ['ended', 'end'],
+    ]);
+
+    // An operator's signal for a record starts the processes it starts there.
+    const third = await ask(app, { starts: '2028-03-20', ends: '2028-03-21', days: 2 });
+    expect((await signal(alice, { name: 'leave_closed', entity: 'leave_request', recordId: third.record.id })).json()).toMatchObject({ heard: 0, started: 1 });
+    expect(await of(third.record.id, 'follow_up')).toMatchObject({ status: 'running' });
+    leave = await of(third.record.id, 'leave_approval');
+    expect(leave).toMatchObject({ status: 'running', waiting: [{ element: 'decide' }] });
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

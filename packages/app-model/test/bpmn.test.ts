@@ -442,6 +442,54 @@ describe('BPMN 2.0 files', () => {
     expect(process).toEqual(app.processes!['leave_approval']);
   });
 
+  it("carry signals out and back, and read another tool's signal names", () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    const process = definition['processes'].leave_approval;
+    Object.assign(process.elements, {
+      closed: { type: 'boundaryEvent', name: 'Office closed', attachedTo: 'decide', signal: 'office_closed' },
+      shut: { type: 'endEvent', name: 'Closed', signal: 'leave_closed' },
+    });
+    process.flows.on_closed = { from: 'closed', to: 'shut' };
+    delete process.diagram;
+    definition['processes'].follow_up = {
+      label: 'Follow-up',
+      entity: 'leave_request',
+      elements: {
+        start: { type: 'startEvent', signal: 'leave_closed' },
+        wait: { type: 'intermediateCatchEvent', name: 'Until it opens', signal: 'office_open' },
+        told: { type: 'intermediateThrowEvent', name: 'Tell the team', signal: 'team_told' },
+        end: { type: 'endEvent' },
+      },
+      flows: { f1: { from: 'start', to: 'wait' }, f2: { from: 'wait', to: 'told' }, f3: { from: 'told', to: 'end' } },
+    };
+    const app = valid(definition);
+    for (const name of ['leave_approval', 'follow_up']) {
+      const xml = processToBpmn(app, name);
+      const back = bpmnToProcesses(xml, { ...app, processes: {} });
+      expect(back.ok ? [] : back.issues).toEqual([]);
+      const { diagram: _diagram, ...read } = back.ok ? back.processes[name]! : ({} as never);
+      const { diagram: _was, ...was } = app.processes![name]!;
+      expect(read).toEqual(was);
+    }
+    expect(processToBpmn(app, 'leave_approval')).toContain('<bpmn:signal id="Signal_office_closed" name="office_closed" />');
+    expect(processToBpmn(app, 'follow_up')).toContain('<bpmn:signalEventDefinition id="start_signal" signalRef="Signal_leave_closed" />');
+
+    // Another tool names a signal as people read it.
+    const foreign = `<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <signal id="S1" name="Office Closed" />
+  <process id="p">
+    <startEvent id="s" />
+    <intermediateCatchEvent id="c"><signalEventDefinition signalRef="S1" /></intermediateCatchEvent>
+    <endEvent id="e" />
+    <sequenceFlow id="f1" sourceRef="s" targetRef="c" />
+    <sequenceFlow id="f2" sourceRef="c" targetRef="e" />
+  </process>
+</definitions>`;
+    const read = bpmnToProcesses(foreign, leave, { entity: 'leave_request' });
+    expect(read.ok ? read.processes['p']!.elements['c'] : read.issues).toEqual({ type: 'intermediateCatchEvent', signal: 'office_closed' });
+    expect(read.ok ? read.notes : []).toContain('Read the signal "Office Closed" of (c) as office_closed');
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

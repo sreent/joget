@@ -65,6 +65,15 @@ const InstanceDetailOut = InstanceOut.extend({
 
 const InstanceParams = AppParams.extend({ instanceId: z.uuid() });
 
+const SignalOut = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  status: z.enum(['waiting', 'delivered']),
+  /** How many instances heard it, and how many processes it started, once it went out. */
+  heard: z.int().nullable(),
+  started: z.int().nullable(),
+});
+
 /**
  * Business processes (design §6.10): people's tasks across apps, starting a process by hand,
  * and the instances of an app for whoever runs it: its owner in a personal space, operators in a
@@ -326,6 +335,34 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         const loaded = await theApp(request);
         await operate(request, loaded, 'ops.job.retry');
         return engine.retry(request, loaded, request.params.instanceId);
+      },
+    );
+
+    app.post(
+      '/v1/apps/:appId/signals',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary: 'Throw a signal to every process of the app that waits for it. For a record, the processes that it starts start on that record',
+          params: AppParams,
+          querystring: EnvQuery,
+          body: z.strictObject({
+            name: z.string().regex(NAME_PATTERN, 'Use lowercase letters, digits and underscores, starting with a letter'),
+            entity: z.string().regex(NAME_PATTERN).optional(),
+            recordId: z.uuid().optional(),
+          }),
+          response: { 201: SignalOut },
+        },
+      },
+      async (request, reply) => {
+        const loaded = await theApp(request);
+        await operate(request, loaded, 'process.admin');
+        const { name, entity, recordId } = request.body;
+        if ((entity === undefined) !== (recordId === undefined)) throw unprocessable('record_incomplete', 'Name both the entity and the record, or neither');
+        const signal = await engine.throwSignal(request, loaded, name, entity && recordId ? { entity, id: recordId } : null);
+        reply.code(201);
+        return { id: signal.id, name: signal.name, status: signal.status, heard: signal.heard, started: signal.started };
       },
     );
 

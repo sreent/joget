@@ -2,7 +2,7 @@ import { isRef, type Condition } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages } from './processes.js';
+import { caughtSignals, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
 import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Raised, type Several, type Step, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
@@ -249,6 +249,8 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
 
 /** The ID of the BPMN message that stands for an action committing on the record. */
 const messageId = (action: string) => `Message_${action}`;
+/** The ID of the BPMN signal of a name. */
+const signalId = (signal: string) => `Signal_${signal}`;
 /** The ID of the BPMN error or escalation of a code. */
 const raisedId = (kind: 'error' | 'escalation', code: string) => `${kind === 'error' ? 'Error' : 'Escalation'}_${code}`;
 /** The language of a script task's script: Ambit's steps, as JSON. Ambit runs no other script. */
@@ -370,6 +372,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
       if ('message' in element && element.message) children.push(messageDefinition(id, element.message));
       if ('error' in element && element.error) children.push(raisedDefinition(id, 'error', element.error));
       if ('escalation' in element && element.escalation) children.push(raisedDefinition(id, 'escalation', element.escalation));
+      if ('signal' in element && element.signal !== undefined) children.push({ name: 'bpmn:signalEventDefinition', attributes: { id: `${id}_signal`, signalRef: signalId(element.signal) } });
       if ('compensate' in element && element.compensate) children.push({ name: 'bpmn:compensateEventDefinition', attributes: { id: `${id}_compensate` } });
       if ('cancel' in element && element.cancel) children.push({ name: 'bpmn:cancelEventDefinition', attributes: { id: `${id}_cancel` } });
       if ('link' in element && element.link !== undefined) children.push({ name: 'bpmn:linkEventDefinition', attributes: { id: `${id}_link`, name: element.link } });
@@ -465,6 +468,8 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
           ),
         ].map((code) => ({ name: `bpmn:${kind}`, attributes: { id: raisedId(kind, code), name: code, [`${kind}Code`]: code } })),
       ),
+      // Each signal that the process throws or waits for.
+      ...[...new Set([...caughtSignals(process), ...thrownSignals(process)])].map((signal) => ({ name: 'bpmn:signal', attributes: { id: signalId(signal), name: signal } })),
       {
         name: 'bpmn:process',
         attributes: { id: name, name: process.label, isExecutable: 'true', 'ambit:entity': process.entity },
@@ -586,6 +591,8 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
   const codes = new Map(
     (['error', 'escalation'] as const).flatMap((kind) => bpmn(root, kind).map((item) => [attribute(item, 'id') ?? '', attribute(item, `${kind}Code`) ?? attribute(item, 'name')] as const)),
   );
+  /** The names of the file's signals, by ID, as names Ambit takes. */
+  const signals = new Map(bpmn(root, 'signal').map((signal) => [attribute(signal, 'id') ?? '', (attribute(signal, 'name') ?? '').trim()] as const));
   const messages = new Map(
     bpmn(root, 'message').map((message) => [attribute(message, 'id') ?? '', { name: attribute(message, 'name'), action: attribute(message, 'action', AMBIT_BPMN) }] as const),
   );
@@ -703,6 +710,18 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           return action;
         };
         const linkName = () => attribute(bpmn(node, 'linkEventDefinition')[0]!, 'name')?.trim() || undefined;
+        /** The signal an event throws or waits for, by its name, made one Ambit takes. */
+        const signalOf = (): string | undefined => {
+          const ref = attribute(bpmn(node, 'signalEventDefinition')[0]!, 'signalRef');
+          const named = ref ? signals.get(ref) : undefined;
+          const signal = named ? named.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') : '';
+          if (!NAME_PATTERN.test(signal)) {
+            refuse('A signal needs a name: name the bpmn:signal its event refers to with signalRef');
+            return undefined;
+          }
+          if (signal !== named) notes.add(`Read the signal "${named}" of ${describe(node)} as ${signal}`);
+          return signal;
+        };
         /** An error or an escalation that an event throws or catches: by its code, or any. */
         const raisedOf = (kind: 'error' | 'escalation'): Raised => {
           const ref = attribute(bpmn(node, `${kind}EventDefinition`)[0]!, `${kind}Ref`);
@@ -735,13 +754,16 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             } else if (kinds.length === 1 && kinds[0] === 'conditional') {
               const condition = conditionOf();
               if (condition) elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [], condition };
+            } else if (kinds.length === 1 && kinds[0] === 'signal') {
+              const signal = signalOf();
+              if (signal) elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: [], signal };
             } else if (kinds.length) refuse(`Ambit doesn't start a process on a ${kinds.join(' or ')} event yet`);
             else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions };
             break;
           }
           case 'endEvent': {
             const plain = { type: 'endEvent' as const, ...(name ? { name } : {}), terminate: false };
-            if (kinds.length > 1 || kinds.some((kind) => !['terminate', 'message', 'error', 'escalation', 'compensation', 'cancel'].includes(kind))) {
+            if (kinds.length > 1 || kinds.some((kind) => !['terminate', 'message', 'error', 'escalation', 'compensation', 'cancel', 'signal'].includes(kind))) {
               refuse(`Ambit doesn't end a process with a ${kinds.join(' or ')} event yet`);
             } else if (kinds[0] === 'message') {
               const message = messageFrom(bpmn(node, 'messageEventDefinition')[0]!);
@@ -750,7 +772,10 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             else if (kinds[0] === 'escalation') elements[id] = { ...plain, escalation: raisedOf('escalation') };
             else if (kinds[0] === 'compensation') elements[id] = { ...plain, compensate: true };
             else if (kinds[0] === 'cancel') elements[id] = { ...plain, cancel: true };
-            else elements[id] = { ...plain, terminate: kinds.includes('terminate') };
+            else if (kinds[0] === 'signal') {
+              const signal = signalOf();
+              if (signal) elements[id] = { ...plain, signal };
+            } else elements[id] = { ...plain, terminate: kinds.includes('terminate') };
             break;
           }
           case 'scriptTask': {
@@ -787,12 +812,16 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             break;
           }
           case 'intermediateThrowEvent': {
-            if (kinds.length > 1 || (kinds.length === 1 && !['message', 'link', 'escalation', 'compensation'].includes(kinds[0]!))) {
+            if (kinds.length > 1 || (kinds.length === 1 && !['message', 'link', 'escalation', 'compensation', 'signal'].includes(kinds[0]!))) {
               refuse(`Ambit doesn't throw a ${kinds.join(' or ')} event yet`);
               break;
             }
             if (kinds[0] === 'escalation') elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), escalation: raisedOf('escalation') };
             else if (kinds[0] === 'compensation') elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), compensate: true };
+            else if (kinds[0] === 'signal') {
+              const signal = signalOf();
+              if (signal) elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), signal };
+            }
             else if (kinds[0] === 'message') {
               const message = messageFrom(bpmn(node, 'messageEventDefinition')[0]!);
               if (message) elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), message };
@@ -877,13 +906,16 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             if (node.local !== 'parallelGateway' && attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
             break;
           case 'intermediateCatchEvent': {
-            if (kinds.length !== 1 || !['timer', 'message', 'link', 'conditional'].includes(kinds[0]!)) {
+            if (kinds.length !== 1 || !['timer', 'message', 'link', 'conditional', 'signal'].includes(kinds[0]!)) {
               refuse(`Ambit doesn't wait for a ${kinds.join(' or ') || 'plain'} event yet`);
               break;
             }
             if (kinds[0] === 'conditional') {
               const condition = conditionOf();
               if (condition) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), condition };
+            } else if (kinds[0] === 'signal') {
+              const signal = signalOf();
+              if (signal) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), signal };
             } else if (kinds[0] === 'timer') {
               const timer = timerOf();
               if (timer) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), timer };
@@ -925,7 +957,7 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
               undos.push({ boundary: id, host: idOf(attribute(node, 'attachedToRef'), node) });
               break;
             }
-            if (kinds.length !== 1 || !['timer', 'message', 'error', 'conditional', 'escalation', 'cancel'].includes(kinds[0]!)) {
+            if (kinds.length !== 1 || !['timer', 'message', 'error', 'conditional', 'escalation', 'cancel', 'signal'].includes(kinds[0]!)) {
               refuse(`Ambit doesn't catch a ${kinds.join(' or ') || 'plain'} event on a task yet`);
               break;
             }
@@ -944,6 +976,9 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
               if (action) elements[id] = { ...base, message: { action } };
             } else if (kinds[0] === 'escalation') {
               elements[id] = { ...base, escalation: raisedOf('escalation') };
+            } else if (kinds[0] === 'signal') {
+              const signal = signalOf();
+              if (signal) elements[id] = { ...base, signal };
             } else if (kinds[0] === 'cancel') {
               elements[id] = { ...base, interrupting: true, cancel: true };
             } else {

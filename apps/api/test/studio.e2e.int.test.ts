@@ -639,4 +639,32 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.elements['cancel_1']).toEqual({ type: 'boundaryEvent', name: 'Cancelled', attachedTo: 'transaction_1', interrupting: true, cancel: true });
     expect(saved.elements['escalation_1']).toEqual({ type: 'boundaryEvent', name: 'Escalation', attachedTo: 'transaction_1', interrupting: false, escalation: { code: 'late' } });
   });
+
+  it('designs a signal that takes the task away, and one that a rejection throws', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with signals', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    // A rejection tells every process of the app that waits for it.
+    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('signalThrow');
+    await visible(page.getByRole('heading', { name: 'Throw a signal', exact: true }));
+    await page.getByLabel('Signal', { exact: true }).fill('leave_rejected');
+    // When the office closes, the manager's task goes.
+    await canvas.getByText('Decide on the leave', { exact: true }).click();
+    await page.getByRole('button', { name: 'Hear a signal', exact: true }).click();
+    await page.getByLabel('The signal', { exact: true }).fill('office_closed');
+    await visible(canvas.getByText('Signalled', { exact: true }));
+    await shot(page, '15i-process-signals');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['signal_1']).toEqual({ type: 'intermediateThrowEvent', name: 'Signal', signal: 'leave_rejected' });
+    expect(saved.elements['signal_2']).toEqual({ type: 'boundaryEvent', name: 'Signal', attachedTo: 'decide', interrupting: true, signal: 'office_closed' });
+  });
 });

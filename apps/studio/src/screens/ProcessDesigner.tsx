@@ -40,6 +40,7 @@ import {
   removeElement,
   removeFlow,
   removeProcess,
+  signalChoices,
   undoChoices,
   updateActions,
   updateElement,
@@ -78,9 +79,18 @@ const FILLED_PATH: Partial<Record<ProcessElement['type'], string>> = {
 /**
  * BPMN's markers for what an event waits for or throws: a clock for a time, an envelope for a
  * message, a lightning bolt for an error, an arrow for a link, an arrowhead for an escalation, two
- * triangles that point back for an undo, and a cross for a cancel. A throw event's marker is filled.
+ * triangles that point back for an undo, a cross for a cancel, and a triangle for a signal. A throw
+ * event's marker is filled.
  */
-function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'message' | 'error' | 'link' | 'condition' | 'escalation' | 'compensation' | 'cancel'; size?: number; filled?: boolean }) {
+function EventIcon({
+  kind,
+  size = 16,
+  filled = false,
+}: {
+  kind: 'timer' | 'message' | 'error' | 'link' | 'condition' | 'escalation' | 'compensation' | 'cancel' | 'signal';
+  size?: number;
+  filled?: boolean;
+}) {
   const fill = filled ? 'currentColor' : 'none';
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden className="text-text">
@@ -99,6 +109,8 @@ function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'messa
         <path d="M8 2.5 12 13 8 9.5 4 13Z" fill={fill} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       ) : kind === 'compensation' ? (
         <path d="M8 4.5v7L3 8Zm5.5 0v7L8.5 8Z" fill={fill} stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+      ) : kind === 'signal' ? (
+        <path d="M8 2.5 13.5 12.5H2.5Z" fill={fill} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       ) : kind === 'cancel' ? (
         <path d="m4 4 8 8m0-8-8 8" fill="none" stroke="currentColor" strokeWidth={filled ? 2.6 : 1.6} strokeLinecap="round" />
       ) : (
@@ -140,13 +152,17 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
               <EventIcon kind={element.link !== undefined ? 'link' : eventKind(element)} />
             </div>
           ) : null}
-          {element.type === 'startEvent' && (element.timer || element.condition) ? <EventIcon kind={element.timer ? 'timer' : 'condition'} size={18} /> : null}
+          {element.type === 'startEvent' && (element.timer || element.condition || element.signal !== undefined) ? (
+            <EventIcon kind={element.timer ? 'timer' : element.condition ? 'condition' : 'signal'} size={18} />
+          ) : null}
           {element.type === 'intermediateThrowEvent' ? (
             <div className="grid size-7 place-items-center rounded-full border border-text">
               {element.message ? (
                 <EventIcon kind="message" filled />
               ) : element.link !== undefined ? (
                 <EventIcon kind="link" filled />
+              ) : element.signal !== undefined ? (
+                <EventIcon kind="signal" filled />
               ) : element.escalation ? (
                 <EventIcon kind="escalation" filled />
               ) : element.compensate ? (
@@ -159,6 +175,7 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
           {end && element.escalation ? <EventIcon kind="escalation" size={16} filled /> : null}
           {end && element.compensate ? <EventIcon kind="compensation" size={16} filled /> : null}
           {end && element.cancel ? <EventIcon kind="cancel" size={16} filled /> : null}
+          {end && element.signal !== undefined ? <EventIcon kind="signal" size={16} filled /> : null}
           {end && element.terminate ? <div className="size-4 rounded-full bg-text" /> : null}
         </div>
         {label ? <span className="absolute top-10 left-1/2 w-28 -translate-x-1/2 text-center text-[11px] leading-tight text-muted">{label}</span> : null}
@@ -802,6 +819,7 @@ function typeLabel(element: ProcessElement): string {
   if ((element.type === 'intermediateCatchEvent' || element.type === 'intermediateThrowEvent') && element.link !== undefined) return 'Link';
   if (element.type === 'intermediateThrowEvent' && element.message) return 'Send a message';
   if (element.type === 'intermediateThrowEvent' && element.escalation) return 'Escalate';
+  if (element.type === 'intermediateThrowEvent' && element.signal !== undefined) return 'Throw a signal';
   if (element.type === 'intermediateThrowEvent' && element.compensate) return 'Undo';
   if (element.type === 'subProcess' && element.transaction) return 'Transaction';
   if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
@@ -810,6 +828,7 @@ function typeLabel(element: ProcessElement): string {
     if (kind === 'error') return 'Error';
     if (kind === 'condition') return 'Condition';
     if (kind === 'escalation') return 'Escalation';
+    if (kind === 'signal') return 'Signal';
     if (kind === 'cancel') return 'Cancel';
   }
   return TYPE_LABELS[element.type];
@@ -829,6 +848,24 @@ function CodeInput({ label, hint, value, onChange }: { label: string; hint: stri
             onChange(code ? { code } : true);
           }}
         />
+      )}
+    </Field>
+  );
+}
+
+/** A signal's name: one that the app's processes use already, or a new one. */
+function SignalInput({ definition, label, hint, value, onChange }: { definition: Definition; label: string; hint: string; value: string; onChange: (signal: string) => void }) {
+  return (
+    <Field label={label} hint={hint}>
+      {(inputId) => (
+        <>
+          <TextInput id={inputId} list={`${inputId}-signals`} value={value} onChange={(event) => onChange(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))} />
+          <datalist id={`${inputId}-signals`}>
+            {signalChoices(definition).map((signal) => (
+              <option key={signal} value={signal} />
+            ))}
+          </datalist>
+        </>
       )}
     </Field>
   );
@@ -874,13 +911,14 @@ function UndoPicker({ definition, name, id, onChange }: { definition: Definition
 }
 
 /** How an end event ends its path, as the select of its panel names it. */
-type EndWay = 'none' | 'terminate' | 'message' | 'error' | 'escalation' | 'compensate' | 'cancel';
+type EndWay = 'none' | 'terminate' | 'message' | 'error' | 'escalation' | 'compensate' | 'cancel' | 'signal';
 function endWay(element: Extract<ProcessElement, { type: 'endEvent' }>): EndWay {
   if (element.terminate) return 'terminate';
   if (element.message) return 'message';
   if (element.error) return 'error';
   if (element.escalation) return 'escalation';
   if (element.compensate) return 'compensate';
+  if (element.signal !== undefined) return 'signal';
   return element.cancel ? 'cancel' : 'none';
 }
 
@@ -966,6 +1004,7 @@ function BoundaryEvents(props: {
   const deadlines = events.flatMap(({ id: other, event }) => (event.timer ? [{ id: other, event, timer: event.timer }] : []));
   const messages = events.flatMap(({ id: other, event }) => (event.message ? [{ id: other, event, action: event.message.action }] : []));
   const conditions = events.flatMap(({ id: other, event }) => (event.condition ? [{ id: other, event, condition: event.condition }] : []));
+  const signals = events.flatMap(({ id: other, event }) => (event.signal !== undefined ? [{ id: other, event, signal: event.signal }] : []));
   const errors = events.flatMap(({ id: other, event }) => (event.error ? [{ id: other, error: event.error }] : []));
   const escalations = events.flatMap(({ id: other, event }) => (event.escalation ? [{ id: other, event, escalation: event.escalation }] : []));
   const cancel = events.find(({ event }) => event.cancel);
@@ -1079,6 +1118,32 @@ function BoundaryEvents(props: {
             Add a condition
           </Button>
           <p className="m-0 text-xs text-muted">It happens when a change to the record makes the condition hold, {words.open}.</p>
+        </fieldset>
+      ) : null}
+      {kinds.includes('signal') ? (
+        <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+          <legend className="px-1 text-sm text-muted">When a signal is thrown</legend>
+          {signals.map(({ id: heard, event, signal }) => (
+            <div key={heard} className="grid gap-1.5 rounded-md bg-sunken p-2">
+              <Problems messages={problems.get(heard)} />
+              <SignalInput
+                definition={definition}
+                label="The signal"
+                hint="A process of the app, or an operator, throws it."
+                value={signal}
+                onChange={(next) => onChange(updateElement(definition, name, heard, (current) => (current.type === 'boundaryEvent' ? { ...current, signal: next } : current)))}
+              />
+              <Checkbox
+                label={words.interrupts}
+                checked={event.interrupting}
+                onChange={(interrupting) => onChange(updateElement(definition, name, heard, (current) => ({ ...current, interrupting }) as ProcessElement))}
+              />
+              <Remove onClick={() => onChange(removeElement(definition, name, heard))}>Remove the signal event</Remove>
+            </div>
+          ))}
+          <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'signal').definition)}>
+            Hear a signal
+          </Button>
         </fieldset>
       ) : null}
       {kinds.includes('error') ? (
@@ -1218,12 +1283,13 @@ function ElementPanel(props: {
             {(inputId) => (
               <Select
                 id={inputId}
-                value={element.condition ? 'condition' : element.timer ? ('date' in element.timer ? 'date' : 'after') : 'actions'}
+                value={element.condition ? 'condition' : element.signal !== undefined ? 'signal' : element.timer ? ('date' in element.timer ? 'date' : 'after') : 'actions'}
                 onChange={(event) =>
                   set((current) => {
                     if (current.type !== 'startEvent') return current;
-                    const { timer: _timer, condition: _condition, ...rest } = current;
+                    const { timer: _timer, condition: _condition, signal: _signal, ...rest } = current;
                     const plain = { ...rest, actions: [] };
+                    if (event.target.value === 'signal') return { ...plain, signal: signalChoices(definition)[0] ?? 'signal' };
                     if (event.target.value === 'date' && dates[0]) return { ...plain, timer: { date: dates[0].name } };
                     if (event.target.value === 'after') return { ...plain, timer: { duration: 'P1D' } };
                     if (event.target.value === 'condition') return { ...plain, condition: startingCondition(definition, process.entity) };
@@ -1237,10 +1303,19 @@ function ElementPanel(props: {
                 </option>
                 <option value="after">A time after each record is created</option>
                 <option value="condition">When a condition comes to hold on a record</option>
+                <option value="signal">When a signal is thrown for a record</option>
               </Select>
             )}
           </Field>
-          {element.condition ? (
+          {element.signal !== undefined ? (
+            <SignalInput
+              definition={definition}
+              label="Starts on the signal"
+              hint="A process of the app throws it on a record, or an operator throws it for a record: this process starts on that record."
+              value={element.signal}
+              onChange={(signal) => set((current) => ({ ...current, signal }) as ProcessElement)}
+            />
+          ) : element.condition ? (
             <ConditionEditor
               label="Starts when this comes to hold"
               value={element.condition}
@@ -1290,7 +1365,7 @@ function ElementPanel(props: {
                   const way = event.target.value;
                   let next = updateElement(definition, name, id, (current) => {
                     if (current.type !== 'endEvent') return current;
-                    const { message: _message, error: _error, escalation: _escalation, compensate: _compensate, cancel: _cancel, ...rest } = current;
+                    const { message: _message, error: _error, escalation: _escalation, compensate: _compensate, cancel: _cancel, signal: _signal, ...rest } = current;
                     const plain = { ...rest, terminate: way === 'terminate' };
                     const first = sendChoices(definition, name)[0];
                     if (way === 'message' && first) return { ...plain, message: { action: first.action, ...(first.record ? { record: first.record } : {}) } };
@@ -1298,6 +1373,7 @@ function ElementPanel(props: {
                     if (way === 'escalation') return { ...plain, escalation: true };
                     if (way === 'compensate') return { ...plain, compensate: true };
                     if (way === 'cancel') return { ...plain, cancel: true };
+                    if (way === 'signal') return { ...plain, signal: signalChoices(definition)[0] ?? 'signal' };
                     return plain;
                   });
                   // A cancel leaves the transaction by its cancel event: add one if it has none.
@@ -1315,6 +1391,7 @@ function ElementPanel(props: {
                 <option value="error">It raises an error</option>
                 <option value="escalation">It escalates</option>
                 <option value="compensate">It undoes what completed here</option>
+                <option value="signal">It throws a signal</option>
                 {inTransaction ? <option value="cancel">It cancels the transaction</option> : null}
               </Select>
             )}
@@ -1340,6 +1417,15 @@ function ElementPanel(props: {
             <p className="m-0 text-sm text-muted">Each task that completed {element.in === undefined ? 'in the process' : 'in the sub-process'} and has an undo action runs it once, newest first.</p>
           ) : null}
           {element.cancel ? <p className="m-0 text-sm text-muted">What completed in the transaction is undone, newest first, and the path leaves by its cancel event.</p> : null}
+          {element.signal !== undefined ? (
+            <SignalInput
+              definition={definition}
+              label="Signal"
+              hint="Every process of the app that waits for this signal hears it, and the processes it starts start on this record."
+              value={element.signal}
+              onChange={(signal) => set((current) => ({ ...current, signal }) as ProcessElement)}
+            />
+          ) : null}
         </>
       ) : null}
       {element.type === 'scriptTask' ? <ScriptSteps definition={definition} name={name} id={id} onChange={onChange} /> : null}
@@ -1355,6 +1441,15 @@ function ElementPanel(props: {
           hint="The escalation event on a sub-process or call around it with this code, or one for any escalation, hears it. The path goes on, unless that event ends what it came from."
           value={element.escalation}
           onChange={(escalation) => set((current) => ({ ...current, escalation }) as ProcessElement)}
+        />
+      ) : null}
+      {element.type === 'intermediateThrowEvent' && element.signal !== undefined ? (
+        <SignalInput
+          definition={definition}
+          label="Signal"
+          hint="Every process of the app that waits for this signal hears it, and the path goes on."
+          value={element.signal}
+          onChange={(signal) => set((current) => ({ ...current, signal }) as ProcessElement)}
         />
       ) : null}
       {element.type === 'intermediateThrowEvent' && element.compensate ? (
@@ -1449,7 +1544,7 @@ function ElementPanel(props: {
           )}
         </Field>
       ) : null}
-      {element.type === 'intermediateThrowEvent' && element.link === undefined && !element.message && !element.escalation && !element.compensate ? (
+      {element.type === 'intermediateThrowEvent' && element.link === undefined && !element.message && !element.escalation && !element.compensate && element.signal === undefined ? (
         <p className="m-0 text-sm text-muted">A milestone: the instance's history marks when a path passes it.</p>
       ) : null}
       {element.type === 'userTask' ? (
@@ -1714,12 +1809,13 @@ function ElementPanel(props: {
             {(inputId) => (
               <Select
                 id={inputId}
-                value={element.message ? 'message' : element.condition ? 'condition' : element.timer && 'date' in element.timer ? 'date' : 'duration'}
+                value={element.message ? 'message' : element.condition ? 'condition' : element.signal !== undefined ? 'signal' : element.timer && 'date' in element.timer ? 'date' : 'duration'}
                 onChange={(event) =>
                   set((current) => {
                     if (current.type !== 'intermediateCatchEvent') return current;
-                    const { timer: _timer, message: _message, condition: _condition, ...rest } = current;
+                    const { timer: _timer, message: _message, condition: _condition, signal: _signal, ...rest } = current;
                     if (event.target.value === 'message' && actions[0]) return { ...rest, message: { action: actions[0] } };
+                    if (event.target.value === 'signal') return { ...rest, signal: signalChoices(definition)[0] ?? 'signal' };
                     if (event.target.value === 'condition') return { ...rest, condition: startingCondition(definition, process.entity) };
                     if (event.target.value === 'date' && dates[0]) return { ...rest, timer: { date: dates[0].name } };
                     return { ...rest, timer: { duration: 'P1D' } };
@@ -1734,10 +1830,19 @@ function ElementPanel(props: {
                   Until an action is saved
                 </option>
                 <option value="condition">Until a condition holds</option>
+                <option value="signal">Until a signal is thrown</option>
               </Select>
             )}
           </Field>
-          {element.condition ? (
+          {element.signal !== undefined ? (
+            <SignalInput
+              definition={definition}
+              label="Until the signal"
+              hint="A process of the app, or an operator, throws it. Only a path that waits when it is thrown hears it."
+              value={element.signal}
+              onChange={(signal) => set((current) => ({ ...current, signal }) as ProcessElement)}
+            />
+          ) : element.condition ? (
             <ConditionEditor
               label="Until this holds"
               value={element.condition}

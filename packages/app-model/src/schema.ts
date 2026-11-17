@@ -518,6 +518,8 @@ const StartEvent = z.strictObject({
   timer: Timer.optional(),
   /** Starts the process on a record when a change makes this condition on it hold, where it didn't before. */
   condition: ConditionSchema.optional(),
+  /** Starts the process on a record when a process on that record throws this signal, or an operator throws it for the record. */
+  signal: Name.optional(),
 });
 /**
  * Where a path ends. A terminate end event ends the whole instance, other paths included; inside a
@@ -537,6 +539,8 @@ const EndEvent = z.strictObject({
   compensate: z.literal(true).optional(),
   /** In a transaction: undoes what completed in it, and leaves the transaction by its cancel event. */
   cancel: z.literal(true).optional(),
+  /** Throws this signal as the path ends: every process of the app that waits for it hears it. */
+  signal: Name.optional(),
 });
 
 /** A choice that completes a user task, such as approve. It can run one of the app's actions on the record, as the person who decides. */
@@ -673,6 +677,8 @@ const CatchEvent = z.strictObject({
   link: Name.optional(),
   /** Waits until this condition on the record holds; if it holds already, the path goes straight on. */
   condition: ConditionSchema.optional(),
+  /** Waits until a process of the app, or an operator, throws this signal. */
+  signal: Name.optional(),
 });
 /**
  * A point that a path passes: a milestone that the history marks; a message that it sends on the
@@ -688,6 +694,8 @@ const ThrowEvent = z.strictObject({
   escalation: Raised.optional(),
   /** Undoes what completed in its run, newest first, and goes on. */
   compensate: z.literal(true).optional(),
+  /** Throws this signal to every process of the app that waits for it, and goes on. */
+  signal: Name.optional(),
 });
 /**
  * A part of the process with its own start and end, drawn open on the canvas: the elements in it
@@ -736,6 +744,8 @@ const BoundaryEvent = z.strictObject({
   cancel: z.literal(true).optional(),
   /** Happens when a change to the record makes this condition hold, where it didn't before. */
   condition: ConditionSchema.optional(),
+  /** On a user task, a receive task, a sub-process or a call: a signal that a process of the app, or an operator, throws. */
+  signal: Name.optional(),
 });
 
 export const ProcessElement = z.discriminatedUnion('type', [
