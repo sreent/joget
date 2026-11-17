@@ -26,7 +26,7 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
   - phase 0, the governance kernel, proven on a real Kubernetes cluster;
   - phase 1, the capability core with line items and files, the studio's data-model and form designers, and the screens every app gets;
   - from phase 2: governed delivery for team apps (working copies, change requests with checks and previews, signed releases, approved deployments to Prod and Staging, and rollback); the designers for rules, actions, queries, review cards, roles, pages, the menu and dashboards; steps for actions (they can start a7c skills too, switched off until an installation connects a7c); moving a personal app to a team space; queries that total and group, for agents; app templates, export and import; and the command line, `ambit`.
-- **Next:** phase 3, approvals and the shared agent: processes with human tasks, a universal inbox and approving in chat.
+- **Next:** phase 3, approvals and the shared agent: business processes in BPMN 2.0 on Ambit's own engine, with human tasks, a universal inbox and approving in chat. A business process, where people decide on an app's records, is Ambit's; automation across systems is a7c's ([design §6.10](docs/02-platform-design.md#610-business-processes-bpmn-20)).
 
 ## What the code does today
 
