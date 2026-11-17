@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api.js';
-import { Badge, Button, Checkbox, Dialog, Notice } from '../components/ui.js';
+import { Badge, Button, Checkbox, cx, Dialog, Notice } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
 import { Link, type BuildTab } from '../router.js';
 import type { Definition, Issue, Plan } from '../types.js';
@@ -15,25 +15,59 @@ import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from '
 import { MenuDesigner, PagesDesigner } from './PagesDesigner.js';
 import { RolesDesigner } from './RolesDesigner.js';
 
-const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
-  { tab: 'data', label: 'Data' },
-  { tab: 'forms', label: 'Forms' },
-  { tab: 'pages', label: 'Pages' },
-  { tab: 'menu', label: 'Menu' },
-  { tab: 'rules', label: 'Rules' },
-  { tab: 'actions', label: 'Actions' },
-  { tab: 'queries', label: 'Queries' },
-  { tab: 'cards', label: 'Review cards' },
-  { tab: 'roles', label: 'Roles' },
-  { tab: 'flows', label: 'Flows' },
+type Part = { readonly tab: BuildTab; readonly label: string };
+
+/**
+ * The workbench's views (design §6.11): an app's parts, as Ocean's workbench names them, each with
+ * what it holds. A view opens on its first part.
+ */
+const VIEWS: ReadonlyArray<{ readonly label: string; readonly parts: readonly Part[] }> = [
+  {
+    label: 'Data',
+    parts: [
+      { tab: 'data', label: 'Entities' },
+      { tab: 'rules', label: 'Rules' },
+      { tab: 'queries', label: 'Queries' },
+    ],
+  },
+  {
+    label: 'Forms',
+    parts: [
+      { tab: 'forms', label: 'Forms' },
+      { tab: 'cards', label: 'Review cards' },
+    ],
+  },
+  {
+    label: 'Pages',
+    parts: [
+      { tab: 'pages', label: 'Pages' },
+      { tab: 'menu', label: 'Menu' },
+    ],
+  },
+  {
+    label: 'Flows',
+    parts: [
+      { tab: 'flows', label: 'Flows' },
+      { tab: 'actions', label: 'Actions' },
+    ],
+  },
+  {
+    label: 'Permissions',
+    parts: [
+      { tab: 'roles', label: 'Roles' },
+      { tab: 'share', label: 'Share' },
+    ],
+  },
 ];
-const TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [...DESIGNERS, { tab: 'share', label: 'Share' }, { tab: 'history', label: 'History' }, { tab: 'advanced', label: 'Advanced' }];
-/** A team app: delivery first, then its main line, read-only, in the designers. */
-const TEAM_TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
+const DESIGNERS: readonly BuildTab[] = ['data', 'rules', 'queries', 'forms', 'cards', 'pages', 'menu', 'flows', 'actions', 'roles'];
+/** Around the app, beside its views: a team app's delivery first; a personal app's history and settings. */
+const AROUND: readonly Part[] = [
+  { tab: 'history', label: 'History' },
+  { tab: 'advanced', label: 'Advanced' },
+];
+const TEAM_AROUND: readonly Part[] = [
   { tab: 'delivery', label: 'Delivery' },
   { tab: 'changes', label: 'Change requests' },
-  ...DESIGNERS,
-  { tab: 'share', label: 'Access' },
   { tab: 'history', label: 'History' },
 ];
 
@@ -96,8 +130,11 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
   const plan = review?.plan;
   const app = summary.data;
   const team = app.kind === 'team';
-  const tabs = team ? TEAM_TABS : TABS;
-  const designing = DESIGNERS.some((item) => item.tab === tab) || tab === 'advanced';
+  const around = team ? TEAM_AROUND : AROUND;
+  const view = VIEWS.find((each) => each.parts.some((part) => part.tab === tab));
+  // A team app's people are its access, which its space grants.
+  const partLabel = (part: Part) => (team && part.tab === 'share' ? 'Access' : part.label);
+  const designing = DESIGNERS.includes(tab) || tab === 'advanced';
   const live = team ? app.environments?.find((env) => env.kind === 'prod') : app.environment;
   const canChat = !!composing.data?.enabled && app.access.compose && !team && !app.movedTo;
   const chatting = canChat && chat;
@@ -132,18 +169,47 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
       {app.workingCopyOf ? <WorkingCopyBar app={app} dirty={dirty} /> : null}
       {app.movedTo ? <MovedNotice movedTo={app.movedTo} /> : null}
 
-      <nav aria-label="Building" className="flex gap-1 overflow-x-auto border-b border-line">
-        {tabs.map((item) => (
-          <Link
-            key={item.tab}
-            to={{ name: 'build', appId, tab: item.tab }}
-            aria-current={item.tab === tab ? 'page' : undefined}
-            className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap no-underline ${item.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
-          >
-            {item.label}
-          </Link>
-        ))}
-      </nav>
+      {/* The workbench's views, as Ocean's modes; around them, what concerns the whole app. */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <nav aria-label="The app" className="inline-flex overflow-hidden rounded-md border border-line-strong bg-surface">
+          {VIEWS.map((each, index) => (
+            <Link
+              key={each.label}
+              to={{ name: 'build', appId, tab: each.parts[0]!.tab }}
+              aria-current={each === view ? 'true' : undefined}
+              className={cx('px-3.5 py-1.5 text-sm no-underline', index > 0 && 'border-l border-line-strong', each === view ? 'bg-accent-soft font-semibold text-accent' : 'text-text hover:bg-sunken')}
+            >
+              {each.label}
+            </Link>
+          ))}
+        </nav>
+        <nav aria-label="Around the app" className="flex gap-1">
+          {around.map((item) => (
+            <Link
+              key={item.tab}
+              to={{ name: 'build', appId, tab: item.tab }}
+              aria-current={item.tab === tab ? 'page' : undefined}
+              className={cx('rounded-md px-3 py-1.5 text-sm no-underline', item.tab === tab ? 'bg-accent-soft font-semibold text-accent' : 'text-muted hover:text-text')}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+      </div>
+      {view ? (
+        <nav aria-label={view.label} className="flex gap-1 overflow-x-auto border-b border-line">
+          {view.parts.map((part) => (
+            <Link
+              key={part.tab}
+              to={{ name: 'build', appId, tab: part.tab }}
+              aria-current={part.tab === tab ? 'page' : undefined}
+              className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap no-underline ${part.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
+            >
+              {partLabel(part)}
+            </Link>
+          ))}
+        </nav>
+      ) : null}
 
       {team && designing ? <TeamAppNotice app={app} /> : null}
       {/* A team app's main line is read-only here: a disabled fieldset disables every control in the designers. */}
