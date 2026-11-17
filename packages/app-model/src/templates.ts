@@ -210,7 +210,7 @@ export const LEAVE_APP = {
 
 /**
  * Purchase requests: a requester asks to buy something, an approver approves it, and procurement
- * orders it. Approval starts the purchase order through an a7c skill.
+ * orders it.
  */
 export const PURCHASE_APP = {
   entities: {
@@ -276,7 +276,7 @@ export const PURCHASE_APP = {
     },
     approve_purchase: {
       label: 'Approve the purchase',
-      description: 'Approve a purchase request that waits for approval. Procurement then raises the order.',
+      description: 'Approve a purchase request that waits for approval. Procurement then orders it.',
       entity: 'purchase_request',
       operation: 'update',
       input: [],
@@ -286,12 +286,6 @@ export const PURCHASE_APP = {
       steps: [
         { type: 'check', assert: { ne: [owner, me] }, message: "You can't approve your own purchase" },
         { type: 'set', field: 'approver', value: me },
-        {
-          type: 'skill',
-          label: 'Raise the purchase order',
-          skill: 'procurement/raise-purchase-order',
-          input: { request: { ref: 'record.id' }, title: { ref: 'record.title' }, supplier: { ref: 'record.supplier' }, amount: { ref: 'record.total' } },
-        },
       ],
     },
     mark_ordered: {
@@ -471,7 +465,7 @@ export const TEMPLATES: readonly AppTemplate[] = [
   {
     id: 'expenses',
     name: 'Expense claims',
-    description: 'Claims with one line per receipt and its file, a total worked out from them, approval that pays through a7c, and a spending dashboard.',
+    description: 'Claims with one line per receipt and its file, a total worked out from them, approval by someone other than the claimant, and a spending dashboard.',
     definition: EXPENSE_APP,
   },
   {
@@ -483,7 +477,7 @@ export const TEMPLATES: readonly AppTemplate[] = [
   {
     id: 'purchasing',
     name: 'Purchase requests',
-    description: 'Requests with one line per item, approval that raises the purchase order through a7c, and procurement marking what was ordered.',
+    description: 'Requests with one line per item, approval by someone other than the requester, and procurement marking what was ordered.',
     definition: PURCHASE_APP,
   },
 ];

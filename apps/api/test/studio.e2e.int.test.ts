@@ -353,33 +353,23 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.queries.my_spending.summary).toMatchObject({ measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, limit: 5 });
   });
 
-  it('designs the steps of an action, and shows the work in other systems that they start', async () => {
+  it('designs the steps of an action, without a7c until the installation connects it', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
     await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
     const steps = page.getByRole('region', { name: 'Steps' });
-    await visible(steps.getByRole('button', { name: 'Step 4: Pay the claim (a7c: finance/pay-expense-claim)' }));
-    await steps.getByRole('button', { name: 'Start an a7c skill', exact: true }).click();
-    await steps.getByLabel('What it does', { exact: true }).fill('Tell the requester');
-    await steps.getByLabel('a7c skill', { exact: true }).fill('people/notify-requester');
-    await steps.getByLabel('Step 5: new input').fill('claim');
-    await steps.getByRole('button', { name: 'Add an input' }).click();
+    await visible(steps.getByRole('button', { name: /^Step 3: Warn unless Total \(SGD\) is at most 1000/ }));
+    // This installation doesn't connect a7c, so there is no skill step to add.
+    expect(await steps.getByRole('button', { name: 'Start an a7c skill', exact: true }).count()).toBe(0);
+    await steps.getByRole('button', { name: 'Check', exact: true }).click();
+    await steps.getByLabel('Message', { exact: true }).fill('A claim needs a title');
+    await steps.getByLabel("When it doesn't hold", { exact: true }).selectOption('warning');
     await steps.getByRole('button', { name: /^Step 2: Set Approver/ }).click();
     await shot(page, '21-steps-designer');
     await page.getByRole('button', { name: 'Review and save' }).click();
     await page.getByRole('button', { name: /^Save as revision/ }).click();
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
-    expect(saved.actions.approve_claim.steps.at(-1)).toEqual({ type: 'skill', label: 'Tell the requester', skill: 'people/notify-requester', input: { claim: { ref: 'record.id' } } });
-
-    // The claim Carol approved shows the payment its approval started, through a7c.
-    const listed = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records`, cookies: alice.cookies })).json();
-    const approved = listed.records.find((record: { values: { status: string } }) => record.values.status === 'approved');
-    const approver = await open(carol);
-    await approver.goto(`${BASE}/studio/apps/${appId}/expense_claim/${approved.id}`);
-    const elsewhere = approver.getByRole('list', { name: 'In other systems' });
-    await visible(elsewhere.getByText('Pay the claim'));
-    await visible(elsewhere.getByText('Waiting'));
-    await shot(approver, '22-record-in-other-systems');
+    expect(saved.actions.approve_claim.steps.at(-1)).toEqual({ type: 'check', assert: { exists: 'record.title' }, message: 'A claim needs a title', severity: 'warning' });
   });
 });

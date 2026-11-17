@@ -13,9 +13,10 @@ describe('editing steps', () => {
     expect(steps(definition).map((step) => describeStep(definition, 'expense_claim', step))).toEqual([
       "Stop unless Owner is not the person running it: You can't approve your own claim",
       'Set Approver to the person running it',
-      'If Total (SGD) is more than 1000',
-      'Pay the claim (a7c: finance/pay-expense-claim)',
+      'Warn unless Total (SGD) is at most 1000: A claim over SGD 1,000: check that a director agreed to it',
     ]);
+    // A step that starts an a7c skill, where an installation connects a7c.
+    expect(describeStep(definition, 'expense_claim', { type: 'skill', label: 'Pay the claim', skill: 'finance/pay-expense-claim', input: {} })).toBe('Pay the claim (a7c: finance/pay-expense-claim)');
   });
 
   it('adds steps with defaults that pass the checks, at the end or inside a branch', () => {
@@ -26,29 +27,33 @@ describe('editing steps', () => {
       field: 'lines',
       values: { date: { today: true }, merchant: '', category: 'travel', amount: 0 },
     });
-    ({ definition, place } = addStep(definition, 'approve_claim', 'set', { index: 2, side: 'else' }));
-    expect(place).toEqual({ index: 2, side: 'else', inner: 0 });
+    ({ definition, place } = addStep(definition, 'approve_claim', 'if'));
+    expect(place).toEqual({ index: 3 });
+    expect(stepAt(definition, 'approve_claim', place!)).toMatchObject({ type: 'if', then: [{ type: 'check', severity: 'warning' }], else: [] });
+    ({ definition, place } = addStep(definition, 'approve_claim', 'set', { index: 3, side: 'else' }));
+    expect(place).toEqual({ index: 3, side: 'else', inner: 0 });
     expect(stepAt(definition, 'approve_claim', place!)).toEqual({ type: 'set', field: 'title', value: '' });
     // A branch holds simple steps only: no branch inside a branch.
-    expect(addStep(definition, 'approve_claim', 'if', { index: 2, side: 'then' }).place).toBeUndefined();
+    expect(addStep(definition, 'approve_claim', 'if', { index: 3, side: 'then' }).place).toBeUndefined();
     expect(newStep(definition, 'expense_line', 'add_line')).toBeUndefined();
   });
 
   it('changes, moves and removes steps, in a branch too, and drops the list when it empties', () => {
-    let definition = updateStep(app(), 'approve_claim', { index: 2, side: 'then', inner: 0 }, { type: 'skill', label: 'Tell finance', skill: 'finance/notify', input: {} });
-    expect(steps(definition)[2]).toMatchObject({ type: 'if', then: [{ skill: 'finance/notify' }] });
+    let definition = addStep(app(), 'approve_claim', 'if').definition;
+    definition = updateStep(definition, 'approve_claim', { index: 3, side: 'then', inner: 0 }, { type: 'set', field: 'trip', value: 'Checked' });
+    expect(steps(definition)[3]).toMatchObject({ type: 'if', then: [{ type: 'set', field: 'trip' }] });
     definition = moveStep(definition, 'approve_claim', { index: 3 }, -1);
-    expect(steps(definition).map((step) => step.type)).toEqual(['check', 'set', 'skill', 'if']);
+    expect(steps(definition).map((step) => step.type)).toEqual(['check', 'set', 'if', 'check']);
     expect(moveStep(definition, 'approve_claim', { index: 0 }, -1)).toBe(definition);
-    definition = removeStep(definition, 'approve_claim', { index: 3, side: 'then', inner: 0 });
-    expect(steps(definition)[3]).toMatchObject({ type: 'if', then: [] });
+    definition = removeStep(definition, 'approve_claim', { index: 2, side: 'then', inner: 0 });
+    expect(steps(definition)[2]).toMatchObject({ type: 'if', then: [] });
     for (let i = 0; i < 4; i++) definition = removeStep(definition, 'approve_claim', { index: 0 });
     expect(definition.actions['approve_claim']).not.toHaveProperty('steps');
   });
 
   it('lets go of a field that goes: steps that set it go with it', () => {
     const definition = removeField(app(), 'expense_claim', app().entities['expense_claim']!.fields.findIndex((f) => f.name === 'approver'));
-    expect(steps(definition).map((step) => step.type)).toEqual(['check', 'if', 'skill']);
+    expect(steps(definition).map((step) => step.type)).toEqual(['check', 'check']);
     const withLine = addStep(app(), 'submit_claim', 'add_line').definition;
     const lineFields = withLine.entities['expense_line']!.fields;
     const without = removeField(withLine, 'expense_line', lineFields.findIndex((f) => f.name === 'merchant'));

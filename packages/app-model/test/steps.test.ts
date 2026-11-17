@@ -6,6 +6,7 @@ import {
   EXPENSE_APP,
   isExpression,
   runSteps,
+  skillStepIssues,
   stepName,
   validateDefinition,
   type Expression,
@@ -34,6 +35,27 @@ function edited(edit: (draft: Record<string, any>) => void): Record<string, any>
   edit(draft);
   return draft;
 }
+
+/** The example, with approval that starts a7c skills: where an installation connects a7c. */
+const SKILL_STEPS = [
+  { type: 'check', assert: { ne: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }, message: "You can't approve your own claim" },
+  { type: 'set', field: 'approver', value: { ref: 'principal.id' } },
+  {
+    type: 'if',
+    when: { gt: [{ ref: 'record.total' }, 1000] },
+    then: [{ type: 'skill', label: 'Ask finance to check a large claim', skill: 'finance/check-large-claim', input: { claim: { ref: 'record.id' }, amount: { ref: 'record.total' } } }],
+  },
+  {
+    type: 'skill',
+    label: 'Pay the claim',
+    skill: 'finance/pay-expense-claim',
+    input: { claim: { ref: 'record.id' }, title: { ref: 'record.title' }, amount: { ref: 'record.total' }, account: { ref: 'record.iban' } },
+  },
+];
+const withSkills = () =>
+  edited((d) => {
+    d.actions.approve_claim.steps = structuredClone(SKILL_STEPS);
+  });
 
 const ALICE = '0193a7c4-0000-7000-8000-000000000001';
 const BOB = '0193a7c4-0000-7000-8000-000000000002';
@@ -77,7 +99,7 @@ describe('expressions', () => {
 });
 
 describe('steps', () => {
-  const definition = valid(EXPENSE_APP);
+  const definition = valid(withSkills());
   const claim = { id: CLAIM, title: 'Singapore trip', trip: 'Singapore', total: 302.4, status: 'approved', iban: 'SG12 3456', approver: null, owner: BOB };
   const approve = (record: Record<string, unknown>, by = ALICE) =>
     runSteps({ definition, entity: 'expense_claim', steps: definition.actions['approve_claim']!.steps!, record: record as never, lines: {}, principal: { id: by }, now: NOW });
@@ -228,7 +250,7 @@ describe('checking steps', () => {
   });
 
   it('carry renames into steps', () => {
-    const first = valid(EXPENSE_APP);
+    const first = valid(withSkills());
     const next = structuredClone(first) as unknown as Record<string, any>;
     next.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'approver').name = 'approved_by';
     next.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'iban').name = 'account';
@@ -242,10 +264,10 @@ describe('checking steps', () => {
 
 describe('steps in review', () => {
   it('name each a7c skill an action gains or loses, for reviewers', () => {
-    const base = valid(EXPENSE_APP);
+    const base = valid(withSkills());
     const head = valid(
       edited((d) => {
-        d.actions.approve_claim.steps = d.actions.approve_claim.steps.filter((step: { type: string }) => step.type !== 'if');
+        d.actions.approve_claim.steps = structuredClone(SKILL_STEPS).filter((step) => step.type !== 'if');
         d.actions.approve_claim.steps.push({ type: 'skill', label: 'Tell the requester', skill: 'people/notify', input: { person: { ref: 'record.owner' } } });
       }),
       base,
@@ -256,7 +278,7 @@ describe('steps in review', () => {
     ]);
     const reordered = valid(
       edited((d) => {
-        d.actions.approve_claim.steps.reverse();
+        d.actions.approve_claim.steps = structuredClone(SKILL_STEPS).reverse();
       }),
       base,
     );
@@ -271,10 +293,15 @@ describe('steps in review', () => {
         d.pages.to_approve.blocks[1].actions = [];
       }),
     );
-    const head = valid(EXPENSE_APP, base);
+    const head = valid(withSkills(), base);
     expect(capabilityChanges(base, head).map((change) => change.text)).toEqual([
       'New tool approve_claim: updates Expense claim, and asks the person to confirm a preview. It starts the a7c skills finance/check-large-claim, finance/pay-expense-claim',
     ]);
+  });
+
+  it('say where a definition starts a7c skills, for an installation without a7c', () => {
+    expect(skillStepIssues(valid(EXPENSE_APP))).toEqual([]);
+    expect(skillStepIssues(valid(withSkills())).map((issue) => issue.path)).toEqual(['actions.approve_claim.steps[2].then[0]', 'actions.approve_claim.steps[3]']);
   });
 
   it('list the skills a change starts on its card, without their input', () => {

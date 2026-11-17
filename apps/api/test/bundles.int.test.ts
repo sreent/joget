@@ -113,8 +113,6 @@ describe('export and import', () => {
     expect(started).toMatchObject({ app: { kind: 'team', name: 'Purchase requests', environments: [] }, plan: null, changeRequest: { number: 1 } });
     const cr = await json({ method: 'GET', url: `/v1/change-requests/${started.changeRequest.id}`, ...as(carol) }, 200);
     expect(cr).toMatchObject({ title: 'Start Purchase requests from a template', status: 'open' });
-    expect(cr.checks.capabilities.map((c: { text: string }) => c.text)).toContain(
-      'New tool approve_purchase: updates Purchase request, and asks the person to confirm a preview. It starts the a7c skill procurement/raise-purchase-order',
-    );
+    expect(cr.checks.capabilities.map((c: { text: string }) => c.text)).toContain('New tool approve_purchase: updates Purchase request, and asks the person to confirm a preview');
   });
 });

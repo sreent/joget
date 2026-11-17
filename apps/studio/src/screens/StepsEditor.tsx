@@ -1,4 +1,6 @@
+import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
+import { api } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { Badge, Button, Field, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type Condition } from '../model/conditions.js';
@@ -49,6 +51,9 @@ const nameOf = (place: StepPlace) => (place.side === undefined ? `Step ${place.i
  * step starts once the change is saved.
  */
 export function StepsEditor({ definition, onChange, action }: Props & { action: string }) {
+  // a7c is left out until the installation connects it: until then, no new skill steps.
+  const features = useQuery({ queryKey: ['features'], queryFn: api.features, staleTime: Infinity });
+  const simple: StepType[] = features.data?.a7c ? ['set', 'add_line', 'check', 'skill'] : ['set', 'add_line', 'check'];
   const current = definition.actions[action]!;
   const steps = (current.steps ?? []) as Step[];
   const [open, setOpen] = useState<string | null>(null);
@@ -103,7 +108,7 @@ export function StepsEditor({ definition, onChange, action }: Props & { action: 
                 ) : (
                   <p className="m-0 text-xs text-faint">Nothing.</p>
                 )}
-                <AddButtons can={can} types={['set', 'add_line', 'check', 'skill']} prefix={`${name}, ${side === 'then' ? 'then' : 'otherwise'}: `} onAdd={(type) => add(type, { index: place.index, side })} />
+                <AddButtons can={can} types={simple} prefix={`${name}, ${side === 'then' ? 'then' : 'otherwise'}: `} onAdd={(type) => add(type, { index: place.index, side })} />
               </div>
             ))}
           </div>
@@ -117,11 +122,12 @@ export function StepsEditor({ definition, onChange, action }: Props & { action: 
       <div>
         <h3 className="m-0 text-sm font-semibold text-muted">Then, step by step</h3>
         <p className="m-0 text-xs text-faint">
-          After it takes its input and sets its values. The review card shows what the steps did, and a7c skills start once the change is saved. Steps can set only what the person running the action may set.
+          After it takes its input and sets its values. The review card shows what the steps did. Steps can set only what the person running the action may set.
+          {features.data?.a7c ? ' a7c skills start once the change is saved.' : ''}
         </p>
       </div>
       {steps.length ? <ol className="m-0 grid list-none grid-cols-1 gap-1.5 p-0">{steps.map((step, index) => item(step, { index }, steps.length))}</ol> : <p className="m-0 text-sm text-muted">No steps: it saves what it takes and sets.</p>}
-      <AddButtons can={can} types={['set', 'add_line', 'check', 'if', 'skill']} prefix="" onAdd={(type) => add(type)} />
+      <AddButtons can={can} types={[...simple.filter((type) => type !== 'skill'), 'if', ...simple.filter((type) => type === 'skill')]} prefix="" onAdd={(type) => add(type)} />
     </section>
   );
 }

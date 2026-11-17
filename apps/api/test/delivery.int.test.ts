@@ -68,7 +68,8 @@ async function deployToProd(releaseId: string, confirmDestructive = false): Prom
 }
 
 beforeAll(async () => {
-  t = await startTestApp();
+  // This installation connects a7c, so the team app's approval can start a skill: in the tier of its environment.
+  t = await startTestApp({ A7C_URL: 'https://a7c.test', A7C_TOKEN_FILE: '/run/secrets/a7c-token' });
   [alice, olivia, carol, gina, dave, erin, frank] = await Promise.all([
     t.login('alice'),
     t.login('olivia'),
@@ -119,7 +120,10 @@ describe('team apps and working copies', () => {
   });
 
   it('lets the builder change the copy at once, with test data that stays in their space', async () => {
-    await editCopy(carol, copyId, (definition) => Object.assign(definition, structuredClone(EXPENSE_APP)));
+    await editCopy(carol, copyId, (definition) => {
+      Object.assign(definition, structuredClone(EXPENSE_APP));
+      definition.actions.approve_claim.steps.push({ type: 'skill', label: 'Pay the claim', skill: 'finance/pay-expense-claim', input: { claim: { ref: 'record.id' }, amount: { ref: 'record.total' } } });
+    });
     await inject(
       { method: 'POST', url: `/v1/apps/${copyId}/entities/expense_claim/records`, ...as(carol), payload: { values: { title: 'Test claim', lines: [line('Cafe', 12)] } } },
       201,

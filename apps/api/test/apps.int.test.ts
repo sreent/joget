@@ -68,6 +68,22 @@ describe('building an app in a personal space', () => {
     await inject({ method: 'POST', url: `/v1/spaces/${bob.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Sneaky' } }, 403);
   });
 
+  it('leaves a7c out until the installation connects it: a definition that starts a skill is refused', async () => {
+    expect((await inject({ method: 'GET', url: '/v1/features', ...as(alice) }, 200)).json()).toEqual({ a7c: false });
+    const current = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json();
+    const definition = structuredClone(current.definition);
+    definition.actions.approve_claim.steps.push({ type: 'skill', label: 'Pay the claim', skill: 'finance/pay-expense-claim', input: {} });
+    const refused = await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), payload: { definition, baseRevision: current.revision } }, 422);
+    expect(refused.json().details.issues).toEqual([
+      {
+        path: 'actions.approve_claim.steps[3]',
+        message: "Pay the claim: this installation doesn't connect a7c, so an action can't start an a7c skill. Leave the step out, or ask an admin to connect a7c",
+      },
+    ]);
+    const imported = await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { bundle: definition, name: 'With a skill' } }, 422);
+    expect(imported.json().error).toBe('invalid_definition');
+  });
+
   it('runs the rules on the server, on every line, whatever the client', async () => {
     const zero = await inject({ method: 'POST', url: records(), ...as(alice), payload: { values: { title: 'Lunch', lines: [line('Cafe', 'meals', 12), line('Free lunch', 'meals', 0)] } } }, 422);
     expect(zero.json()).toMatchObject({ error: 'rule_failed', details: { findings: [{ rule: 'positive_amount', fields: ['lines[1].amount'], line: { field: 'lines', index: 1 } }] } });

@@ -76,6 +76,19 @@ export function linesFieldsAddedTo(steps: readonly Step[]): string[] {
   return [...names];
 }
 
+/**
+ * Where a definition starts a7c skills, as issues: for an installation that doesn't connect a7c,
+ * which refuses such a definition rather than queue calls that nothing would ever send.
+ */
+export function skillStepIssues(definition: { readonly actions: Readonly<Record<string, { readonly steps?: readonly Step[] }>> }): Array<{ path: string; message: string }> {
+  return Object.entries(definition.actions).flatMap(([name, action]) =>
+    skillSteps(action.steps ?? []).map(({ path, step }) => ({
+      path: `actions.${name}.${path}`,
+      message: `${step.label}: this installation doesn't connect a7c, so an action can't start an a7c skill. Leave the step out, or ask an admin to connect a7c`,
+    })),
+  );
+}
+
 /** Every skill step of an action, at any depth, with where it is. */
 export function skillSteps(steps: readonly Step[]): Array<{ readonly path: string; readonly step: Extract<Step, { type: 'skill' }> }> {
   const found: Array<{ path: string; step: Extract<Step, { type: 'skill' }> }> = [];

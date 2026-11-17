@@ -42,10 +42,33 @@ async function claim(session: Session, title: string, amounts: number[], iban = 
 
 const callsOf = (recordId: string) => t.ctx.db.select().from(skillCalls).where(eq(skillCalls.recordId, recordId)).orderBy(asc(skillCalls.step));
 
+/** The example, with approval that starts a7c skills. */
+function withSkills() {
+  const definition = structuredClone(EXPENSE_APP) as unknown as { actions: { approve_claim: { steps: unknown[] } } };
+  definition.actions.approve_claim.steps = [
+    { type: 'check', assert: { ne: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }, message: "You can't approve your own claim" },
+    { type: 'set', field: 'approver', value: { ref: 'principal.id' } },
+    {
+      type: 'if',
+      when: { gt: [{ ref: 'record.total' }, 1000] },
+      then: [{ type: 'skill', label: 'Ask finance to check a large claim', skill: 'finance/check-large-claim', input: { claim: { ref: 'record.id' }, amount: { ref: 'record.total' } } }],
+    },
+    {
+      type: 'skill',
+      label: 'Pay the claim',
+      skill: 'finance/pay-expense-claim',
+      input: { claim: { ref: 'record.id' }, title: { ref: 'record.title' }, amount: { ref: 'record.total' }, account: { ref: 'record.iban' } },
+    },
+  ];
+  return definition;
+}
+
 beforeAll(async () => {
-  t = await startTestApp();
+  // This installation connects a7c: actions may start a7c skills. Nothing reaches a7c in these tests.
+  t = await startTestApp({ A7C_URL: 'https://a7c.test', A7C_TOKEN_FILE: '/run/secrets/a7c-token' });
   [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
-  const created = await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } }, 201);
+  expect((await inject({ method: 'GET', url: '/v1/features', ...as(alice) }, 200)).json()).toEqual({ a7c: true });
+  const created = await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withSkills() } }, 201);
   appId = created.json().app.id;
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'carol@example.com', role: 'approver' } }, 201);

@@ -118,6 +118,8 @@ export const api = {
   example: () => call<{ schema: unknown; example: Definition }>('GET', '/v1/app-model/schema'),
   /** An app's definition, as the file Ambit exports: the main line, never data. */
   exportApp: (appId: string) => call<Record<string, unknown> & { app: { handle: string } }>('GET', `${app(appId)}/export`),
+  /** What this installation offers builders, such as whether it connects a7c. */
+  features: () => call<{ a7c: boolean }>('GET', '/v1/features'),
   templates: () => call<{ templates: Array<{ id: string; name: string; description: string; entities: string[] }> }>('GET', '/v1/templates'),
   importApp: (spaceId: string, body: { name?: string; template?: string; bundle?: Record<string, unknown> }) =>
     call<{ app: AppSummary; plan: Plan | null; changeRequest: { id: string; number: number } | null; asExported: boolean | null }>(
