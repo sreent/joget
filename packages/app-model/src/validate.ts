@@ -16,7 +16,7 @@ import {
 import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
 import { elementName, processGraph } from './processes.js';
 import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Action, type Entity, type ProcessElement, type SimpleStep, type Step, type Timer } from './schema.js';
-import { alwaysGiven } from './steps.js';
+import { alwaysGiven, readsPrincipal } from './steps.js';
 import { canonicalValue } from './values.js';
 
 export interface Issue {
@@ -1124,6 +1124,10 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
             if (seen.has(outcome.name)) issues.push({ path: `${at}.name`, message: `Another outcome is already named ${outcome.name}` });
             seen.add(outcome.name);
             if (!outcome.action) return;
+            // Running an outcome's action completes the task with that outcome, so each outcome runs its own.
+            if (element.outcomes.findIndex((other) => other.action === outcome.action) !== index) {
+              issues.push({ path: `${at}.action`, message: `Another outcome already runs ${outcome.action}: each outcome runs an action of its own` });
+            }
             const action = updateAction(outcome.action, `${at}.action`);
             if (action && role && !role.actions.includes(outcome.action)) {
               issues.push({ path: `${at}.action`, message: `${role.label} can't run ${outcome.action}, so nobody who may do the task could choose ${outcome.label}` });
@@ -1148,7 +1152,9 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         }
         case 'serviceTask':
           if (Boolean(element.action) === Boolean(element.skill)) issues.push({ path, message: `${label(id)} runs an action or starts an a7c skill: one of the two` });
-          if (element.action) updateAction(element.action, `${path}.action`);
+          if (element.action && updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
+            issues.push({ path: `${path}.action`, message: `${element.action} reads the person who runs it, but a service task runs it with no person` });
+          }
           if (element.input && !element.skill) issues.push({ path: `${path}.input`, message: 'Only a skill takes input' });
           for (const [input, expression] of Object.entries(element.input ?? {})) {
             for (const ref of expressionRefs(expression)) {

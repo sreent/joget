@@ -822,6 +822,18 @@ So a change request's permission diff still says who can decide, and a process n
 - A process advances in the same transaction as the change that moves it, together with its audit events: the action that starts it, the outcome that completes a task, or a timer. Workers claim due timers with `SKIP LOCKED`.
 - So a record and its process never disagree, and there is no second system to run. a7c keeps Temporal for its own runs.
 
+**As built (phase 3, so far):**
+
+- Processes are part of an app's definition, under BPMN 2.0's names, with their diagram. They are optional, so the definitions of earlier releases keep their digests. The checks refuse what can't run and name it, and a renamed entity or field carries into processes.
+- A change request names what starts a new process and what it runs by itself, and the permission diff names who may start one by hand. A change of layout alone isn't a change of capability.
+- The engine works as described above. A task records its outcomes and their actions as it opens, so a later release can't change what deciding it does. A path that loops 500 times without waiting stops, and the change that started it is refused.
+- A user task goes to the person a user field names, if they are still active, or else to anyone with its role. An outcome's action runs as the person who decides, under their permissions; from an API token it becomes a proposal, and an outcome without an action can't be chosen from a token at all.
+- A service task can't run an action that reads the person running it, as a process runs it with no person. If an action's checks stop it, nothing it did stays (a savepoint), and the instance waits at the task.
+- Operators see where each instance waits and why, try a stuck one again, and cancel one. Every start, assignment, decision, escalation and end is audited.
+- Agents get the person's tasks and complete them through MCP, once an app they can use has a process.
+- The leave template has a process: the manager the employee names decides within three days.
+- Not built yet: BPMN 2.0 XML import and export, the designer, routing from the directory, and the next elements above.
+
 ---
 
 ## 7. Deployment

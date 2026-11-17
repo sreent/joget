@@ -676,6 +676,179 @@ export const skillCalls = pgTable(
   ],
 );
 
+/*
+ * Business processes (design §6.10): instances, the tokens that wait in them, people's tasks,
+ * timers and each instance's history. A process advances in the transaction of the change that
+ * moves it, so these rows and the record always agree.
+ */
+
+/** One run of a process, about one record. */
+export const processInstances = pgTable(
+  'process_instances',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    /** The process's name in the definition. */
+    process: text('process').notNull(),
+    /** The definition revision it runs on, to the end (design §6.9). */
+    revision: integer('revision').notNull(),
+    entity: text('entity').notNull(),
+    recordId: uuid('record_id').notNull(),
+    status: text('status', { enum: ['running', 'completed', 'cancelled'] })
+      .notNull()
+      .default('running'),
+    /** The outcome each user task was last completed with, which conditions read. */
+    outcomes: jsonb('outcomes').$type<Record<string, string>>().notNull().default({}),
+    /** Who started it: the person whose action started it, or who started it by hand. */
+    startedBy: uuid('started_by').references(() => users.id),
+    /** The action whose commit started it, if one did. */
+    startedByAction: text('started_by_action'),
+    startedAt: timestamp('started_at', tz).notNull(),
+    endedAt: timestamp('ended_at', tz),
+  },
+  (t) => [
+    uniqueIndex('process_instances_one_running_uq').on(t.environmentId, t.process, t.recordId).where(sql`${t.status} = 'running'`),
+    index('process_instances_app_idx').on(t.appId, t.environmentId, t.status),
+    index('process_instances_record_idx').on(t.environmentId, t.recordId),
+    check('process_instances_ended_when', sql`(${t.status} = 'running') = (${t.endedAt} is null)`),
+  ],
+);
+
+/** A token that waits: for a person at a user task, for a timer, for the other paths at a parallel gateway, or for an operator where it got stuck. */
+export const processTokens = pgTable(
+  'process_tokens',
+  {
+    id: uuid('id').primaryKey(),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    element: text('element').notNull(),
+    /** The flow it came by: a parallel gateway waits for a token from each flow in. */
+    arrivedBy: text('arrived_by'),
+    state: text('state', { enum: ['waiting', 'stuck'] }).notNull(),
+    /** Why it is stuck, for the operator who retries it. */
+    error: text('error'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('process_tokens_instance_idx').on(t.instanceId), check('process_tokens_stuck_why', sql`(${t.state} = 'stuck') = (${t.error} is not null)`)],
+);
+
+/** A user task: work that waits for a person, in their inbox. */
+export const processTasks = pgTable(
+  'process_tasks',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    element: text('element').notNull(),
+    /** The token that waits at the task while it is open. */
+    tokenId: uuid('token_id'),
+    name: text('name').notNull(),
+    entity: text('entity').notNull(),
+    recordId: uuid('record_id').notNull(),
+    /** The app role whose holders may do it. */
+    role: text('role').notNull(),
+    /** The one person it waits for, when routing names one. */
+    assignee: uuid('assignee').references(() => users.id),
+    /** The outcomes as the task opened with them, and the action each runs. */
+    outcomes: jsonb('outcomes').$type<Array<{ name: string; label: string; action?: string }>>().notNull(),
+    card: text('card'),
+    status: text('status', { enum: ['open', 'completed', 'cancelled'] })
+      .notNull()
+      .default('open'),
+    outcome: text('outcome'),
+    completedBy: uuid('completed_by').references(() => users.id),
+    /** Why it closed without an outcome: a timer, or the instance ending or being cancelled. */
+    cancelReason: text('cancel_reason'),
+    dueAt: timestamp('due_at', tz),
+    createdAt: createdAt(),
+    closedAt: timestamp('closed_at', tz),
+  },
+  (t) => [
+    index('process_tasks_open_idx').on(t.environmentId, t.role).where(sql`${t.status} = 'open'`),
+    index('process_tasks_assignee_idx').on(t.assignee).where(sql`${t.status} = 'open'`),
+    index('process_tasks_record_idx').on(t.environmentId, t.recordId),
+    index('process_tasks_instance_idx').on(t.instanceId),
+    check('process_tasks_closed_when', sql`(${t.status} = 'open') = (${t.closedAt} is null)`),
+    check('process_tasks_outcome_when', sql`(${t.status} = 'completed') = (${t.outcome} is not null)`),
+  ],
+);
+
+/** A timer that waits to fire: at a timer catch event, or on a user task's boundary. */
+export const processTimers = pgTable(
+  'process_timers',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    /** The timer event. */
+    element: text('element').notNull(),
+    /** The token that waits at a timer catch event. */
+    tokenId: uuid('token_id'),
+    /** The task a boundary timer sits on. */
+    taskId: uuid('task_id').references(() => processTasks.id),
+    fireAt: timestamp('fire_at', tz).notNull(),
+    status: text('status', { enum: ['waiting', 'fired', 'cancelled'] })
+      .notNull()
+      .default('waiting'),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    firedAt: timestamp('fired_at', tz),
+  },
+  (t) => [
+    index('process_timers_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`),
+    index('process_timers_instance_idx').on(t.instanceId),
+    check('process_timers_one_place', sql`(${t.tokenId} is null) <> (${t.taskId} is null)`),
+  ],
+);
+
+/** What happened in an instance, step by step, for the people in it and its operators. */
+export const processEvents = pgTable(
+  'process_events',
+  {
+    id: uuid('id').primaryKey(),
+    /** The order things happened in, within a transaction too. */
+    seq: bigint('seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    at: timestamp('at', tz).notNull(),
+    kind: text('kind', {
+      enum: ['started', 'task_opened', 'task_completed', 'task_cancelled', 'timer_fired', 'ran', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
+    }).notNull(),
+    element: text('element'),
+    /** The person behind it, if there is one. */
+    by: uuid('by').references(() => users.id),
+    detail: jsonb('detail').$type<Json>(),
+  },
+  (t) => [index('process_events_instance_idx').on(t.instanceId, t.seq)],
+);
+
 /** Org-level rules that deny, or demand fresh MFA, regardless of grants. */
 export const guardrails = pgTable('guardrails', {
   id: text('id').primaryKey(),

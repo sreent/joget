@@ -50,6 +50,8 @@ import {
   type StoredRecord,
   type ValueIssue,
   type ValueKind,
+  type Action,
+  type Step,
   rangeStart,
   summarize,
   type ChartBlock,
@@ -63,13 +65,13 @@ import { proposals, skillCalls, users } from '@platform/db';
 import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { checkQuery, principalEnv } from '../access/check.js';
+import { checkPermission, checkQuery, principalEnv } from '../access/check.js';
 import type { AllowedQuery } from '../access/rules.js';
-import { auditScopeFor, recordAudit } from '../audit/writer.js';
+import { auditScopeFor, recordAudit, type AuditScope } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import type { FileUse } from '../files/service.js';
 import type { SkillTier } from '../skills/dispatcher.js';
-import { badRequest, conflict, forbidden, notFound, unprocessable } from '../errors.js';
+import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
 import type { LoadedApp } from './catalog.js';
 import { capabilityResource, recordResource } from './resources.js';
 import { pgError } from './pg-errors.js';
@@ -212,6 +214,100 @@ function skillCallView(row: SkillCallRow): SkillCallView {
 /** Which a7c tier runs the skills an environment's actions start. */
 const SKILL_TIERS: Readonly<Record<LoadedApp['env']['kind'], SkillTier>> = { sandbox: 'personal', preview: 'team', staging: 'team', prod: 'production' };
 
+/** What a caller gives an action. */
+export interface ActionInput {
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly recordId?: string;
+  readonly version?: number;
+  readonly provenance?: unknown;
+  readonly dryRun?: boolean;
+}
+
+/** A process's service task, running an action by itself (design §6.10). */
+export interface ProcessOrigin {
+  readonly kind: 'process';
+  readonly instanceId: string;
+  readonly process: string;
+  readonly element: string;
+  /** The person the process works for: who started it, or whose decision moved it on. */
+  readonly onBehalfOf: string | null;
+}
+
+/** Who runs an action: a person, through a request, or a process by itself. */
+export type ActionOrigin = { readonly kind: 'request'; readonly request: FastifyRequest; readonly auth: AuthContext } | ProcessOrigin;
+
+/** Who writes a record, for its audit event and its history. */
+export interface Writer {
+  /** Stored as who created the record or changed it last. */
+  readonly actorId: string;
+  readonly scope: (now: Date) => AuditScope;
+  readonly history: { readonly actorType: string; readonly actorId: string; readonly onBehalfOf: string | null };
+}
+
+/** A process writes as itself, for the person it works for: the audit log and the history name both. */
+export function processWriter(orgId: string, origin: ProcessOrigin): Writer {
+  return {
+    actorId: origin.onBehalfOf ?? origin.instanceId,
+    scope: (now) => ({
+      orgId,
+      now,
+      actor: { type: 'system', id: `process:${origin.instanceId}`, via: 'system', ...(origin.onBehalfOf ? { onBehalfOf: origin.onBehalfOf } : {}) },
+      context: { process: origin.process, element: origin.element },
+    }),
+    history: { actorType: 'process', actorId: origin.instanceId, onBehalfOf: origin.onBehalfOf },
+  };
+}
+
+/** The app's authority, which a process's service task acts with: every record and field of the entity, and no guardrail of a person's. */
+function processAuthority(action: string, entity: string, instanceId: string): AllowedQuery {
+  const grant: QueryGrant = {
+    bindingId: `process:${instanceId}`,
+    permissionSetId: 'process',
+    scope: { type: 'env', id: instanceId },
+    grant: { permission: action, resource: entity },
+    filter: true,
+    check: true,
+  };
+  return { allowed: true, action, grants: [grant], exclude: [], reasons: [] };
+}
+
+/** What the process engine does around an action (design §6.10). */
+export interface ProcessHooks {
+  /** Refuse an action that decides a task assigned to someone else. */
+  checkDecider(tx: AppTransaction, loaded: LoadedApp, recordId: string, action: string, actorId: string): Promise<void>;
+  /** After an action commits on a record, in its transaction: complete the tasks it decides, and start the processes it starts. */
+  afterAction(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    event: { readonly action: string; readonly recordId: string; readonly by: AuthContext['actor']; readonly writer: Writer },
+  ): Promise<void>;
+}
+
+interface ActionRun {
+  readonly origin: ActionOrigin;
+  readonly loaded: LoadedApp;
+  readonly name: string;
+  readonly action: Action;
+  readonly entity: StoredEntity;
+  readonly input: ActionInput;
+  readonly options: { readonly revises?: ProposalRow };
+  readonly check: ReturnType<typeof checkActionInput>;
+  readonly provenance: Record<string, Provenance>;
+  readonly permission: AllowedQuery;
+  readonly needsConfirmation: boolean;
+  readonly steps: readonly Step[];
+  readonly now: Date;
+  readonly commit: boolean;
+  readonly proposed: NonNullable<SealedEffect['lines']>;
+  readonly newId: string | undefined;
+  readonly stepLines: readonly string[];
+  readonly given: readonly string[];
+  readonly givenScalars: readonly string[];
+  readonly writer: Writer;
+  readonly principal: Record<string, unknown>;
+  readonly onBehalfOf: string | null;
+}
+
 const toWire = (lines: readonly LineValues[]): LineWire[] => lines.map((line) => ({ ...line.values, ...(line.id ? { id: line.id } : {}) }));
 
 function decodeCursor(cursor: string, kinds: readonly ValueKind[]): FieldValue[] {
@@ -256,9 +352,23 @@ const encodeCursor = (values: readonly FieldValue[]) => Buffer.from(JSON.stringi
  */
 export class AppRuntime {
   readonly #ctx: AppContext;
+  #processes: ProcessHooks | undefined;
 
   constructor(ctx: AppContext) {
     this.#ctx = ctx;
+  }
+
+  /** Let the process engine follow the actions that move processes. */
+  attachProcesses(hooks: ProcessHooks): void {
+    this.#processes = hooks;
+  }
+
+  #writer(request: FastifyRequest, auth: AuthContext): Writer {
+    return {
+      actorId: auth.actor.id,
+      scope: (now) => auditScopeFor(request, this.#ctx.org.id, now),
+      history: { actorType: auth.agent ? 'service_account' : auth.actor.type, actorId: auth.agent?.id ?? auth.actor.id, onBehalfOf: auth.agent ? auth.actor.id : null },
+    };
   }
 
   /** The platform's policy with this app's own roles. */
@@ -467,8 +577,8 @@ export class AppRuntime {
     }
   }
 
-  #rules(loaded: LoadedApp, entityName: string, auth: AuthContext, values: RecordValues, lines: Readonly<Record<string, readonly LineValues[]>> = {}): Finding[] {
-    const findings = evaluateRules(loaded.definition, entityName, values, { principal: principalEnv(auth) }, lines);
+  #rules(loaded: LoadedApp, entityName: string, principal: Record<string, unknown>, values: RecordValues, lines: Readonly<Record<string, readonly LineValues[]>> = {}): Finding[] {
+    const findings = evaluateRules(loaded.definition, entityName, values, { principal }, lines);
     const errors = findings.filter((finding) => finding.severity === 'error');
     if (errors.length) throw unprocessable('rule_failed', errors.map((e) => e.message).join('; '), { findings });
     return findings;
@@ -519,8 +629,7 @@ export class AppRuntime {
   }
 
   async #writeRecord(
-    request: FastifyRequest,
-    auth: AuthContext,
+    writer: Writer,
     loaded: LoadedApp,
     tx: AppTransaction,
     write: {
@@ -547,10 +656,10 @@ export class AppRuntime {
     let after: StoredRecord | null = null;
     try {
       if (write.operation === 'create') {
-        const query = insertRecord(names, entity, { id: write.id ?? uuidv7(now.getTime()), owner: write.owner ?? auth.actor.id, actor: auth.actor.id, at, values: write.values });
+        const query = insertRecord(names, entity, { id: write.id ?? uuidv7(now.getTime()), owner: write.owner ?? writer.actorId, actor: writer.actorId, at, values: write.values });
         after = parseRecord(entity, (await tx.query(query.text, query.values)).rows[0]!).record;
       } else if (write.operation === 'update') {
-        const query = updateRecord(names, entity, { id: write.before!.id, actor: auth.actor.id, at, values: write.values });
+        const query = updateRecord(names, entity, { id: write.before!.id, actor: writer.actorId, at, values: write.values });
         after = parseRecord(entity, (await tx.query(query.text, query.values)).rows[0]!).record;
       } else {
         const query = deleteRecord(names, entity, write.before!.id);
@@ -584,7 +693,7 @@ export class AppRuntime {
     if (write.files?.length && write.operation !== 'delete') {
       await ctx.files.attach(tx, loaded, { entityId: entity.id, recordId: record.id }, write.files.map((use) => use.fileId));
     }
-    const event = await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
+    const event = await recordAudit(tx.db, writer.scope(now), {
       action: `record.${write.operation}`,
       target: { type: 'record', id: record.id, name: write.entityName },
       spaceId: loaded.space.id,
@@ -602,9 +711,9 @@ export class AppRuntime {
         version: after?.version ?? write.before!.version,
         operation: write.operation,
         changes,
-        actorType: auth.agent ? 'service_account' : auth.actor.type,
-        actorId: auth.agent?.id ?? auth.actor.id,
-        onBehalfOf: auth.agent ? auth.actor.id : null,
+        actorType: writer.history.actorType,
+        actorId: writer.history.actorId,
+        onBehalfOf: writer.history.onBehalfOf,
         via: event.actor.via ?? 'api',
         at,
         auditEventId: event.id,
@@ -699,14 +808,14 @@ export class AppRuntime {
       throw forbidden('not_allowed', 'You may not create this record: a field or a value is outside what your role allows');
     }
     this.#blockedBy(permission, after);
-    this.#rules(loaded, entityName, auth, after, prepared.lines);
+    this.#rules(loaded, entityName, principalEnv(auth), after, prepared.lines);
     await this.#checkPeople(loaded, entity, after, 'owner' in input.values, prepared.lines);
     const record = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
       const files = this.#newFiles(loaded, entity, null, values, prepared.lines, {});
       await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: null });
       const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
-      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines, files }))!;
+      return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines, files }))!;
     });
     return this.#respond(auth, loaded, entityName, record);
   }
@@ -748,13 +857,13 @@ export class AppRuntime {
         throw conflict('version_conflict', `The record is at version ${before.version}, not ${input.version}. Reload it and try again.`);
       }
       this.#blockedBy(permission, beforeValues, afterValues);
-      this.#rules(loaded, entityName, auth, afterValues, prepared.lines);
+      this.#rules(loaded, entityName, principalEnv(auth), afterValues, prepared.lines);
       if (Object.keys(changed).length === 0 && prepared.changed.length === 0) return before;
       const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: current[name] ?? [] }]));
       await this.#checkPeople(loaded, entity, changed, 'owner' in changed, Object.fromEntries(prepared.changed.map((name) => [name, prepared.lines[name]!])));
       const files = this.#newFiles(loaded, entity, beforeValues, changed, prepared.lines, current);
       await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: before.id });
-      return (await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'update', before, values: changed, provenance, lines, files }))!;
+      return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'update', before, values: changed, provenance, lines, files }))!;
     });
     return this.#respond(auth, loaded, entityName, record);
   }
@@ -776,7 +885,7 @@ export class AppRuntime {
       this.#blockedBy(permission, values);
       const current = await this.#currentLines(tx, loaded, entity, before.id, linesFieldsOf(entity).map((f) => f.name));
       const lines = Object.fromEntries(Object.entries(current).filter(([, list]) => list.length).map(([name, list]) => [name, { next: [], current: list }]));
-      await this.#writeRecord(request, auth, loaded, tx, { entityName, operation: 'delete', before, values: {}, lines });
+      await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'delete', before, values: {}, lines });
     });
   }
 
@@ -1078,15 +1187,40 @@ export class AppRuntime {
     auth: AuthContext,
     loaded: LoadedApp,
     name: string,
-    input: {
-      readonly values: Readonly<Record<string, unknown>>;
-      readonly recordId?: string;
-      readonly version?: number;
-      readonly provenance?: unknown;
-      readonly dryRun?: boolean;
-    },
+    input: ActionInput,
     options: { readonly revises?: ProposalRow } = {},
   ): Promise<ActionResult> {
+    const run = await this.#prepareAction({ kind: 'request', request, auth }, loaded, name, input, options);
+    return withAppTransaction(this.#ctx.pool, loaded.env, 'records', (tx) => this.#runActionIn(tx, run)).then(async (result) => {
+      if (result.status !== 'done') return result;
+      // The response shows the record as the caller may read it, decided after the write.
+      const stored = await this.#readBack(loaded, run.entity, result.record.id);
+      return { status: 'done' as const, record: stored ? await this.#respond(auth, loaded, run.action.entity, stored, true) : result.record };
+    });
+  }
+
+  /**
+   * Run an update action on a record for a process's service task, in the process's transaction,
+   * with the app's authority (design §6.10): the definition grants it, so no role is needed, but
+   * the action's own conditions, steps and rules still run. If they stop it, nothing it did stays,
+   * and the answer says why.
+   */
+  async runForProcess(tx: AppTransaction, loaded: LoadedApp, name: string, recordId: string, origin: ProcessOrigin): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+    await tx.platformQuery('savepoint process_action');
+    try {
+      const run = await this.#prepareAction(origin, loaded, name, { values: {}, recordId }, {});
+      await this.#runActionIn(tx, run);
+      await tx.platformQuery('release savepoint process_action');
+      return { ok: true };
+    } catch (error) {
+      await tx.platformQuery('rollback to savepoint process_action');
+      if (error instanceof HttpError) return { ok: false, message: error.message };
+      throw error;
+    }
+  }
+
+  /** Check an action's input and decide whether its caller may run it at all, before any transaction. */
+  async #prepareAction(origin: ActionOrigin, loaded: LoadedApp, name: string, input: ActionInput, options: { readonly revises?: ProposalRow }): Promise<ActionRun> {
     const ctx = this.#ctx;
     const action = loaded.definition.actions[name];
     if (!action) throw notFound('Action');
@@ -1095,9 +1229,13 @@ export class AppRuntime {
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
     const provenance = this.#provenance(input.provenance, action.input, check.lines);
     if (action.operation === 'update' && !input.recordId) throw unprocessable('record_required', `${name} changes an existing record: give its ID`);
-    const permission = await this.decide(request, auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity, { inside: true });
+    const permission =
+      origin.kind === 'request'
+        ? await this.decide(origin.request, origin.auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity, { inside: true })
+        : processAuthority(action.operation === 'create' ? 'record.create' : 'record.update', action.entity, origin.instanceId);
     // Revising a proposal is the person's own edit: it waits for their approval again, through the same review.
-    const needsConfirmation = action.confirm !== 'none' && (auth.credential.kind === 'token' || options.revises !== undefined);
+    const needsConfirmation =
+      origin.kind === 'request' && action.confirm !== 'none' && (origin.auth.credential.kind === 'token' || options.revises !== undefined);
     const steps = action.steps ?? [];
     const now = ctx.now();
     const commit = !input.dryRun && !needsConfirmation;
@@ -1109,158 +1247,169 @@ export class AppRuntime {
     const stepLines = linesFieldsAddedTo(steps).filter((field) => !(field in check.lines));
     const given = [...new Set([...Object.keys(input.values), ...Object.keys(action.set)])];
     const givenScalars = given.filter((field) => !(field in check.lines));
+    const writer = origin.kind === 'request' ? this.#writer(origin.request, origin.auth) : processWriter(ctx.org.id, origin);
+    const principal = origin.kind === 'request' ? principalEnv(origin.auth) : {};
+    const onBehalfOf = origin.kind === 'request' ? (origin.auth.actor.type === 'user' ? origin.auth.actor.id : null) : origin.onBehalfOf;
+    return {
+      origin, loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, steps, now, commit, proposed, newId, stepLines, given, givenScalars, writer, principal, onBehalfOf,
+    };
+  }
 
-    return withAppTransaction(ctx.pool, loaded.env, 'records', async (tx) => {
-      this.#sameRevision(tx, loaded);
-      let before: StoredRecord | null = null;
-      let beforeValues: Record<string, FieldValue> = {};
-      let current: Record<string, StoredLine[]> = {};
-      let prepared: ReturnType<AppRuntime['prepareLinesFor']>;
-      if (action.operation === 'create') {
-        prepared = this.prepareLinesFor(loaded, action.entity, check.lines, proposed, {}, true, alwaysGiven(steps));
-        const after = { ...check.values, ...prepared.rollups, owner: (check.values['owner'] as string | undefined) ?? auth.actor.id };
-        if (!writeGrant(permission.grants, { fields: [...givenScalars, ...prepared.paths], after })) {
-          throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a field or a value is outside what your role allows`);
-        }
-      } else {
-        before = await this.#lock(tx, loaded, entity, input.recordId!);
-        if (!before) throw notFound('Record');
-        current = await this.#currentLines(tx, loaded, entity, before.id, [...Object.keys(check.lines), ...stepLines]);
-        // Lines fields that only the steps add to keep the lines they have.
-        const kept = Object.fromEntries(stepLines.map((field) => [field, (current[field] ?? []).map((line) => ({ id: line.id, values: {} }))]));
-        prepared = this.prepareLinesFor(loaded, action.entity, { ...kept, ...check.lines }, { ...current, ...proposed }, current, false);
-        beforeValues = recordValues(before);
-        const after = { ...beforeValues, ...check.values, ...prepared.rollups };
-        if (!writeGrant(permission.grants, { fields: [...givenScalars, ...prepared.paths], before: beforeValues, after })) {
-          const read = await this.#readGrants(auth, loaded, action.entity, true);
-          if (!(read && grantsFor(read.grants, beforeValues).length)) throw notFound('Record');
-          throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()} for this record`);
-        }
-        if (input.version !== undefined && input.version !== before.version) {
-          throw conflict('version_conflict', `The record is at version ${before.version}, not ${input.version}. Reload it and try again.`);
-        }
-        if (action.where) {
-          const where = partialEvaluate(action.where, { principal: principalEnv(auth), context: {} }, ['record']);
-          const applies = typeof where === 'boolean' ? where : evaluateCondition(where, { record: conditionRecord(beforeValues) });
-          if (!applies) throw conflict('action_not_applicable', `${action.label} doesn't apply to this record as it is now`);
-        }
-        this.#blockedBy(permission, beforeValues);
+  /** An action's work, in a transaction: work out the change, then propose it, or write it and move the processes it touches. */
+  async #runActionIn(tx: AppTransaction, run: ActionRun): Promise<ActionResult> {
+    const { loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, steps, now, commit, proposed, newId, stepLines, given, givenScalars } = run;
+    const ctx = this.#ctx;
+    this.#sameRevision(tx, loaded);
+    let before: StoredRecord | null = null;
+    let beforeValues: Record<string, FieldValue> = {};
+    let current: Record<string, StoredLine[]> = {};
+    let prepared: ReturnType<AppRuntime['prepareLinesFor']>;
+    if (action.operation === 'create') {
+      prepared = this.prepareLinesFor(loaded, action.entity, check.lines, proposed, {}, true, alwaysGiven(steps));
+      const after = { ...check.values, ...prepared.rollups, owner: (check.values['owner'] as string | undefined) ?? run.writer.actorId };
+      if (!writeGrant(permission.grants, { fields: [...givenScalars, ...prepared.paths], after })) {
+        throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a field or a value is outside what your role allows`);
       }
+    } else {
+      before = await this.#lock(tx, loaded, entity, input.recordId!);
+      if (!before) throw notFound('Record');
+      current = await this.#currentLines(tx, loaded, entity, before.id, [...Object.keys(check.lines), ...stepLines]);
+      // Lines fields that only the steps add to keep the lines they have.
+      const kept = Object.fromEntries(stepLines.map((field) => [field, (current[field] ?? []).map((line) => ({ id: line.id, values: {} }))]));
+      prepared = this.prepareLinesFor(loaded, action.entity, { ...kept, ...check.lines }, { ...current, ...proposed }, current, false);
+      beforeValues = recordValues(before);
+      const after = { ...beforeValues, ...check.values, ...prepared.rollups };
+      if (!writeGrant(permission.grants, { fields: [...givenScalars, ...prepared.paths], before: beforeValues, after })) {
+        const read = run.origin.kind === 'request' ? await this.#readGrants(run.origin.auth, loaded, action.entity, true) : null;
+        if (!(read && grantsFor(read.grants, beforeValues).length)) throw notFound('Record');
+        throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()} for this record`);
+      }
+      // While a task waits for one person to decide, only they can run the action that decides it.
+      if (run.origin.kind === 'request') await this.#processes?.checkDecider(tx, loaded, before.id, name, run.origin.auth.actor.id);
+      if (input.version !== undefined && input.version !== before.version) {
+        throw conflict('version_conflict', `The record is at version ${before.version}, not ${input.version}. Reload it and try again.`);
+      }
+      if (action.where) {
+        const where = partialEvaluate(action.where, { principal: run.principal, context: {} }, ['record']);
+        const applies = typeof where === 'boolean' ? where : evaluateCondition(where, { record: conditionRecord(beforeValues) });
+        if (!applies) throw conflict('action_not_applicable', `${action.label} doesn't apply to this record as it is now`);
+      }
+      this.#blockedBy(permission, beforeValues);
+    }
 
-      // The record as the action shapes it; then its steps, if it has any (design §6.2).
-      let draft: Record<string, FieldValue> =
-        action.operation === 'create'
-          ? { ...check.values, ...prepared.rollups, id: newId!, owner: (check.values['owner'] as string | undefined) ?? auth.actor.id }
-          : { ...beforeValues, ...check.values, ...prepared.rollups };
-      let worked: Record<string, LineValues[]> = prepared.lines;
-      let stepFindings: readonly Finding[] = [];
-      let skills: readonly SkillCall[] = [];
-      let stepSet: readonly string[] = [];
-      let linesAdded: readonly string[] = [];
-      if (steps.length) {
-        const ran = runSteps({ definition: loaded.definition, entity: action.entity, steps, record: draft, lines: worked, principal: principalEnv(auth), now });
-        if (ran.failed) throw unprocessable('rule_failed', ran.failed.message, { findings: [ran.failed] });
-        if (ran.issues.length) throw unprocessable('invalid_values', 'A step works out a value that its field cannot hold', { issues: ran.issues });
-        draft = ran.record;
-        worked = ran.lines;
-        stepFindings = ran.findings;
-        skills = ran.skills;
-        stepSet = ran.set;
-        linesAdded = ran.linesAdded;
-      }
-      if (action.operation === 'create' && steps.length) {
-        // What the steps were to give, they gave: a new record still has every required value.
-        const missing = entity.fields.flatMap((field): ValueIssue[] => {
-          if (!field.required) return [];
-          const empty = field.type === 'lines' ? !(worked[field.name]?.length) : draft[field.name] === undefined || draft[field.name] === null;
-          return empty ? [{ field: field.name, code: 'required', message: field.type === 'lines' ? `${field.label}: add at least one line` : `${field.label} is required` }] : [];
-        });
-        if (missing.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: missing });
-      }
-      const delta = this.#linesDelta(loaded, entity, worked, current);
-      const written = [...new Set([...givenScalars, ...stepSet])];
-      let values: Record<string, FieldValue>;
-      let after: Record<string, FieldValue>;
-      if (action.operation === 'create') {
-        const { id: _id, owner, ...rest } = draft;
-        values = 'owner' in check.values || stepSet.includes('owner') ? { ...rest, owner: owner ?? null } : rest;
-        after = { ...rest, owner: owner ?? auth.actor.id };
-      } else {
-        values = Object.fromEntries(Object.entries(draft).filter(([field, value]) => JSON.stringify(beforeValues[field] ?? null) !== JSON.stringify(value)));
-        after = { ...beforeValues, ...values };
-      }
-      // What the steps set is the person's write too: an action never does more than its runner may.
-      if (steps.length && !writeGrant(permission.grants, { fields: [...written, ...delta.paths], ...(before ? { before: beforeValues } : {}), after })) {
-        throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a step sets a field or a value outside what your role allows`);
-      }
-      this.#blockedBy(permission, after);
-      // A proposal gives new lines their IDs now, so the person's revisions can follow each line.
-      const lines: Record<string, LineValues[]> = Object.fromEntries(
-        Object.entries(worked).map(([field, list]) => [field, commit || input.dryRun ? list : list.map((line) => ({ id: line.id ?? uuidv7(now.getTime()), values: line.values }))]),
+    // The record as the action shapes it; then its steps, if it has any (design §6.2).
+    let draft: Record<string, FieldValue> =
+      action.operation === 'create'
+        ? { ...check.values, ...prepared.rollups, id: newId!, owner: (check.values['owner'] as string | undefined) ?? run.writer.actorId }
+        : { ...beforeValues, ...check.values, ...prepared.rollups };
+    let worked: Record<string, LineValues[]> = prepared.lines;
+    let stepFindings: readonly Finding[] = [];
+    let skills: readonly SkillCall[] = [];
+    let stepSet: readonly string[] = [];
+    let linesAdded: readonly string[] = [];
+    if (steps.length) {
+      const ran = runSteps({ definition: loaded.definition, entity: action.entity, steps, record: draft, lines: worked, principal: run.principal, now });
+      if (ran.failed) throw unprocessable('rule_failed', ran.failed.message, { findings: [ran.failed] });
+      if (ran.issues.length) throw unprocessable('invalid_values', 'A step works out a value that its field cannot hold', { issues: ran.issues });
+      draft = ran.record;
+      worked = ran.lines;
+      stepFindings = ran.findings;
+      skills = ran.skills;
+      stepSet = ran.set;
+      linesAdded = ran.linesAdded;
+    }
+    if (action.operation === 'create' && steps.length) {
+      // What the steps were to give, they gave: a new record still has every required value.
+      const missing = entity.fields.flatMap((field): ValueIssue[] => {
+        if (!field.required) return [];
+        const empty = field.type === 'lines' ? !(worked[field.name]?.length) : draft[field.name] === undefined || draft[field.name] === null;
+        return empty ? [{ field: field.name, code: 'required', message: field.type === 'lines' ? `${field.label}: add at least one line` : `${field.label} is required` }] : [];
+      });
+      if (missing.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: missing });
+    }
+    const delta = this.#linesDelta(loaded, entity, worked, current);
+    const written = [...new Set([...givenScalars, ...stepSet])];
+    let values: Record<string, FieldValue>;
+    let after: Record<string, FieldValue>;
+    if (action.operation === 'create') {
+      const { id: _id, owner, ...rest } = draft;
+      values = 'owner' in check.values || stepSet.includes('owner') ? { ...rest, owner: owner ?? null } : rest;
+      after = { ...rest, owner: owner ?? run.writer.actorId };
+    } else {
+      values = Object.fromEntries(Object.entries(draft).filter(([field, value]) => JSON.stringify(beforeValues[field] ?? null) !== JSON.stringify(value)));
+      after = { ...beforeValues, ...values };
+    }
+    // What the steps set is the person's write too: an action never does more than its runner may.
+    if (steps.length && !writeGrant(permission.grants, { fields: [...written, ...delta.paths], ...(before ? { before: beforeValues } : {}), after })) {
+      throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a step sets a field or a value outside what your role allows`);
+    }
+    this.#blockedBy(permission, after);
+    // A proposal gives new lines their IDs now, so the person's revisions can follow each line.
+    const lines: Record<string, LineValues[]> = Object.fromEntries(
+      Object.entries(worked).map(([field, list]) => [field, commit || input.dryRun ? list : list.map((line) => ({ id: line.id ?? uuidv7(now.getTime()), values: line.values }))]),
+    );
+    const findings = [...this.#rules(loaded, action.entity, run.principal, after, lines), ...stepFindings];
+    await this.#checkPeople(loaded, entity, values, 'owner' in values, lines);
+    // An agent can only propose files the person uploaded (or it uploaded for them): checked now, attached on approval.
+    const files = this.#newFiles(loaded, entity, before ? beforeValues : null, values, lines, current);
+    if (run.origin.kind === 'request') await ctx.files.checkUses(tx, loaded, run.origin.auth, files, { entityId: entity.id, recordId: before?.id ?? null });
+    else if (files.length) throw unprocessable('files_from_process', `${action.label} attaches files, which only a person can do`);
+    const sources: Record<string, Provenance> = { ...provenance, ...Object.fromEntries(stepSet.map((field) => [field, { source: 'platform' as const }])) };
+    const card = buildCard({
+      definition: loaded.definition,
+      entity: action.entity,
+      ...(action.card ? { card: action.card } : {}),
+      title: action.label,
+      show: [...new Set([...given, ...stepSet, ...linesAdded])],
+      values: after,
+      lines,
+      findings,
+      provenance: sources,
+      files: await ctx.files.describe(tx, loaded, this.#fileIds(loaded, entity, { values: { ...after, ...Object.fromEntries(Object.entries(lines).map(([field, list]) => [field, list.map((line) => line.values)])) } })),
+      skills,
+    });
+    if (input.dryRun) return { status: 'preview' as const, needsConfirmation, findings, card };
+    if (!commit) {
+      if (run.origin.kind !== 'request') throw new Error('A process never waits for a confirmation');
+      const { request, auth } = run.origin;
+      const sealedInput: SealedEffect['input'] = Object.fromEntries(
+        Object.entries({ ...check.values, ...Object.fromEntries(Object.keys(check.lines).map((field) => [field, toWire(lines[field]!)])) }).filter(([field]) => action.input.includes(field)),
       );
-      const findings = [...this.#rules(loaded, action.entity, auth, after, lines), ...stepFindings];
-      await this.#checkPeople(loaded, entity, values, 'owner' in values, lines);
-      // An agent can only propose files the person uploaded (or it uploaded for them): checked now, attached on approval.
-      const files = this.#newFiles(loaded, entity, before ? beforeValues : null, values, lines, current);
-      await ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: before?.id ?? null });
-      const sources: Record<string, Provenance> = { ...provenance, ...Object.fromEntries(stepSet.map((field) => [field, { source: 'platform' as const }])) };
-      const card = buildCard({
-        definition: loaded.definition,
-        entity: action.entity,
-        ...(action.card ? { card: action.card } : {}),
-        title: action.label,
-        show: [...new Set([...given, ...stepSet, ...linesAdded])],
-        values: after,
-        lines,
+      const sealedLines = Object.fromEntries(delta.changed.map((field) => [field, lines[field]!.map((line) => ({ id: line.id!, values: line.values }))]));
+      const proposal = await this.#propose(request, auth, loaded, tx, {
+        action: name,
+        recordId: before?.id ?? null,
+        baseVersion: before?.version ?? null,
+        effect: {
+          input: sealedInput,
+          values,
+          ...(Object.keys(sealedLines).length ? { lines: sealedLines } : {}),
+          ...(newId && steps.length ? { id: newId } : {}),
+          ...(stepSet.length ? { stepFields: [...stepSet] } : {}),
+          ...(skills.length ? { skills: [...skills] } : {}),
+        },
         findings,
         provenance: sources,
-        files: await ctx.files.describe(tx, loaded, this.#fileIds(loaded, entity, { values: { ...after, ...Object.fromEntries(Object.entries(lines).map(([field, list]) => [field, list.map((line) => line.values)])) } })),
-        skills,
+        card,
+        ...(options.revises ? { revises: options.revises } : {}),
       });
-      if (input.dryRun) return { status: 'preview' as const, needsConfirmation, findings, card };
-      if (!commit) {
-        const sealedInput: SealedEffect['input'] = Object.fromEntries(
-          Object.entries({ ...check.values, ...Object.fromEntries(Object.keys(check.lines).map((field) => [field, toWire(lines[field]!)])) }).filter(([field]) => action.input.includes(field)),
-        );
-        const sealedLines = Object.fromEntries(delta.changed.map((field) => [field, lines[field]!.map((line) => ({ id: line.id!, values: line.values }))]));
-        const proposal = await this.#propose(request, auth, loaded, tx, {
-          action: name,
-          recordId: before?.id ?? null,
-          baseVersion: before?.version ?? null,
-          effect: {
-            input: sealedInput,
-            values,
-            ...(Object.keys(sealedLines).length ? { lines: sealedLines } : {}),
-            ...(newId && steps.length ? { id: newId } : {}),
-            ...(stepSet.length ? { stepFields: [...stepSet] } : {}),
-            ...(skills.length ? { skills: [...skills] } : {}),
-          },
-          findings,
-          provenance: sources,
-          card,
-          ...(options.revises ? { revises: options.revises } : {}),
-        });
-        return { status: 'needs_confirmation' as const, proposal, card };
-      }
-      const record = (await this.#writeRecord(request, auth, loaded, tx, {
-        entityName: action.entity,
-        operation: action.operation,
-        before,
-        values,
-        ...(action.operation === 'create' ? { owner: after['owner'] as string, id: newId! } : {}),
-        provenance: sources,
-        reason: { action: name },
-        lines: Object.fromEntries(delta.changed.map((field) => [field, { next: lines[field]!, current: current[field] ?? [] }])),
-        files,
-      }))!;
-      await this.#queueSkills(request, auth, loaded, tx, { action: name, recordId: record.id, calls: skills });
-      return { status: 'done' as const, record: { id: record.id, version: record.version } };
-    }).then(async (result) => {
-      if (result.status !== 'done') return result;
-      // The response shows the record as the caller may read it, decided after the write.
-      const stored = await this.#readBack(loaded, entity, result.record.id);
-      return { status: 'done' as const, record: stored ? await this.#respond(auth, loaded, action.entity, stored, true) : result.record };
-    });
+      return { status: 'needs_confirmation' as const, proposal, card };
+    }
+    const record = (await this.#writeRecord(run.writer, loaded, tx, {
+      entityName: action.entity,
+      operation: action.operation,
+      before,
+      values,
+      ...(action.operation === 'create' ? { owner: after['owner'] as string, id: newId! } : {}),
+      provenance: sources,
+      reason: { action: name },
+      lines: Object.fromEntries(delta.changed.map((field) => [field, { next: lines[field]!, current: current[field] ?? [] }])),
+      files,
+    }))!;
+    await this.queueSkills(run.writer, loaded, tx, { action: name, recordId: record.id, calls: skills, onBehalfOf: run.onBehalfOf });
+    // The processes it moves: tasks it decides complete, and processes it starts begin (design §6.10).
+    if (run.origin.kind === 'request') await this.#processes?.afterAction(tx, loaded, { action: name, recordId: record.id, by: run.origin.auth.actor, writer: run.writer });
+    return { status: 'done' as const, record: { id: record.id, version: record.version } };
   }
 
   /** The fields of lines a write changes, for the permission check, and which lines fields change at all. */
@@ -1282,12 +1431,18 @@ export class AppRuntime {
    * it commits. A sandbox calls a7c's personal tier, Staging and previews its team tier, and only
    * Prod its production tier, so trying a change never starts production work.
    */
-  async #queueSkills(
-    request: FastifyRequest,
-    auth: AuthContext,
+  async queueSkills(
+    writer: Writer,
     loaded: LoadedApp,
     tx: AppTransaction,
-    queue: { readonly action: string; readonly recordId: string; readonly calls: readonly SkillCall[]; readonly proposalId?: string; readonly onBehalfOf?: string },
+    queue: {
+      /** The action that starts them, or `process:<name>` for a process's service task. */
+      readonly action: string;
+      readonly recordId: string;
+      readonly calls: readonly SkillCall[];
+      readonly proposalId?: string;
+      readonly onBehalfOf: string | null;
+    },
   ): Promise<void> {
     const ctx = this.#ctx;
     const now = ctx.now();
@@ -1306,12 +1461,12 @@ export class AppRuntime {
         label: call.label,
         tier,
         input: call.input as unknown as Record<string, unknown>,
-        onBehalfOf: queue.onBehalfOf ?? (auth.actor.type === 'user' ? auth.actor.id : null),
+        onBehalfOf: queue.onBehalfOf,
         proposalId: queue.proposalId ?? null,
         nextAttemptAt: now,
         createdAt: now,
       });
-      await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
+      await recordAudit(tx.db, writer.scope(now), {
         action: 'skill_call.queue',
         target: { type: 'skill_call', id, name: call.skill },
         spaceId: loaded.space.id,
@@ -1320,6 +1475,22 @@ export class AppRuntime {
         reason: { action: queue.action, recordId: queue.recordId, step: call.step, skill: call.skill, tier, ...(queue.proposalId ? { proposal: queue.proposalId } : {}) },
       });
     }
+  }
+
+  /**
+   * A record's values, read in a transaction for the process engine: conditions and routing read
+   * the record as it is now. A process reads with the app's authority, as it acts with it.
+   */
+  async recordIn(tx: AppTransaction, loaded: LoadedApp, entityName: string, id: string): Promise<RecordValues | null> {
+    const entity = this.entity(loaded, entityName);
+    const query = selectRecords({ names: this.#names(loaded), entity, fields: entity.fields.map((f) => f.name), grants: [true], id });
+    const row = (await tx.query(query.text, query.values)).rows[0];
+    return row ? recordValues(parseRecord(entity, row).record) : null;
+  }
+
+  /** Lock a record for the rest of the transaction. The engine locks the record before its process, as an action does. */
+  async lockRecord(tx: AppTransaction, loaded: LoadedApp, entityName: string, id: string): Promise<boolean> {
+    return (await this.#lock(tx, loaded, this.entity(loaded, entityName), id)) !== null;
   }
 
   async #readBack(loaded: LoadedApp, entity: StoredEntity, id: string): Promise<StoredRecord | null> {
@@ -1497,6 +1668,7 @@ export class AppRuntime {
         before = await this.#lock(tx, loaded, entity, locked!.recordId!);
         if (!before) throw notFound('Record');
         if (before.version !== locked!.baseVersion) throw conflict('record_changed', 'The record changed since this was proposed. Ask for a new proposal.');
+        await this.#processes?.checkDecider(tx, loaded, before.id, proposal.action, auth.actor.id);
         current = await this.#currentLines(tx, loaded, entity, before.id, Object.keys(sealedLines));
         const beforeValues = recordValues(before);
         after = { ...beforeValues, ...effect.values };
@@ -1504,10 +1676,11 @@ export class AppRuntime {
         this.#blockedBy(permission, beforeValues);
       }
       this.#blockedBy(permission, after);
-      this.#rules(loaded, action.entity, auth, after, sealedLines);
+      this.#rules(loaded, action.entity, principalEnv(auth), after, sealedLines);
       const files = this.#newFiles(loaded, entity, before ? recordValues(before) : null, effect.values, sealedLines, current);
       await ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: before?.id ?? null });
-      const record = await this.#writeRecord(request, auth, loaded, tx, {
+      const writer = this.#writer(request, auth);
+      const record = await this.#writeRecord(writer, loaded, tx, {
         entityName: action.entity,
         operation: action.operation,
         before,
@@ -1518,7 +1691,8 @@ export class AppRuntime {
         lines: Object.fromEntries(Object.entries(sealedLines).map(([field, lines]) => [field, { next: lines, current: current[field] ?? [] }])),
         files,
       });
-      await this.#queueSkills(request, auth, loaded, tx, { action: proposal.action, recordId: record!.id, calls: effect.skills ?? [], proposalId: id, onBehalfOf: locked!.onBehalfOf });
+      await this.queueSkills(writer, loaded, tx, { action: proposal.action, recordId: record!.id, calls: effect.skills ?? [], proposalId: id, onBehalfOf: locked!.onBehalfOf });
+      await this.#processes?.afterAction(tx, loaded, { action: proposal.action, recordId: record!.id, by: auth.actor, writer });
       await tx.db.update(proposals).set({ status: 'approved', decidedAt: now, resultRecordId: record!.id }).where(eq(proposals.id, id));
       await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
         action: 'proposal.approve',
@@ -1652,6 +1826,11 @@ export class AppRuntime {
   /** The capability resource for an action or query, for permission checks. */
   capability(loaded: LoadedApp, kind: 'action' | 'query', name: string) {
     return capabilityResource(this.#ctx.org.id, loaded, kind, name);
+  }
+
+  /** Refuse, audited, unless the caller may run this action or query, as its own route would check. */
+  async checkCapability(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, kind: 'action' | 'query', name: string): Promise<void> {
+    await checkPermission(this.#ctx, request, auth, kind === 'action' ? 'action.run' : 'query.run', this.capability(loaded, kind, name), { policy: await this.policy(loaded) });
   }
 }
 

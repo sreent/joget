@@ -49,3 +49,11 @@ export const capabilityResource = (orgId: string, loaded: LoadedApp, kind: 'acti
   scopes: appScopes(orgId, loaded, loaded.env),
   attributes: attributes(loaded, loaded.env.kind),
 });
+
+/** A process of the app, for starting it by hand: roles name the processes their holders may start. */
+export const processResource = (orgId: string, loaded: LoadedApp, name: string): Resource => ({
+  type: 'process',
+  selector: name,
+  scopes: appScopes(orgId, loaded, loaded.env),
+  attributes: attributes(loaded, loaded.env.kind),
+});

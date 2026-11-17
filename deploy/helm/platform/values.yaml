@@ -50,6 +50,8 @@ config:
   # How often skill calls are sent to a7c, and how many tries each gets before it fails for good.
   SKILL_DISPATCH_INTERVAL_SECONDS: "5"
   SKILL_CALL_MAX_ATTEMPTS: "12"
+  # How often the timers of business processes that are due fire: deadlines, escalations and waits.
+  PROCESS_TIMER_INTERVAL_SECONDS: "5"
 
 # Extra environment variables for the API container, in Kubernetes `env` format.
 extraEnv: []

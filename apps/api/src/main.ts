@@ -7,6 +7,7 @@ import { createResilientOidcProvider } from './auth/oidc.js';
 import { loadConfig } from './config.js';
 import { buildServer } from './server.js';
 import { a7cRunner, SkillDispatcher, startSkillDispatcher } from './skills/dispatcher.js';
+import { startProcessTimers } from './processes/engine.js';
 
 const config = loadConfig();
 const database = createDatabase(config.DATABASE_URL, { applicationName: 'platform-api' });
@@ -26,7 +27,7 @@ if (!signingKey) {
 let reportIdpError = (error: unknown) => console.error('Cannot reach the identity provider', error);
 const oidc = createResilientOidcProvider(config, (error) => reportIdpError(error));
 const ctx = await createAppContext({ config, db: database.db, pool: database.pool, oidc, auditSigningKeyPem: signingKey });
-const { app } = await buildServer(ctx);
+const { app, processes } = await buildServer(ctx);
 for (const warning of warnings) app.log.warn(warning);
 reportIdpError = (error) => app.log.error({ err: error }, 'Cannot reach the identity provider: sign-in answers 503 until it can');
 void oidc.warmUp();
@@ -48,6 +49,7 @@ const stopDispatcher =
         logger: app.log,
       })
     : () => {};
+const stopTimers = config.PROCESS_TIMER_INTERVAL_SECONDS > 0 ? startProcessTimers(processes, { intervalSeconds: config.PROCESS_TIMER_INTERVAL_SECONDS, logger: app.log }) : () => {};
 if (!config.A7C_URL) app.log.warn('A7C_URL is not set: the a7c skills that actions call wait until it is');
 if (config.FILE_SCANNER === 'none') {
   app.log.warn(config.NODE_ENV === 'production' ? 'FILE_SCANNER is none, so uploads are refused: set up a clamd server' : 'FILE_SCANNER is none: uploads are kept without a malware check');
@@ -58,6 +60,7 @@ async function shutdown(signal: string): Promise<void> {
   stopSealer();
   stopSweeper();
   stopDispatcher();
+  stopTimers();
   await app.close();
   await database.close();
   process.exit(0);

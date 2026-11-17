@@ -41,7 +41,8 @@
         "CHANGE_APPROVALS": { "type": "string", "pattern": "^[1-5]$" },
         "DEPLOY_PROD_APPROVALS": { "type": "string", "pattern": "^[1-5]$" },
         "SKILL_DISPATCH_INTERVAL_SECONDS": { "type": "string", "pattern": "^[0-9]+$" },
-        "SKILL_CALL_MAX_ATTEMPTS": { "type": "string", "pattern": "^([1-9]|[1-4][0-9]|50)$" }
+        "SKILL_CALL_MAX_ATTEMPTS": { "type": "string", "pattern": "^([1-9]|[1-4][0-9]|50)$" },
+        "PROCESS_TIMER_INTERVAL_SECONDS": { "type": "string", "pattern": "^[0-9]+$" }
       },
       "not": {
         "anyOf": [

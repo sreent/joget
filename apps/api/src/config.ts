@@ -134,6 +134,8 @@ export const ConfigSchema = z
     SKILL_DISPATCH_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How many times a skill call is tried before it fails for good. */
     SKILL_CALL_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(12),
+    /** How often the timers of processes that are due fire. 0 disables it (for example, when a worker fires them). */
+    PROCESS_TIMER_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How often the in-process sealer runs. 0 disables it (for example, when a worker seals). */
     AUDIT_SEAL_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(60),
     /** Only events older than this are sealed, so no in-flight transaction can land in a sealed range. */

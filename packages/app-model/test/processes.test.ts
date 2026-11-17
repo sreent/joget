@@ -159,6 +159,7 @@ describe('the checks of a process', () => {
       "processes.leave_approval.elements.decide.outcomes[1].action: request_leave creates a record; here an action changes the process's own record",
       'processes.leave_approval.elements.decide.card: No card named nowhere',
       'processes.leave_approval.elements.pay: Pay runs an action or starts an a7c skill: one of the two',
+      'processes.leave_approval.elements.pay.action: approve_leave reads the person who runs it, but a service task runs it with no person',
       "processes.leave_approval.elements.pay.input.who: principal.id: a process's skill input reads fields of the record",
       'processes.leave_approval.elements.pay: Pay leads on by one flow',
       'roles.employee.processes[0]: No process named nothing',
@@ -233,13 +234,22 @@ describe('a process in review', () => {
       { tool: 'leave_approval', change: 'added', text: 'New process Leave approval, on Leave request: request_leave starts it' },
     ]);
     const paying = valid(
-      leave((process) => {
-        process.elements.pay = { type: 'serviceTask', name: 'Record it', action: 'approve_leave' };
+      leave((process, definition) => {
+        definition['actions'].mark_recorded = {
+          label: 'Mark as recorded',
+          description: 'Record that payroll knows of the leave.',
+          entity: 'leave_request',
+          operation: 'update',
+          input: [],
+          steps: [{ type: 'set', field: 'decided_on', value: { today: true } }],
+        };
+        definition['roles'].manager.actions.push('mark_recorded');
+        process.elements.pay = { type: 'serviceTask', name: 'Record it', action: 'mark_recorded' };
         process.flows.on_approve.to = 'pay';
         process.flows.paid = { from: 'pay', to: 'approved' };
       }),
     );
-    expect(capabilityChanges(head, paying).map((change) => change.text)).toEqual(['Leave approval now runs approve_leave by itself']);
+    expect(capabilityChanges(head, paying).map((change) => change.text)).toEqual(['New tool mark_recorded: updates Leave request, and asks the person to confirm a preview', 'Leave approval now runs mark_recorded by itself']);
   });
 
   it("ignores a change of layout, and names a change of the flow", () => {

@@ -8,10 +8,11 @@ import { checkPermission } from '../access/check.js';
 import { spaceResource } from '../access/resources.js';
 import { requireAuth } from '../access/rules.js';
 import type { AppContext, AuthContext } from '../context.js';
-import { HttpError, notFound } from '../errors.js';
+import { HttpError, notFound, unprocessable } from '../errors.js';
 import { changeRequestRequired, type AppBuilder } from './builder.js';
 import { isTeamApp, type LoadedApp } from './catalog.js';
 import type { Delivery } from '../delivery/service.js';
+import type { ProcessEngine } from '../processes/engine.js';
 import { appResource } from './resources.js';
 import { definitionJsonSchema, describeApp, isNotLive, visibleApps } from './routes.js';
 import type { AppRuntime } from './runtime.js';
@@ -131,9 +132,11 @@ function toolName(handle: string, name: string, taken: Set<string>, appId: strin
 }
 
 /** The tools an agent acting as this caller may use: every action and query they are allowed to run. */
-async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext): Promise<Tool[]> {
+/** The tools of the apps the person may use, and whether any of those apps has a business process. */
+async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext): Promise<{ tools: Tool[]; processes: boolean }> {
   const tools: Tool[] = [];
   const taken = new Set<string>();
+  let processes = false;
   for (const summary of await visibleApps(ctx, runtime, auth)) {
     if (!summary.access.run) continue;
     // Agents use a team app in Prod. One that isn't live there yet offers no tools.
@@ -142,6 +145,7 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
       throw error;
     });
     if (!loaded) continue;
+    if (Object.keys(loaded.definition.processes ?? {}).length) processes = true;
     const policy = await runtime.policy(loaded);
     const allowed = async (kind: 'action' | 'query', name: string) =>
       (await ctx.policy.authorize(auth.principal, `${kind}.run`, runtime.capability(loaded, kind, name), undefined, policy)).allowed;
@@ -196,7 +200,52 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
       });
     }
   }
-  return tools;
+  return { tools, processes };
+}
+
+const TaskId = z.uuid();
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The person's tasks in business processes (design §6.10): agents show them, and complete them as the person decides. */
+function taskTools(engine: ProcessEngine, request: FastifyRequest, auth: AuthContext): Tool[] {
+  return [
+    {
+      name: 'my_tasks',
+      title: 'My tasks',
+      description:
+        "The person's tasks in Ambit's business processes: decisions that wait for them, or for a role of theirs, soonest due first. Each names its app, its record, its outcomes and when it is due. Show them to the person, and complete one only when they say which outcome.",
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      run: async () => ({ tasks: await engine.inbox(auth, { status: 'open', limit: 50 }) }),
+      summarize: (result) => `${(result as { tasks: unknown[] }).tasks.length} task(s) wait.`,
+    },
+    {
+      name: 'complete_task',
+      title: 'Complete a task',
+      description:
+        "Complete one of the person's tasks with the outcome they chose, such as approve. The outcome's action becomes a proposal, as any action an agent runs: give the person its review link. The task completes when they approve it.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', format: 'uuid', description: 'From my_tasks' },
+          outcome: { type: 'string', description: "One of the task's outcomes, by name" },
+          values: { type: 'object', description: "The input of the outcome's action, if it takes any" },
+        },
+        required: ['task_id', 'outcome'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+      run: async (args) => {
+        const id = TaskId.safeParse(args['task_id']);
+        if (!id.success) throw unprocessable('invalid_task', 'Give the ID of a task from my_tasks');
+        return engine.complete(request, auth, id.data, { outcome: String(args['outcome']), ...(isObject(args['values']) ? { values: args['values'] } : {}) });
+      },
+      summarize: (result) => {
+        const done = result as { task: { name: string; status: string }; result: { status: string } | null };
+        return done.result?.status === 'needs_confirmation' ? `${done.task.name} waits until the person approves the proposal.` : `${done.task.name} is ${done.task.status}.`;
+      },
+    },
+  ];
 }
 
 function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, name: string, tool: string): Tool {
@@ -492,7 +541,7 @@ function serve(
   };
 }
 
-export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, delivery: Delivery): FastifyPluginAsyncZod {
+export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, delivery: Delivery, processes: ProcessEngine): FastifyPluginAsyncZod {
   return async (app) => {
     await app.register(
       serve(
@@ -503,7 +552,10 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
           instructions:
             'Tools here act for the signed-in person, within their permissions. Actions that need confirmation return a proposal: give the person its review link, and never claim it is done until they approve it. Report where each value came from in provenance.',
         },
-        (request, auth) => capabilityTools(ctx, runtime, request, auth),
+        async (request, auth) => {
+          const { tools, processes: used } = await capabilityTools(ctx, runtime, request, auth);
+          return used ? [...tools, ...taskTools(processes, request, auth)] : tools;
+        },
       ),
     );
     await app.register(

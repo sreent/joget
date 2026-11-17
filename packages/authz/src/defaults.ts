@@ -82,13 +82,13 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'deploy.execute',
     'deploy.rollback',
   ]),
-  permissionSet('ps.space.operations', 'Operate apps', 'space', ['ops.monitor.read', 'ops.job.retry', 'ops.task.reassign']),
+  permissionSet('ps.space.operations', 'Operate apps', 'space', ['ops.monitor.read', 'ops.job.retry', 'ops.task.reassign', 'process.admin']),
   // Builders and reviewers click through a change in its preview, with every right there, and nowhere else.
   permissionSet(
     'ps.space.preview',
     'Try changes in previews',
     'space',
-    ['app.run', 'action.run', 'query.run', 'record.read', 'record.create', 'record.update', 'record.delete'],
+    ['app.run', 'action.run', 'query.run', 'record.read', 'record.create', 'record.update', 'record.delete', 'process.start'],
     inPreview,
   ),
   permissionSet('ps.space.personal', 'Personal space owner', 'space', [
@@ -108,6 +108,8 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'record.update',
     'record.delete',
     'record.export',
+    'process.start',
+    'process.admin',
     'connection.use',
     'connection.manage',
     'deploy.read',

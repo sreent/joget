@@ -1,5 +1,5 @@
-import { evaluateCondition } from '@platform/authz';
-import { evaluateExpression, roundTo, type Expression, type ExpressionValue } from './expressions.js';
+import { conditionRefs, evaluateCondition, type Condition } from '@platform/authz';
+import { evaluateExpression, expressionRefs, roundTo, type Expression, type ExpressionValue } from './expressions.js';
 import { entityFields, isWritable, type FieldInfo, type StoredDefinition } from './fields.js';
 import type { Finding } from './rules.js';
 import { processSkillTasks } from './processes.js';
@@ -245,4 +245,32 @@ export function runSteps(input: {
 
   input.steps.every((step, index) => run(step, `steps[${index}]`) && issues.length === 0);
   return { record, lines, set: [...set], linesAdded: [...linesAdded], findings, skills, issues, ...(failed ? { failed } : {}) };
+}
+
+/** Whether an action reads the person who runs it: in its condition or its steps. A process's service task runs actions with no person. */
+export function readsPrincipal(action: { readonly where?: Condition; readonly steps?: readonly Step[] }): boolean {
+  const refs: string[] = [...(action.where ? conditionRefs(action.where) : [])];
+  const visit = (step: Step): void => {
+    switch (step.type) {
+      case 'set':
+        refs.push(...expressionRefs(step.value));
+        break;
+      case 'add_line':
+        for (const value of Object.values(step.values)) refs.push(...expressionRefs(value));
+        break;
+      case 'check':
+        refs.push(...conditionRefs(step.assert));
+        break;
+      case 'skill':
+        for (const value of Object.values(step.input)) refs.push(...expressionRefs(value));
+        break;
+      case 'if':
+        refs.push(...conditionRefs(step.when));
+        step.then.forEach(visit);
+        step.else.forEach(visit);
+        break;
+    }
+  };
+  (action.steps ?? []).forEach(visit);
+  return refs.some((ref) => ref === 'principal' || ref.startsWith('principal.'));
 }
