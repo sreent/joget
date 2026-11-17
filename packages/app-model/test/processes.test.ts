@@ -202,6 +202,25 @@ describe('the checks of a process', () => {
     ]);
   });
 
+  it('route a task by the directory: the manager of whoever a field names, or the department', () => {
+    const routed = leave((process) => {
+      process.elements.decide.assignee = { managerOf: 'owner', levels: 2 };
+      process.elements.decide.department = { of: 'owner' };
+    });
+    expect(issuesOf(routed)).toEqual([]);
+    expect(
+      issuesOf(
+        leave((process) => {
+          process.elements.decide.assignee = { managerOf: 'reason' };
+          process.elements.decide.department = { of: 'days' };
+        }),
+      ),
+    ).toEqual([
+      "processes.leave_approval.elements.decide.assignee.managerOf: reason doesn't name a person",
+      "processes.leave_approval.elements.decide.department.of: days doesn't name a person",
+    ]);
+  });
+
   it('carry a rename of the entity or a field into the process', () => {
     const before = valid(leave());
     const renamed = structuredClone(before) as unknown as Record<string, any>;

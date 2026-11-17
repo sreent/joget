@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, ApiError, type AppAt } from '../api.js';
-import { PersonName } from '../components/people.js';
-import { Badge, Button, Card, EmptyState, Notice } from '../components/ui.js';
+import { PersonName, PersonPicker } from '../components/people.js';
+import { Badge, Button, Card, EmptyState, Field, Notice, TextInput } from '../components/ui.js';
 import { Link } from '../router.js';
 import type { ProcessInstance, Task } from '../types.js';
 
@@ -21,7 +21,19 @@ function Due({ task }: { task: Task }) {
  */
 export function TaskOutcomes({ task, onDone }: { task: Task; onDone?: () => void }) {
   const client = useQueryClient();
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me });
   const [review, setReview] = useState<string | null>(null);
+  const [handing, setHanding] = useState(false);
+  const [to, setTo] = useState<string | null>(null);
+  const refresh = () => Promise.all(['tasks', 'processes'].map((key) => client.invalidateQueries({ queryKey: [key] })));
+  const take = useMutation({ mutationFn: () => api.claimTask(task.id), onSuccess: refresh });
+  const hand = useMutation({
+    mutationFn: (userId: string) => api.reassignTask(task.id, userId),
+    onSuccess: async () => {
+      setHanding(false);
+      await refresh();
+    },
+  });
   const decide = useMutation({
     mutationFn: (outcome: string) => api.completeTask(task.id, outcome),
     onSuccess: async ({ result }) => {
@@ -39,7 +51,35 @@ export function TaskOutcomes({ task, onDone }: { task: Task; onDone?: () => void
           </Button>
         ))}
       </div>
-      {decide.error ? <Notice tone="bad">{decide.error instanceof ApiError ? decide.error.message : 'Something went wrong'}</Notice> : null}
+      <div className="flex flex-wrap gap-2">
+        {task.assignee ? null : (
+          <Button size="sm" variant="ghost" onClick={() => take.mutate()} disabled={take.isPending}>
+            Take it
+          </Button>
+        )}
+        {task.assignee?.id === me.data?.id ? (
+          <Button size="sm" variant="ghost" onClick={() => setHanding(!handing)}>
+            Hand over
+          </Button>
+        ) : null}
+      </div>
+      {handing ? (
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-56">
+            <PersonPicker id={`hand-${task.id}`} label="To" value={to} onChange={setTo} />
+          </div>
+          <Button size="sm" variant="primary" disabled={!to || hand.isPending} onClick={() => to && hand.mutate(to)}>
+            Hand it over
+          </Button>
+        </div>
+      ) : null}
+      {[decide.error, take.error, hand.error].map((error, index) =>
+        error ? (
+          <Notice key={index} tone="bad">
+            {error instanceof ApiError ? error.message : 'Something went wrong'}
+          </Notice>
+        ) : null,
+      )}
       {review ? (
         <Notice tone="warn">
           It waits for your approval: <a href={review}>review it</a>.
@@ -72,6 +112,7 @@ export function Tasks() {
         </div>
       </div>
       {tasks.isError ? <Notice tone="bad">Your tasks can't be loaded right now.</Notice> : null}
+      {status === 'open' ? <Cover /> : null}
       {tasks.data && !tasks.data.tasks.length ? (
         <EmptyState title={status === 'open' ? 'Nothing waits for you' : 'Nothing done yet'}>
           {status === 'open' ? 'Tasks from the processes of your apps appear here when they need you.' : 'The tasks you finish appear here.'}
@@ -98,6 +139,46 @@ export function Tasks() {
         ))}
       </ul>
     </div>
+  );
+}
+
+/** Who takes the person's tasks while they are away, and until when. */
+function Cover() {
+  const client = useQueryClient();
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me });
+  const current = useQuery({ queryKey: ['cover', me.data?.id], queryFn: () => api.cover(me.data!.id), enabled: Boolean(me.data) });
+  const [who, setWho] = useState<string | null>(null);
+  const [until, setUntil] = useState('');
+  const save = useMutation({
+    mutationFn: (coverId: string | null) => api.setCover(coverId, until ? new Date(`${until}T23:59:59`).toISOString() : undefined),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['cover'] }),
+  });
+  if (!current.data) return null;
+  return (
+    <Card className="grid gap-3">
+      <h2 className="m-0 text-base font-semibold">While you're away</h2>
+      {current.data.coverId ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span>
+            <PersonName id={current.data.coverId} /> takes your new tasks{current.data.coverUntil ? ` until ${DAY.format(new Date(current.data.coverUntil))}` : ''}.
+          </span>
+          <Button size="sm" onClick={() => save.mutate(null)} disabled={save.isPending}>
+            I'm back
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-56">
+            <PersonPicker id="cover" label="Who takes your new tasks" value={who} onChange={setWho} />
+          </div>
+          <Field label="Until">{(id) => <TextInput id={id} type="date" value={until} onChange={(event) => setUntil(event.target.value)} />}</Field>
+          <Button size="sm" variant="primary" disabled={!who || save.isPending} onClick={() => save.mutate(who)}>
+            Hand over while away
+          </Button>
+        </div>
+      )}
+      {save.error ? <Notice tone="bad">{save.error instanceof ApiError ? save.error.message : 'Something went wrong'}</Notice> : null}
+    </Card>
   );
 }
 

@@ -236,6 +236,74 @@ describe('BPMN 2.0 files', () => {
   });
 });
 
+describe('routing from the directory', () => {
+  it("sends a task to the requester's manager, up the line, to their cover, or to a department", async () => {
+    const [dave, erin] = [await t.login('dave'), await t.login('erin')];
+    const directory = (person: Session, body: Record<string, unknown>) =>
+      inject({ method: 'PATCH', url: `/v1/people/${person.userId}/directory`, ...as(alice), payload: body }, 200);
+    // Alice reports to Bob, who reports to Erin. Alice and Carol work in Sales, Dave in Finance.
+    await directory(alice, { managerId: bob.userId, department: 'Sales' });
+    await directory(bob, { managerId: erin.userId });
+    await directory(carol, { department: 'Sales' });
+    await directory(dave, { department: 'Finance' });
+    // A loop in the reporting line is refused, and only directory admins set it.
+    expect((await inject({ method: 'PATCH', url: `/v1/people/${erin.userId}/directory`, ...as(alice), payload: { managerId: alice.userId } }, 422)).json().error).toBe('reporting_loop');
+    await inject({ method: 'PATCH', url: `/v1/people/${carol.userId}/directory`, ...as(bob), payload: { department: 'Finance' } }, 403);
+
+    const routed = await leaveApp('Leave, by the directory', (definition) => {
+      const process = definition['processes'].leave_approval;
+      // The requester's manager decides; then the manager's manager, for long leave; then HR in the requester's department.
+      process.elements.decide.assignee = { managerOf: 'owner' };
+      process.elements.second = { type: 'userTask', name: 'Second approval', role: 'manager', assignee: { managerOf: 'owner', levels: 2 }, outcomes: [{ name: 'done', label: 'Done' }] };
+      process.elements.file = { type: 'userTask', name: 'File it', role: 'hr', department: { of: 'owner' }, outcomes: [{ name: 'done', label: 'Done' }] };
+      process.flows.on_approve.to = 'second';
+      process.flows.seconded = { from: 'second', to: 'file' };
+      process.flows.filed = { from: 'file', to: 'approved' };
+      delete process.diagram;
+    });
+    for (const [subject, role] of [['erin', 'manager'], ['dave', 'hr'], ['carol', 'manager']] as const) {
+      await inject({ method: 'POST', url: `/v1/apps/${routed}/shares`, ...as(alice), payload: { email: `${subject}@example.com`, role } }, 201);
+    }
+    const tasksOf = async (session: Session) => (await inbox(session)).filter((task: { app: { id: string } }) => task.app.id === routed);
+
+    // The form names Carol as the manager, but the process asks the directory: Bob.
+    const asked = await ask(routed, { manager: carol.userId });
+    const [first] = await tasksOf(bob);
+    expect(first).toMatchObject({ name: 'Decide on the leave', assignee: { id: bob.userId } });
+    expect(await tasksOf(carol)).toEqual([]);
+
+    // Bob hands it to Carol, who holds the role too; not to Dave, who doesn't.
+    expect((await inject({ method: 'POST', url: `/v1/tasks/${first.id}/reassign`, ...as(bob), payload: { userId: dave.userId } }, 422)).json().error).toBe('not_in_role');
+    await json({ method: 'POST', url: `/v1/tasks/${first.id}/reassign`, ...as(bob), payload: { userId: carol.userId } }, 200);
+    expect(await tasksOf(bob)).toEqual([]);
+    await complete(carol, first.id, 'approve');
+
+    // Two levels up: Erin.
+    const [second] = await tasksOf(erin);
+    expect(second).toMatchObject({ name: 'Second approval', recordId: asked.record.id });
+    await complete(erin, second.id, 'done');
+
+    // HR in Alice's department: Carol sees it and takes it; Dave, in Finance, neither sees nor decides it.
+    expect(await tasksOf(dave)).toEqual([]);
+    const [filing] = await tasksOf(carol);
+    expect(filing).toMatchObject({ name: 'File it', assignee: null });
+    expect((await inject({ method: 'POST', url: `/v1/tasks/${filing.id}/complete`, ...as(dave), payload: { outcome: 'done' } }, 403)).json().error).toBe('task_department');
+    expect(await json({ method: 'POST', url: `/v1/tasks/${filing.id}/claim`, ...as(carol) }, 200)).toMatchObject({ assignee: { id: carol.userId } });
+    await complete(carol, filing.id, 'done');
+    expect((await processesOf(routed, asked.record.id))[0]).toMatchObject({ status: 'completed' });
+
+    // While Bob is away, Carol covers for him: the next request goes to her.
+    await inject({ method: 'PUT', url: '/v1/me/cover', ...as(bob), payload: { coverId: carol.userId, until: new Date(Date.now() + 7 * 86_400_000).toISOString() } }, 200);
+    const covered = await ask(routed, { starts: '2027-04-01', ends: '2027-04-01', days: 1 });
+    const [cover] = (await tasksOf(carol)).filter((task: { recordId: string }) => task.recordId === covered.record.id);
+    expect(cover).toMatchObject({ name: 'Decide on the leave', assignee: { id: carol.userId } });
+    const [instance] = await processesOf(routed, covered.record.id);
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'task_opened').detail).toMatchObject({ assignee: carol.userId, covering: bob.userId });
+    await inject({ method: 'PUT', url: '/v1/me/cover', ...as(bob), payload: { coverId: null } }, 200);
+    await inject({ method: 'POST', url: `/v1/apps/${routed}/process-instances/${instance.id}/cancel`, ...as(alice) }, 200);
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {
@@ -262,7 +330,7 @@ describe('a deadline', () => {
     [bob, carol, alice] = [await t.login('bob'), await t.login('carol'), await t.login('alice')];
     expect(await t.server.processes.fireDue()).toBe(1);
     expect((await inbox(bob)).filter((task: { recordId: string }) => task.recordId === asked.record.id)).toEqual([]);
-    const [hr] = await inbox(carol);
+    const [hr] = (await inbox(carol)).filter((task: { recordId: string }) => task.recordId === asked.record.id);
     expect(hr).toMatchObject({ name: 'Decide instead of the manager', role: 'hr', assignee: null, recordId: asked.record.id });
     await complete(carol, hr.id, 'reject');
 

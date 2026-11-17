@@ -170,6 +170,12 @@ export const api = {
       `/v1/tasks/${encodeURIComponent(id)}/complete`,
       { outcome, ...(values ? { values } : {}) },
     ),
+  claimTask: (id: string) => call<Task>('POST', `/v1/tasks/${encodeURIComponent(id)}/claim`),
+  reassignTask: (id: string, userId: string) => call<Task>('POST', `/v1/tasks/${encodeURIComponent(id)}/reassign`, { userId }),
+  cover: (userId: string) =>
+    call<{ id: string; department: string | null; managerId: string | null; coverId: string | null; coverUntil: string | null }>('GET', `/v1/people/${encodeURIComponent(userId)}/directory`),
+  setCover: (coverId: string | null, until?: string) =>
+    call<{ coverId: string | null; coverUntil: string | null }>('PUT', '/v1/me/cover', { coverId, ...(coverId && until ? { until } : {}) }),
   recordProcesses: (target: string | AppAt, entity: string, recordId: string) =>
     call<{ instances: ProcessInstance[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/processes${envParams(target)}`),
   startProcess: (target: string | AppAt, process: string, recordId: string) =>

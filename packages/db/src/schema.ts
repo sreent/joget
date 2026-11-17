@@ -47,10 +47,22 @@ export const users = pgTable(
     status: text('status', { enum: ['active', 'deprovisioned'] })
       .notNull()
       .default('active'),
+    /** From the directory: the department, and the manager on the reporting line. Processes route tasks by them. */
+    department: text('department'),
+    managerId: uuid('manager_id').references((): AnyPgColumn => users.id),
+    /** Out-of-office cover: who takes the tasks that would come to this person, until when. */
+    coverId: uuid('cover_id').references((): AnyPgColumn => users.id),
+    coverUntil: timestamp('cover_until', tz),
     createdAt: createdAt(),
     lastLoginAt: timestamp('last_login_at', tz),
   },
-  (t) => [uniqueIndex('users_issuer_subject_uq').on(t.issuer, t.subject), index('users_org_email_idx').on(t.orgId, t.email)],
+  (t) => [
+    uniqueIndex('users_issuer_subject_uq').on(t.issuer, t.subject),
+    index('users_org_email_idx').on(t.orgId, t.email),
+    index('users_manager_idx').on(t.managerId),
+    check('users_not_own_manager', sql`${t.managerId} is distinct from ${t.id}`),
+    check('users_not_own_cover', sql`${t.coverId} is distinct from ${t.id}`),
+  ],
 );
 
 /** Groups from the IdP's group claim, or managed on the platform. */
@@ -768,6 +780,8 @@ export const processTasks = pgTable(
     role: text('role').notNull(),
     /** The one person it waits for, when routing names one. */
     assignee: uuid('assignee').references(() => users.id),
+    /** Without one person: only those with the role in this department may take it. */
+    department: text('department'),
     /** The outcomes as the task opened with them, and the action each runs. */
     outcomes: jsonb('outcomes').$type<Array<{ name: string; label: string; action?: string }>>().notNull(),
     card: text('card'),
@@ -839,7 +853,7 @@ export const processEvents = pgTable(
       .references(() => processInstances.id, { onDelete: 'cascade' }),
     at: timestamp('at', tz).notNull(),
     kind: text('kind', {
-      enum: ['started', 'task_opened', 'task_completed', 'task_cancelled', 'timer_fired', 'ran', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
+      enum: ['started', 'task_opened', 'task_completed', 'task_cancelled', 'reassigned', 'timer_fired', 'ran', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
     }).notNull(),
     element: text('element'),
     /** The person behind it, if there is one. */

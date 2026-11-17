@@ -24,6 +24,10 @@ config:
   OIDC_CLIENT_ID: platform
   OIDC_SCOPES: openid profile email
   OIDC_GROUPS_CLAIM: groups
+  # The claims that carry a person's department and their manager's email, where the IdP sends them.
+  # Business processes route tasks by them, for example to the requester's manager.
+  # OIDC_DEPARTMENT_CLAIM: department
+  # OIDC_MANAGER_CLAIM: manager_email
   MFA_EVIDENCE: amr
   MFA_AMR_VALUES: mfa
   TRUST_PROXY: "true"

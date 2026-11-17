@@ -94,6 +94,22 @@ describe('BPMN 2.0 files', () => {
     expect(back).toEqual({ ok: true, processes: { leave_approval: leave.processes!['leave_approval'] }, notes: [] });
   });
 
+  it('carry routing by the directory out and back', () => {
+    const routed = valid({
+      ...LEAVE_APP,
+      processes: {
+        leave_approval: {
+          ...LEAVE_APP.processes.leave_approval,
+          elements: { ...LEAVE_APP.processes.leave_approval.elements, decide: { ...LEAVE_APP.processes.leave_approval.elements.decide, assignee: { managerOf: 'owner', levels: 2 }, department: { of: 'owner' } } },
+        },
+      },
+    });
+    const xml = processToBpmn(routed, 'leave_approval');
+    expect(xml).toContain('ambit:managerOf="owner" ambit:levels="2" ambit:department="owner"');
+    const back = bpmnToProcesses(xml, { ...routed, processes: {} });
+    expect(back.ok && back.processes['leave_approval']!.elements['decide']).toMatchObject({ assignee: { managerOf: 'owner', levels: 2 }, department: { of: 'owner' } });
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

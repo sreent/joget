@@ -4,6 +4,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { recordAudit, SYSTEM_ACTOR, type AuditScope } from '../audit/writer.js';
 import type { Config } from '../config.js';
 import { forbidden } from '../errors.js';
+import { closesLoop, personByEmail } from '../people/directory.js';
 import type { OidcIdentity } from './oidc.js';
 
 export interface ProvisionedUser {
@@ -67,6 +68,17 @@ export async function provisionUser(
       changes: { after: { issuer: identity.issuer, subject: identity.subject, email: identity.email } },
     });
   }
+
+  // The directory, where the IdP gives it: processes route tasks by department and reporting line.
+  const directory: { department?: string | null; managerId?: string | null } = {};
+  if (identity.department !== undefined) directory.department = identity.department;
+  if (identity.managerEmail === null) directory.managerId = null;
+  else if (identity.managerEmail) {
+    // A manager who hasn't signed in yet is set at a later sign-in; a loop in the line is left out.
+    const manager = await personByEmail(tx, orgId, identity.managerEmail);
+    if (manager && manager !== userId && !(await closesLoop(tx, userId, manager))) directory.managerId = manager;
+  }
+  if (Object.keys(directory).length) await tx.update(users).set(directory).where(eq(users.id, userId));
 
   await syncIdpGroups(tx, { orgId, userId, groupNames: identity.groups, audit: system });
   const personalSpaceId = await ensurePersonalSpace(tx, { orgId, userId, name: identity.name ?? identity.email, audit: system });

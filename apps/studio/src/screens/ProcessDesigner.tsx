@@ -528,24 +528,61 @@ function ElementPanel(props: {
             {(inputId) => (
               <Select
                 id={inputId}
-                value={element.assignee?.field ?? ''}
+                value={!element.assignee ? '' : 'field' in element.assignee ? `field:${element.assignee.field}` : `manager:${element.assignee.managerOf}:${element.assignee.levels}`}
                 onChange={(event) =>
                   set((current) => {
                     if (current.type !== 'userTask') return current;
                     const { assignee: _assignee, ...rest } = current;
-                    return event.target.value ? { ...rest, assignee: { field: event.target.value } } : rest;
+                    const [kind, field, levels] = event.target.value.split(':');
+                    if (kind === 'field' && field) return { ...rest, assignee: { field } };
+                    if (kind === 'manager' && field) return { ...rest, assignee: { managerOf: field, levels: Number(levels) || 1 } };
+                    return rest;
                   })
                 }
               >
                 <option value="">Anyone with the role</option>
                 {people.map((person) => (
-                  <option key={person.name} value={person.name}>
+                  <option key={`field:${person.name}`} value={`field:${person.name}`}>
                     The record's {person.label.toLowerCase()}
+                  </option>
+                ))}
+                {people.map((person) => (
+                  <option key={`manager:${person.name}`} value={`manager:${person.name}:1`}>
+                    The manager of the record's {person.label.toLowerCase()}
+                  </option>
+                ))}
+                {people.map((person) => (
+                  <option key={`manager2:${person.name}`} value={`manager:${person.name}:2`}>
+                    The manager's manager of the record's {person.label.toLowerCase()}
                   </option>
                 ))}
               </Select>
             )}
           </Field>
+          {element.assignee ? null : (
+            <Field label="In the department of" hint="Only people with the role in that department see and decide the task.">
+              {(inputId) => (
+                <Select
+                  id={inputId}
+                  value={element.department?.of ?? ''}
+                  onChange={(event) =>
+                    set((current) => {
+                      if (current.type !== 'userTask') return current;
+                      const { department: _department, ...rest } = current;
+                      return event.target.value ? { ...rest, department: { of: event.target.value } } : rest;
+                    })
+                  }
+                >
+                  <option value="">Any department</option>
+                  {people.map((person) => (
+                    <option key={person.name} value={person.name}>
+                      The record's {person.label.toLowerCase()}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          )}
           <Checkbox
             label="It has a due date"
             checked={element.due !== undefined}

@@ -140,7 +140,12 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         break;
       case 'userTask':
         attributes['ambit:role'] = element.role;
-        attributes['ambit:assignee'] = element.assignee?.field;
+        if (element.assignee && 'field' in element.assignee) attributes['ambit:assignee'] = element.assignee.field;
+        if (element.assignee && 'managerOf' in element.assignee) {
+          attributes['ambit:managerOf'] = element.assignee.managerOf;
+          attributes['ambit:levels'] = String(element.assignee.levels);
+        }
+        attributes['ambit:department'] = element.department?.of;
         attributes['ambit:due'] = element.due;
         attributes['ambit:card'] = element.card;
         children.push({
@@ -412,6 +417,9 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             .flatMap((extension) => childElements(extension, AMBIT_BPMN, 'outcome'))
             .map((outcome) => ({ name: attribute(outcome, 'name') ?? '', label: attribute(outcome, 'label') ?? attribute(outcome, 'name') ?? '', ...(attribute(outcome, 'action') ? { action: attribute(outcome, 'action')! } : {}) }));
           const assignee = ambit(node, 'assignee');
+          const managerOf = ambit(node, 'managerOf');
+          const levels = Number(ambit(node, 'levels') ?? '1');
+          const department = ambit(node, 'department');
           const due = ambit(node, 'due');
           const card = ambit(node, 'card');
           elements[id] = {
@@ -419,7 +427,8 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             name: name ?? id,
             ...(documentation ? { description: documentation } : {}),
             role,
-            ...(assignee ? { assignee: { field: assignee } } : {}),
+            ...(assignee ? { assignee: { field: assignee } } : managerOf ? { assignee: { managerOf, levels: Number.isInteger(levels) ? levels : 1 } } : {}),
+            ...(department ? { department: { of: department } } : {}),
             outcomes: outcomes.length ? outcomes : [{ name: 'done', label: 'Done' }],
             ...(due ? { due } : {}),
             ...(card ? { card } : {}),

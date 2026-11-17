@@ -180,6 +180,46 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
       },
     );
 
+    const reassign = async (request: FastifyRequest, taskId: string, to: string) => {
+      const auth = requireAuth(request);
+      const place = await engine.taskPlace(taskId);
+      if (!place) throw notFound('Task');
+      const loaded = await ctx.apps.load(place.appId, { id: place.environmentId });
+      // Operators move any task of the app: its owner in a personal space, ops.task.reassign in a team space.
+      const action = loaded.space.kind === 'personal' ? 'app.edit' : 'ops.task.reassign';
+      const operator = (await ctx.policy.authorize(auth.principal, action, appResource(ctx.org.id, loaded), undefined, await runtime.policy(loaded))).allowed;
+      return engine.reassign(request, auth, taskId, to, { operator });
+    };
+
+    app.post(
+      '/v1/tasks/:taskId/reassign',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary: "Give a task to someone else who holds its role: yours to a colleague, or any task of an app you operate",
+          params: z.object({ taskId: z.uuid() }),
+          body: z.object({ userId: z.uuid() }),
+          response: { 200: TaskOut },
+        },
+      },
+      async (request) => reassign(request, request.params.taskId, request.body.userId),
+    );
+
+    app.post(
+      '/v1/tasks/:taskId/claim',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary: 'Take a task that waits for anyone with your role, so others know you have it',
+          params: z.object({ taskId: z.uuid() }),
+          response: { 200: TaskOut },
+        },
+      },
+      async (request) => reassign(request, request.params.taskId, requireAuth(request).actor.id),
+    );
+
     app.post(
       '/v1/apps/:appId/processes/:process/start',
       {

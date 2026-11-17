@@ -43,6 +43,9 @@ export const ConfigSchema = z
      * tenant. Agents' tokens then name the same person as sign-ins do. Set it before the first sign-in.
      */
     OIDC_SUBJECT_CLAIM: z.string().min(1).default('sub'),
+    /** The claims that carry a person's department and their manager's email, for routing tasks (design §6.10). Unset, the IdP gives neither. */
+    OIDC_DEPARTMENT_CLAIM: z.string().min(1).optional(),
+    OIDC_MANAGER_CLAIM: z.string().min(1).optional(),
     /**
      * Audiences accepted on a person's token in a token exchange (comma-separated): Ambit's own
      * client ID, and those of agents that exchange the tokens they were given. Defaults to Ambit's.

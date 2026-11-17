@@ -23,6 +23,7 @@ import { processWriter, type AppRuntime, type ProcessHooks, type ProcessOrigin, 
 import { withAppTransaction, type AppTransaction } from '../apps/transaction.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
+import { coverFor, departmentOf, managerUp } from '../people/directory.js';
 import { backoffSeconds } from '../skills/dispatcher.js';
 
 /*
@@ -117,6 +118,12 @@ export interface InstanceDetail extends InstanceView {
   readonly events: Array<{ readonly at: string; readonly kind: EventKind; readonly element: string | null; readonly name: string | null; readonly by: string | null; readonly detail: unknown }>;
 }
 
+/** Whether a person may decide a task: the one it waits for, or, for nobody in particular, anyone with its role in its department. */
+function decidable(task: Pick<TaskRow, 'assignee' | 'department'>, actorId: string, department: string | null): boolean {
+  if (task.assignee) return task.assignee === actorId;
+  return !task.department || task.department === department;
+}
+
 export class ProcessEngine implements ProcessHooks {
   readonly #ctx: AppContext;
   readonly #runtime: AppRuntime;
@@ -131,9 +138,12 @@ export class ProcessEngine implements ProcessHooks {
 
   async checkDecider(tx: AppTransaction, loaded: LoadedApp, recordId: string, action: string, actorId: string): Promise<void> {
     const open = await this.#tasksDecidedBy(tx.db, loaded, recordId, action, false);
-    if (!open.length || open.some((task) => !task.assignee || task.assignee === actorId)) return;
+    if (!open.length) return;
+    const department = await departmentOf(tx.db, actorId);
+    if (open.some((task) => decidable(task, actorId, department))) return;
     const [task] = open;
-    throw forbidden('task_assigned', `${task!.name} waits for ${await this.#personName(tx.db, task!.assignee!)}: only they can decide it`);
+    if (task!.assignee) throw forbidden('task_assigned', `${task!.name} waits for ${await this.#personName(tx.db, task!.assignee)}: only they can decide it`);
+    throw forbidden('task_department', `${task!.name} waits for someone in ${task!.department}`);
   }
 
   async afterAction(
@@ -212,6 +222,46 @@ export class ProcessEngine implements ProcessHooks {
     return { task: (await this.#taskViews(eq(processTasks.id, task.id), 1))[0]!, result };
   }
 
+  /**
+   * Give a task to someone else: its assignee hands it to a colleague, an operator moves it, or
+   * someone with its role takes one that waits for nobody in particular. The new assignee must
+   * hold the task's role: routing never grants.
+   */
+  async reassign(request: FastifyRequest, auth: AuthContext, taskId: string, to: string, options: { readonly operator: boolean }): Promise<TaskView> {
+    const task = await this.#taskRow(taskId);
+    if (!task) throw notFound('Task');
+    if (task.status !== 'open') throw conflict('task_closed', `${task.name} is already ${task.status}`);
+    const me = auth.actor.id;
+    if (!options.operator) {
+      if (task.assignee && task.assignee !== me) throw forbidden('task_assigned', `${task.name} waits for ${await this.#personName(this.#ctx.db, task.assignee)}`);
+      if (!task.assignee) await this.#mayDo(auth, task);
+    }
+    const [person] = await this.#ctx.db.select({ id: users.id }).from(users).where(and(eq(users.id, to), eq(users.orgId, this.#ctx.org.id), eq(users.status, 'active')));
+    if (!person) throw unprocessable('unknown_person', 'Give someone active in the directory');
+    const held = await this.#ctx.policy.bindingsFor(await this.#ctx.policy.userPrincipal(to));
+    if (!held.some((binding) => binding.scope.type === 'env' && binding.scope.id === task.environmentId && binding.roleId && appRoleName(task.appId, binding.roleId) === task.role)) {
+      throw unprocessable('not_in_role', `They don't hold the role ${task.role} here, so they couldn't decide the task`);
+    }
+    const loaded = await this.#ctx.apps.load(task.appId, { id: task.environmentId });
+    await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
+      await this.#runtime.lockRecord(tx, loaded, task.entity, task.recordId);
+      const [locked] = await tx.db.select().from(processTasks).where(eq(processTasks.id, task.id)).for('update');
+      if (locked!.status !== 'open') throw conflict('task_closed', `${task.name} is already ${locked!.status}`);
+      await tx.db.update(processTasks).set({ assignee: to }).where(eq(processTasks.id, task.id));
+      const turn = this.#turn(tx, loaded, (now) => auditScopeFor(request, this.#ctx.org.id, now), auth.actor.type === 'user' ? me : null);
+      const live = await this.#live(turn, task.instanceId);
+      await this.#event(turn, live, 'reassigned', task.element, { task: task.id, from: locked!.assignee, to });
+      await this.#audit(turn, live, 'process.task.reassign', { task: task.id, from: locked!.assignee, to, byOperator: options.operator }, { type: 'process_task', id: task.id, name: task.name });
+    });
+    return (await this.#taskViews(eq(processTasks.id, task.id), 1, 'all'))[0]!;
+  }
+
+  /** The app and environment a task belongs to, for checking who may operate it. */
+  async taskPlace(taskId: string): Promise<{ readonly appId: string; readonly environmentId: string } | null> {
+    const task = await this.#taskRow(taskId);
+    return task ? { appId: task.appId, environmentId: task.environmentId } : null;
+  }
+
   /** Tasks a person may do: theirs, and those of their roles that wait for nobody in particular. Soonest due first. */
   async inbox(auth: AuthContext, options: { readonly status: 'open' | 'closed'; readonly limit: number }): Promise<TaskView[]> {
     const me = auth.actor.id;
@@ -221,7 +271,9 @@ export class ProcessEngine implements ProcessHooks {
       const role = appRoleName(appId, binding.roleId);
       return role ? [and(eq(processTasks.environmentId, binding.scope.id), eq(processTasks.role, role))!] : [];
     });
-    const mine = or(eq(processTasks.assignee, me), ...(roles.length ? [and(isNull(processTasks.assignee), or(...roles))] : []))!;
+    const department = await departmentOf(this.#ctx.db, me);
+    const inDepartment = department ? or(isNull(processTasks.department), eq(processTasks.department, department)) : isNull(processTasks.department);
+    const mine = or(eq(processTasks.assignee, me), ...(roles.length ? [and(isNull(processTasks.assignee), or(...roles), inDepartment)] : []))!;
     if (options.status === 'open') return this.#taskViews(and(eq(processTasks.status, 'open'), mine)!, options.limit);
     return this.#taskViews(and(sql`${processTasks.status} <> 'open'`, or(eq(processTasks.completedBy, me), mine))!, options.limit, 'closed');
   }
@@ -393,8 +445,9 @@ export class ProcessEngine implements ProcessHooks {
 
   /** What an action's commit does to processes: it completes the tasks it decides, then starts the processes it starts. */
   async #actionCommitted(turn: Turn, action: string, recordId: string, actorId: string | null): Promise<void> {
+    const department = actorId ? await departmentOf(turn.tx.db, actorId) : null;
     for (const task of await this.#tasksDecidedBy(turn.tx.db, turn.loaded, recordId, action, true)) {
-      if (task.assignee && task.assignee !== actorId) continue;
+      if (!(actorId ? decidable(task, actorId, department) : !task.assignee && !task.department)) continue;
       const outcome = task.outcomes.find((candidate) => candidate.action === action)!;
       await this.#completeTask(turn, task, outcome.name, actorId);
     }
@@ -506,12 +559,23 @@ export class ProcessEngine implements ProcessHooks {
 
   async #openTask(turn: Turn, live: Live, id: string, element: UserTaskElement): Promise<void> {
     const record = (await this.#record(turn, live)) ?? {};
-    let assignee: string | null = null;
-    if (element.assignee) {
-      const named = record[element.assignee.field];
-      // Someone who left can't take a task: it goes to the role instead.
-      if (typeof named === 'string' && (await this.#activeUser(turn.tx.db, named))) assignee = named;
+    const db = turn.tx.db;
+    const person = (field: string): string | null => {
+      const value = record[field];
+      return typeof value === 'string' ? value : null;
+    };
+    // Routing narrows the role to one person: by the record, or by the directory's reporting line.
+    let routed: string | null = null;
+    if (element.assignee && 'field' in element.assignee) {
+      const named = person(element.assignee.field);
+      if (named && (await this.#activeUser(db, named))) routed = named;
+    } else if (element.assignee) {
+      const from = person(element.assignee.managerOf);
+      if (from) routed = await managerUp(db, from, element.assignee.levels);
     }
+    // Someone who left, or a line that ends, sends the task to the role; someone away sends it to their cover.
+    const assignee = routed ? await coverFor(db, routed, turn.now) : null;
+    const departmentOfTask = !assignee && element.department ? await this.#departmentOfField(db, person(element.department.of)) : null;
     const tokenId = uuidv7(turn.now.getTime());
     await turn.tx.db.insert(processTokens).values({ id: tokenId, instanceId: live.row.id, element: id, state: 'waiting', createdAt: turn.now });
     const taskId = uuidv7(turn.now.getTime());
@@ -528,6 +592,7 @@ export class ProcessEngine implements ProcessHooks {
       recordId: live.row.recordId,
       role: element.role,
       assignee,
+      department: departmentOfTask,
       outcomes: element.outcomes.map((outcome) => ({ name: outcome.name, label: outcome.label, ...(outcome.action ? { action: outcome.action } : {}) })),
       card: element.card ?? null,
       dueAt: element.due ? addDuration(turn.now, element.due) : null,
@@ -540,8 +605,9 @@ export class ProcessEngine implements ProcessHooks {
       if (!fireAt) continue;
       await turn.tx.db.insert(processTimers).values({ id: uuidv7(turn.now.getTime()), orgId: this.#ctx.org.id, instanceId: live.row.id, element: boundary, taskId, fireAt, nextAttemptAt: fireAt, createdAt: turn.now });
     }
-    await this.#event(turn, live, 'task_opened', id, { task: taskId, role: element.role, assignee });
-    await this.#audit(turn, live, 'process.task.assign', { task: taskId, name: element.name, role: element.role, assignee }, { type: 'process_task', id: taskId, name: element.name });
+    const routing = { role: element.role, assignee, ...(routed && routed !== assignee ? { covering: routed } : {}), ...(element.assignee && !routed ? { routing: 'fell back to the role' } : {}), ...(departmentOfTask ? { department: departmentOfTask } : {}) };
+    await this.#event(turn, live, 'task_opened', id, { task: taskId, ...routing });
+    await this.#audit(turn, live, 'process.task.assign', { task: taskId, name: element.name, ...routing }, { type: 'process_task', id: taskId, name: element.name });
   }
 
   async #completeTask(turn: Turn, task: TaskRow, outcome: string, by: string | null): Promise<void> {
@@ -667,6 +733,12 @@ export class ProcessEngine implements ProcessHooks {
     const held = await this.#ctx.policy.bindingsFor(auth.principal);
     const holds = held.some((binding) => binding.scope.type === 'env' && binding.scope.id === task.environmentId && binding.roleId && appRoleName(task.appId, binding.roleId) === task.role);
     if (!holds) throw forbidden('not_your_task', `${task.name} is for the role ${task.role}, which you don't hold here`);
+    if (task.department && task.department !== (await departmentOf(this.#ctx.db, auth.actor.id))) throw forbidden('task_department', `${task.name} waits for someone in ${task.department}`);
+  }
+
+  /** The department of the person a record's field names. A task for a department nobody names is for the whole role. */
+  async #departmentOfField(db: Database, person: string | null): Promise<string | null> {
+    return person ? departmentOf(db, person) : null;
   }
 
   async #activeUser(db: Database, id: string): Promise<boolean> {

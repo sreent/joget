@@ -836,7 +836,9 @@ So a change request's permission diff still says who can decide, and a process n
 - A model from another tool comes in where Ambit can run it. A lane named after a role gives its tasks that role. A simple condition, such as `${days > 10}`, is read with its names as the record's fields, and the import says how it read each one. Pools without a process, message flows and what only documents the model are left out, and the import says so. Anything else Ambit can't run is refused by name and ID.
 - An import changes a personal app, or the working copy of a team app, through the same checks as any edit.
 - The studio's process designer draws BPMN 2.0 on a canvas (React Flow). Its palette offers first what most processes need, and the rest of what Ambit runs after; a timer on a task's boundary is drawn on the task, with its own path. The checks of any definition run as the builder works, and mark the shapes they concern. Every person has an inbox of their tasks across apps, and each record page says where its processes are.
-- Not built yet: routing from the directory, and the next elements above.
+- Routing from the directory: a task goes to the manager of whoever a field names, up to five levels up the reporting line, or is kept to the department of whoever a field names. The directory takes departments and managers from the IdP's claims at each sign-in (the claims an installation names), and directory admins set them where the IdP doesn't. A loop in the reporting line is refused. Someone who has left, or a line that ends, sends the task to the role.
+- Out-of-office cover: a person names who takes their new tasks while they are away, until a date, and the task's history says whom the cover stands in for. A person hands their task to a colleague who holds its role; operators move any task of the apps they operate; and anyone with a task's role takes one that waits for nobody in particular. Each move is audited.
+- Not built yet: the next elements above, and reading the directory by SCIM.
 
 ---
 

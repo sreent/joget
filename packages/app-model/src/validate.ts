@@ -301,7 +301,13 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
           elements: mapRecord(process.elements, (element): ProcessElement => {
             switch (element.type) {
               case 'userTask':
-                return element.assignee ? { ...element, assignee: { field: field(element.assignee.field) } } : element;
+                return {
+                  ...element,
+                  ...(element.assignee
+                    ? { assignee: 'field' in element.assignee ? { field: field(element.assignee.field) } : { ...element.assignee, managerOf: field(element.assignee.managerOf) } }
+                    : {}),
+                  ...(element.department ? { department: { of: field(element.department.of) } } : {}),
+                };
               case 'serviceTask':
                 return element.input ? { ...element, input: mapRecord(element.input, (value) => mapExpressionRefs(value, refs(entity))) } : element;
               case 'intermediateCatchEvent':
@@ -1114,11 +1120,16 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         case 'userTask': {
           const role = definition.roles[element.role];
           if (!role) issues.push({ path: `${path}.role`, message: `No role named ${element.role}` });
+          const person = (field: string, at: string) => {
+            const info = fields.get(field);
+            if (!info) issues.push({ path: at, message: `No field ${field}` });
+            else if (!(info.field?.type === 'user' || PERSON_FIELDS.includes(info.name))) issues.push({ path: at, message: `${info.name} doesn't name a person` });
+          };
           if (element.assignee) {
-            const info = fields.get(element.assignee.field);
-            if (!info) issues.push({ path: `${path}.assignee.field`, message: `No field ${element.assignee.field}` });
-            else if (!(info.field?.type === 'user' || PERSON_FIELDS.includes(info.name))) issues.push({ path: `${path}.assignee.field`, message: `${info.name} doesn't name a person` });
+            if ('field' in element.assignee) person(element.assignee.field, `${path}.assignee.field`);
+            else person(element.assignee.managerOf, `${path}.assignee.managerOf`);
           }
+          if (element.department) person(element.department.of, `${path}.department.of`);
           const seen = new Set<string>();
           element.outcomes.forEach((outcome, index) => {
             const at = `${path}.outcomes[${index}]`;

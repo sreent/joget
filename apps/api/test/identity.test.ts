@@ -45,6 +45,15 @@ describe('identityFromClaims works with any OIDC provider', () => {
     });
   });
 
+  it('reads the department and the manager from the claims an installation names, and leaves them alone otherwise', () => {
+    const claims = { iss: 'https://idp.example.com', sub: 'u1', department: ' Sales ', mgr: 'Bob@Example.com' };
+    expect(identityFromClaims(claims, 'groups', 'sub', { departmentClaim: 'department', managerClaim: 'mgr' })).toMatchObject({ department: 'Sales', managerEmail: 'bob@example.com' });
+    expect(identityFromClaims({ ...claims, department: '' }, 'groups', 'sub', { departmentClaim: 'department' })).toMatchObject({ department: null });
+    const unnamed = identityFromClaims(claims, 'groups');
+    expect(unnamed).not.toHaveProperty('department');
+    expect(unnamed).not.toHaveProperty('managerEmail');
+  });
+
   it('reads groups from whatever claim the IdP uses', () => {
     const identity = identityFromClaims({ iss: 'https://acme.okta.com', sub: '00u1', okta_groups: ['Builders', 'Builders'] }, 'okta_groups');
     expect(identity.groups).toEqual(['Builders']);

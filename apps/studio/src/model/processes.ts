@@ -386,7 +386,11 @@ export function forgetInProcesses(definition: Definition, gone: { readonly actio
       if (element.type === 'startEvent' && gone.action) element.actions = element.actions.filter((action) => action !== gone.action);
       if (element.type === 'userTask') {
         if (gone.action) for (const outcome of element.outcomes) if (outcome.action === gone.action) delete outcome.action;
-        if (gone.field && gone.entity === process.entity && element.assignee?.field === gone.field) delete element.assignee;
+        if (gone.field && gone.entity === process.entity) {
+          const named = element.assignee && ('field' in element.assignee ? element.assignee.field : element.assignee.managerOf);
+          if (named === gone.field) delete element.assignee;
+          if (element.department?.of === gone.field) delete element.department;
+        }
       }
       if (element.type === 'serviceTask' && gone.action && element.action === gone.action) delete element.action;
       if ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && gone.field && gone.entity === process.entity && 'date' in element.timer && element.timer.date === gone.field) {

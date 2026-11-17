@@ -497,6 +497,18 @@ const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optio
 const Outcome = z.strictObject({ name: Name, label: Label, action: Name.optional() });
 export type Outcome = z.infer<typeof Outcome>;
 
+/**
+ * Who of a role's holders a task waits for. Routing narrows; the role grants: whoever it names
+ * still decides under the role's permissions.
+ */
+export const Routing = z.union([
+  /** Whoever a user field of the record names, such as the manager the requester chose. */
+  z.strictObject({ field: Name }),
+  /** The manager of whoever a user field names, from the directory, `levels` up the reporting line. */
+  z.strictObject({ managerOf: Name, levels: z.int().min(1).max(5).default(1) }),
+]);
+export type Routing = z.infer<typeof Routing>;
+
 /** Work a person does, such as deciding on a claim: it waits in their inbox until they choose an outcome. */
 const UserTask = z.strictObject({
   type: z.literal('userTask'),
@@ -505,8 +517,10 @@ const UserTask = z.strictObject({
   description: Description.optional(),
   /** The app role whose holders may do the task. A role grants; routing only narrows. */
   role: Name,
-  /** One person: whoever a user field of the record names, such as the manager the requester chose. Without one, anyone with the role can take it. */
-  assignee: z.strictObject({ field: Name }).optional(),
+  /** One person, by the record or the directory. Without one, anyone with the role can take it. */
+  assignee: Routing.optional(),
+  /** Without one person: only those with the role in the department of whoever a user field names, such as the requester's. */
+  department: z.strictObject({ of: Name }).optional(),
   outcomes: z.array(Outcome).min(1).max(10),
   /** How long the task may stay open, from when it opens: its due date. */
   due: Duration.optional(),
