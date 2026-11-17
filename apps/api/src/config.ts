@@ -43,6 +43,9 @@ export const ConfigSchema = z
      * tenant. Agents' tokens then name the same person as sign-ins do. Set it before the first sign-in.
      */
     OIDC_SUBJECT_CLAIM: z.string().min(1).default('sub'),
+    /** The claims that carry a person's department and their manager's email, for routing tasks (design §6.10). Unset, the IdP gives neither. */
+    OIDC_DEPARTMENT_CLAIM: z.string().min(1).optional(),
+    OIDC_MANAGER_CLAIM: z.string().min(1).optional(),
     /**
      * Audiences accepted on a person's token in a token exchange (comma-separated): Ambit's own
      * client ID, and those of agents that exchange the tokens they were given. Defaults to Ambit's.
@@ -73,6 +76,10 @@ export const ConfigSchema = z
     /** Personal spaces stay small (design §3): at most this many apps, each shared with at most this many people. */
     PERSONAL_SPACE_MAX_APPS: z.coerce.number().int().min(1).default(20),
     PERSONAL_APP_MAX_SHARES: z.coerce.number().int().min(1).default(10),
+    /** Approvals a change request needs before it can merge, from people other than its author (design §6.7). */
+    CHANGE_APPROVALS: z.coerce.number().int().min(1).max(5).default(1),
+    /** Approvals a Prod deployment needs, from people who authored none of its changes (design §7.1). */
+    DEPLOY_PROD_APPROVALS: z.coerce.number().int().min(1).max(5).default(1),
     /** How long an agent's proposal waits for the person before it expires. */
     PROPOSAL_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(72),
     /** The longest a service-account token may live. */
@@ -122,6 +129,16 @@ export const ConfigSchema = z
         ctx.addIssue({ code: 'custom', message: 'Must be a JSON object of keyId to PEM public key' });
         return z.NEVER;
       }),
+    /** The a7c control plane that runs the skills actions call, for example https://a7c.example.com. Without it, skill calls wait. */
+    A7C_URL: z.url().optional(),
+    /** A file that holds Ambit's bearer token for a7c. It is read at each call, so whatever issues the token can renew it. */
+    A7C_TOKEN_FILE: z.string().min(1).optional(),
+    /** How often the dispatcher starts the skill calls that are due. 0 disables it (for example, when a worker does it). */
+    SKILL_DISPATCH_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
+    /** How many times a skill call is tried before it fails for good. */
+    SKILL_CALL_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(12),
+    /** How often the timers of processes that are due fire. 0 disables it (for example, when a worker fires them). */
+    PROCESS_TIMER_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How often the in-process sealer runs. 0 disables it (for example, when a worker seals). */
     AUDIT_SEAL_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(60),
     /** Only events older than this are sealed, so no in-flight transaction can land in a sealed range. */
@@ -135,6 +152,7 @@ export const ConfigSchema = z
       [config.OIDC_ALLOW_HTTP, 'OIDC_ALLOW_HTTP', 'OIDC_ALLOW_HTTP must be false in production'],
       [!config.AUDIT_SIGNING_KEY_PEM, 'AUDIT_SIGNING_KEY_PEM', 'AUDIT_SIGNING_KEY_PEM is required in production'],
       [!config.PUBLIC_BASE_URL.startsWith('https://'), 'PUBLIC_BASE_URL', 'PUBLIC_BASE_URL must use https in production'],
+      [Boolean(config.A7C_URL) && !config.A7C_URL!.startsWith('https://'), 'A7C_URL', 'A7C_URL must use https in production'],
     ];
     for (const [broken, path, message] of rules) {
       if (broken) ctx.addIssue({ code: 'custom', message, path: [path] });
@@ -144,6 +162,9 @@ export const ConfigSchema = z
     if (config.FILE_STORE === 's3' && !config.S3_BUCKET) ctx.addIssue({ code: 'custom', message: 'FILE_STORE=s3 needs S3_BUCKET', path: ['S3_BUCKET'] });
     if (Boolean(config.S3_ACCESS_KEY_ID) !== Boolean(config.S3_SECRET_ACCESS_KEY)) {
       ctx.addIssue({ code: 'custom', message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither', path: ['S3_ACCESS_KEY_ID'] });
+    }
+    if (Boolean(config.A7C_URL) !== Boolean(config.A7C_TOKEN_FILE)) {
+      ctx.addIssue({ code: 'custom', message: 'Set both A7C_URL and A7C_TOKEN_FILE, or neither', path: ['A7C_URL'] });
     }
     if (config.FILE_UNATTACHED_TTL_HOURS < config.PROPOSAL_TTL_HOURS) {
       ctx.addIssue({ code: 'custom', message: 'FILE_UNATTACHED_TTL_HOURS must be at least PROPOSAL_TTL_HOURS, so files outlive the proposals that name them', path: ['FILE_UNATTACHED_TTL_HOURS'] });

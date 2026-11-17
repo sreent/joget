@@ -13,4 +13,5 @@ export const workspaceAliases = [
   { find: /^@platform\/audit$/, replacement: `${root}packages/audit/src/index.ts` },
   { find: /^@platform\/db$/, replacement: `${root}packages/db/src/index.ts` },
   { find: /^@platform\/db\/testing$/, replacement: `${root}packages/db/src/testing.ts` },
+  { find: /^@platform\/cli$/, replacement: `${root}apps/cli/src/run.ts` },
 ];

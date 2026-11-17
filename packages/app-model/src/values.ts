@@ -304,6 +304,8 @@ export function checkInput(
     readonly allowed?: ReadonlySet<string>;
     /** Values set regardless of the input, for example by an action. They win over the input. */
     readonly fixed?: Readonly<Record<string, unknown>>;
+    /** Fields that get their value later, for example from an action's steps: no input is required for them. */
+    readonly given?: ReadonlySet<string>;
   },
 ): InputCheck {
   const entity = definition.entities[entityName]!;
@@ -347,7 +349,8 @@ export function checkInput(
     const emptied = field.name in values && value === null;
     // A field whose value was refused already has its issue; don't report it as missing too.
     const refused = issues.some((issue) => issue.field === field.name);
-    if (field.required && !refused && (options.mode === 'create' ? value === undefined || value === null : emptied)) {
+    const later = options.given?.has(field.name) && value === undefined;
+    if (field.required && !refused && !later && (options.mode === 'create' ? value === undefined || value === null : emptied)) {
       issues.push({ field: field.name, code: 'required', message: `${field.label} is required` });
     }
   }

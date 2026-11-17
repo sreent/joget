@@ -8,9 +8,15 @@ export interface EnvironmentNames {
   readonly role: string;
 }
 
-/** Schema and role names for an app's environment, for example `app_0193..._sandbox`. */
-export function environmentNames(appId: string, kind: 'sandbox' | 'staging' | 'prod'): EnvironmentNames {
-  const name = `app_${appId.replaceAll('-', '').toLowerCase()}_${kind}`;
+/**
+ * Schema and role names for an app's environment, for example `app_0193..._sandbox`. A team app
+ * has a preview for each change request, so a preview's names carry the request's number.
+ */
+export function environmentNames(appId: string, kind: 'sandbox' | 'staging' | 'prod'): EnvironmentNames;
+export function environmentNames(appId: string, kind: 'preview', changeRequest: number): EnvironmentNames;
+export function environmentNames(appId: string, kind: 'sandbox' | 'preview' | 'staging' | 'prod', changeRequest?: number): EnvironmentNames {
+  const suffix = kind === 'preview' ? `preview${changeRequest!}` : kind;
+  const name = `app_${appId.replaceAll('-', '').toLowerCase()}_${suffix}`;
   return { schema: name, role: name };
 }
 
@@ -95,6 +101,42 @@ function rollupSignature(definition: StoredDefinition, entity: StoredEntity, fie
   const lineEntity = definition.entities[lines.entity]!;
   const source = sub ? lineEntity.fields.find((f) => f.name === sub) : undefined;
   return JSON.stringify([op, lines.id, lineEntity.id, source?.id ?? null, source ? physicalType(source, definition.entities) : null]);
+}
+
+/** The statement that works out a stored rollup for every record, or null if the field is no rollup. */
+function rollupUpdate(
+  definition: StoredDefinition,
+  entity: StoredEntity,
+  field: StoredField,
+  tableOf: (id: string) => string,
+  column: (field: StoredField) => string,
+): string | null {
+  const rollup = rollupOf(field);
+  if (!rollup) return null;
+  const [op, path] = Object.entries(rollup)[0] as [string, string];
+  const [linesName, sub] = path.split('.');
+  const lines = entity.fields.find((f) => f.name === linesName);
+  if (lines?.type !== 'lines') return null;
+  const lineEntity = definition.entities[lines.entity]!;
+  const source = sub ? lineEntity.fields.find((f) => f.name === sub) : undefined;
+  const aggregate = op === 'count' ? 'count(*)' : op === 'sum' ? `coalesce(sum(l.${column(source!)}), 0)` : `${op}(l.${column(source!)})`;
+  return `update ${tableOf(entity.id)} as r set ${column(field)} = (select ${aggregate} from ${tableOf(lineEntity.id)} l where l.parent_id = r.id)`;
+}
+
+/**
+ * Work out every stored rollup again. Run it when an environment goes forward again after a
+ * rollback: the older release did not keep the newer rollups up to date.
+ */
+export function recomputeRollups(definition: StoredDefinition, names: EnvironmentNames): string[] {
+  const schema = ident(names.schema);
+  const tableOf = (id: string) => `${schema}.${ident(tableName(id))}`;
+  const column = (field: StoredField) => ident(columnName(field.id));
+  return Object.values(definition.entities).flatMap((entity) =>
+    entity.fields.flatMap((field) => {
+      const statement = rollupUpdate(definition, entity, field, tableOf, column);
+      return statement ? [statement] : [];
+    }),
+  );
 }
 
 /**
@@ -287,15 +329,11 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
       const lineEntity = next.entities[(lines as { entity: string }).entity]!;
       const unchanged = oldField && rollupSignature(previous!, old.entity, oldField) === signature && !fresh.has(lineEntity.id);
       if (unchanged) continue;
-      const [op, path] = Object.entries(rollupOf(field)!)[0] as [string, string];
-      const source = lineEntity.fields.find((f) => f.name === path.split('.')[1]);
-      const aggregate =
-        op === 'count' ? 'count(*)' : op === 'sum' ? `coalesce(sum(l.${column(source!)}), 0)` : `${op}(l.${column(source!)})`;
       step(
         { kind: 'compute_field', entity: name, field: field.name, destructive: false, description: `Work out ${name}.${field.name} for existing records` },
         `select count(*)::int as n from ${table(entity)}`,
       );
-      computes.push(`update ${table(entity)} as r set ${column(field)} = (select ${aggregate} from ${table(lineEntity)} l where l.parent_id = r.id)`);
+      computes.push(rollupUpdate(next, entity, field, tableOf, column)!);
     }
   }
 

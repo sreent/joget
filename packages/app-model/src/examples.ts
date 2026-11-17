@@ -6,8 +6,8 @@ const status = { ref: 'record.status' } as const;
 
 /**
  * A small expense-claim app: a claim with one line per receipt, each with its file, and a total worked out from them,
- * rules on each line, two actions, a query, a review card with the lines as a table, a form and
- * two roles. It's the running example in the design doc (§6.2) and in the tests.
+ * rules on each line, two actions (one with steps), two queries (one works out numbers), a review card with the lines as a table, a form,
+ * two roles, three pages (one a dashboard) and a menu. It's the running example in the design doc (§6.2) and in the tests.
  */
 export const EXPENSE_APP = {
   entities: {
@@ -82,6 +82,11 @@ export const EXPENSE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
+      steps: [
+        { type: 'check', assert: { ne: [owner, me] }, message: "You can't approve your own claim" },
+        { type: 'set', field: 'approver', value: me },
+        { type: 'check', assert: { lte: [{ ref: 'record.total' }, 1000] }, severity: 'warning', message: 'A claim over SGD 1,000: check that a director agreed to it', fields: ['total'] },
+      ],
     },
   },
   queries: {
@@ -92,6 +97,13 @@ export const EXPENSE_APP = {
       fields: ['title', 'total', 'status', 'created_at'],
       filter: { eq: [owner, me] },
       sort: [{ field: 'created_at', direction: 'desc' }],
+    },
+    my_spending: {
+      label: 'My spending by category',
+      description: 'How much the person you act for has claimed this year, in SGD, for each category of receipt. Use it for questions such as "how much did I spend on hotels this year?"',
+      entity: 'expense_claim',
+      filter: { eq: [owner, me] },
+      summary: { measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, range: { field: 'lines.date', within: 'this_year' } },
     },
   },
   cards: {
@@ -125,7 +137,7 @@ export const EXPENSE_APP = {
         },
       },
       actions: ['submit_claim'],
-      queries: ['my_claims'],
+      queries: ['my_claims', 'my_spending'],
     },
     approver: {
       label: 'Approver',
@@ -133,10 +145,89 @@ export const EXPENSE_APP = {
       entities: {
         expense_claim: {
           read: { where: { in: [status, ['submitted', 'approved']] } },
-          update: { where: { eq: [status, 'submitted'] }, fields: { include: ['status'] } },
+          update: { where: { eq: [status, 'submitted'] }, fields: { include: ['status', 'approver'] } },
         },
       },
       actions: ['approve_claim'],
     },
+  },
+  pages: {
+    my_claims: {
+      label: 'My claims',
+      description: 'Your expense claims, newest first.',
+      blocks: [
+        { type: 'buttons', buttons: [{ form: 'claim_form' }] },
+        {
+          type: 'list',
+          entity: 'expense_claim',
+          columns: ['title', 'total', 'status', 'created_at'],
+          filter: { eq: [owner, me] },
+          sort: [{ field: 'created_at', direction: 'desc' }],
+          empty: 'You have no claims yet.',
+        },
+      ],
+    },
+    to_approve: {
+      label: 'To approve',
+      roles: ['approver'],
+      blocks: [
+        { type: 'text', style: 'note', text: 'Check the receipts of each claim before you approve it.' },
+        {
+          type: 'list',
+          title: 'Submitted claims',
+          entity: 'expense_claim',
+          columns: ['title', 'total', 'owner', 'created_at'],
+          filter: { eq: [status, 'submitted'] },
+          sort: [{ field: 'created_at', direction: 'asc' }],
+          actions: ['approve_claim'],
+          empty: 'Nothing waits for approval.',
+        },
+      ],
+    },
+    spending: {
+      label: 'Spending',
+      description: 'Where the money goes, from the claims you may see.',
+      blocks: [
+        { type: 'stat', label: 'Claims waiting for approval', entity: 'expense_claim', measure: { op: 'count' }, filter: { eq: [status, 'submitted'] } },
+        {
+          type: 'stat',
+          label: 'Approved this year (SGD)',
+          entity: 'expense_claim',
+          measure: { op: 'sum', field: 'total' },
+          filter: { eq: [status, 'approved'] },
+          range: { field: 'created_at', within: 'this_year' },
+        },
+        { type: 'stat', label: 'Receipts', entity: 'expense_claim', measure: { op: 'count', field: 'lines' } },
+        {
+          type: 'chart',
+          title: 'Spending by category (SGD)',
+          entity: 'expense_claim',
+          measure: { op: 'sum', field: 'lines.amount' },
+          group: { field: 'lines.category' },
+          show: 'bar',
+        },
+        {
+          type: 'chart',
+          title: 'Spending by month (SGD)',
+          entity: 'expense_claim',
+          measure: { op: 'sum', field: 'lines.amount' },
+          group: { field: 'lines.date', period: 'month' },
+          range: { field: 'lines.date', within: 'last_12_months' },
+          show: 'column',
+          limit: 12,
+        },
+      ],
+    },
+  },
+  navigation: {
+    home: 'my_claims',
+    items: [
+      { page: 'my_claims' },
+      { form: 'claim_form' },
+      { entity: 'expense_claim', label: 'All claims' },
+      { page: 'spending' },
+      { heading: 'Approvals' },
+      { page: 'to_approve' },
+    ],
   },
 } as const satisfies AppDefinitionInput;

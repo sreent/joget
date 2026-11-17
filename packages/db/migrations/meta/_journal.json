@@ -36,6 +36,55 @@
       "when": 1794750050247,
       "tag": "0004_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794846659948,
+      "tag": "0005_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794892949105,
+      "tag": "0006_skill_calls",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794894185469,
+      "tag": "0007_promotion",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794902229250,
+      "tag": "0008_processes",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794903969907,
+      "tag": "0009_directory",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794912030899,
+      "tag": "0010_votes",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794914432891,
+      "tag": "0011_calls",
+      "breakpoints": true
     }
   ]
 }

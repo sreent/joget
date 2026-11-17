@@ -1,4 +1,4 @@
-import { EXPENSE_APP, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { EXPENSE_APP, skillSteps, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
 import { spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -8,11 +8,13 @@ import { checkPermission } from '../access/check.js';
 import { spaceResource } from '../access/resources.js';
 import { requireAuth } from '../access/rules.js';
 import type { AppContext, AuthContext } from '../context.js';
-import { HttpError, notFound } from '../errors.js';
-import type { AppBuilder } from './builder.js';
-import type { LoadedApp } from './catalog.js';
+import { HttpError, notFound, unprocessable } from '../errors.js';
+import { changeRequestRequired, type AppBuilder } from './builder.js';
+import { isTeamApp, type LoadedApp } from './catalog.js';
+import type { Delivery } from '../delivery/service.js';
+import type { ProcessEngine } from '../processes/engine.js';
 import { appResource } from './resources.js';
-import { definitionJsonSchema, describeApp, visibleApps } from './routes.js';
+import { definitionJsonSchema, describeApp, isNotLive, visibleApps } from './routes.js';
 import type { AppRuntime } from './runtime.js';
 
 /**
@@ -130,12 +132,20 @@ function toolName(handle: string, name: string, taken: Set<string>, appId: strin
 }
 
 /** The tools an agent acting as this caller may use: every action and query they are allowed to run. */
-async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext): Promise<Tool[]> {
+/** The tools of the apps the person may use, and whether any of those apps has a business process. */
+async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext): Promise<{ tools: Tool[]; processes: boolean }> {
   const tools: Tool[] = [];
   const taken = new Set<string>();
+  let processes = false;
   for (const summary of await visibleApps(ctx, runtime, auth)) {
     if (!summary.access.run) continue;
-    const loaded = await ctx.apps.load(summary.id);
+    // Agents use a team app in Prod. One that isn't live there yet offers no tools.
+    const loaded = await ctx.apps.load(summary.id).catch((error: unknown) => {
+      if (isNotLive(error)) return null;
+      throw error;
+    });
+    if (!loaded) continue;
+    if (Object.keys(loaded.definition.processes ?? {}).length) processes = true;
     const policy = await runtime.policy(loaded);
     const allowed = async (kind: 'action' | 'query', name: string) =>
       (await ctx.policy.authorize(auth.principal, `${kind}.run`, runtime.capability(loaded, kind, name), undefined, policy)).allowed;
@@ -149,6 +159,27 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
         Object.entries(query.parameters).map(([param, spec]) => [param, { type: spec.type === 'text' ? 'string' : spec.type, description: spec.description }]),
       );
       const required = Object.entries(query.parameters).filter(([, spec]) => spec.required).map(([param]) => param);
+      if (query.summary) {
+        const grouped = query.summary.group !== undefined;
+        tools.push({
+          name: toolName(loaded.app.handle, name, taken, loaded.app.id),
+          title: query.label,
+          description: `${query.description} (App: ${loaded.app.name}. ${
+            grouped
+              ? `Returns a number for each group, as { groups: [{ key, label, value }], other, more }: at most ${query.summary.limit} groups, the largest first or the latest periods. other totals the rest where they add up, and more counts them.`
+              : 'Returns one number, as { value }.'
+          } It counts only the records the person may read.)`,
+          inputSchema: { type: 'object', properties: params, ...(required.length ? { required } : {}), additionalProperties: false },
+          annotations: { readOnlyHint: true, openWorldHint: false },
+          run: async (parameters) => runtime.runQuery(request, auth, loaded, name, { parameters }),
+          summarize: (result) => {
+            if ('value' in (result as object)) return `The number is ${(result as { value: number | null }).value ?? 'empty'}.`;
+            const { groups, more } = result as { groups: unknown[]; more: number };
+            return `${groups.length} group(s)${more ? `, and ${more} more` : ''}.`;
+          },
+        });
+        continue;
+      }
       tools.push({
         name: toolName(loaded.app.handle, name, taken, loaded.app.id),
         title: query.label,
@@ -169,7 +200,52 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
       });
     }
   }
-  return tools;
+  return { tools, processes };
+}
+
+const TaskId = z.uuid();
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The person's tasks in business processes (design §6.10): agents show them, and complete them as the person decides. */
+function taskTools(engine: ProcessEngine, request: FastifyRequest, auth: AuthContext): Tool[] {
+  return [
+    {
+      name: 'my_tasks',
+      title: 'My tasks',
+      description:
+        "The person's tasks in Ambit's business processes: decisions that wait for them, or for a role of theirs, soonest due first. Each names its app, its record, its outcomes and when it is due. Show them to the person, and complete one only when they say which outcome.",
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      run: async () => ({ tasks: await engine.inbox(auth, { status: 'open', limit: 50 }) }),
+      summarize: (result) => `${(result as { tasks: unknown[] }).tasks.length} task(s) wait.`,
+    },
+    {
+      name: 'complete_task',
+      title: 'Complete a task',
+      description:
+        "Complete one of the person's tasks with the outcome they chose, such as approve. The outcome's action becomes a proposal, as any action an agent runs: give the person its review link. The task completes when they approve it.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', format: 'uuid', description: 'From my_tasks' },
+          outcome: { type: 'string', description: "One of the task's outcomes, by name" },
+          values: { type: 'object', description: "The input of the outcome's action, if it takes any" },
+        },
+        required: ['task_id', 'outcome'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+      run: async (args) => {
+        const id = TaskId.safeParse(args['task_id']);
+        if (!id.success) throw unprocessable('invalid_task', 'Give the ID of a task from my_tasks');
+        return engine.complete(request, auth, id.data, { outcome: String(args['outcome']), ...(isObject(args['values']) ? { values: args['values'] } : {}) });
+      },
+      summarize: (result) => {
+        const done = result as { task: { name: string; status: string }; result: { status: string } | null };
+        return done.result?.status === 'needs_confirmation' ? `${done.task.name} waits until the person approves the proposal.` : `${done.task.name} is ${done.task.status}.`;
+      },
+    },
+  ];
 }
 
 function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, name: string, tool: string): Tool {
@@ -190,10 +266,13 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
     action.confirm === 'none'
       ? 'It runs straight away.'
       : `The person must confirm it before it commits (${action.confirm}): the call returns a proposal with a review link to give them.`;
+  // Work in other systems is part of what the tool does, so an agent knows of it before it calls.
+  const skills = [...new Set(skillSteps(action.steps ?? []).map(({ step }) => step.label))];
+  const then = skills.length ? ` Once saved, it starts work in other systems: ${skills.join('; ')}.` : '';
   return {
     name: tool,
     title: action.label,
-    description: `${action.description} (App: ${loaded.app.name}. ${confirm} Use dry_run to see the review card and any rule findings first.)`,
+    description: `${action.description} (App: ${loaded.app.name}. ${confirm}${then} Use dry_run to see the review card and any rule findings first.)`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -228,12 +307,18 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
 }
 
 /** Tools for AI clients that build apps, such as Claude: the builder API, as the builder. */
-function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext): Tool[] {
+function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, delivery: Delivery, request: FastifyRequest, auth: AuthContext): Tool[] {
   const app = async (args: Record<string, unknown>, action: string) => {
     if (typeof args['app_id'] !== 'string') throw new HttpError(400, 'invalid_arguments', 'app_id is required');
-    const loaded = await ctx.apps.load(args['app_id']);
-    await checkPermission(ctx, request, auth, action, appResource(ctx.org.id, loaded), { policy: await runtime.policy(loaded) });
-    return loaded;
+    const found = await ctx.apps.ref(args['app_id']);
+    await checkPermission(ctx, request, auth, action, appResource(ctx.org.id, found));
+    return found;
+  };
+  /** The sandbox a change applies to: of a personal app or a working copy. A team app changes through change requests. */
+  const sandbox = async (args: Record<string, unknown>) => {
+    const found = await app(args, 'app.edit');
+    if (isTeamApp(found)) throw changeRequestRequired(found);
+    return ctx.apps.load(found.app.id);
   };
   const appId = { app_id: { type: 'string', format: 'uuid' } };
   const definition = { definition: { type: 'object', description: 'A complete app definition. See describe_format.' } };
@@ -253,6 +338,11 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
           'An empty field is missing: it never equals anything. Test for emptiness with exists.',
           'Entities and fields get stable IDs when first saved. Keep them when you edit a definition: a field that keeps its ID under a new name is a rename, and renames carry through to every reference.',
           'Actions need a description written for agents, and a confirmation level: none, preview or review.',
+          'Processes are BPMN 2.0, each about one record of an entity. Elements go by ID: a startEvent names the actions that start it; a userTask names the role that may do it, its outcomes and the action each runs; a serviceTask runs an update action, with no person; exclusiveGateway, parallelGateway, intermediateCatchEvent and boundaryEvent (with a timer: an ISO 8601 duration or a date field) and endEvent. Flows join elements: a flow out of a user task names an outcome, and one out of an exclusive gateway has a condition or is its default. Conditions read record.<field> and tasks.<task>.outcome. The leave template has a process to start from.',
+          'Pages lay out lists of records, text and buttons for people in screens, and navigation is the menu. Neither protects data: roles do, and each person sees only what their role can use.',
+          'An action can have steps, which run after its input and its set values, in order: {"type": "set", "field", "value"}, {"type": "add_line", "field": "<lines field>", "values": {...}}, {"type": "check", "assert": <condition>, "message", "severity": "error" | "warning"}, {"type": "if", "when": <condition>, "then": [...], "else": [...]} (one level deep), and {"type": "skill", "label", "skill": "<project>/<skill>", "input": {...}} to start an a7c skill once the change is saved.',
+          ctx.config.A7C_URL ? 'This installation connects a7c, so actions may start a7c skills.' : "This installation doesn't connect a7c: leave skill steps out, or the definition is refused.",
+          'Step values are expressions: a literal, {"ref": "record.<field>" | "principal.id"}, {"today": true}, {"now": true}, {"add": [a, b, ...]}, {"sub": [a, b]}, {"mul": [a, b, ...]}, {"div": [a, b]}, {"round": [a, digits]} or {"concat": [a, b, ...]}. A number is rounded to its field\'s decimal places. Steps set only fields the person running the action may write.',
         ],
       }),
     },
@@ -267,10 +357,16 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
     {
       name: 'create_app',
       title: 'Create an app',
-      description: "Create an app in the person's personal space, optionally with a first definition. Its sandbox is ready at once.",
+      description: `Create an app in the person's personal space, from a definition, from a template, or blank. Its sandbox is ready at once. Templates: ${TEMPLATES.map((t) => `${t.id} (${t.name})`).join(', ')}.`,
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string' }, handle: { type: 'string', description: 'A short identifier; agent tool names start with it' }, description: { type: 'string' }, ...definition },
+        properties: {
+          name: { type: 'string' },
+          handle: { type: 'string', description: 'A short identifier; agent tool names start with it' },
+          description: { type: 'string' },
+          ...definition,
+          template: { type: 'string', enum: TEMPLATES.map((t) => t.id), description: 'Start from this template instead of a definition' },
+        },
         required: ['name'],
         additionalProperties: false,
       },
@@ -279,24 +375,28 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
         const [space] = await ctx.db.select().from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
         if (!space) throw notFound('Personal space');
         await checkPermission(ctx, request, auth, 'app.create', spaceResource(ctx.org.id, space));
+        const template = typeof args['template'] === 'string' ? TEMPLATES.find((t) => t.id === args['template']) : undefined;
+        if (args['template'] !== undefined && !template) throw notFound('Template');
+        const start = template ? template.definition : args['definition'];
         const { appId, plan } = await builder.create(request, auth, space, {
           name: String(args['name'] ?? ''),
           ...(typeof args['handle'] === 'string' ? { handle: args['handle'] } : {}),
           ...(typeof args['description'] === 'string' ? { description: args['description'] } : {}),
-          ...(args['definition'] !== undefined ? { definition: args['definition'] } : {}),
+          ...(start !== undefined ? { definition: start } : {}),
         });
-        return { app: await describeApp(ctx, runtime, auth, await ctx.apps.load(appId)), plan };
+        return { app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(appId)), plan };
       },
     },
     {
       name: 'get_definition',
       title: "Read an app's definition",
-      description: "An app's current definition and revision. Edit it, then plan_change or apply_change.",
+      description:
+        "An app's current definition and revision. Edit it, then plan_change or apply_change. A team app's definition is its main line: change it in a working copy (start_working_copy), then submit_change.",
       inputSchema: { type: 'object', properties: appId, required: ['app_id'], additionalProperties: false },
       annotations: { readOnlyHint: true },
       run: async (args) => {
-        const loaded = await app(args, 'app.read');
-        return { revision: loaded.app.currentRevision, definition: loaded.definition as StoredDefinition };
+        const found = await app(args, 'app.read');
+        return { revision: found.app.currentRevision, definition: await ctx.apps.mainDefinition(found) };
       },
     },
     {
@@ -305,7 +405,7 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
       description: 'Validate a new definition and see what saving it would do (the migration steps, and how many records each destructive step touches), without saving.',
       inputSchema: { type: 'object', properties: { ...appId, ...definition }, required: ['app_id', 'definition'], additionalProperties: false },
       annotations: { readOnlyHint: true },
-      run: async (args) => ({ plan: (await builder.plan(await app(args, 'app.edit'), args['definition'])).plan }),
+      run: async (args) => ({ plan: (await builder.plan(await sandbox(args), args['definition'])).plan }),
     },
     {
       name: 'apply_change',
@@ -319,12 +419,48 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
         additionalProperties: false,
       },
       run: async (args) => {
-        const loaded = await app(args, 'app.edit');
+        const loaded = await sandbox(args);
         const plan = await builder.save(request, auth, loaded, args['definition'], {
           ...(typeof args['base_revision'] === 'number' ? { baseRevision: args['base_revision'] } : {}),
           confirmDestructive: false,
         });
         return { plan };
+      },
+    },
+    {
+      name: 'start_working_copy',
+      title: 'Edit a team app in your space',
+      description:
+        "A team app changes through change requests. This makes (or finds) the person's working copy of it in their personal space: change the copy with apply_change, then submit_change.",
+      inputSchema: { type: 'object', properties: appId, required: ['app_id'], additionalProperties: false },
+      run: async (args) => {
+        if (auth.actor.type !== 'user') throw new HttpError(403, 'person_required', 'Only people have personal spaces');
+        const team = await app(args, 'app.edit');
+        const { appId: copyId, created, samples } = await delivery.workingCopy(request, auth, team);
+        return { app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(copyId)), created, sampleRecords: samples };
+      },
+    },
+    {
+      name: 'submit_change',
+      title: 'Submit a change for review',
+      description:
+        "Submit the changes in a working copy: opens a change request in the team space, with automatic checks and a preview, or brings the open one up to date. Reviewers approve it; the person can't approve their own change.",
+      inputSchema: {
+        type: 'object',
+        properties: { ...appId, title: { type: 'string', description: 'What the change does, in a few words' }, description: { type: 'string' } },
+        required: ['app_id'],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        if (auth.actor.type !== 'user') throw new HttpError(403, 'person_required', 'Only people submit changes');
+        const copy = await app(args, 'app.edit');
+        if (!copy.app.workingCopyOf) throw new HttpError(422, 'not_a_working_copy', 'Submit from a working copy: see start_working_copy');
+        await checkPermission(ctx, request, auth, 'change.open', appResource(ctx.org.id, await ctx.apps.ref(copy.app.workingCopyOf)));
+        const cr = await delivery.submit(request, auth, await ctx.apps.load(copy.app.id), {
+          ...(typeof args['title'] === 'string' ? { title: args['title'] } : {}),
+          ...(typeof args['description'] === 'string' ? { description: args['description'] } : {}),
+        });
+        return { changeRequest: { id: cr.id, number: cr.number, title: cr.title, status: cr.status, checks: cr.checks } };
       },
     },
   ];
@@ -406,7 +542,7 @@ function serve(
   };
 }
 
-export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime): FastifyPluginAsyncZod {
+export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime, delivery: Delivery, processes: ProcessEngine): FastifyPluginAsyncZod {
   return async (app) => {
     await app.register(
       serve(
@@ -417,7 +553,10 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
           instructions:
             'Tools here act for the signed-in person, within their permissions. Actions that need confirmation return a proposal: give the person its review link, and never claim it is done until they approve it. Report where each value came from in provenance.',
         },
-        (request, auth) => capabilityTools(ctx, runtime, request, auth),
+        async (request, auth) => {
+          const { tools, processes: used } = await capabilityTools(ctx, runtime, request, auth);
+          return used ? [...tools, ...taskTools(processes, request, auth)] : tools;
+        },
       ),
     );
     await app.register(
@@ -427,9 +566,9 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         {
           name: 'ambit-builder',
           instructions:
-            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change. Changes apply at once to the person's sandbox; anything that deletes data waits for them.",
+            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change. Changes apply at once to the person's sandbox; anything that deletes data waits for them. A team app changes through change requests: start_working_copy, change the copy, then submit_change for review.",
         },
-        async (request, auth) => builderTools(ctx, builder, runtime, request, auth),
+        async (request, auth) => builderTools(ctx, builder, runtime, delivery, request, auth),
       ),
     );
   };

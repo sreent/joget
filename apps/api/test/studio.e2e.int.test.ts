@@ -13,7 +13,9 @@ import { startTestApp, type Session, type TestApp } from './helpers.js';
 
 /** Playwright is installed with the environment's browser, not as a dependency: the little of it used here. */
 interface Locator {
-  click(): Promise<void>;
+  count(): Promise<number>;
+  click(options?: { position?: { x: number; y: number } }): Promise<void>;
+  isDisabled(): Promise<boolean>;
   fill(value: string): Promise<void>;
   blur(): Promise<void>;
   selectOption(value: string): Promise<unknown>;
@@ -21,6 +23,9 @@ interface Locator {
   waitFor(options?: { state?: 'visible' | 'hidden'; timeout?: number }): Promise<void>;
   getByLabel(text: string, options?: { exact?: boolean }): Locator;
   getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
+  getByText(text: string, options?: { exact?: boolean }): Locator;
+  getByTestId(testId: string): Locator;
+  locator(selector: string, options?: { has?: Locator }): Locator;
   first(): Locator;
   setInputFiles(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
 }
@@ -29,7 +34,6 @@ interface Page extends Locator {
   url(): string;
   waitForURL(url: RegExp): Promise<void>;
   getByText(text: string, options?: { exact?: boolean }): Locator;
-  locator(selector: string, options?: { has?: Locator }): Locator;
   screenshot(options: { path: string; fullPage?: boolean }): Promise<unknown>;
   on(event: 'pageerror', listener: (error: Error) => void): void;
 }
@@ -52,13 +56,14 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   let t: TestApp;
   let alice: Session;
   let bob: Session;
+  let carol: Session;
   let browser: Browser;
   let appId: string;
 
   beforeAll(async () => {
     t = await startTestApp({ PUBLIC_BASE_URL: BASE });
     await t.app.listen({ host: '127.0.0.1', port: PORT });
-    [alice, bob] = [await t.login('alice'), await t.login('bob')];
+    [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
     const { chromium } = createRequire(import.meta.url)('playwright') as { chromium: { launch(): Promise<Browser> } };
     browser = await chromium.launch();
   }, 60_000);
@@ -87,7 +92,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.goto(`${BASE}/studio/`);
     await visible(page.getByRole('heading', { name: 'Your apps' }));
     await page.getByLabel('Name').fill('Expenses');
-    await page.getByLabel('Start from').selectOption('example');
+    await page.getByLabel('Start from').selectOption('expenses');
     await shot(page, '1-home');
     await page.getByRole('button', { name: 'Create app' }).click();
     await page.waitForURL(/\/build\/data$/);
@@ -199,7 +204,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const page = await open(bob, 'dark');
     await page.goto(`${BASE}/studio/apps/${appId}`);
     await visible(page.getByText('requester'));
-    await visible(page.getByText('No expense claims you can see'));
+    // The app opens on its home page, "My claims", which is empty for Bob so far.
+    await visible(page.getByRole('heading', { name: 'My claims' }));
+    await visible(page.getByText('You have no claims yet.'));
+    await hidden(page.getByRole('link', { name: 'To approve' }));
     await hidden(page.getByText('Build this app'));
     await shot(page, '7-shared-dark');
 
@@ -207,5 +215,324 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await builder.goto(`${BASE}/studio/apps/${appId}/build/data`);
     await builder.getByRole('button', { name: /^Bank account/ }).click();
     await shot(builder, '8-data-designer-dark');
+  });
+
+  it('builds a rule and a role without JSON, and the app follows them', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/rules`);
+    await page.getByLabel('New rule').fill('Total cap');
+    await page.getByRole('button', { name: 'Add rule' }).click();
+    // The new rule checks claims: make it "Total is at most 1000", and block the change otherwise.
+    await page.getByLabel('Field').selectOption('record.total');
+    await page.getByLabel('Test').selectOption('lte');
+    await page.getByLabel('Value').fill('1000');
+    await page.getByLabel('Message', { exact: true }).fill('Claims over SGD 1,000 need a director');
+    await shot(page, '11-rule-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+
+    await page.goto(`${BASE}/studio/apps/${appId}/build/roles`);
+    await page.getByRole('button', { name: 'Approver', exact: true }).click();
+    await page.getByLabel('Exports records').click();
+    await shot(page, '12-roles');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.rules.total_cap).toMatchObject({ entity: 'expense_claim', assert: { lte: [{ ref: 'record.total' }, 1000] }, severity: 'error' });
+    expect(saved.roles.approver.entities.expense_claim.export).toBe(true);
+
+    // The app now refuses a claim over the cap, with the rule's message.
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: '+ Claim an expense' }).click();
+    await page.getByLabel('Title').fill('Conference');
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-10');
+    await page.getByLabel('Receipt 1, Merchant').fill('Expo');
+    await page.getByLabel('Receipt 1, Category').selectOption('travel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('1200');
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByText('Claims over SGD 1,000 need a director'));
+  });
+
+  it('designs a page and the menu, and each role sees its own pages', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);
+    await visible(page.getByRole('button', { name: /^To approve/ }));
+    await page.getByLabel('New page').fill('Recent claims');
+    await page.getByRole('button', { name: 'Add page' }).click();
+    await page.getByLabel('Title (optional)').fill('The latest ten');
+    await page.getByLabel('Shows at first').fill('10');
+    await page.getByLabel('Journey', { exact: true }).click();
+    await page.getByRole('button', { name: 'Add text' }).click();
+    await page.getByLabel('A note that stands out').click();
+    await page.getByLabel('Text', { exact: true }).fill('Newest first. Open one to see its receipts.');
+    await shot(page, '14-page-designer');
+
+    await page.getByRole('link', { name: 'Menu', exact: true }).click();
+    await page.getByRole('button', { name: 'Add a page' }).click();
+    // The new item opens the page that the menu does not have yet.
+    expect(await page.getByLabel('Item 7 opens').inputValue()).toBe('recent_claims');
+    await shot(page, '15-menu-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.pages.recent_claims.blocks).toEqual([
+      expect.objectContaining({ type: 'list', title: 'The latest ten', limit: 10, columns: ['title', 'total', 'created_at'] }),
+      { type: 'text', style: 'note', text: 'Newest first. Open one to see its receipts.' },
+    ]);
+    expect(saved.navigation.items.at(-1)).toEqual({ page: 'recent_claims' });
+
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: 'Recent claims' }).click();
+    await visible(page.getByRole('heading', { name: 'The latest ten' }));
+    await visible(page.getByText('Newest first. Open one to see its receipts.'));
+    await shot(page, '16-page');
+
+    // An approver gets the page for approvers, and approves from its list in one click.
+    const share = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, cookies: alice.cookies, payload: { email: 'carol@example.com', role: 'approver' } });
+    expect(share.statusCode, share.body).toBe(201);
+    const approver = await open(carol);
+    await approver.goto(`${BASE}/studio/apps/${appId}`);
+    await approver.getByRole('link', { name: 'To approve' }).click();
+    await visible(approver.getByText('Check the receipts of each claim before you approve it.'));
+    const rows = approver.locator('tbody tr');
+    await visible(rows.first());
+    const before = await rows.count();
+    await shot(approver, '17-to-approve');
+    await approver.getByRole('button', { name: 'Approve an expense claim' }).first().click();
+    await expect.poll(() => rows.count()).toBe(before - 1);
+    // No claiming for an approver: no form in the menu, and no button for it on My claims.
+    await hidden(approver.getByRole('link', { name: '+ Claim an expense' }));
+  });
+
+  it('shows a dashboard of numbers and charts, and builds one more chart in the page designer', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: 'Spending' }).click();
+    await visible(page.getByRole('heading', { name: 'Claims waiting for approval' }));
+    await visible(page.getByRole('heading', { name: 'Spending by category (SGD)' }));
+    await visible(page.getByRole('heading', { name: 'Spending by month (SGD)' }));
+    await visible(page.locator('ul[aria-label="Spending by category (SGD)"] li').first());
+    await shot(page, '18-dashboard');
+    // Every chart has a table view, the twin of what it draws.
+    await page.getByRole('button', { name: 'Table' }).first().click();
+    await visible(page.getByRole('columnheader', { name: 'Category' }));
+    await page.getByRole('button', { name: 'Chart' }).first().click();
+
+    const dark = await open(alice, 'dark');
+    await dark.goto(`${BASE}/studio/apps/${appId}/pages/spending`);
+    await visible(dark.locator('ul[aria-label="Spending by category (SGD)"] li').first());
+    await shot(dark, '19-dashboard-dark');
+
+    await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);
+    await page.getByRole('button', { name: /^Spending/ }).click();
+    await page.getByRole('button', { name: 'Add chart' }).click();
+    await page.getByLabel('Title', { exact: true }).fill('Claims by status');
+    await page.getByLabel('Width').selectOption('full');
+    await shot(page, '20-chart-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    await page.goto(`${BASE}/studio/apps/${appId}/pages/spending`);
+    await visible(page.getByRole('heading', { name: 'Claims by status' }));
+    await visible(page.locator('ul[aria-label="Claims by status"] li').first());
+  });
+
+  it('designs a query that answers with numbers, for agents to ask', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/queries`);
+    await page.getByRole('button', { name: /^My spending by category/ }).click();
+    await visible(page.getByLabel('A number for each group'));
+    expect(await page.getByLabel('For each', { exact: true }).inputValue()).toBe('lines.category');
+    await page.getByLabel('Largest groups').fill('5');
+    await shot(page, '23-query-numbers');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.queries.my_spending.summary).toMatchObject({ measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, limit: 5 });
+  });
+
+  it('designs the steps of an action, without a7c until the installation connects it', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
+    await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
+    const steps = page.getByRole('region', { name: 'Steps' });
+    await visible(steps.getByRole('button', { name: /^Step 3: Warn unless Total \(SGD\) is at most 1000/ }));
+    // This installation doesn't connect a7c, so there is no skill step to add.
+    expect(await steps.getByRole('button', { name: 'Start an a7c skill', exact: true }).count()).toBe(0);
+    await steps.getByRole('button', { name: 'Check', exact: true }).click();
+    await steps.getByLabel('Message', { exact: true }).fill('A claim needs a title');
+    await steps.getByLabel("When it doesn't hold", { exact: true }).selectOption('warning');
+    await steps.getByRole('button', { name: /^Step 2: Set Approver/ }).click();
+    await shot(page, '21-steps-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.actions.approve_claim.steps.at(-1)).toEqual({ type: 'check', assert: { exists: 'record.title' }, message: 'A claim needs a title', severity: 'warning' });
+  });
+
+  it('designs a process on a canvas, and the manager decides in their inbox', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await visible(page.getByRole('heading', { name: 'Your apps' }));
+    await page.getByLabel('Name').fill('Leave');
+    await page.getByLabel('Start from').selectOption('leave');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const leaveId = page.url().split('/apps/')[1]!.split('/')[0]!;
+
+    // The template's process, drawn in BPMN 2.0: it passes the checks as it is.
+    await page.getByRole('link', { name: 'Processes', exact: true }).click();
+    await visible(page.getByTestId('process-canvas'));
+    await visible(page.getByText('The process passes the checks.'));
+    await shot(page, '14-process');
+    // The manager has three days; then HR's way of doing it takes over. Here: a deadline that ends the path.
+    await page.getByTestId('process-canvas').getByText('Decide on the leave', { exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'User task' }));
+    await page.getByRole('button', { name: 'Add a deadline' }).click();
+    await visible(page.getByText('Unsaved changes.'));
+    // Both of the app's update actions decide the task, so neither can also interrupt it as a message.
+    expect(await page.getByRole('button', { name: 'Add an action', exact: true }).isDisabled()).toBe(true);
+    await shot(page, '15-process-deadline');
+    // An inclusive gateway on the approved path: it takes each flow out whose condition holds.
+    // The label's background takes the click: React Flow lets the text itself ignore the pointer.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await visible(page.getByRole('heading', { name: 'Flow', exact: true }));
+    await page.getByRole('button', { name: 'Inclusive', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Inclusive', exact: true }));
+    await shot(page, '15c-process-inclusive');
+    await page.getByTestId('process-canvas').click({ position: { x: 12, y: 12 } });
+    await visible(page.getByText('The process passes the checks.'));
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const dark = await open(alice, 'dark');
+    await dark.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    await visible(dark.getByTestId('process-canvas'));
+    await shot(dark, '15b-process-dark');
+
+    // Alice asks for leave, naming Bob; the decision waits in his inbox.
+    await t.app.inject({ method: 'POST', url: `/v1/apps/${leaveId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'manager' } });
+    const asked = await t.app.inject({
+      method: 'POST',
+      url: `/v1/apps/${leaveId}/actions/request_leave/run`,
+      cookies: alice.cookies,
+      payload: { values: { kind: 'annual', starts: '2026-12-28', ends: '2026-12-30', days: 3, manager: bob.userId } },
+    });
+    expect(asked.statusCode, asked.body).toBe(201);
+    const inbox = await open(bob);
+    await inbox.goto(`${BASE}/studio/tasks`);
+    await visible(inbox.getByRole('heading', { name: 'Decide on the leave' }));
+    await shot(inbox, '16-inbox');
+    await inbox.getByRole('button', { name: 'Approve', exact: true }).click();
+    await visible(inbox.getByText('Nothing waits for you'));
+
+    // The record shows that its process is done.
+    const record = await open(alice);
+    await record.goto(`${BASE}/studio/apps/${leaveId}/leave_request/${asked.json().record.id}`);
+    await visible(record.getByText('Leave approval'));
+    await visible(record.getByText('Done', { exact: true }));
+    await shot(record, '17-record-process');
+  });
+
+  it('designs a message that withdraws a request, and a system task whose failure has a path', async () => {
+    // The leave template, with an action that withdraws a request and one that tells payroll.
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with withdrawal', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
+    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    current.definition.actions.withdraw_leave = update('Withdraw', { status: 'rejected' });
+    current.definition.actions.tell_payroll = update('Tell payroll', { reason: 'Payroll knows' });
+    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    expect(put.statusCode, put.body).toBe(200);
+
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await visible(canvas);
+    // While the manager decides, the employee can withdraw the request: the task goes, and the path ends.
+    await canvas.getByText('Decide on the leave', { exact: true }).click();
+    await page.getByRole('button', { name: 'Add an action', exact: true }).click();
+    await page.getByLabel('The action that is saved').selectOption('withdraw_leave');
+    await visible(canvas.getByText('Stopped', { exact: true }));
+
+    // Once approved, a system task tells payroll; if its action fails, the path leads on.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByRole('button', { name: 'System task', exact: true }).click();
+    await page.getByLabel("Runs, with the app's authority").selectOption('tell_payroll');
+    await page.getByRole('button', { name: 'Catch the failure', exact: true }).click();
+    await visible(page.getByText("The process leads on by the error's path."));
+    await visible(canvas.getByText('Failed', { exact: true }));
+
+    // An event that waits for an action, drawn and taken away again: the path joins up around it.
+    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
+    await page.getByRole('button', { name: 'Message', exact: true }).click();
+    await visible(page.getByLabel('Until it is saved'));
+    await shot(page, '15d-process-events');
+    await page.getByRole('button', { name: 'Remove message', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 3' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['message_1']).toEqual({ type: 'boundaryEvent', name: 'Withdraw', attachedTo: 'decide', interrupting: true, message: { action: 'withdraw_leave' } });
+    expect(saved.elements['system_1']).toMatchObject({ type: 'serviceTask', action: 'tell_payroll' });
+    expect(saved.elements['error_1']).toEqual({ type: 'boundaryEvent', name: 'Error', attachedTo: 'system_1', interrupting: true, error: true });
+    expect(saved.flows['on_reject']).toMatchObject({ from: 'decide', to: 'rejected' });
+  });
+
+  it('designs a sub-process with a task inside it, and a call to another process of the app', async () => {
+    // The leave template, with a second process on the same requests, for the first to call.
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a review', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
+    current.definition.processes.second_look = {
+      label: 'Second look',
+      entity: 'leave_request',
+      elements: { start: { type: 'startEvent', name: 'Start' }, end: { type: 'endEvent', name: 'Seen' } },
+      flows: { through: { from: 'start', to: 'end' } },
+    };
+    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    expect(put.statusCode, put.body).toBe(200);
+
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await page.getByLabel('Process', { exact: true }).selectOption('leave_approval');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    // A rejection calls the second look.
+    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
+    await page.getByRole('button', { name: 'Call process', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Call process', exact: true }));
+    await visible(page.getByRole('button', { name: 'Open Second look', exact: true }));
+    // Once approved, a review runs as a sub-process, with its own start and end.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByRole('button', { name: 'Sub-process', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Sub-process', exact: true }));
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Review');
+    // After the start event inside it, a task goes inside it too.
+    await page.getByTestId('rf__node-start_1').click();
+    await page.getByRole('button', { name: 'Manual task', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Manual task', exact: true }));
+    await shot(page, '15e-process-sub-and-call');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 3' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['sub_1']).toEqual({ type: 'subProcess', name: 'Review' });
+    expect(saved.elements['manual_1']).toMatchObject({ type: 'manualTask', in: 'sub_1' });
+    expect(saved.elements['call_1']).toEqual({ type: 'callActivity', name: 'Second look', process: 'second_look' });
+
+    // The called process opens from the call.
+    await page.getByTestId('process-canvas').getByText('Second look', { exact: true }).click();
+    await page.getByRole('button', { name: 'Open Second look', exact: true }).click();
+    await visible(page.getByTestId('process-canvas').getByText('Seen', { exact: true }));
   });
 });

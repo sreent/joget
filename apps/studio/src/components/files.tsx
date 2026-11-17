@@ -1,11 +1,11 @@
 import { createContext, useContext, useState, type ReactNode } from 'react';
-import { ApiError, uploadFile } from '../api.js';
+import { ApiError, envParams, uploadFile, type AppAt } from '../api.js';
 import type { FileInfo } from '../types.js';
 import { Button } from './ui.js';
 
-/** The app whose files these are, and the names of the files the screen knows about. */
+/** The app (in its environment) whose files these are, and the names of the files the screen knows about. */
 interface Files {
-  readonly appId: string;
+  readonly at: AppAt;
   readonly names: Readonly<Record<string, FileInfo>>;
   remember(id: string, info: FileInfo): void;
 }
@@ -13,18 +13,18 @@ interface Files {
 const FilesContext = createContext<Files | null>(null);
 
 /** Gives the screens below it the app's files: their names, and somewhere to keep new uploads' names. */
-export function FilesProvider({ appId, known, children }: { appId: string; known?: Readonly<Record<string, FileInfo>>; children: ReactNode }) {
+export function FilesProvider({ at, known, children }: { at: AppAt; known?: Readonly<Record<string, FileInfo>>; children: ReactNode }) {
   const [uploaded, setUploaded] = useState<Record<string, FileInfo>>({});
   const parent = useContext(FilesContext);
   const names = { ...parent?.names, ...known, ...uploaded };
   return (
-    <FilesContext.Provider value={{ appId, names, remember: (id, info) => (parent ? parent.remember(id, info) : setUploaded((all) => ({ ...all, [id]: info }))) }}>
+    <FilesContext.Provider value={{ at, names, remember: (id, info) => (parent ? parent.remember(id, info) : setUploaded((all) => ({ ...all, [id]: info }))) }}>
       {children}
     </FilesContext.Provider>
   );
 }
 
-export const fileUrl = (appId: string, id: string) => `/v1/apps/${encodeURIComponent(appId)}/files/${encodeURIComponent(id)}`;
+export const fileUrl = (at: AppAt, id: string) => `/v1/apps/${encodeURIComponent(at.id)}/files/${encodeURIComponent(id)}${envParams(at)}`;
 
 const size = (bytes: number) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`);
 
@@ -35,7 +35,7 @@ export function FileLink({ id, link = true }: { id: string; link?: boolean }) {
   const name = info?.name ?? 'A file';
   if (!link || !files) return <span>{name}</span>;
   return (
-    <a href={fileUrl(files.appId, id)} target="_blank" rel="noopener noreferrer">
+    <a href={fileUrl(files.at, id)} target="_blank" rel="noopener noreferrer">
       {name}
       {info ? <span className="ml-1 text-xs text-faint">{size(info.size)}</span> : null}
     </a>
@@ -76,7 +76,7 @@ export function FileInput({ id, value, accept, onChange, label }: { id: string; 
           setBusy(true);
           setError(null);
           try {
-            const uploaded = await uploadFile(files.appId, file);
+            const uploaded = await uploadFile(files.at, file);
             files.remember(uploaded.id, uploaded);
             onChange(uploaded.id);
           } catch (e) {

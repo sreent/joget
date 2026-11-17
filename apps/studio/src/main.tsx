@@ -4,7 +4,9 @@ import { createRoot } from 'react-dom/client';
 import { api } from './api.js';
 import { Link, useRoute } from './router.js';
 import { Builder } from './screens/Builder.js';
+import { ChangeRequestPage } from './screens/Delivery.js';
 import { Home } from './screens/Home.js';
+import { TaskCount, Tasks } from './screens/Tasks.js';
 import { Use } from './screens/Use.js';
 import './styles.css';
 
@@ -22,6 +24,7 @@ function App() {
             Ambit <span className="font-normal text-muted">Studio</span>
           </Link>
           <span className="flex-1" />
+          {me.data ? <TaskCount /> : null}
           {me.data ? <span className="text-sm text-muted">{me.data.displayName ?? me.data.email}</span> : null}
         </div>
       </header>
@@ -30,10 +33,20 @@ function App() {
           <p className="text-bad">Ambit can't be reached right now.</p>
         ) : !me.data ? null : route.name === 'home' ? (
           <Home me={me.data} />
+        ) : route.name === 'tasks' ? (
+          <Tasks />
         ) : route.name === 'build' ? (
           <Builder appId={route.appId} tab={route.tab} />
+        ) : route.name === 'change' ? (
+          <ChangeRequestPage id={route.changeRequestId} me={me.data} />
         ) : (
-          <Use appId={route.appId} {...(route.page ? { page: route.page } : {})} {...(route.recordId ? { recordId: route.recordId } : {})} />
+          <Use
+            appId={route.appId}
+            {...(route.env ? { env: route.env } : {})}
+            {...(route.appPage ? { appPage: route.appPage } : {})}
+            {...(route.page ? { page: route.page } : {})}
+            {...(route.recordId ? { recordId: route.recordId } : {})}
+          />
         )}
       </main>
     </div>

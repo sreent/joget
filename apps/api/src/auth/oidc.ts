@@ -14,6 +14,9 @@ export interface OidcIdentity {
   readonly amr: readonly string[];
   readonly acr: string | null;
   readonly authTime: Date | null;
+  /** From the directory, where the IdP says: the department, and the manager's email. Absent leaves Ambit's as they are. */
+  readonly department?: string | null;
+  readonly managerEmail?: string | null;
 }
 
 export interface LoginStart {
@@ -47,7 +50,12 @@ function stringArray(value: unknown): string[] {
 }
 
 /** Map ID-token claims to an identity. `groupsClaim` is configurable because IdPs name it differently. */
-export function identityFromClaims(claims: Record<string, unknown>, groupsClaim: string, subjectClaim = 'sub'): OidcIdentity {
+export function identityFromClaims(
+  claims: Record<string, unknown>,
+  groupsClaim: string,
+  subjectClaim = 'sub',
+  directory: { readonly departmentClaim?: string | undefined; readonly managerClaim?: string | undefined } = {},
+): OidcIdentity {
   const { iss } = claims;
   const sub = claims[subjectClaim];
   if (typeof iss !== 'string' || typeof sub !== 'string' || !iss || !sub) {
@@ -64,7 +72,17 @@ export function identityFromClaims(claims: Record<string, unknown>, groupsClaim:
     amr: stringArray(claims['amr']),
     acr: typeof claims['acr'] === 'string' ? claims['acr'] : null,
     authTime: typeof claims['auth_time'] === 'number' ? new Date(claims['auth_time'] * 1000) : null,
+    ...directoryClaim('department', directory.departmentClaim, claims, (value) => value.trim().slice(0, 200)),
+    ...directoryClaim('managerEmail', directory.managerClaim, claims, (value) => value.trim().toLowerCase().slice(0, 320)),
   };
+}
+
+/** A directory value from a claim the installation names: a text, or empty; nothing when the token doesn't carry it. */
+function directoryClaim<K extends string>(key: K, claim: string | undefined, claims: Record<string, unknown>, clean: (value: string) => string): Partial<Record<K, string | null>> {
+  if (!claim || !(claim in claims)) return {};
+  const value = claims[claim];
+  const text = typeof value === 'string' ? clean(value) : '';
+  return { [key]: text || null } as Partial<Record<K, string | null>>;
 }
 
 /** When the IdP last confirmed MFA for this login, or null if it did not. */
@@ -184,7 +202,10 @@ export async function createOpenIdProvider(config: Config): Promise<OidcProvider
       });
       const claims = tokens.claims();
       if (!claims) throw new Error('The IdP did not return an ID token');
-      return identityFromClaims(claims as Record<string, unknown>, config.OIDC_GROUPS_CLAIM, config.OIDC_SUBJECT_CLAIM);
+      return identityFromClaims(claims as Record<string, unknown>, config.OIDC_GROUPS_CLAIM, config.OIDC_SUBJECT_CLAIM, {
+        departmentClaim: config.OIDC_DEPARTMENT_CLAIM,
+        managerClaim: config.OIDC_MANAGER_CLAIM,
+      });
     },
 
     verifyToken: (() => {

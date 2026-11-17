@@ -36,6 +36,24 @@ export async function checkPermission(
   return decision;
 }
 
+/** Allow if the policy decision point allows any one of the actions; refuse (audited) with the first one's reasons otherwise. */
+export async function checkAnyPermission(
+  ctx: AppContext,
+  request: FastifyRequest,
+  auth: AuthContext,
+  actions: readonly string[],
+  resource: Resource,
+  options: CheckOptions = {},
+): Promise<Decision> {
+  let first: Decision | undefined;
+  for (const action of actions) {
+    const decision = await ctx.policy.authorize(auth.principal, action, resource, options.context, options.policy);
+    if (decision.allowed) return decision;
+    first ??= decision;
+  }
+  return deny(ctx, request, actions.join(' or '), resource, first?.reasons ?? []);
+}
+
 /** Like checkPermission, for an action over many records: returns the grants with their record filters. */
 export async function checkQuery(
   ctx: AppContext,

@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { once, requireAuth } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
 import { appResource } from '../apps/resources.js';
+import { envOf } from '../apps/routes.js';
+import { EnvQuery } from '../apps/schemas.js';
 import type { AppRuntime, RecordOut } from '../apps/runtime.js';
 import { withAppTransaction } from '../apps/transaction.js';
 import type { AppContext } from '../context.js';
@@ -38,7 +40,7 @@ function holds(loaded: LoadedApp, entityName: string, record: RecordOut, fileId:
  * download it, through that record, and nobody else. A file nobody may see is "not found".
  */
 export function fileRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginAsyncZod {
-  const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId));
+  const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
   const appRule = { kind: 'permission' as const, action: 'app.run', resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theApp(request)), policy: async (request: FastifyRequest) => runtime.policy(await theApp(request)) };
   const files = ctx.files;
 
@@ -55,7 +57,7 @@ export function fileRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginA
           tags: ['files'],
           summary: 'Upload a file, such as a receipt, to use in a record of this app: send its content as the body. Images and PDFs only',
           params: z.object({ appId: z.uuid() }),
-          querystring: z.object({ name: z.string().max(500).optional().describe('The file name to show') }),
+          querystring: EnvQuery.extend({ name: z.string().max(500).optional().describe('The file name to show') }),
           response: { 201: FileOut },
         },
       },
@@ -68,7 +70,15 @@ export function fileRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginA
 
     app.get(
       '/v1/apps/:appId/files/:fileId',
-      { config: { access: appRule }, schema: { tags: ['files'], summary: 'Download a file you uploaded, or one in a record you can see', params: z.object({ appId: z.uuid(), fileId: z.uuid() }) } },
+      {
+        config: { access: appRule },
+        schema: {
+          tags: ['files'],
+          summary: 'Download a file you uploaded, or one in a record you can see',
+          params: z.object({ appId: z.uuid(), fileId: z.uuid() }),
+          querystring: EnvQuery,
+        },
+      },
       async (request, reply) => {
         const auth = requireAuth(request);
         const loaded = await theApp(request);

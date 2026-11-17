@@ -1,10 +1,14 @@
+import type { Condition } from './conditions.js';
 import type { SodRule } from './governance.js';
 import type { Guardrail, PermissionSet, Role, ScopeType } from './model.js';
 import type { PlatformPermission } from './permissions.js';
 
-function permissionSet(id: string, name: string, scopeType: ScopeType, permissions: PlatformPermission[]): PermissionSet {
-  return { id, name, scopeType, managed: true, grants: permissions.map((permission) => ({ permission })) };
+function permissionSet(id: string, name: string, scopeType: ScopeType, permissions: PlatformPermission[], condition?: Condition): PermissionSet {
+  return { id, name, scopeType, managed: true, grants: permissions.map((permission) => ({ permission, ...(condition ? { condition } : {}) })) };
 }
+
+/** True inside a change request's preview: a temporary environment with test data only. */
+const inPreview: Condition = { eq: [{ ref: 'resource.env' }, 'preview'] };
 
 function role(id: string, name: string, scopeType: ScopeType, permissionSetIds: string[]): Role {
   return { id, name, scopeType, permissionSetIds, managed: true };
@@ -68,7 +72,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'connection.manage',
   ]),
   permissionSet('ps.space.view', 'Space view', 'space', ['space.read', 'app.read', 'deploy.read', 'ops.monitor.read']),
-  permissionSet('ps.space.build', 'Build apps', 'space', ['app.create', 'app.read', 'app.edit', 'change.open', 'connection.use']),
+  permissionSet('ps.space.build', 'Build apps', 'space', ['app.create', 'app.read', 'app.edit', 'app.export', 'change.open', 'connection.use']),
   permissionSet('ps.space.review', 'Review changes', 'space', ['change.review', 'change.approve', 'deploy.approve']),
   permissionSet('ps.space.release', 'Release management', 'space', [
     'change.merge',
@@ -78,7 +82,15 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'deploy.execute',
     'deploy.rollback',
   ]),
-  permissionSet('ps.space.operations', 'Operate apps', 'space', ['ops.monitor.read', 'ops.job.retry', 'ops.task.reassign']),
+  permissionSet('ps.space.operations', 'Operate apps', 'space', ['ops.monitor.read', 'ops.job.retry', 'ops.task.reassign', 'process.admin']),
+  // Builders and reviewers click through a change in its preview, with every right there, and nowhere else.
+  permissionSet(
+    'ps.space.preview',
+    'Try changes in previews',
+    'space',
+    ['app.run', 'action.run', 'query.run', 'record.read', 'record.create', 'record.update', 'record.delete', 'process.start'],
+    inPreview,
+  ),
   permissionSet('ps.space.personal', 'Personal space owner', 'space', [
     'space.read',
     'space.settings.manage',
@@ -96,6 +108,8 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'record.update',
     'record.delete',
     'record.export',
+    'process.start',
+    'process.admin',
     'connection.use',
     'connection.manage',
     'deploy.read',
@@ -119,11 +133,12 @@ export const MANAGED_ROLES: readonly Role[] = [
     'ps.space.review',
     'ps.space.release',
     'ps.space.operations',
+    'ps.space.preview',
   ]),
   role('space.admin', 'Space admin', 'space', ['ps.space.administration', 'ps.space.view']),
-  role('space.builder', 'Builder', 'space', ['ps.space.build', 'ps.space.view']),
-  role('space.reviewer', 'Reviewer', 'space', ['ps.space.review', 'ps.space.view']),
-  role('space.release_manager', 'Release manager', 'space', ['ps.space.release', 'ps.space.view']),
+  role('space.builder', 'Builder', 'space', ['ps.space.build', 'ps.space.view', 'ps.space.preview']),
+  role('space.reviewer', 'Reviewer', 'space', ['ps.space.review', 'ps.space.view', 'ps.space.preview']),
+  role('space.release_manager', 'Release manager', 'space', ['ps.space.release', 'ps.space.view', 'ps.space.preview']),
   role('space.operator', 'Operator', 'space', ['ps.space.operations', 'ps.space.view']),
   role('space.viewer', 'Viewer', 'space', ['ps.space.view']),
   role('space.personal_owner', 'Personal space owner', 'space', ['ps.space.personal']),
@@ -206,6 +221,15 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
     ],
     effect: 'deny',
     when: { eq: [{ ref: 'resource.status' }, 'frozen'] },
+    managed: true,
+  },
+  {
+    id: 'gr.app.moved-read-only',
+    name: 'An app that moved to a team space is read-only where it was',
+    // Its people keep reading what they did here; they work on in the team space's app (design §3).
+    actions: ['app.edit', 'app.share', 'action.run', 'record.create', 'record.update', 'record.delete', 'change.*'],
+    effect: 'deny',
+    when: { eq: [{ ref: 'resource.moved' }, true] },
     managed: true,
   },
   {

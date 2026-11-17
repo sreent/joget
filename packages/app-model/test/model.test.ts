@@ -80,7 +80,7 @@ describe('validateDefinition', () => {
     const result = validateDefinition(input, first, ids());
     if (!result.ok) throw new Error(JSON.stringify(result.issues));
     const { definition } = result;
-    expect(definition.roles['approver']!.entities['claim']!.update).toEqual({ where: { eq: [{ ref: 'record.state' }, 'submitted'] }, fields: { include: ['state'] } });
+    expect(definition.roles['approver']!.entities['claim']!.update).toEqual({ where: { eq: [{ ref: 'record.state' }, 'submitted'] }, fields: { include: ['state', 'approver'] } });
     expect(definition.actions['approve_claim']).toMatchObject({ entity: 'claim', set: { state: 'approved' } });
     expect(planMigration(first, definition, names).statements.every((s) => s.startsWith('comment on'))).toBe(true);
   });
@@ -106,6 +106,8 @@ describe('validateDefinition', () => {
   it('catches actions that could never succeed, and conditions with the wrong types', () => {
     const broken = clone(EXPENSE_APP) as any;
     broken.forms = {}; // the form would rightly complain too; this test is about the action
+    broken.pages = {};
+    delete broken.navigation;
     broken.actions.submit_claim.input = ['title', 'total'];
     broken.rules.hotel_cap.assert = { lte: [{ ref: 'record.category' }, 250] };
     broken.roles.requester.entities.expense_claim.read.where = { eq: [{ ref: 'record.total' }, 'lots'] };
@@ -362,6 +364,8 @@ describe('planMigration', () => {
     const fields = next.entities.expense_claim.fields as Array<{ name: string; type: string; unique?: boolean }>;
     fields.find((f) => f.name === 'trip')!.name = 'journey';
     next.entities.expense_claim.fields = fields.filter((f) => f.name !== 'approver');
+    next.actions.approve_claim.steps = next.actions.approve_claim.steps.filter((step: { field?: string }) => step.field !== 'approver');
+    next.roles.approver.entities.expense_claim.update.fields = { include: ['status'] };
     const iban = fields.find((f) => f.name === 'iban')!;
     iban.unique = true;
     const title = fields.find((f) => f.name === 'title')! as any;
@@ -409,7 +413,7 @@ describe('compileAppPolicy', () => {
       { permission: 'app.run' },
       { permission: 'action.run', resource: 'approve_claim' },
       { permission: 'record.read', resource: 'expense_claim', condition: { in: [{ ref: 'record.status' }, ['submitted', 'approved']] }, mask: ['iban'] },
-      { permission: 'record.update', resource: 'expense_claim', condition: { eq: [{ ref: 'record.status' }, 'submitted'] }, fields: { include: ['status'] } },
+      { permission: 'record.update', resource: 'expense_claim', condition: { eq: [{ ref: 'record.status' }, 'submitted'] }, fields: { include: ['status', 'approver'] } },
     ]);
   });
 

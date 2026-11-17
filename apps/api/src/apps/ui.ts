@@ -1,4 +1,4 @@
-import { covers, fieldAccess, lineOwners, rollupOf, type FieldAccess, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { appRoleName, covers, fieldAccess, lineOwners, rollupOf, type ChartBlock, type FieldAccess, type StatBlock, type StoredDefinition, type StoredField } from '@platform/app-model';
 import type { PermissionGrant } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
 import type { AppContext, AuthContext } from '../context.js';
@@ -131,5 +131,159 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
         .filter((section) => section.fields.length),
     };
   }
-  return { entities, forms, actions, queries };
+  const { pages, navigation } = await describePages(ctx, auth, loaded, { entities, forms, actions, visibleFields });
+  return { entities, forms, actions, queries, pages, navigation };
+}
+
+/** What screens need to draw a number or a chart: its labels, and how to show its values. */
+function describeSummary(definition: StoredDefinition, index: number, block: StatBlock | ChartBlock): Record<string, unknown> & { type: string } {
+  const entity = definition.entities[block.entity]!;
+  /** A field of the records, or of their lines. */
+  const fieldOf = (path: string): StoredField | undefined => {
+    const [first, sub] = path.split('.') as [string, string | undefined];
+    const field = entity.fields.find((f) => f.name === first);
+    if (!sub) return field;
+    return field?.type === 'lines' ? definition.entities[field.entity]?.fields.find((f) => f.name === sub) : undefined;
+  };
+  const measured = block.measure.field ? fieldOf(block.measure.field) : undefined;
+  const decimals = block.measure.op === 'count' ? 0 : measured?.type === 'number' ? measured.decimals : 0;
+  const base = { index, entity: block.entity, op: block.measure.op, decimals };
+  if (block.type === 'stat') return { type: 'stat', label: block.label, ...base };
+  const grouped = fieldOf(block.group.field);
+  const people = grouped?.type === 'user' || ['owner', 'created_by', 'updated_by'].includes(block.group.field);
+  return {
+    type: 'chart',
+    title: block.title,
+    show: block.show,
+    width: block.width,
+    ...base,
+    group: {
+      label: grouped?.label ?? SYSTEM_COLUMNS[block.group.field] ?? block.group.field,
+      kind: block.group.period ? 'period' : people ? 'person' : 'value',
+      ...(block.group.period ? { period: block.group.period } : {}),
+    },
+  };
+}
+
+/** Labels for the system fields a list may show as columns. */
+const SYSTEM_COLUMNS: Readonly<Record<string, string>> = {
+  created_at: 'Created',
+  updated_at: 'Updated',
+  owner: 'Owner',
+  created_by: 'Created by',
+  updated_by: 'Updated by',
+};
+
+type Visible = {
+  readonly entities: Record<string, unknown>;
+  readonly forms: Record<string, unknown>;
+  readonly actions: Record<string, unknown>;
+  readonly visibleFields: ReadonlyMap<string, ReadonlySet<string>>;
+};
+
+/**
+ * The app's pages and menu as the caller may use them (design §5.5): a list shows the columns
+ * their role can read, a button or menu item appears only if what it opens is usable, and a page
+ * appears if anything on it is. A page meant for some roles only is left out for people who hold
+ * other roles of the app. None of this protects data: the records API does that.
+ */
+async function describePages(ctx: AppContext, auth: AuthContext, loaded: LoadedApp, visible: Visible) {
+  const definition = loaded.definition;
+  const held = await ctx.policy.bindingsFor(auth.principal);
+  const myRoles = new Set(
+    held
+      .filter((binding) => binding.scope.type === 'env' && binding.scope.id === loaded.env.id && binding.roleId)
+      .map((binding) => appRoleName(loaded.app.id, binding.roleId!))
+      .filter((name): name is string => name !== null),
+  );
+  const fieldsOf = (entity: string) => (visible.entities[entity] as { fields: UiField[]; can: { read: boolean } } | undefined);
+
+  type Block = Record<string, unknown> & { type: string };
+  const shown = new Map<string, { label: string; description?: string; blocks: Block[]; usable: boolean }>();
+  for (const [name, page] of Object.entries(definition.pages)) {
+    if (page.roles?.length && myRoles.size && !page.roles.some((role) => myRoles.has(role))) continue;
+    let data = 0;
+    let usable = 0;
+    const blocks: Block[] = [];
+    page.blocks.forEach((block, index) => {
+      if (block.type === 'text') {
+        blocks.push({ type: 'text', style: block.style, text: block.text });
+        return;
+      }
+      data++;
+      if (block.type === 'buttons') {
+        // Page buttons are checked once every page's own use is known.
+        const buttons = block.buttons.filter((button) => ('form' in button ? button.form in visible.forms : true));
+        if (buttons.some((button) => 'form' in button)) usable++;
+        if (buttons.length) blocks.push({ type: 'buttons', buttons });
+        return;
+      }
+      const entity = fieldsOf(block.entity);
+      if (!entity?.can.read) return;
+      if (block.type === 'stat' || block.type === 'chart') {
+        // A number about fields the person can't see would tell them what their role hides.
+        const read = (path: string): UiField['read'] => {
+          if (path in SYSTEM_COLUMNS) return 'full';
+          const [first, sub] = path.split('.') as [string, string | undefined];
+          const field = entity.fields.find((f) => f.name === first);
+          return sub ? (field?.lines?.fields.find((f) => f.name === sub)?.read ?? null) : (field?.read ?? null);
+        };
+        const paths = [block.measure.field, block.type === 'chart' ? block.group.field : undefined, block.range?.field].filter((path): path is string => path !== undefined);
+        if (paths.some((path) => read(path) !== 'full')) return;
+        usable++;
+        blocks.push(describeSummary(definition, index, block));
+        return;
+      }
+      const fields = new Map(entity.fields.filter((field) => field.read).map((field) => [field.name, field]));
+      const columns = block.columns.flatMap((column) => {
+        const field = fields.get(column);
+        if (field) return [{ name: column, label: field.label, type: field.type, ...(field.options ? { options: field.options } : {}), ...(field.decimals !== undefined ? { decimals: field.decimals } : {}) }];
+        return column in SYSTEM_COLUMNS ? [{ name: column, label: SYSTEM_COLUMNS[column]!, type: column.endsWith('_at') ? 'datetime' : 'user' }] : [];
+      });
+      if (!columns.length) return;
+      usable++;
+      blocks.push({
+        type: 'list',
+        index,
+        entity: block.entity,
+        ...(block.title ? { title: block.title } : {}),
+        columns,
+        actions: block.actions.filter((action) => action in visible.actions),
+        ...(block.empty ? { empty: block.empty } : {}),
+      });
+    });
+    shown.set(name, { label: page.label, ...(page.description ? { description: page.description } : {}), blocks, usable: data === 0 || usable > 0 });
+  }
+  // A button to a page, and a page of nothing but such buttons, count once the pages they open do.
+  const usablePage = (name: string) => shown.get(name)?.usable === true;
+  const pages: Record<string, unknown> = {};
+  for (const [name, page] of shown) {
+    const blocks = page.blocks.flatMap((block) => {
+      if (block.type !== 'buttons') return [block];
+      const buttons = (block['buttons'] as Array<{ form?: string; page?: string }>).filter((button) => (button.page ? usablePage(button.page) : true));
+      return buttons.length ? [{ ...block, buttons }] : [];
+    });
+    const usable = page.usable || blocks.some((block) => block.type === 'buttons');
+    if (usable) pages[name] = { label: page.label, ...(page.description ? { description: page.description } : {}), blocks };
+  }
+
+  let navigation: { home: string | null; items: Array<Record<string, string>> } | null = null;
+  if (definition.navigation) {
+    const items: Array<Record<string, string>> = [];
+    for (const item of definition.navigation.items) {
+      if ('heading' in item) items.push({ heading: item.heading });
+      else if ('page' in item) {
+        if (item.page in pages) items.push({ page: item.page, label: item.label ?? (pages[item.page] as { label: string }).label });
+      } else if ('form' in item) {
+        if (item.form in visible.forms) items.push({ form: item.form, label: item.label ?? (visible.forms[item.form] as { label: string }).label });
+      } else if (fieldsOf(item.entity)?.can.read) {
+        items.push({ entity: item.entity, label: item.label ?? (visible.entities[item.entity] as { pluralLabel: string }).pluralLabel });
+      }
+    }
+    // A heading with nothing under it says nothing.
+    const kept = items.filter((item, i) => !('heading' in item) || (items[i + 1] !== undefined && !('heading' in items[i + 1]!)));
+    const home = definition.navigation.home;
+    navigation = { home: home && home in pages ? home : null, items: kept };
+  }
+  return { pages, navigation };
 }

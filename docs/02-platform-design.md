@@ -10,6 +10,9 @@
 - **Decided:**
   - 2026-11-14: one company; cloud-agnostic and IdP-agnostic; TypeScript; ISO 27001:2022; no data-residency constraint.
   - 2026-11-15: people ask for outcomes and builders publish capabilities; the agent is a separate project; the first processes keep their data on the platform; it stays a low-code platform like Joget and Mendix, with visual designers next to an AI copilot.
+  - 2026-11-16: an action's logic stays a short list of steps over Ambit's own data; automation across other systems belongs to a7c's skills, which an action can call. So there is one automation canvas, in a7c, not two.
+  - 2026-11-17: a7c is left out for now. Ambit keeps its side of the link to a7c, switched off: until an installation connects a7c (`A7C_URL`), a definition whose actions start a7c skills is refused, and the templates and the example start none.
+  - 2026-11-17: business processes are BPMN 2.0. Ambit imports and exports BPMN 2.0 XML, runs a stated part of BPMN 2.0 on its own engine in PostgreSQL rather than Temporal, and grows that part. A business process, where people decide on an app's records, is Ambit's; automation, where machines do work across systems, is a7c's (§6.10).
 
   Production is separated from everything else (§7.3), and §15 maps the design to ISO 27001 controls.
 - **People ask for outcomes; builders publish capabilities.** For the person doing the work, the app disappears: they ask an agent for an outcome, in Teams, Slack, Matrix, Signal or the web, then check a review card and confirm. For builders and governance, the app remains as the package that capabilities ship in: owned, versioned, reviewed, released and audited (§6).
@@ -25,7 +28,7 @@
 - **Data is reached through connectors, as in n8n.** The platform's own governed store is the first connector, and other systems plug in the same way. Record- and field-level permissions, history and atomic commits hold in full in the built-in store. For other systems, the platform governs the call (§6.1).
 - **AI builds too, under the same rules.** The builder API is also an MCP server, so Claude or the studio's own copilot can draft capabilities with the builder's permissions. In the builder's personal space, drafts apply live, except changes that would lose data. In a team space, a draft can only become a change request (§6.5).
 - **Surpass, don't clone.** Match what Joget lets builders deliver, and beat it on governance, isolation, delivery, observability, audit and readiness for agents. Build security in rather than selling it as an extra (§1).
-- **Modern, proven stack.** TypeScript end to end: a Fastify modular monolith, and React for the studio and the generated review screens. PostgreSQL, Temporal for long-running processes, MCP for agents, OpenTelemetry and Kubernetes (§12).
+- **Modern, proven stack.** TypeScript end to end: a Fastify modular monolith, and React for the studio and the generated review screens. PostgreSQL, which also holds the state of Ambit's BPMN 2.0 engine, MCP for agents, OpenTelemetry and Kubernetes (§12).
 - **Build the governance kernel first:** organizations, spaces, identity, one authorization engine and an audit pipeline. Joget attaches permissions to each component, and retrofitting them is the most expensive change a low-code platform can face.
 - **Build in personal, run in team.** Every user gets a private **personal space**, which is their development environment, both for their own apps and for working copies of team apps. **Team spaces** run approved apps in **Prod**. Each change request gets a temporary **preview** for review and testing, and a persistent **Staging** environment is optional. Changes reach a team space only through an audited change request.
 - **Permissions are permission sets bound at a scope.** Atomic permissions are grouped into reusable **permission sets**. Permission sets are composed into **roles**. Both are granted through **bindings**, which record who gets what, where, and until when. Org-level **guardrails** never grant: they deny, demand fresh MFA, or hold an action for the person's confirmation. One policy decision point (PDP) answers every request, whether it comes from the API, the UI, an agent, the workflow engine or custom code.
@@ -91,7 +94,7 @@ Surpassing Joget on governance is worthless if builders can't deliver what they 
 | Internationalization: UI translations, right-to-left layouts, per-app message bundles, time zones | 2 |
 | App templates, import and export | 2 |
 | A permissioned API for each app: every capability is an OpenAPI operation and an MCP tool (Joget's API Builder is Enterprise-only) | 1 |
-| Processes with human tasks, org-chart routing (requester, head of department, reporting line, department, group, role), parallel branches, timers and SLA escalation | 3 |
+| Business processes in BPMN 2.0, with human tasks, org-chart routing (requester, head of department, reporting line, department, group, role), parallel branches, timers and SLA escalation, and BPMN 2.0 import and export | 3 |
 | A universal task inbox across apps, with delegation, out-of-office cover and reassignment | 3 |
 | Notifications by email, Teams and Slack, with deep links | 3 |
 | Connectors: REST, SOAP, databases (including Oracle and SQL Server), webhooks in and out, inbound email, scheduled jobs | 3–4 |
@@ -213,6 +216,14 @@ Team spaces have no permanent Dev environment, because each builder's personal s
 
 Several builders can work on the same app at once, each in their own working copy. Conflicts are detected when changes are merged (§6.7). Teams that test against other systems' test instances, such as an ERP sandbox, can enable a persistent **Staging** environment between the release and Prod.
 
+**As built (phase 2):**
+
+- A team app starts empty. Its content arrives through change requests, so nothing reaches Prod unreviewed, the first version included.
+- A working copy keeps the main line's stable IDs, so its changes map cleanly onto Prod's tables. It starts with three sample records for each entity, made through the app's own rules.
+- The working copy stays after a merge, and continues from the merged revision. A builder whose copy is older selects **Take in newer changes**: a three-way merge, as in §6.7.
+- A preview is an environment of the team app. Builders, reviewers and release managers may do anything in a preview, and nothing with Prod's data, through the managed permission set *Try changes in previews*. That set applies only where the resource's environment is a preview. Business testers get one of the app's roles in Staging from a space admin.
+- Staging and Prod are made by the first deployment to them.
+
 ### Promotion: personal → team
 
 1. The owner chooses **Promote** and picks a target team space where they hold `change.open`.
@@ -222,6 +233,14 @@ Several builders can work on the same app at once, each in their own working cop
 5. Data is not copied unless that is explicitly requested, approved and classified.
 
 Why: personal spaces stay fast and free of ceremony. Anything that outgrows "me plus a few colleagues" moves to a place with owners, environments and change control. A guardrail can also *nudge* the owner, for example: "this personal app has 12 users, consider promoting it".
+
+**As built (phase 2):**
+
+- **Move to a team space** makes an empty team app in the target space that names the personal app as its source, and a working copy of it in the owner's personal space that starts from the personal app's definition. The change request from that copy is the promotion. Its checks show everything the app brings: entities, rules, actions and the a7c skills they start, roles, pages and the menu.
+- The owner needs `app.create` and `change.open` in the target space. One promotion of an app runs at a time.
+- The personal app keeps working until the team app first runs in Prod, so its people are never without a working app. Then a managed guardrail makes it read-only: its people keep reading what they did there, and it points to the team app.
+- Data stays in the personal app. Copying it waits for a request that is approved and classified.
+
 
 ### Space lifecycle
 
@@ -466,12 +485,12 @@ Not everything is a task. Exploring data, comparing options and monitoring a pro
 |---|---|---|
 | Entity | A data model: typed fields, relations, line items (child records), files, classification tags (`PII`, `Confidential`) | A form and its `app_fd_*` table |
 | Rule | A check the server runs for every write, whatever the path: form, API, agent or automation. An error blocks the write. A warning travels with the record to the approver | Form validators |
-| Action | A business operation that changes something: create or update records, or start a process. It has typed inputs, a confirmation level and a review card. Its effect starts simple (set these values) and grows into a flow of steps, designed visually, like a Mendix microflow or an n8n workflow | Form submission and process start |
+| Action | A business operation that changes something: create or update records, or start a process. It has typed inputs, a confirmation level and a review card. Its effect starts simple (set these values) and grows into a short list of steps over the app's own data: set values, add lines, check, branch. Work across other systems is an a7c skill that a step calls | Form submission and process start |
 | Query | A named, parameterized read, such as "my open claims" or "status of a claim" | Datalist |
 | Prediction | A value or flag a model computes, such as the likely category of a receipt, how unusual a claim is, or a forecast on a dashboard. Like any value, it records its source: the model and its version | None |
 | Review card | What a person checks before confirming an action. The app's owner designs it, and the platform fills it from the exact data the action will write | None |
-| Process | A BPMN-style model (start, human and service tasks, gateways, timers, end), run durably on Temporal | Process (XPDL) |
-| Automation | Steps triggered by record events, schedules or webhooks | Process tools, plugins |
+| Process | A BPMN 2.0 process about one record of an entity: events, user and service tasks, gateways and timers, run by Ambit's own engine (§6.10) | Process (XPDL) |
+| Automation | Work that machines do across systems, triggered by record events, schedules or webhooks. It belongs to a7c's skills, which an action's step or a process's service task starts (§6.10) | Process tools, plugins |
 | Connection | A configured connector: the built-in store, a REST API, a database or email. Secrets are held by reference | Plugins, API connectors |
 | App roles | Permission sets over the app's capabilities and entities (§5.5) | Userview and form permission plugins, participant mappings |
 | Forms and pages | Designed in the studio's form and page designers, starting from generated defaults | Form, Userview |
@@ -551,6 +570,32 @@ first: findings                     # rule findings and open questions before ev
 
   The review card shows the source, the approver sees it, and the record's history keeps it (§9.4). Without it, review turns into rubber-stamping.
 
+**Queries that work out numbers (built in phase 2).** A query can answer with a number, or with a number for each group, instead of records: the measures, groups and time ranges of a dashboard (§6.5). So an agent can ask "how much did I spend on hotels this year?" through a published query, rather than fetching records and adding them up. The query runs under the caller's permissions, like any other: it counts only the records the person may read, and refuses a total over a field their role masks. Its MCP tool says what shape the answer has.
+
+**Steps (built in phase 2).** An action can do more than set fixed values. Its steps run in order, after its input and its set values:
+
+```yaml
+# actions/approve_claim.yaml (its steps, where an installation connects a7c)
+steps:
+  - { type: check, assert: "record.owner != principal.id", message: "You can't approve your own claim" }
+  - { type: set, field: approver, value: { ref: principal.id } }
+  - type: if
+    when: "record.total > 1000"
+    then:
+      - { type: skill, label: Ask finance to check a large claim, skill: finance/check-large-claim, input: { claim: { ref: record.id } } }
+  - { type: skill, label: Pay the claim, skill: finance/pay-expense-claim, input: { claim: { ref: record.id }, amount: { ref: record.total }, account: { ref: record.iban } } }
+```
+
+- **Five kinds of step.** *Set* gives a field a value. *Add a line* adds a line to a lines field, and the totals follow at once, for the steps after it. *Check* stops the action with a message, or warns and lets it through. *If* takes one of two short lists of steps; branches go one level deep. *Skill* starts an a7c skill.
+- **Values are small expressions in JSON:** a literal, a field of the record, the person, today, now, a sum, a product, a difference, a quotient, a rounding, or text joined from parts. A number is rounded to its field's decimal places. There are no loops and no calls, so the result depends only on the record, the person and the time.
+- **Steps run when the change is worked out.** A preview, a dry run and a proposal all show what the steps did. A proposal seals their result, and its digest covers the skills it starts. Approving it writes exactly that, and doesn't run the steps again.
+- **An action does no more than the person may.** Fields that steps set count as written by the person, so the role's field permissions apply to them. The rules run on the result.
+- **Steps see the record's real values,** not masked ones: they are the app's own logic, and a change request shows each change to them, naming each a7c skill gained or lost. The review card names the skills a change starts, but never their input, which can hold values the person can't read.
+- **Switched off for now (decided 2026-11-17).** Skill steps work only where an installation connects a7c, with `A7C_URL`. Until then a definition whose actions start a7c skills is refused when it is saved or imported, the step designer doesn't offer the step, and the templates and the example start none. The example above shows the steps as they would be with a7c.
+- **Work in other systems belongs to a7c.** A skill step doesn't call a7c during the action. It writes the call to an outbox, in the change's own transaction, so a call exists exactly when its change commits. A dispatcher then starts each call in a7c through `runs.start`, with the call's ID as the idempotency key, so a retry never starts a second run. It tries again while a7c can't be reached, with a wait that doubles up to an hour, and stops when a7c refuses the call. Operators see each call and how it went, and can try a failed one again.
+- **The environment picks a7c's tier.** A sandbox starts skills in a7c's personal tier, Staging and previews in its team tier, and only Prod in its production tier. Trying a change never starts production work.
+- **The record shows what it started.** Whoever can read the record sees each skill its actions started, and whether it is waiting, started or failed.
+
 ### 6.3 Proposals: agents propose, people approve
 
 ```mermaid
@@ -594,9 +639,22 @@ sequenceDiagram
 
 ### 6.5 Building: the studio, an AI copilot, or code
 
-- **The studio is a visual low-code builder,** like Joget and Mendix. It has designers for the data model, forms, pages and navigation, and, from phase 2, logic flows. Builders work in their personal space, where every change applies at once to their sandbox.
-  - The first slice ships in phase 1. The data designer edits entities and fields, reorders them by dragging, and renames without touching data. Saving shows the migration plan first, and anything that deletes data needs a second confirmation. The form designer lays fields out in sections, at full or half width, with labels and help, and picks the action a form submits through, so its rules and confirmation apply. What has no designer yet (rules, actions, queries, cards and roles) is edited as JSON in the studio, and checked like any other change when it's saved.
+- **The studio is a visual low-code builder,** like Joget and Mendix. It has designers for the data model, forms, rules, actions, queries, review cards and roles, then pages, navigation and dashboards, and steps for actions. Builders work in their personal space, where every change applies at once to their sandbox.
+  - The first slice ships in phase 1. The data designer edits entities and fields, reorders them by dragging, and renames without touching data. Saving shows the migration plan first, and anything that deletes data needs a second confirmation. The form designer lays fields out in sections, at full or half width, with labels and help, and picks the action a form submits through, so its rules and confirmation apply. Rules, actions, queries, review cards and roles have designers too, from phase 2's first step: conditions are built as clauses (a field, a test, a value; all or any of them), and roles as a matrix of who may do what with which records. The whole definition can still be edited as JSON, and is checked like any other change when it's saved.
   - Every app gets its screens without design work: lists, forms and record pages, generated from what each person may do, so a colleague in a narrow role sees only what that role allows. Pages and dashboards designed in phase 2 replace these defaults where a builder wants something else.
+  - **Pages and the menu (built in phase 2).**
+    - A page is blocks, top to bottom: headings, text and notes; lists of records; and buttons that open forms or other pages.
+    - A list names its columns, which records it shows (for example "mine", with a condition on `principal.id`), their order, how many show at first, and update actions that run on a row in one click, such as Approve.
+    - The menu orders pages, forms and lists under headings, and names the page the app opens on. Without a menu of its own, an app lists its forms and lists.
+    - Access follows the data (§5.5). A list shows only the records and columns the person's role may read, because the records API runs it under their permissions. A button, a row action or a menu item appears only if what it opens is usable, and a page appears if something on it is.
+    - A page can name the roles it is for, such as a page for approvers. That only tidies screens, and protects nothing; people who hold none of the app's roles, such as its builder, see every page.
+    - Pages and the menu travel with the definition. A change request shows their changes, and a three-way merge treats the menu as one artifact.
+  - **Dashboards (built in phase 2).** A page can also hold numbers and charts.
+    - A number counts records, or the lines they hold, or works out the sum, the average, the lowest or the highest of a number field, of the records or of their lines. It can keep to records that meet a condition, and to a time range on a date: this month, this quarter, this year, or the last 30 days, 90 days or 12 months, in UTC.
+    - A chart works out the same for each group: each value of a field (a choice, text, yes or no, or a person), or each day, week, month, quarter or year of a date. Bars show the largest groups first and fold the rest into Other. Columns and a line show periods in order. Every chart can also show its numbers as a table.
+    - The database does the work: one SQL statement for each block, under the person's own record filter, so a number counts only records the person may read. A total over a field that one of the person's roles masks or hides is refused, and the block is hidden, so that a sum cannot reveal masked values.
+    - Charts share one visual system: one series colour, checked for contrast in light and dark, thin marks, a hairline grid, and a tooltip on hover and on keyboard focus.
+  - **Steps for actions (built in phase 2).** The action designer lists an action's steps in order, with the two sides of a branch beneath it. Each step opens in place: the field a step sets and where its value comes from (a fixed value, a field, the person, today, a calculation, or text joined from parts); the condition of a check or a branch; or a skill and its input. A value too complex to show stays as it is, and the JSON editor changes it. When a field goes, the steps that set it go too.
   - The studio is a static web app, served by the API on its own origin. So it shares the sign-in, needs no cross-origin access, and has no permissions of its own: the API decides everything, and what the studio hides, the API refuses anyway.
 - **An AI copilot works alongside the designers.** It drafts entities, rules, actions and cards from a description, for example "employees claim travel expenses with receipts, and hotels are capped at SGD 250 a night". The builder then refines the draft visually.
 - **The builder API is also an MCP server.** Any AI client can build through it with the builder's permissions: Claude Code, Claude Desktop or the studio's own copilot. Through it, a client can:
@@ -637,6 +695,13 @@ expense/
 
 The platform stores definitions in Postgres, with working copies held as copy-on-write over the main line, and stores release bundles in object storage. **Git sync** (push to GitHub or GitLab, and optionally pull) is an export and integration feature, not the runtime's source of truth, so the runtime never needs a shared filesystem.
 
+**As built (phase 2): templates, export and import.**
+
+- **Templates.** A new app can start blank, or from a template: expense claims, leave requests or purchase requests. Each is a complete app, with its entities, rules, actions and their steps, queries, review cards, roles, pages and menu, and passes the same checks as any definition. AI clients that build through MCP can start from one too.
+- **Export.** An app's definition downloads as one JSON file: the main line, with its name, revision and a digest. It never carries data. Exporting needs `app.export`, which the owner of a personal app and a team space's builders hold, and each export is audited.
+- **Import.** A template or a file starts an app in a personal space at once, or arrives in a team space as a change request, reviewed like any change. A file may be edited before it is imported: definitions are readable files. The import records whether the file was still as it was exported.
+- **Signed release bundles** for moving releases between installations are not built yet.
+
 ### 6.7 Lifecycle in a team space
 
 ```mermaid
@@ -668,6 +733,20 @@ Rolling back means re-activating the previous release in that environment (§7.1
 
 **Concurrency.** Each builder has their own working copy. Artifacts carry versions for optimistic locking, merges are three-way at the artifact level, and conflicts are shown in the UI. Real-time co-editing can come later.
 
+**As built (phase 2):**
+
+- The checks run when a change is submitted, and are kept with it:
+  - validation of the whole definition;
+  - the migration Prod would need from the change's base, with the steps that delete data flagged;
+  - the permission diff, worked out from the compiled roles, so it means exactly what the policy engine will do, with how many people and groups hold each role in Staging and Prod now;
+  - the capability diff;
+  - lint, for example "No role can read Expense claim".
+  Guardrails apply when people act on the change.
+- A review names the digest of the version it reviewed. A new version needs approval again. The author can't approve (the guardrail `gr.sod.author-cannot-approve`), and a merge needs `CHANGE_APPROVALS` approvals, one by default.
+- When the main line moved on, the merge is three-way at the artifact level. An entity, rule, action, query, card, form or role that changed on one side only takes that side. One that changed differently on both sides conflicts, and the merge is refused. The merged definition is validated again.
+- A release is signed with the platform's Ed25519 key, over a manifest of the app, its number, revision, definition digest, previous release and contents. A database trigger refuses any change to it. Listing releases checks each signature and each definition's digest.
+- A change that deletes data goes in a release of its own. A release that would delete data and hold more than one change is refused, with the revision to release first.
+
 ### 6.8 Data-model migrations
 
 In the built-in store, app data lives in **typed tables, in a separate schema for each app and environment** (for example `app_7f3c_prod`). Nothing is shared implicitly between apps: one app reaches another's data only through declared, permissioned references.
@@ -689,6 +768,91 @@ Migrations are generated from the model diff. In a personal sandbox, saving appl
 
 Running process instances stay on the release they started on, while new instances use the active release. Migrating in-flight instances is an explicit, audited operation with a dry run.
 
+### 6.10 Business processes: BPMN 2.0
+
+**Business processes and automation are different jobs, and they belong to different products.**
+
+| | Business process: Ambit | Automation: a7c |
+|---|---|---|
+| What it is | People decide on a business record, stage by stage: a claim, a leave request, a purchase order | Machines do work across systems: call APIs, move data, run models and agents |
+| How long it runs | Days or weeks, and it waits mostly for people | Seconds or minutes, and it waits for systems |
+| What it needs | Tasks with outcomes, assignment, deadlines, escalation, an inbox, and an audit of who decided what | Connectors, credentials, egress control, retries and rate limits |
+| Its data | The app's record | A run's inputs and outputs |
+| How it is drawn | BPMN 2.0, on Ambit's process canvas | Skills, on a7c's canvas |
+
+The test: if a process waits for people to decide on an app's records, it is an Ambit process. If machines do the work across systems, it is an a7c skill. A process never calls another system itself. Its service tasks run the app's own actions, or start an a7c skill when an installation connects a7c (§6.2). A skill never holds a person's task.
+
+**BPMN 2.0 is the notation and the interchange format.**
+
+- A process is a BPMN 2.0 process, stored in the app's definition with its diagram.
+- The studio draws it with BPMN's shapes. It offers the few elements that most processes need first, as Mendix does, and the rest to builders who want them.
+- Ambit imports and exports BPMN 2.0 XML with the diagram (BPMN DI), so a model moves to and from tools such as Camunda Modeler or Signavio. Ambit's own settings, such as the role that does a task, travel in Ambit's extension namespace.
+- An import refuses any element that Ambit can't run, and names it. Text annotations and other parts that only document the model don't stop an import.
+
+**The record is the process's data.** Each instance is about one record of the process's entity, such as one claim. Conditions on flows read the record as it is now, for example `record.total > 1000`, and the outcome of the user task they leave. So there are no process variables to keep in step with the record.
+
+**What runs (phase 3):**
+
+- start events, and end events, which can terminate the instance;
+- user tasks, with outcomes such as approve and reject, each of which can run one of the app's actions;
+- user tasks that several people decide (BPMN's multi-instance tasks), each with a vote: everyone with the role, the people some fields of the record name, or the reporting line up from someone, at once or one after another. The first vote decides, or enough votes for one outcome (a number, all, or a majority), and the other outcome once that can no longer happen;
+- service tasks, which run one of the app's actions, or start an a7c skill;
+- tasks and manual tasks, which pass straight on;
+- exclusive, parallel and inclusive gateways. An inclusive gateway takes each flow whose condition holds, or else its default. Where paths join, it waits for each path that can still arrive;
+- catch events that wait for a time, a date of the record, or a message;
+- events on a boundary: a timer or a message on a user task, a sub-process or a call activity, interrupting or not, for deadlines, escalation and withdrawal; and an error on a service task or a sub-process, for when an action fails;
+- sub-processes, drawn open with what they hold, and call activities, which run another process of the app.
+
+Not run yet, and refused by name on import: script, send and receive tasks; event-based and complex gateways; signal, escalation, compensation and conditional events; throw events; event sub-processes, transactions and ad hoc sub-processes; and repeating any element but a user task.
+
+**A sub-process is a part with its own start and end; a call runs another process.**
+
+- A sub-process starts at its one start event and ends when no path is left inside it. An event on its boundary acts on all of it: a deadline for the whole part, or a withdrawal that ends it. An action that fails inside it goes to the nearest sub-process around it that has an error event, and what still runs inside that sub-process ends. A terminate end event inside it ends the sub-process only.
+- A call activity starts another process of the app at its start event without actions, and waits until that instance ends. It runs on the same record, or, for a process about another entity, on the record that a reference field names, such as the team of a leave request. A process can't call itself, and processes can't call each other in a ring.
+
+**A message is an action saved on the record.** In BPMN, a message comes from outside the process. In Ambit, the record is the process's data, so a message is one of the app's update actions that commits on the instance's record. For example, the employee withdraws a request while the manager decides: the withdrawal takes the manager's task away, and the process ends. A process waits for messages on its own record only, and an outcome of a task can't also interrupt that task.
+
+**How a process starts.** An action starts it when the action commits on a record, if a start event names that action. Otherwise a person whose app role may start it starts it on a record. Only one instance of a process runs on a record at a time.
+
+**Roles grant; routing narrows.**
+
+- A user task names the app role whose holders may do it.
+- Routing narrows the task to one person: someone a user field of the record names, such as the approver the requester chose, or, from the directory, the requester's manager or a reporting line.
+- The outcome's action runs as that person, under their own permissions.
+
+So a change request's permission diff still says who can decide, and a process never grants anyone a permission.
+
+**A task is an action that someone is expected to run.** Running the action that an open task's outcome names completes the task, whether it runs from the inbox, from a list's row button, or from an agent's proposal that the person approves. While a task is assigned to one person, nobody else can run its outcomes' actions on that record.
+
+**Service tasks act for the process.** A service task's action runs with the app's authority, not a person's: the definition grants it, and a change request's capability diff names it, for example "Expense approval runs mark_paid by itself". The action's own checks, steps and rules still run. If they stop it, the instance waits at that task until an operator retries it, and the instance's history says why. An error event on the task changes that: it catches the failure, and the process takes the error's path.
+
+**The engine is Ambit's own, on PostgreSQL.**
+
+- BPMN engines such as Camunda 7 and Flowable keep their state in relational tables, with a job executor for timers. Ambit does the same: instances, tokens, tasks and timers are rows in PostgreSQL.
+- A process advances in the same transaction as the change that moves it, together with its audit events: the action that starts it, the outcome that completes a task, or a timer. Workers claim due timers with `SKIP LOCKED`.
+- So a record and its process never disagree, and there is no second system to run. a7c keeps Temporal for its own runs.
+
+**As built (phase 3, so far):**
+
+- Processes are part of an app's definition, under BPMN 2.0's names, with their diagram. They are optional, so the definitions of earlier releases keep their digests. The checks refuse what can't run and name it, and a renamed entity or field carries into processes.
+- A change request names what starts a new process and what it runs by itself, and the permission diff names who may start one by hand. A change of layout alone isn't a change of capability.
+- The engine works as described above. A task records its outcomes and their actions as it opens, so a later release can't change what deciding it does. A path that loops 500 times without waiting stops, and the change that started it is refused.
+- A user task goes to the person a user field names, if they are still active, or else to anyone with its role. An outcome's action runs as the person who decides, under their permissions; from an API token it becomes a proposal, and an outcome without an action can't be chosen from a token at all.
+- A service task can't run an action that reads the person running it, as a process runs it with no person. If an action's checks stop it, nothing it did stays (a savepoint), and the instance waits at the task.
+- Operators see where each instance waits and why, try a stuck one again, and cancel one. Every start, assignment, decision, escalation and end is audited.
+- Agents get the person's tasks and complete them through MCP, once an app they can use has a process.
+- The leave template has a process: the manager the employee names decides within three days.
+- BPMN 2.0 files go out with their diagram, laid out if the process has none, and come back exactly as they went. Ambit's settings travel in the namespace `urn:ambit:bpmn:1`, and conditions as text, such as `record.days > 10`, which maps one to one onto the stored JSON. The XML reader is Ambit's own: it refuses a DOCTYPE and any entity but XML's own, so a file can't expand entities or reach outside.
+- A model from another tool comes in where Ambit can run it. A lane named after a role gives its tasks that role. A simple condition, such as `${days > 10}`, is read with its names as the record's fields, and the import says how it read each one. Pools without a process, message flows and what only documents the model are left out, and the import says so. Anything else Ambit can't run is refused by name and ID.
+- An import changes a personal app, or the working copy of a team app, through the same checks as any edit.
+- The studio's process designer draws BPMN 2.0 on a canvas (React Flow). Its palette offers first what most processes need, and the rest of what Ambit runs after. An event on a boundary (a deadline, a message or an error) is drawn on its task or sub-process, with its own path. A sub-process is drawn open, with what it holds inside it, and grows to hold what is added in it; a call activity opens the process it calls. A new element makes room for itself, and doesn't land on another. The checks of any definition run as the builder works, and mark the shapes they concern. Every person has an inbox of their tasks across apps, and each record page says where its processes are.
+- Routing from the directory: a task goes to the manager of whoever a field names, up to five levels up the reporting line, or is kept to the department of whoever a field names. The directory takes departments and managers from the IdP's claims at each sign-in (the claims an installation names), and directory admins set them where the IdP doesn't. A loop in the reporting line is refused. Someone who has left, or a line that ends, sends the task to the role.
+- Out-of-office cover: a person names who takes their new tasks while they are away, until a date, and the task's history says whom the cover stands in for. A person hands their task to a colleague who holds its role; operators move any task of the apps they operate; and anyone with a task's role takes one that waits for nobody in particular. Each move is audited.
+- When several people decide, a vote is the person's own: an agent can't cast it, and it can't be handed over. Once the votes decide, the other votes close and the outcome's action runs with the app's authority, as a service task's does; if its checks stop it, the deciding vote is refused, with why. Nobody can run that action around the vote while it is open.
+- Sub-processes and calls run as described above. An instance runs a sub-process once at a time. A call on another record locks that record too, as an action on it would. If an operator cancels the called instance, the call waits for an operator in turn, and trying it again calls the process anew; cancelling the caller cancels what it called. The called instance stays on the release that was current when it started, and the history of each says which called which.
+- Inclusive gateways, messages and errors run as described above. A message that commits moves on each instance of the record that waits for it, in the same transaction. An error event catches only an action's failure: a service task that starts an a7c skill can't have one, as the skill runs later in a7c. BPMN files carry all three, with each message as a `bpmn:message` that names its action.
+- Not built yet: the elements that the list above names as not run yet, and reading the directory by SCIM.
+
 ---
 
 ## 7. Deployment
@@ -706,6 +870,14 @@ Deploying release *R* to environment *E* runs these steps:
 
 Target: deploys and rollbacks that touch only metadata finish in under 30 seconds.
 
+**As built (phase 2):**
+
+- **Plan.** The migration from the environment's current data model to the release, with how many records each step that deletes data touches. A deployment that deletes data needs a person's confirmation in an interactive session, and can't skip an earlier release that deletes data.
+- **Approve.** Staging needs no approval. Prod needs `DEPLOY_PROD_APPROVALS` approvals (one by default) from people who authored none of the changes it carries, each with fresh MFA. Executing it needs fresh MFA too.
+- **Execute and activate** happen in one transaction: the migration, a smoke check that every table answers to the environment's own database role, and the switch of the active-release pointer. A failure changes nothing, and is recorded.
+- **Roll back** makes the release that ran before live again, without touching the schema: the newer tables and columns stay, and the older release ignores them. A rollback across a deployment that deleted data is refused. Going forward again works out the stored rollups afresh. In the tests a rollback takes milliseconds.
+- **Verify**, watching error rates after a deployment, is not built yet. It needs the per-app metrics of phase 4.
+
 **Across installations**, such as an isolated Prod cluster, export a signed release bundle and import it through the API or CLI. The target verifies the signature and the approval record. Alternatively, it can pull releases GitOps-style.
 
 **CI/CD.** Everything in the UI is also available through the API and a CLI. An illustrative command:
@@ -713,6 +885,13 @@ Target: deploys and rollbacks that touch only metadata finish in under 30 second
 ```bash
 platform deploy --space finance --app expense --release 1.4.0 --env prod --wait
 ```
+
+**As built (phase 2): the command line, `ambit`.**
+
+- It covers delivery and files: templates, apps, export and import, an offline check of a definition file, releases, deployments and rollback. For example, `ambit deploy expenses --release 4 --env prod --wait`.
+- It signs in with an API token from `AMBIT_TOKEN`: a person's personal access token, or a team space's service account in CI. A token never appears in a command, so it stays out of shell history and CI logs. The token's scopes limit what the command can do, as for any API client.
+- Staging deploys at once. A Prod deployment waits for people's approvals in Ambit; with `--wait`, the command follows it, executes it once it is approved, and fails if it fails.
+- `ambit check` validates a definition file with the same checks as the server, without one: a builder who edits a file in their editor, or a CI step, checks it before importing.
 
 ### 7.2 Deploying the platform
 
@@ -799,7 +978,6 @@ flowchart TB
   - Infrastructure as code (OpenTofu or Terraform).
   - The External Secrets Operator to bring cloud secrets into the cluster.
   - Workload identity instead of static cloud keys.
-  - If you use Temporal Cloud, encrypt workflow payloads client-side with Temporal's payload codec, so business data never leaves your accounts in readable form.
 
 **Cloud-agnostic by design.** The platform depends only on portable interfaces: any conformant Kubernetes, the PostgreSQL wire protocol, the Redis protocol (Valkey), OTLP for telemetry, and OIDC, SAML and SCIM for identity. Everything provider-specific sits behind an adapter that must pass a shared conformance test suite: blob storage, the WORM audit archive, encryption keys and secrets. OpenTofu modules describe each provider's infrastructure, and one Helm chart deploys everything inside the cluster.
 
@@ -814,7 +992,6 @@ Adapter targets by provider:
 | Secrets (through the External Secrets Operator) | AWS Secrets Manager | Azure Key Vault | Secret Manager | OpenBao or Vault |
 | Cache (Valkey or Redis) | ElastiCache for Valkey | Azure Managed Redis | Memorystore for Valkey | Valkey on the cluster |
 | Metrics and dashboards (OTLP) | Amazon Managed Service for Prometheus, Amazon Managed Grafana | Azure Monitor managed service for Prometheus, Azure Managed Grafana | Google Cloud Managed Service for Prometheus, Cloud Monitoring | Prometheus, Loki, Tempo and Grafana |
-| Processes | Temporal Cloud, or Temporal self-hosted on the cluster | Same | Same | Temporal self-hosted |
 
 
 ### 7.4 Kubernetes layout
@@ -825,10 +1002,9 @@ Kubernetes is the platform's one hard runtime requirement, and any conformant di
 |---|---|---|---|
 | `api` | Deployment | Horizontal Pod Autoscaler on CPU and request rate | Stateless. Serves the builders, the runtime API and the governance console |
 | `gateway` | Deployment | Horizontal Pod Autoscaler on request rate | The same image as `api`. Serves the MCP endpoints and the agent API, so agent traffic scales and fails separately from the builders |
-| `worker` | Deployment | On job-queue depth, for example with KEDA | Automations, timers, the outbox relay and audit sealing |
+| `worker` | Deployment | On job-queue depth, for example with KEDA | Process timers, the outbox relay and audit sealing |
 | `sandbox` | Deployment on a dedicated node pool | On queue depth | Runs custom code. Where available, it adds a sandboxed container runtime (gVisor or Kata Containers) for stronger isolation |
 | `migrate` | Job, run as a Helm pre-upgrade hook | None | Applies expand-phase database migrations before new pods start |
-| Temporal | A separate Helm release, or Temporal Cloud | Per Temporal's guidance | From phase 3 |
 | PostgreSQL | A managed service, or the CloudNativePG operator | Vertical, plus read replicas | Outside the chart |
 
 **Cluster-wide baseline:**
@@ -944,7 +1120,7 @@ Start as a **modular monolith**: one deployable unit with strict module boundari
 | Capabilities | Actions, queries, rules, review cards, proposals and their confirmation |
 | Agent gateway | The MCP endpoints for capabilities and for building, the agent registry, token exchange |
 | Built-in store | The data API, record and field security, record history, generated screens |
-| Workflow and automation | The process engine, human tasks, timers, SLAs, triggers |
+| Processes | The BPMN 2.0 engine, human tasks, timers, SLAs, and BPMN import and export |
 | Integrations | Connectors and connections, the plugin host, the secrets broker, the sandbox client |
 | Audit | Capture, sealing, query, export, SIEM streaming |
 | Observability and usage | Telemetry conventions, health, metering |
@@ -964,14 +1140,14 @@ Within that, **TypeScript end to end** is the chosen stack (decided 2026-11-14).
 | Repository | A pnpm workspaces + Turborepo monorepo | Shared packages with enforced boundaries, and fast incremental builds |
 | Definition schemas | Zod schemas, exported as JSON Schema | Definitions validate identically in the browser, on the server and in the CLI |
 | Frontend | React 19, Vite, TanStack Query and Tailwind CSS, on the Ocean design system shared with agentos: primitive and semantic tokens, IBM Plex type, light and dark | One look across Ambit and agentos, with contrast checked in tests, for the studio, the review pages and the generated screens |
-| Builders | The studio's visual designers: dnd-kit for the form and page canvases, React Flow (xyflow) for logic flows and processes. An AI copilot drafts into the same definitions | MIT-licensed building blocks for our own designers |
+| Builders | The studio's visual designers: dnd-kit for the form, page and dashboard canvases, and React Flow (xyflow) for processes, drawn with BPMN 2.0's shapes. Automation across systems is drawn on a7c's canvas, not Ambit's. An AI copilot drafts into the same definitions | MIT-licensed building blocks for our own designers |
 | Agents | MCP (the Streamable HTTP transport, with MCP's OAuth-based authorization) for agents and AI builders; OpenAPI for everything else | One open protocol that Claude, Copilot and our own agent all speak |
 | Agent identity | OAuth 2.0 Token Exchange (RFC 8693) for an agent acting on a person's behalf | Standard delegation, with the agent recorded as the actor |
 | Backend | Fastify 5 with Zod schemas, organized as a modular monolith | Every route must declare its access rule, and the server refuses to start if one is missing. No decorator metadata. OpenAPI is generated from the schemas |
 | API | REST with OpenAPI 3.1, a generated TypeScript SDK, and webhooks | Serves CI/CD and integrations. The CLI is built on the same SDK |
 | Database | PostgreSQL 17+ (RLS, JSONB). Drizzle ORM and migrations for platform tables; generated SQL for app schemas | One reliable store for metadata, app data and audit |
 | Jobs and outbox | graphile-worker, which is Postgres-backed and enqueues jobs in the same transaction as the change | No message broker needed early on. Add Kafka only if volume demands it |
-| Processes | Temporal (TypeScript SDK), running an interpreter workflow for our process model, from phase 3 | Durable timers, SLAs, retries and version pinning, without writing a workflow engine |
+| Processes | Ambit's own BPMN 2.0 engine, from phase 3: instances, tokens, tasks and timers in PostgreSQL, advanced in the transaction of the change, with timers claimed by workers (decided 2026-11-17) | A record, its process and their audit events commit together, with no second system to run. BPMN engines such as Camunda 7 and Flowable work the same way |
 | Expressions | A CEL subset, parsed in TypeScript into the platform's JSON condition format. Record conditions are partially evaluated and compiled to SQL | One safe language for permissions, rules and routing |
 | Sandbox | A separate service that runs JavaScript in WebAssembly (QuickJS), with CPU, memory and time limits | Custom code cannot touch the platform process |
 | Cache | Valkey (Redis-compatible) | Permission caches, rate limits, presence |
@@ -999,8 +1175,8 @@ Check each component's licence as you adopt it. Prefer Apache-2.0 and MIT, and r
 |---|---|---|
 | **0. Governance kernel** (done) | Orgs, personal and team spaces, membership · OIDC login, directory, service accounts, tokens · the PDP with permission sets, roles, bindings and expiry · scope-based isolation · the audit pipeline (same-transaction writes, sealing) · OpenTelemetry conventions · CI/CD, Helm chart, Compose file | An admin creates a team space and assigns roles, and every action appears in a verifiable audit log. Proven on a real Kubernetes cluster |
 | **1. Capability core and the first studio** (built: Ambit's side of the exit criterion; the agent's side is the agent project's) | The built-in store: entities with relations, line items and files, and record- and field-level permissions and history · rules · actions and queries · review cards and the review page · proposals and confirmation · provenance · MCP endpoints for capabilities and for building · agents acting for one named person (approval by a Security admin, RFC 8693 token exchange) · sharing personal apps · the studio's data-model and form designers, with generated pages | In a personal space, a builder designs an expense app in the studio, with Claude drafting through the builder MCP. An agent acting for a colleague prepares a claim from a receipt. The colleague edits a line on the review page and confirms. The claim is stored with where every value came from, and the audit log shows who did what, for whom |
-| **2. Governed delivery and the full studio** | Working copies in personal spaces · change requests with checks, permission and capability diffs, and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback, CLI/API · promotion from personal to team · app templates, import and export · the page, navigation and dashboard designers, and logic flows for actions | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
-| **3. Approvals and the shared agent** | Processes on Temporal with human tasks, org-chart routing, timers and SLAs · universal inbox · approving in chat, where the channel can prove who pressed Approve · agentos calling Ambit from Teams, in the separate agent project · notifications, including telling an agent when a proposal is decided · document generation | An employee claims expenses in Teams, the approver approves in Teams, and SLA alerts and the audit trail are complete |
+| **2. Governed delivery and the full studio** (built, but for signed release bundles between installations, Git sync and watching error rates after a deployment) | Working copies in personal spaces · change requests with checks, permission and capability diffs, and previews · Prod and optional Staging · releases, deployment plans, migrations, approvals, rollback and the API (built) · a CLI (built) · promotion from personal to team (built) · app templates, import and export (built) · designers for rules, actions, queries, review cards and roles, for pages and navigation, and for dashboards, with numbers and charts that total and group (built) · steps for actions, which can start a7c skills for automation across systems, through an outbox (built, and switched off until an installation connects a7c) · queries for agents that total and group (built) | A change goes from a builder's personal space, through a reviewed preview, to Prod, and is rolled back in under a minute |
+| **3. Approvals and the shared agent** | Business processes in BPMN 2.0, on Ambit's own engine in PostgreSQL: user and service tasks, gateways, org-chart routing, timers and SLAs, and BPMN 2.0 import and export · universal inbox · approving in chat, where the channel can prove who pressed Approve · agentos calling Ambit from Teams, in the separate agent project · notifications, including telling an agent when a proposal is decided · document generation | An employee claims expenses in Teams, the approver approves in Teams, and SLA alerts and the audit trail are complete |
 | **4. Connectors and enterprise hardening** | Connectors that publish other systems' operations as capabilities (REST and OpenAPI first) · automations · guardrail editor, SoD, JIT elevation, access reviews · plugin registry, sandboxed scripts · SIEM streaming, quotas and metering · the production plane in its own cloud account · DR drills, ASVS verification and a penetration test | Passes an internal audit against ISO 27001:2022 using the §15 mapping, and meets the readiness targets in §1 |
 | **5. Earned autonomy and beyond** | Confirmation levels that step down once a capability has earned trust, per person or team, within guardrails · predictions in apps: predicted fields, anomaly flags and forecasts, with the model recorded as each value's source · AI that drafts whole apps from a description into change requests · a signed marketplace of templates and plugins · an installable PWA with offline drafts · a BI connector (read replica, governed exports) | A routine claim type moves from review to preview on measured trust, and a business user ships a new capability that an AI drafted, through the normal approval flow |
 
@@ -1028,18 +1204,35 @@ Phases 0–3 are the MVP: the point where an employee can claim expenses through
 | Decision | Outcome | Consequence |
 |---|---|---|
 | What the platform is | People ask for outcomes, builders publish capabilities, and apps are the packages that capabilities ship in | §6. One definition is used in two ways: as screens and as agent tools |
-| Low-code | A low-code platform like Joget and Mendix. Visual designers for data, forms, pages and logic sit next to an AI copilot and code | The studio is core: the data-model and form designers in phase 1, and pages, dashboards and logic flows in phase 2 (§6.5) |
+| Low-code | A low-code platform like Joget and Mendix. Visual designers for data, forms, pages and logic sit next to an AI copilot and code | The studio is core: the data-model and form designers in phase 1; designers for rules, actions, queries, review cards and roles, then pages and dashboards, in phase 2 (§6.5) |
+| Logic | An action's logic is a short list of steps over the app's own data: set values, add lines, check, branch. Automation across other systems is an a7c skill, which a step calls (decided 2026-11-16) | One automation canvas across the products, in a7c. Ambit's own canvas draws business processes in BPMN 2.0 (§6.10) |
 | The agent | A separate project: the agent runtime and its chat adapters for Teams, Slack, Matrix and Signal. It calls the platform through MCP and the API | The platform depends on no single chat app. Any agent can use the same capabilities: Copilot, Claude or our own (§6.4) |
 | Systems of record | The first processes, expenses included, have no existing system. Their data lives in the platform's built-in store, which is reached like any other connector | Phase 1 builds the built-in store behind the connector interface. Connectors to other systems follow in phase 4 (§6.1) |
 | Ambit and autonomic | Split by job: Ambit for data apps and the errands agents run, autonomic (a7c) for automation. Ambit still does predictive analytics and ML where they serve an app | Predictions are app artifacts (§6.1) and record the model behind each value. A model can live in Ambit or come from autonomic through a connection |
 | Name | Ambit (a3t) | It sits beside autonomic (a7c) and agentos (a5s). What Ambit lets people get done are called errands |
 | Who builds | People, in the studio and with an AI copilot. AI clients such as Claude can also build through the builder MCP and API, with the builder's permissions | The builder MCP arrives in phase 1, and AI changes pass the same checks and reviews (§6.5) |
 
+**Decided while building governed delivery (2026-11-16):**
+
+| Decision | Outcome | Consequence |
+|---|---|---|
+| A new team app | Starts empty, and changes only through change requests from working copies | Nothing reaches Prod unreviewed, the first version included (§3) |
+| Previews | Environments of the team app, where builders, reviewers and release managers may do anything, with test data only | Reviewers click through every screen of the change; Prod's data stays out of their reach (§3) |
+| Approvals | One for a change and one for a Prod deployment by default, from people who wrote none of it; both configurable | A small team can deliver, and a larger one raises the counts (§6.7, §7.1) |
+| Rollback | Re-activates the previous release and keeps the newer data model (expand and contract). Refused across a release that deleted data | Rollbacks take milliseconds, and changes that delete data go out on their own (§7.1) |
+
+**Decided before building processes (2026-11-17):**
+
+| Decision | Outcome | Consequence |
+|---|---|---|
+| Business processes | BPMN 2.0 is the notation and the interchange format. The studio offers the common elements first, like Mendix. Ambit imports and exports BPMN 2.0 XML with its diagram, and refuses what it can't run | Models move between Ambit and other BPMN tools. The part of BPMN 2.0 that runs grows release by release (§6.10) |
+| The process engine | Ambit's own, with its state in PostgreSQL, not Temporal | A process advances in the same transaction as the change that moves it, and there is no second system to run (§12) |
+| Processes and automation | A business process, where people decide on an app's records, is Ambit's. Automation, where machines do work across systems, is a7c's | A process's service task can start an a7c skill. A skill never holds a person's task |
+
 **Still open:**
 
-1. **Workflow depth:** is a BPMN-style subset enough, or do you need full BPMN 2.0 conformance, for example to import existing process models? This must be settled before phase 3.
-2. **Platform database:** PostgreSQL only for the platform's own store, with Oracle and SQL Server reached through connectors? This is the working assumption. n8n has narrowed itself to PostgreSQL (plus SQLite for small installs) in the same way ([n8n reference](03-n8n-reference.md)).
-3. **Approving in chat:** which chat platforms can prove who pressed Approve strongly enough to commit a proposal, and which must hand off to the review page? Teams, with the corporate sign-in, probably can. Signal can't. This must be settled before phase 3.
+1. **Platform database:** PostgreSQL only for the platform's own store, with Oracle and SQL Server reached through connectors? This is the working assumption. n8n has narrowed itself to PostgreSQL (plus SQLite for small installs) in the same way ([n8n reference](03-n8n-reference.md)).
+2. **Approving in chat:** which chat platforms can prove who pressed Approve strongly enough to commit a proposal, and which must hand off to the review page? Teams, with the corporate sign-in, probably can. Signal can't. This must be settled before phase 3.
 
 ---
 

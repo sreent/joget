@@ -4,7 +4,10 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { requireUser } from '../access/rules.js';
 import type { AppContext } from '../context.js';
-import { badRequest } from '../errors.js';
+import { orgResource } from '../access/resources.js';
+import { auditScopeFor, recordAudit } from '../audit/writer.js';
+import { badRequest, notFound, unprocessable } from '../errors.js';
+import { closesLoop } from './directory.js';
 
 export const MAX_LOOKUP_IDS = 100;
 export const MAX_SEARCH_RESULTS = 10;
@@ -85,6 +88,99 @@ export function peopleRoutes(ctx: AppContext): FastifyPluginAsyncZod {
             ...agents.map((row) => ({ id: row.id, kind: 'agent' as const, name: row.name, active: row.status === 'active' })),
           ],
         };
+      },
+    );
+
+    const DirectoryOut = z.object({ id: z.uuid(), department: z.string().nullable(), managerId: z.uuid().nullable(), coverId: z.uuid().nullable(), coverUntil: z.string().nullable() });
+    const directoryOf = async (id: string) => {
+      const [row] = await ctx.db
+        .select({ id: users.id, department: users.department, managerId: users.managerId, coverId: users.coverId, coverUntil: users.coverUntil })
+        .from(users)
+        .where(and(eq(users.orgId, ctx.org.id), eq(users.id, id)));
+      if (!row) throw notFound('Person');
+      return { ...row, coverUntil: row.coverUntil?.toISOString() ?? null };
+    };
+
+    app.get(
+      '/v1/people/:userId/directory',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['people'],
+          summary: "A person's place in the directory, which routes tasks: their department, their manager, and who covers for them",
+          params: z.object({ userId: z.uuid() }),
+          response: { 200: DirectoryOut },
+        },
+      },
+      async (request) => {
+        requireUser(request);
+        return directoryOf(request.params.userId);
+      },
+    );
+
+    app.patch(
+      '/v1/people/:userId/directory',
+      {
+        config: { access: { kind: 'permission', action: 'directory.user.manage', resource: async () => orgResource(ctx.org.id) } },
+        schema: {
+          tags: ['people'],
+          summary: "Set a person's department or manager, where the IdP doesn't give them",
+          params: z.object({ userId: z.uuid() }),
+          body: z.object({ department: z.string().trim().min(1).max(200).nullable().optional(), managerId: z.uuid().nullable().optional() }),
+          response: { 200: DirectoryOut },
+        },
+      },
+      async (request) => {
+        const before = await directoryOf(request.params.userId);
+        const { department, managerId } = request.body;
+        if (managerId) {
+          if (managerId === before.id) throw unprocessable('own_manager', 'Nobody is their own manager');
+          await directoryOf(managerId);
+          if (await closesLoop(ctx.db, before.id, managerId)) throw unprocessable('reporting_loop', 'That would make the reporting line a loop');
+        }
+        const changes = { ...(department !== undefined ? { department } : {}), ...(managerId !== undefined ? { managerId } : {}) };
+        if (!Object.keys(changes).length) return before;
+        await ctx.db.transaction(async (tx) => {
+          await tx.update(users).set(changes).where(eq(users.id, before.id));
+          await recordAudit(tx, auditScopeFor(request, ctx.org.id, ctx.now()), {
+            action: 'user.directory',
+            target: { type: 'user', id: before.id },
+            changes: { before: { department: before.department, managerId: before.managerId }, after: changes },
+          });
+        });
+        return directoryOf(before.id);
+      },
+    );
+
+    app.put(
+      '/v1/me/cover',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['people'],
+          summary: 'Name who covers for you while you are away: tasks that would come to you go to them, until the time you give. Null ends the cover',
+          body: z.object({ coverId: z.uuid().nullable(), until: z.iso.datetime({ offset: true }).optional() }),
+          response: { 200: DirectoryOut },
+        },
+      },
+      async (request) => {
+        const me = requireUser(request).actor.id;
+        const { coverId, until } = request.body;
+        if (coverId) {
+          if (coverId === me) throw unprocessable('own_cover', 'Name someone else to cover for you');
+          const [cover] = await ctx.db.select({ id: users.id }).from(users).where(and(eq(users.orgId, ctx.org.id), eq(users.id, coverId), eq(users.status, 'active')));
+          if (!cover) throw unprocessable('unknown_person', 'Name someone active in the directory');
+          if (until && Date.parse(until) <= ctx.now().getTime()) throw unprocessable('cover_past', 'The cover ends in the past');
+        }
+        await ctx.db.transaction(async (tx) => {
+          await tx.update(users).set({ coverId, coverUntil: coverId && until ? new Date(until) : null }).where(eq(users.id, me));
+          await recordAudit(tx, auditScopeFor(request, ctx.org.id, ctx.now()), {
+            action: 'user.cover',
+            target: { type: 'user', id: me },
+            changes: { after: { coverId, until: coverId ? (until ?? null) : null } },
+          });
+        });
+        return directoryOf(me);
       },
     );
   };

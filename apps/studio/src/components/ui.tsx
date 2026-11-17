@@ -24,15 +24,18 @@ export function Button({ variant = 'secondary', size = 'md', className, type = '
   );
 }
 
-const control = 'w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5 text-text placeholder:text-faint';
+const control = 'rounded-sm border border-line-strong bg-surface px-2.5 py-1.5 text-text placeholder:text-faint';
+
+/** Full width, unless the caller sizes the control: two width classes would leave the winner to the stylesheet's order. */
+const sized = (className?: string) => (className && /(^|\s)(w-|flex-1)/.test(className) ? className : cx('w-full', className));
 
 export function TextInput({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cx(control, className)} {...rest} />;
+  return <input className={cx(control, sized(className))} {...rest} />;
 }
 
 export function Select({ className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select className={cx(control, className)} {...rest}>
+    <select className={cx(control, sized(className))} {...rest}>
       {children}
     </select>
   );

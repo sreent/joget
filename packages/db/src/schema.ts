@@ -12,6 +12,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 type Json = Record<string, unknown>;
@@ -46,10 +47,22 @@ export const users = pgTable(
     status: text('status', { enum: ['active', 'deprovisioned'] })
       .notNull()
       .default('active'),
+    /** From the directory: the department, and the manager on the reporting line. Processes route tasks by them. */
+    department: text('department'),
+    managerId: uuid('manager_id').references((): AnyPgColumn => users.id),
+    /** Out-of-office cover: who takes the tasks that would come to this person, until when. */
+    coverId: uuid('cover_id').references((): AnyPgColumn => users.id),
+    coverUntil: timestamp('cover_until', tz),
     createdAt: createdAt(),
     lastLoginAt: timestamp('last_login_at', tz),
   },
-  (t) => [uniqueIndex('users_issuer_subject_uq').on(t.issuer, t.subject), index('users_org_email_idx').on(t.orgId, t.email)],
+  (t) => [
+    uniqueIndex('users_issuer_subject_uq').on(t.issuer, t.subject),
+    index('users_org_email_idx').on(t.orgId, t.email),
+    index('users_manager_idx').on(t.managerId),
+    check('users_not_own_manager', sql`${t.managerId} is distinct from ${t.id}`),
+    check('users_not_own_cover', sql`${t.coverId} is distinct from ${t.id}`),
+  ],
 );
 
 /** Groups from the IdP's group claim, or managed on the platform. */
@@ -300,7 +313,19 @@ export const apps = pgTable(
     status: text('status', { enum: ['active', 'deleted'] })
       .notNull()
       .default('active'),
+    /** The newest revision of the main line. A team app's environments run releases of it. */
     currentRevision: integer('current_revision').notNull(),
+    /**
+     * Set on a working copy: a personal app in which one builder changes a team app (design §3).
+     * Changes go back to the team app through change requests.
+     */
+    workingCopyOf: uuid('working_copy_of').references((): AnyPgColumn => apps.id),
+    /** For a working copy: the team app's main-line revision that the copy last took in. */
+    baseRevision: integer('base_revision'),
+    /** Set on a team app made by promotion: the personal app it came from (design §3). */
+    promotedFrom: uuid('promoted_from').references((): AnyPgColumn => apps.id),
+    /** Set on a personal app once its promoted team app runs in Prod: the app is read-only here, and lives on there. */
+    movedTo: uuid('moved_to').references((): AnyPgColumn => apps.id),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
@@ -311,6 +336,12 @@ export const apps = pgTable(
   (t) => [
     index('apps_space_idx').on(t.spaceId),
     uniqueIndex('apps_space_handle_uq').on(t.spaceId, t.handle).where(sql`${t.status} = 'active'`),
+    uniqueIndex('apps_one_working_copy_uq')
+      .on(t.workingCopyOf, t.ownerUserId)
+      .where(sql`${t.status} = 'active' and ${t.workingCopyOf} is not null`),
+    check('apps_working_copy_has_base', sql`(${t.workingCopyOf} is null) = (${t.baseRevision} is null)`),
+    // One promotion of a personal app at a time.
+    uniqueIndex('apps_one_promotion_uq').on(t.promotedFrom).where(sql`${t.status} = 'active' and ${t.promotedFrom} is not null`),
   ],
 );
 
@@ -327,6 +358,11 @@ export const appRevisions = pgTable(
     digest: text('digest').notNull(),
     /** The migration steps and notes of the save that made this revision. */
     summary: jsonb('summary').$type<Json>(),
+    /**
+     * Set on the head of a change request: a revision off the main line, which the request's
+     * preview runs. Main-line revisions have none.
+     */
+    changeRequestId: uuid('change_request_id'),
     createdByType: text('created_by_type', { enum: actorTypes }).notNull(),
     createdBy: uuid('created_by'),
     createdAt: createdAt(),
@@ -336,7 +372,8 @@ export const appRevisions = pgTable(
 
 /**
  * Where an app runs. Each environment has its own database schema and NOLOGIN role (design §6.8).
- * A personal app has one: its sandbox.
+ * A personal app has one: its sandbox. A team app has Prod, optionally Staging, and a preview for
+ * each open change request.
  */
 export const appEnvironments = pgTable(
   'app_environments',
@@ -345,11 +382,21 @@ export const appEnvironments = pgTable(
     appId: uuid('app_id')
       .notNull()
       .references(() => apps.id),
-    kind: text('kind', { enum: ['sandbox', 'staging', 'prod'] }).notNull(),
+    kind: text('kind', { enum: ['sandbox', 'preview', 'staging', 'prod'] }).notNull(),
     schemaName: text('schema_name').notNull(),
     dbRole: text('db_role').notNull(),
     /** The definition revision whose data model the schema has. */
     appliedRevision: integer('applied_revision').notNull(),
+    /**
+     * The revision whose definition the environment runs. After a rollback it is behind
+     * applied_revision: the schema keeps the newer tables and columns, which the older
+     * definition ignores (expand and contract, design §7.1).
+     */
+    activeRevision: integer('active_revision').notNull(),
+    /** Staging and Prod: the release that is live. */
+    activeReleaseId: uuid('active_release_id').references((): AnyPgColumn => releases.id),
+    /** A preview: the change request it shows. */
+    changeRequestId: uuid('change_request_id').references((): AnyPgColumn => changeRequests.id),
     status: text('status', { enum: ['active', 'deleted'] })
       .notNull()
       .default('active'),
@@ -357,8 +404,186 @@ export const appEnvironments = pgTable(
   },
   (t) => [
     uniqueIndex('app_environments_schema_uq').on(t.schemaName),
-    uniqueIndex('app_environments_app_kind_uq').on(t.appId, t.kind).where(sql`${t.status} = 'active'`),
+    uniqueIndex('app_environments_app_kind_uq')
+      .on(t.appId, t.kind)
+      .where(sql`${t.status} = 'active' and ${t.kind} <> 'preview'`),
+    uniqueIndex('app_environments_preview_uq').on(t.changeRequestId).where(sql`${t.status} = 'active'`),
+    check('app_environments_previews_show_changes', sql`(${t.kind} = 'preview') = (${t.changeRequestId} is not null)`),
   ],
+);
+
+/**
+ * A change to a team app, from a builder's working copy (design §6.7). The head is a revision off
+ * the main line; merging makes it (or its merge with newer main-line changes) the next main-line
+ * revision.
+ */
+export const changeRequests = pgTable(
+  'change_requests',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    /** Numbered per app: change request #3. */
+    number: integer('number').notNull(),
+    workingCopyId: uuid('working_copy_id').references(() => apps.id),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status', { enum: ['open', 'merged', 'closed'] })
+      .notNull()
+      .default('open'),
+    /** The main-line revision the change starts from. */
+    baseRevision: integer('base_revision').notNull(),
+    headRevision: integer('head_revision').notNull(),
+    /** SHA-256 of the head definition. Reviews name it, so an approval covers exactly what was seen. */
+    headDigest: text('head_digest').notNull(),
+    /** The automatic checks of the head: validation, migration plan, permission and capability diffs, lint. */
+    checks: jsonb('checks').$type<Json>().notNull(),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    mergedRevision: integer('merged_revision'),
+    mergedAt: timestamp('merged_at', tz),
+    mergedByType: text('merged_by_type', { enum: actorTypes }),
+    mergedBy: uuid('merged_by'),
+    closedAt: timestamp('closed_at', tz),
+    closedByType: text('closed_by_type', { enum: actorTypes }),
+    closedBy: uuid('closed_by'),
+  },
+  (t) => [
+    uniqueIndex('change_requests_app_number_uq').on(t.appId, t.number),
+    uniqueIndex('change_requests_one_open_per_copy_uq').on(t.workingCopyId).where(sql`${t.status} = 'open'`),
+    index('change_requests_space_idx').on(t.spaceId, t.status),
+  ],
+);
+
+/** Reviews of a change request. Each names the head it reviewed, so a new head needs new approvals. */
+export const changeReviews = pgTable(
+  'change_reviews',
+  {
+    id: uuid('id').primaryKey(),
+    changeRequestId: uuid('change_request_id')
+      .notNull()
+      .references(() => changeRequests.id),
+    reviewerId: uuid('reviewer_id')
+      .notNull()
+      .references(() => users.id),
+    verdict: text('verdict', { enum: ['approve', 'request_changes', 'comment'] }).notNull(),
+    headDigest: text('head_digest').notNull(),
+    comment: text('comment'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('change_reviews_request_idx').on(t.changeRequestId, t.createdAt)],
+);
+
+/**
+ * Releases of a team app: one main-line revision, hashed and signed. Immutable: a trigger rejects
+ * UPDATE and DELETE. Rolling back re-activates an earlier release (design §7.1).
+ */
+export const releases = pgTable(
+  'releases',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    /** Numbered per app: release 4. */
+    number: integer('number').notNull(),
+    revision: integer('revision').notNull(),
+    /** SHA-256 of the definition. */
+    digest: text('digest').notNull(),
+    previousReleaseId: uuid('previous_release_id').references((): AnyPgColumn => releases.id),
+    /** True if the step from the previous release deletes data. Such a release holds one change only. */
+    destructive: boolean('destructive').notNull(),
+    /** The migration steps from the previous release, and the change requests the release holds. */
+    contents: jsonb('contents').$type<Json>().notNull(),
+    notes: text('notes'),
+    /** SHA-256 of the release's canonical manifest, and the platform's signature over it. */
+    manifestDigest: text('manifest_digest').notNull(),
+    keyId: text('key_id').notNull(),
+    signature: text('signature').notNull(),
+    createdByType: text('created_by_type', { enum: actorTypes }).notNull(),
+    createdBy: uuid('created_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('releases_app_number_uq').on(t.appId, t.number), uniqueIndex('releases_app_revision_uq').on(t.appId, t.revision)],
+);
+
+/**
+ * Deploying a release to Staging or Prod, or rolling back to an earlier one: planned, approved as
+ * the environment requires, then executed (design §7.1).
+ */
+export const deployments = pgTable(
+  'deployments',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentKind: text('environment_kind', { enum: ['staging', 'prod'] }).notNull(),
+    /** Set once the environment exists: the first deployment to it creates it. */
+    environmentId: uuid('environment_id').references(() => appEnvironments.id),
+    kind: text('kind', { enum: ['deploy', 'rollback'] }).notNull(),
+    releaseId: uuid('release_id')
+      .notNull()
+      .references(() => releases.id),
+    /** The release that was live when the deployment was planned. None for the first one. */
+    fromReleaseId: uuid('from_release_id').references(() => releases.id),
+    status: text('status', { enum: ['awaiting_approval', 'approved', 'succeeded', 'failed', 'cancelled'] }).notNull(),
+    /** The migration steps, and what the plan was made against: it is checked again before executing. */
+    plan: jsonb('plan').$type<Json>().notNull(),
+    destructive: boolean('destructive').notNull(),
+    approvalsRequired: integer('approvals_required').notNull(),
+    requestedByType: text('requested_by_type', { enum: actorTypes }).notNull(),
+    requestedBy: uuid('requested_by'),
+    requestedAt: timestamp('requested_at', tz).notNull(),
+    executedByType: text('executed_by_type', { enum: actorTypes }),
+    executedBy: uuid('executed_by'),
+    startedAt: timestamp('started_at', tz),
+    finishedAt: timestamp('finished_at', tz),
+    error: text('error'),
+  },
+  (t) => [
+    index('deployments_app_idx').on(t.appId, t.requestedAt),
+    uniqueIndex('deployments_one_open_per_env_uq')
+      .on(t.appId, t.environmentKind)
+      .where(sql`${t.status} in ('awaiting_approval', 'approved')`),
+  ],
+);
+
+/** People who approved a deployment. Someone who authored a change in it cannot (design §5.7). */
+export const deploymentApprovals = pgTable(
+  'deployment_approvals',
+  {
+    deploymentId: uuid('deployment_id')
+      .notNull()
+      .references(() => deployments.id),
+    approverId: uuid('approver_id')
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.deploymentId, t.approverId] })],
 );
 
 /**
@@ -410,6 +635,261 @@ export const proposals = pgTable(
     resultRecordId: uuid('result_record_id'),
   },
   (t) => [index('proposals_person_idx').on(t.onBehalfOf, t.status), index('proposals_app_idx').on(t.appId)],
+);
+
+/**
+ * Calls to a7c skills that actions make (design §6.2). Each is queued in the transaction of the
+ * change that makes it, so a call exists exactly when its change commits. A dispatcher then asks
+ * a7c to start it, with the call's ID as the idempotency key, so a retry never starts it twice.
+ */
+export const skillCalls = pgTable(
+  'skill_calls',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    action: text('action').notNull(),
+    /** The record the action wrote. */
+    recordId: uuid('record_id').notNull(),
+    /** Where the step is in the action, such as `steps[2]`. */
+    step: text('step').notNull(),
+    skill: text('skill').notNull(),
+    label: text('label').notNull(),
+    /** The a7c tier that runs it: production for Prod, team for Staging and previews, personal for a sandbox. */
+    tier: text('tier', { enum: ['personal', 'team', 'production'] }).notNull(),
+    input: jsonb('input').$type<Json>().notNull(),
+    /** The person the action ran for. A service account that runs an action for nobody leaves it empty. */
+    onBehalfOf: uuid('on_behalf_of').references(() => users.id),
+    /** The proposal it came from, when a person approved an agent's proposal. */
+    proposalId: uuid('proposal_id').references(() => proposals.id),
+    status: text('status', { enum: ['pending', 'started', 'failed'] })
+      .notNull()
+      .default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    /** When the dispatcher may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    lastError: text('last_error'),
+    /** The run that a7c started. */
+    runId: text('run_id'),
+    createdAt: createdAt(),
+    startedAt: timestamp('started_at', tz),
+  },
+  (t) => [
+    index('skill_calls_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'pending'`),
+    index('skill_calls_record_idx').on(t.appId, t.recordId),
+    check('skill_calls_started_when', sql`(${t.status} = 'started') = (${t.startedAt} is not null)`),
+  ],
+);
+
+/*
+ * Business processes (design §6.10): instances, the tokens that wait in them, people's tasks,
+ * timers and each instance's history. A process advances in the transaction of the change that
+ * moves it, so these rows and the record always agree.
+ */
+
+/** One run of a process, about one record. */
+export const processInstances = pgTable(
+  'process_instances',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    /** The process's name in the definition. */
+    process: text('process').notNull(),
+    /** The definition revision it runs on, to the end (design §6.9). */
+    revision: integer('revision').notNull(),
+    entity: text('entity').notNull(),
+    recordId: uuid('record_id').notNull(),
+    status: text('status', { enum: ['running', 'completed', 'cancelled'] })
+      .notNull()
+      .default('running'),
+    /** The outcome each user task was last completed with, which conditions read. */
+    outcomes: jsonb('outcomes').$type<Record<string, string>>().notNull().default({}),
+    /** Who started it: the person whose action started it, or who started it by hand. */
+    startedBy: uuid('started_by').references(() => users.id),
+    /** The action whose commit started it, if one did. */
+    startedByAction: text('started_by_action'),
+    /** The instance whose call activity started it, if one did; it goes on when this one ends. */
+    calledByInstance: uuid('called_by_instance'),
+    /** The token that waits at that call activity. */
+    calledByToken: uuid('called_by_token'),
+    startedAt: timestamp('started_at', tz).notNull(),
+    endedAt: timestamp('ended_at', tz),
+  },
+  (t) => [
+    uniqueIndex('process_instances_one_running_uq').on(t.environmentId, t.process, t.recordId).where(sql`${t.status} = 'running'`),
+    index('process_instances_called_by_idx').on(t.calledByToken).where(sql`${t.calledByToken} is not null`),
+    index('process_instances_app_idx').on(t.appId, t.environmentId, t.status),
+    index('process_instances_record_idx').on(t.environmentId, t.recordId),
+    check('process_instances_ended_when', sql`(${t.status} = 'running') = (${t.endedAt} is null)`),
+  ],
+);
+
+/** A token that waits: for a person at a user task, for a timer, for the other paths at a parallel gateway, or for an operator where it got stuck. */
+export const processTokens = pgTable(
+  'process_tokens',
+  {
+    id: uuid('id').primaryKey(),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    element: text('element').notNull(),
+    /** The flow it came by: a parallel gateway waits for a token from each flow in. */
+    arrivedBy: text('arrived_by'),
+    state: text('state', { enum: ['waiting', 'stuck'] }).notNull(),
+    /** Why it is stuck, for the operator who retries it. */
+    error: text('error'),
+    /** At a task that several people decide: who votes, in order. */
+    voters: jsonb('voters').$type<string[]>(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('process_tokens_instance_idx').on(t.instanceId), check('process_tokens_stuck_why', sql`(${t.state} = 'stuck') = (${t.error} is not null)`)],
+);
+
+/** A user task: work that waits for a person, in their inbox. */
+export const processTasks = pgTable(
+  'process_tasks',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    element: text('element').notNull(),
+    /** The token that waits at the task while it is open. */
+    tokenId: uuid('token_id'),
+    name: text('name').notNull(),
+    entity: text('entity').notNull(),
+    recordId: uuid('record_id').notNull(),
+    /** The app role whose holders may do it. */
+    role: text('role').notNull(),
+    /** The one person it waits for, when routing names one. */
+    assignee: uuid('assignee').references(() => users.id),
+    /** Without one person: only those with the role in this department may take it. */
+    department: text('department'),
+    /** One vote of a task that several people decide: the votes together decide its outcome. */
+    several: boolean('several').notNull().default(false),
+    /** The outcomes as the task opened with them, and the action each runs. */
+    outcomes: jsonb('outcomes').$type<Array<{ name: string; label: string; action?: string }>>().notNull(),
+    card: text('card'),
+    status: text('status', { enum: ['open', 'completed', 'cancelled'] })
+      .notNull()
+      .default('open'),
+    outcome: text('outcome'),
+    completedBy: uuid('completed_by').references(() => users.id),
+    /** Why it closed without an outcome: a timer, or the instance ending or being cancelled. */
+    cancelReason: text('cancel_reason'),
+    dueAt: timestamp('due_at', tz),
+    createdAt: createdAt(),
+    closedAt: timestamp('closed_at', tz),
+  },
+  (t) => [
+    index('process_tasks_open_idx').on(t.environmentId, t.role).where(sql`${t.status} = 'open'`),
+    index('process_tasks_assignee_idx').on(t.assignee).where(sql`${t.status} = 'open'`),
+    index('process_tasks_record_idx').on(t.environmentId, t.recordId),
+    index('process_tasks_instance_idx').on(t.instanceId),
+    check('process_tasks_closed_when', sql`(${t.status} = 'open') = (${t.closedAt} is null)`),
+    check('process_tasks_outcome_when', sql`(${t.status} = 'completed') = (${t.outcome} is not null)`),
+  ],
+);
+
+/** A timer that waits to fire: at a timer catch event, or on a user task's boundary. */
+export const processTimers = pgTable(
+  'process_timers',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    /** The timer event. */
+    element: text('element').notNull(),
+    /** The token that waits at a timer catch event. */
+    tokenId: uuid('token_id'),
+    /** The task a boundary timer sits on. */
+    taskId: uuid('task_id').references(() => processTasks.id),
+    fireAt: timestamp('fire_at', tz).notNull(),
+    status: text('status', { enum: ['waiting', 'fired', 'cancelled'] })
+      .notNull()
+      .default('waiting'),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    firedAt: timestamp('fired_at', tz),
+  },
+  (t) => [
+    index('process_timers_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`),
+    index('process_timers_instance_idx').on(t.instanceId),
+    check('process_timers_one_place', sql`(${t.tokenId} is null) <> (${t.taskId} is null)`),
+  ],
+);
+
+/** What happened in an instance, step by step, for the people in it and its operators. */
+export const processEvents = pgTable(
+  'process_events',
+  {
+    id: uuid('id').primaryKey(),
+    /** The order things happened in, within a transaction too. */
+    seq: bigint('seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
+    instanceId: uuid('instance_id')
+      .notNull()
+      .references(() => processInstances.id, { onDelete: 'cascade' }),
+    at: timestamp('at', tz).notNull(),
+    kind: text('kind', {
+      enum: [
+        'started',
+        'task_opened',
+        'voted',
+        'task_completed',
+        'task_cancelled',
+        'reassigned',
+        'timer_fired',
+        'message',
+        'ran',
+        'error_caught',
+        'skill_queued',
+        'entered',
+        'exited',
+        'called',
+        'returned',
+        'stuck',
+        'retried',
+        'ended',
+        'cancelled',
+      ],
+    }).notNull(),
+    element: text('element'),
+    /** The person behind it, if there is one. */
+    by: uuid('by').references(() => users.id),
+    detail: jsonb('detail').$type<Json>(),
+  },
+  (t) => [index('process_events_instance_idx').on(t.instanceId, t.seq)],
 );
 
 /** Org-level rules that deny, or demand fresh MFA, regardless of grants. */

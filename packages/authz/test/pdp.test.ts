@@ -6,6 +6,7 @@ import {
   findEscalation,
   findSodConflicts,
   MANAGED_GUARDRAILS,
+  mergePolicies,
   MANAGED_PERMISSION_SETS,
   MANAGED_ROLES,
   MANAGED_SOD_RULES,
@@ -244,5 +245,13 @@ describe('privilege escalation', () => {
     for (const role of ['space.admin', 'space.builder', 'space.reviewer', 'space.release_manager', 'space.operator', 'space.viewer']) {
       expect(findEscalation(policy, alice, teamSpace.scopes, [owner], { roleId: role }, now)).toEqual([]);
     }
+  });
+
+  it('lets a grant that holds only in previews cover the same grant, and nothing wider', () => {
+    // A builder may try changes in previews: they can pass that on, but not record access everywhere.
+    const builder = binding({ principalId: 'alice', roleId: 'space.builder', scope: { type: 'space', id: TEAM } });
+    expect(findEscalation(policy, alice, teamSpace.scopes, [builder], { permissionSetId: 'ps.space.preview' }, now)).toEqual([]);
+    const wider = createPolicy({ permissionSets: [{ id: 'ps.records', name: 'Records', scopeType: 'space', grants: [{ permission: 'record.read' }] }], roles: [] });
+    expect(findEscalation(mergePolicies(policy, wider), alice, teamSpace.scopes, [builder], { permissionSetId: 'ps.records' }, now)).toEqual(['record.read']);
   });
 });

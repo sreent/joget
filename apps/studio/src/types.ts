@@ -17,17 +17,139 @@ export interface Me {
   personalSpaceId: string | null;
 }
 
+/** Where an app runs: the sandbox of a personal app; Prod, Staging and previews of a team app. */
+export interface EnvironmentInfo {
+  id: string;
+  kind: 'sandbox' | 'preview' | 'staging' | 'prod';
+  revision: number;
+  release: { id: string; number: number } | null;
+  changeRequest: { id: string; number: number } | null;
+}
+
+/** The delivery steps the caller's roles allow on a team app. */
+export interface DeliveryAccess {
+  review: boolean;
+  approve: boolean;
+  merge: boolean;
+  release: boolean;
+  deploy: boolean;
+  approveDeploy: boolean;
+  execute: boolean;
+  rollback: boolean;
+  manageAccess: boolean;
+}
+
 export interface AppSummary {
   id: string;
   spaceId: string;
+  /** A personal app is edited live; a team app changes through change requests and runs releases. */
+  kind: 'personal' | 'team';
   handle: string;
   name: string;
   description: string | null;
   ownerUserId: string;
+  /** The newest revision of the main line. */
   revision: number;
   createdAt: string;
   updatedAt: string;
-  access: { build: boolean; run: boolean; share: boolean; roles: string[] };
+  environment: EnvironmentInfo | null;
+  environments?: EnvironmentInfo[];
+  workingCopyOf: { appId: string; name: string; baseRevision: number; behind: boolean; changeRequest: { id: string; number: number } | null } | null;
+  myWorkingCopyId?: string | null;
+  /** On a personal app that moved to a team space: the app it lives on as. It is read-only here. */
+  movedTo?: { appId: string; name: string } | null;
+  /** On a personal app on its way to a team space: the team app, and the change request that brings it in. */
+  promotion?: { appId: string; name: string; changeRequest: { id: string; number: number; status: 'open' | 'merged' | 'closed' } | null } | null;
+  /** On a team app made by promotion: the personal app it came from. */
+  promotedFrom?: string | null;
+  access: { build: boolean; run: boolean; share: boolean; edit: boolean; roles: string[]; delivery?: DeliveryAccess };
+}
+
+export interface Space {
+  id: string;
+  kind: 'personal' | 'team';
+  name: string;
+  status: string;
+}
+
+export interface PersonRef {
+  id: string;
+  name: string;
+}
+
+export interface ChangeRequestSummary {
+  id: string;
+  appId: string;
+  number: number;
+  title: string;
+  status: 'open' | 'merged' | 'closed';
+  author: PersonRef;
+  baseRevision: number;
+  headRevision: number;
+  mergedRevision: number | null;
+  destructive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChangeRequest extends ChangeRequestSummary {
+  description: string | null;
+  workingCopyId: string | null;
+  headDigest: string;
+  checks: {
+    validation: { ok: boolean; notes: string[] };
+    migration: { destructive: boolean; steps: PlanStep[] };
+    access: Array<{ role: string; kind: 'gains' | 'loses' | 'changes'; text: string; holders: number }>;
+    capabilities: Array<{ tool: string; change: 'added' | 'removed' | 'changed'; text: string }>;
+    lint: string[];
+  };
+  changes: Array<{ section: string; name: string; change: 'added' | 'removed' | 'changed'; from?: string; details: string[] }>;
+  behind: boolean;
+  conflicts: Array<{ section: string; name: string; ours: string; theirs: string }>;
+  reviews: Array<{ id: string; reviewer: PersonRef; verdict: 'approve' | 'request_changes' | 'comment'; comment: string | null; createdAt: string; current: boolean }>;
+  approvals: { required: number; approvedBy: PersonRef[]; changesRequestedBy: PersonRef[]; ready: boolean };
+  preview: { environmentId: string } | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+}
+
+export interface Release {
+  id: string;
+  appId: string;
+  number: number;
+  revision: number;
+  digest: string;
+  destructive: boolean;
+  notes: string | null;
+  changes: Array<{ id: string; number: number; title: string; author: PersonRef }>;
+  steps: PlanStep[];
+  createdBy: PersonRef | null;
+  createdAt: string;
+  manifestDigest: string;
+  keyId: string;
+  verified: boolean;
+  liveIn: Array<'staging' | 'prod'>;
+}
+
+export interface Deployment {
+  id: string;
+  appId: string;
+  environment: 'staging' | 'prod';
+  kind: 'deploy' | 'rollback';
+  status: 'awaiting_approval' | 'approved' | 'succeeded' | 'failed' | 'cancelled';
+  release: { id: string; number: number };
+  fromRelease: { id: string; number: number } | null;
+  destructive: boolean;
+  plan: { steps: PlanStep[]; notes: string[] };
+  approvals: { required: number; by: PersonRef[] };
+  authors: PersonRef[];
+  requestedBy: PersonRef | null;
+  requestedAt: string;
+  executedBy: PersonRef | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  error: string | null;
 }
 
 export interface PlanStep {
@@ -115,12 +237,54 @@ export interface UiAction {
   confirm: 'none' | 'preview' | 'review';
 }
 
+/** A column of a page's list: a field, or a system field such as `created_at`. */
+export interface UiColumn {
+  name: string;
+  label: string;
+  type: string;
+  options?: Array<{ value: string; label: string }>;
+  decimals?: number;
+}
+
+/** A block of a page, as the person may use it. A list names its place in the page, which reads its records. */
+export type UiBlock =
+  | { type: 'text'; style: 'heading' | 'paragraph' | 'note'; text: string }
+  | { type: 'list'; index: number; entity: string; title?: string; columns: UiColumn[]; actions: string[]; empty?: string }
+  | { type: 'buttons'; buttons: Array<{ form: string; label?: string } | { page: string; label?: string }> }
+  | { type: 'stat'; index: number; entity: string; label: string; op: string; decimals: number }
+  | {
+      type: 'chart';
+      index: number;
+      entity: string;
+      title: string;
+      show: 'bar' | 'column' | 'line' | 'table';
+      width: 'full' | 'half';
+      op: string;
+      decimals: number;
+      group: { label: string; kind: 'value' | 'person' | 'period'; period?: string };
+    };
+
+export interface UiPage {
+  label: string;
+  description?: string;
+  blocks: UiBlock[];
+}
+
+/** The app's own menu, as the person may use it. */
+export interface UiNavigation {
+  home: string | null;
+  items: Array<{ page: string; label: string } | { form: string; label: string } | { entity: string; label: string } | { heading: string }>;
+}
+
 export interface UiManifest {
   app: AppSummary;
   entities: Record<string, UiEntity>;
   forms: Record<string, UiForm>;
   actions: Record<string, UiAction>;
   queries: Record<string, { label: string; description: string; entity: string; fields: string[] }>;
+  pages: Record<string, UiPage>;
+  /** Null when the app has no menu of its own: then it lists every form and list. */
+  navigation: UiNavigation | null;
 }
 
 export type Value = string | number | boolean | string[] | null;
@@ -174,6 +338,22 @@ export interface LinesChange {
   reordered: boolean;
 }
 
+/** A call to an a7c skill that an action on a record made, and how it went. */
+export interface SkillCall {
+  id: string;
+  action: string;
+  step: string;
+  skill: string;
+  label: string;
+  tier: 'personal' | 'team' | 'production';
+  status: 'pending' | 'started' | 'failed';
+  attempts: number;
+  lastError: string | null;
+  runId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+}
+
 export interface HistoryEntry {
   version: number;
   operation: 'create' | 'update' | 'delete';
@@ -182,4 +362,51 @@ export interface HistoryEntry {
   actor: { type: string; id: string | null; onBehalfOf: string | null };
   via: string;
   changes: Array<{ field: string; before?: Value; after?: Value; lines?: LinesChange; masked?: true; removed?: true; source?: Source }>;
+}
+
+/** A person's task in a business process (design §6.10): a decision that waits in their inbox. */
+export interface Task {
+  id: string;
+  name: string;
+  status: 'open' | 'completed' | 'cancelled';
+  app: { id: string; name: string };
+  environment: { id: string };
+  process: string;
+  instanceId: string;
+  element: string;
+  entity: string;
+  recordId: string;
+  role: string;
+  assignee: { id: string; name: string | null } | null;
+  outcomes: Array<{ name: string; label: string; action?: string }>;
+  card: string | null;
+  due: string | null;
+  overdue: boolean;
+  /** One vote of a task that several people decide, and how many vote. */
+  several: boolean;
+  voters: number | null;
+  outcome: string | null;
+  completedBy: string | null;
+  createdAt: string;
+  closedAt: string | null;
+}
+
+/** One run of a process on a record: where it waits, and what happened in it. */
+export interface ProcessInstance {
+  id: string;
+  process: string;
+  label: string;
+  revision: number;
+  entity: string;
+  recordId: string;
+  status: 'running' | 'completed' | 'cancelled';
+  stuck: Array<{ element: string; name: string; error: string }>;
+  waiting: Array<{ element: string; name: string }>;
+  startedBy: string | null;
+  startedByAction: string | null;
+  calledBy: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  tasks?: Task[];
+  events?: Array<{ at: string; kind: string; element: string | null; name: string | null; by: string | null; detail: unknown }>;
 }

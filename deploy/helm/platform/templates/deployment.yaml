@@ -56,9 +56,16 @@ spec:
                 name: {{ include "platform.fullname" . }}
             - secretRef:
                 name: {{ required "existingSecret is required: a Secret with DATABASE_URL, COOKIE_SECRET and AUDIT_SIGNING_KEY_PEM" .Values.existingSecret }}
-          {{- with .Values.extraEnv }}
+          {{- if or .Values.extraEnv .Values.a7c.url }}
           env:
-            {{- range . }}
+            {{- if .Values.a7c.url }}
+            # a7c runs the skills that actions start. Its token is a file, so a renewed Secret needs no restart.
+            - name: A7C_URL
+              value: {{ .Values.a7c.url | quote }}
+            - name: A7C_TOKEN_FILE
+              value: /var/run/secrets/a7c/token
+            {{- end }}
+            {{- range .Values.extraEnv }}
             - name: {{ required "every extraEnv entry needs a name" .name }}
               {{- if hasKey . "valueFrom" }}
               valueFrom:
@@ -97,9 +104,22 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.a7c.url }}
+            - name: a7c-token
+              mountPath: /var/run/secrets/a7c
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.a7c.url }}
+        - name: a7c-token
+          secret:
+            secretName: {{ required "a7c.tokenSecret is required with a7c.url: a Secret with Ambit's a7c token under the key token" .Values.a7c.tokenSecret }}
+            items:
+              - key: token
+                path: token
+        {{- end }}
       {{- if .Values.topologySpread.enabled }}
       topologySpreadConstraints:
         - maxSkew: {{ .Values.topologySpread.maxSkew }}

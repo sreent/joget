@@ -110,7 +110,7 @@ describe('acting for one named person', () => {
 
   it("shows the agent the person's errands, and turns an action into a proposal attributed to both", async () => {
     const tools = (await rpc(delegated, 'tools/list')).result.tools.map((tool: { name: string }) => tool.name).sort();
-    expect(tools).toEqual(['expenses__my_claims', 'expenses__submit_claim']);
+    expect(tools).toEqual(['expenses__my_claims', 'expenses__my_spending', 'expenses__submit_claim']);
     const call = await rpc(delegated, 'tools/call', {
       name: 'expenses__submit_claim',
       arguments: {

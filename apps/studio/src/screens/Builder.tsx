@@ -5,15 +5,34 @@ import { Badge, Button, Checkbox, Dialog, Notice } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
 import { Link, type BuildTab } from '../router.js';
 import type { Definition, Issue, Plan } from '../types.js';
-import { AdvancedPanel, HistoryPanel, SharePanel } from './BuilderPanels.js';
+import { AccessPanel, AdvancedPanel, HistoryPanel, MovedNotice, MovePanel, SharePanel } from './BuilderPanels.js';
+import { ChangesPanel, DeliveryPanel, TeamAppNotice, WorkingCopyBar } from './Delivery.js';
 import { DataDesigner } from './DataDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
+import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from './LogicDesigners.js';
+import { MenuDesigner, PagesDesigner } from './PagesDesigner.js';
+import { ProcessDesigner } from './ProcessDesigner.js';
+import { RolesDesigner } from './RolesDesigner.js';
 
-const TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
+const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
   { tab: 'data', label: 'Data' },
   { tab: 'forms', label: 'Forms' },
-  { tab: 'share', label: 'Share' },
-  { tab: 'advanced', label: 'Advanced' },
+  { tab: 'pages', label: 'Pages' },
+  { tab: 'menu', label: 'Menu' },
+  { tab: 'rules', label: 'Rules' },
+  { tab: 'actions', label: 'Actions' },
+  { tab: 'queries', label: 'Queries' },
+  { tab: 'cards', label: 'Review cards' },
+  { tab: 'roles', label: 'Roles' },
+  { tab: 'processes', label: 'Processes' },
+];
+const TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [...DESIGNERS, { tab: 'share', label: 'Share' }, { tab: 'history', label: 'History' }, { tab: 'advanced', label: 'Advanced' }];
+/** A team app: delivery first, then its main line, read-only, in the designers. */
+const TEAM_TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
+  { tab: 'delivery', label: 'Delivery' },
+  { tab: 'changes', label: 'Change requests' },
+  ...DESIGNERS,
+  { tab: 'share', label: 'Access' },
   { tab: 'history', label: 'History' },
 ];
 
@@ -70,6 +89,11 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
   }
   if (!draft || !summary.data || !saved.data) return <p className="text-muted">Loading…</p>;
   const plan = review?.plan;
+  const app = summary.data;
+  const team = app.kind === 'team';
+  const tabs = team ? TEAM_TABS : TABS;
+  const designing = DESIGNERS.some((item) => item.tab === tab) || tab === 'advanced';
+  const live = team ? app.environments?.find((env) => env.kind === 'prod') : app.environment;
 
   return (
     <div className="grid gap-5 pb-24">
@@ -81,37 +105,62 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
           <h1 className="m-0 text-2xl font-semibold tracking-tight">{summary.data.name}</h1>
         </div>
         <div className="flex items-center gap-2">
+          {team ? <Badge tone="accent">Team app</Badge> : null}
           <Badge>revision {saved.data.revision}</Badge>
-          <Link to={{ name: 'use', appId }} className="no-underline">
-            <Button tabIndex={-1}>Open the app</Button>
-          </Link>
+          {live ? (
+            <Link to={{ name: 'use', appId }} className="no-underline">
+              <Button tabIndex={-1}>{team ? 'Open in Prod' : 'Open the app'}</Button>
+            </Link>
+          ) : null}
         </div>
       </div>
 
-      <nav aria-label="Building" className="flex gap-1 border-b border-line">
-        {TABS.map((item) => (
+      {app.workingCopyOf ? <WorkingCopyBar app={app} dirty={dirty} /> : null}
+      {app.movedTo ? <MovedNotice movedTo={app.movedTo} /> : null}
+
+      <nav aria-label="Building" className="flex gap-1 overflow-x-auto border-b border-line">
+        {tabs.map((item) => (
           <Link
             key={item.tab}
             to={{ name: 'build', appId, tab: item.tab }}
             aria-current={item.tab === tab ? 'page' : undefined}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium no-underline ${item.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
+            className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap no-underline ${item.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
           >
             {item.label}
           </Link>
         ))}
       </nav>
 
-      {tab === 'data' ? <DataDesigner definition={draft} onChange={setDraft} /> : null}
-      {tab === 'forms' ? <FormDesigner definition={draft} onChange={setDraft} /> : null}
-      {tab === 'share' ? <SharePanel appId={appId} definition={saved.data.definition} /> : null}
-      {tab === 'advanced' ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
+      {team && designing ? <TeamAppNotice app={app} /> : null}
+      {/* A team app's main line is read-only here: a disabled fieldset disables every control in the designers. */}
+      <fieldset disabled={team} className="m-0 min-w-0 border-0 p-0">
+        {tab === 'data' ? <DataDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'forms' ? <FormDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'pages' ? <PagesDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'menu' ? <MenuDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'rules' ? <RulesDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'actions' ? <ActionsDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'processes' ? (
+          <ProcessDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team} dirty={dirty} saved={Object.keys(saved.data.definition.processes ?? {})} />
+        ) : null}
+        {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
+      </fieldset>
+      {tab === 'share' && team ? <AccessPanel app={app} definition={saved.data.definition} /> : null}
+      {tab === 'share' && !team && app.access.share ? <SharePanel at={{ id: appId }} definition={saved.data.definition} /> : null}
+      {tab === 'share' && !team && !app.workingCopyOf ? <MovePanel app={app} /> : null}
       {tab === 'history' ? <HistoryPanel appId={appId} /> : null}
+      {tab === 'delivery' && team ? <DeliveryPanel app={app} /> : null}
+      {tab === 'changes' && team ? <ChangesPanel app={app} /> : null}
 
-      {dirty ? (
+      {dirty && !team ? (
         <div className="fixed inset-x-0 bottom-0 z-10 border-t border-line bg-surface/95 backdrop-blur">
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
             <p className="m-0 text-sm">
-              <strong>Unsaved changes.</strong> <span className="text-muted">They apply to your sandbox once saved.</span>
+              <strong>Unsaved changes.</strong>{' '}
+              <span className="text-muted">{app.workingCopyOf ? 'They apply to your working copy once saved; submit them for review after.' : 'They apply to your sandbox once saved.'}</span>
             </p>
             <div className="flex gap-2">
               <Button onClick={() => setDraft(normalize(saved.data.definition))}>Discard</Button>

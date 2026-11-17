@@ -9,6 +9,8 @@ export interface AppTransaction {
   readonly db: Database;
   /** The definition revision whose data model the environment has, read under the lock. */
   readonly revision: number;
+  /** The revision the environment runs, read under the lock. Behind `revision` after a rollback. */
+  readonly activeRevision: number;
   /** Run SQL on app data, as the environment's own database role (design §6.8). */
   query<R extends pg.QueryResultRow = Record<string, unknown>>(text: string, values?: readonly unknown[]): Promise<pg.QueryResult<R>>;
   /** Run SQL as the platform itself, for example DDL. */
@@ -18,6 +20,11 @@ export interface AppTransaction {
 /** A 64-bit advisory-lock key for an environment, from the random part of its UUIDv7. */
 function lockKey(environmentId: string): string {
   return BigInt.asIntN(64, BigInt(`0x${environmentId.replaceAll('-', '').slice(16)}`)).toString();
+}
+
+/** Take an environment's exclusive lock in a transaction of one's own, before changing its data model. */
+export async function lockEnvironment(client: pg.PoolClient, environmentId: string): Promise<void> {
+  await client.query('select pg_advisory_xact_lock($1::bigint)', [lockKey(environmentId)]);
 }
 
 /**
@@ -38,11 +45,15 @@ export async function withAppTransaction<T>(
     await client.query('begin');
     await client.query("set local lock_timeout = '5s'");
     await client.query(mode === 'records' ? 'select pg_advisory_xact_lock_shared($1::bigint)' : 'select pg_advisory_xact_lock($1::bigint)', [lockKey(env.id)]);
-    const current = await client.query<{ applied_revision: number }>('select applied_revision from app_environments where id = $1', [env.id]);
+    const current = await client.query<{ applied_revision: number; active_revision: number }>(
+      'select applied_revision, active_revision from app_environments where id = $1',
+      [env.id],
+    );
     const role = ident(env.dbRole);
     const tx: AppTransaction = {
       db: drizzle(client, { schema }),
       revision: current.rows[0]?.applied_revision ?? env.appliedRevision,
+      activeRevision: current.rows[0]?.active_revision ?? env.activeRevision,
       async query(text, values = []) {
         await client.query(`set local role ${role}`);
         try {

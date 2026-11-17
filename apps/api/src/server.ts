@@ -20,6 +20,10 @@ import { proposalRoutes } from './apps/proposal-routes.js';
 import { appRoutes } from './apps/routes.js';
 import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
+import { skillRoutes } from './skills/routes.js';
+import { ProcessEngine } from './processes/engine.js';
+import { processRoutes } from './processes/routes.js';
+import { bundleRoutes } from './apps/bundles.js';
 import { authRoutes } from './auth/routes.js';
 import { designRoutes } from './design/routes.js';
 import { studioRoutes } from './studio/routes.js';
@@ -27,6 +31,8 @@ import type { AppContext } from './context.js';
 import { HttpError } from './errors.js';
 import { healthRoutes } from './health/routes.js';
 import { peopleRoutes } from './people/routes.js';
+import { deliveryRoutes } from './delivery/routes.js';
+import { Delivery } from './delivery/service.js';
 import { fileRoutes } from './files/routes.js';
 import { spaceRoutes } from './spaces/routes.js';
 import { tokenRoutes } from './tokens/routes.js';
@@ -37,6 +43,8 @@ export interface Server {
   readonly app: FastifyInstance;
   /** Every route with its declared access rule, for review and tests. */
   readonly routes: readonly RouteAccess[];
+  /** The process engine, whose timers a worker fires. */
+  readonly processes: ProcessEngine;
 }
 
 export async function buildServer(ctx: AppContext, options: { logger?: FastifyServerOptions['logger'] } = {}): Promise<Server> {
@@ -123,10 +131,16 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(tokenRoutes(ctx));
   const builder = new AppBuilder(ctx);
   const runtime = new AppRuntime(ctx);
+  const processes = new ProcessEngine(ctx, runtime);
   await app.register(appRoutes(ctx, builder, runtime));
   await app.register(runtimeRoutes(ctx, runtime));
+  await app.register(skillRoutes(ctx, runtime));
+  await app.register(processRoutes(ctx, runtime, processes, builder));
   await app.register(proposalRoutes(ctx, runtime));
-  await app.register(mcpRoutes(ctx, builder, runtime));
+  const delivery = new Delivery(ctx, builder, runtime);
+  await app.register(deliveryRoutes(ctx, delivery, runtime));
+  await app.register(bundleRoutes(ctx, builder, delivery, runtime));
+  await app.register(mcpRoutes(ctx, builder, runtime, delivery, processes));
   await app.register(designRoutes());
   await app.register(agentRoutes(ctx));
   await app.register(peopleRoutes(ctx));
@@ -139,5 +153,5 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   );
 
   await app.ready();
-  return { app, routes };
+  return { app, routes, processes };
 }

@@ -21,8 +21,13 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
   - the agent and its chat adapters are a separate project that calls the platform;
   - data lives in the platform's built-in store, which is reached like any other connector;
   - it stays a low-code platform like Joget and Mendix: visual designers, an AI copilot and code edit the same definitions, and AI clients such as Claude can build through an MCP server.
-- **Still open** (§14 of the design doc): workflow depth, PostgreSQL-only (the working assumption), and which chat platforms can carry an approval.
-- **Built so far:** phase 0, the governance kernel, proven on a real Kubernetes cluster; and phase 1, the capability core with line items and files, and the first slice of the studio: the data-model and form designers, and the screens every app gets (below). Phase 2, governed delivery and the full studio, is next.
+- **Still open** (§14 of the design doc): PostgreSQL-only (the working assumption), and which chat platforms can carry an approval.
+- **Built so far:**
+  - phase 0, the governance kernel, proven on a real Kubernetes cluster;
+  - phase 1, the capability core with line items and files, the studio's data-model and form designers, and the screens every app gets;
+  - from phase 2: governed delivery for team apps (working copies, change requests with checks and previews, signed releases, approved deployments to Prod and Staging, and rollback); the designers for rules, actions, queries, review cards, roles, pages, the menu and dashboards; steps for actions (they can start a7c skills too, switched off until an installation connects a7c); moving a personal app to a team space; queries that total and group, for agents; app templates, export and import; and the command line, `ambit`.
+  - from phase 3: business processes in BPMN 2.0, on Ambit's own engine in PostgreSQL, with people's tasks in an inbox across apps, timers for deadlines and escalation, tools for agents, BPMN 2.0 files in and out with their diagrams, the process designer in the studio, and routing from the directory: the requester's manager, a reporting line, a department, and cover while someone is away. A business process, where people decide on an app's records, is Ambit's; automation across systems is a7c's ([design §6.10](docs/02-platform-design.md#610-business-processes-bpmn-20)).
+- **Next:** the rest of phase 3: approving in chat, notifications, and document generation.
 
 ## What the code does today
 
@@ -32,13 +37,16 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
 | Spaces | A personal space for every user, created at first sign-in. Team spaces with a minimum number of owners. Freezing |
 | Authorization | One policy decision point (`@platform/authz`): permissions, permission sets, roles, scoped bindings with expiry, the personal-space boundary, guardrails (deny and fresh-MFA rules), separation of duties, privilege-escalation checks and explained decisions. Every route must declare an access rule, or the server refuses to start |
 | API tokens | Personal access tokens and service accounts owned by team spaces. Tokens are scoped, expire (90 days at most by default), are stored only as hashes, and can only be created from an interactive session with fresh MFA. Service accounts start with no access and gain it only through bindings. Admins can list and revoke any token, and every step is audited |
-| Apps (built-in store) | Apps live in personal spaces, defined as entities, rules, actions, queries, review cards and roles:<ul><li>Each app environment gets its own database schema and NOLOGIN role, and every query switches to that role.</li><li>Definitions are versioned. Entities and fields have stable IDs, so a rename is free and carries through to every reference. Changes apply live, but anything that deletes data waits for confirmation.</li><li>Record- and field-level permissions are compiled to SQL filters, and PII is masked by default.</li><li>Every record keeps a field-level history, with where each value came from.</li><li>Line items: a record can hold lines of another entity, such as one line per receipt on a claim. Lines are read, written, permitted and kept in history with their record, each value with its source. Rules check every line, and totals and counts are worked out from the lines (rollups).</li><li>Files, such as receipts: each upload is checked for what it really is and scanned for malware (ClamAV), then kept in the app's own schema or any S3-compatible store. Only whoever can see the field holding a file can download it.</li><li>Apps can be shared with named colleagues, each in one of the app's roles.</li></ul> |
-| Studio | A web app at `/studio`, in the Ocean design system, light and dark:<ul><li>The data designer: entities and fields, drag to reorder, and renames that keep the data. Saving shows the plan first, and asks again before anything deletes data.</li><li>The form designer: sections, half- or full-width fields, labels and help text, and the action a form submits through, so its rules and confirmation apply.</li><li>Every app's screens, generated from what the person may do: lists, forms, and record pages that show who changed what and when. Person fields have a picker. A colleague in a narrower role sees only what that role allows.</li><li>Sharing, the revision history, and an editor for what has no designer yet (rules, actions, queries, cards and roles).</li></ul> |
-| Agents | Every action and query a person may run is an MCP tool (`/mcp`), and AI clients such as Claude can build apps through a second MCP server (`/mcp/build`). An agent that serves many people, such as agentos or a Copilot Studio bot, is approved by a Security admin, then exchanges a person's IdP token for a 10-minute Ambit token that acts for that one person (RFC 8693). Agents work through errands only, never on raw records, and the audit log names both the agent and the person. When an API token runs an action that needs confirmation, the action becomes a proposal sealed with a digest. Only the person, signed in, can approve exactly that change, on a review page where they can also edit it |
+| Apps (built-in store) | Apps live in personal spaces, where their builder edits them live, or in team spaces, where they change only through reviewed change requests (below). They are defined as entities, rules, actions, queries, review cards and roles:<ul><li>Each app environment gets its own database schema and NOLOGIN role, and every query switches to that role.</li><li>Definitions are versioned. Entities and fields have stable IDs, so a rename is free and carries through to every reference. Changes apply live, but anything that deletes data waits for confirmation.</li><li>Record- and field-level permissions are compiled to SQL filters, and PII is masked by default.</li><li>Every record keeps a field-level history, with where each value came from.</li><li>Line items: a record can hold lines of another entity, such as one line per receipt on a claim. Lines are read, written, permitted and kept in history with their record, each value with its source. Rules check every line, and totals and counts are worked out from the lines (rollups).</li><li>Files, such as receipts: each upload is checked for what it really is and scanned for malware (ClamAV), then kept in the app's own schema or any S3-compatible store. Only whoever can see the field holding a file can download it.</li><li>Apps can be shared with named colleagues, each in one of the app's roles.</li></ul> |
+| Studio | A web app at `/studio`, in the Ocean design system, light and dark:<ul><li>The data designer: entities and fields, drag to reorder, and renames that keep the data. Saving shows the plan first, and asks again before anything deletes data.</li><li>The form designer: sections, half- or full-width fields, labels and help text, and the action a form submits through, so its rules and confirmation apply.</li><li>Every app's screens, generated from what the person may do: lists, forms, and record pages that show who changed what and when. Person fields have a picker. A colleague in a narrower role sees only what that role allows.</li><li>Designers for rules, actions, queries (which answer with records, a number, or a number for each group), review cards and roles: conditions are built as clauses (a field, a test, a value), and roles as a matrix of who may do what with which records.</li><li>The page and menu designers. A page is blocks: text, lists of records (columns, which records, their order, and one-click row actions such as Approve) and buttons that open forms or pages. The menu orders pages, forms and lists under headings, and names the home page. Each person sees only the pages, columns, buttons and items their role can use.</li><li>Dashboards: numbers and charts on a page. A number counts records or their lines, or works out a sum, an average, the lowest or the highest, for the records that meet a condition and fall in a time range. A chart groups by a field or by a period, as bars, columns, a line or a table, and every chart has a table view. The database works them out under the person's own permissions, and refuses a total over a field their role masks.</li><li>Steps for actions: set a value, add a line, check, branch, and, where the installation connects a7c, start an a7c skill. A value comes from a fixed value, a field, the person, today, a calculation or text joined from parts. A record's page shows the work in other systems that its actions started, and how each call went.</li><li>The process designer: BPMN 2.0 on a canvas. The palette offers first what most processes need (user tasks, decisions, parallel paths, timers, system tasks and ends), and the rest of what Ambit runs after. A new element goes on the selected flow, or after the selected element. The panel sets who does a task, its outcomes and the action each runs, its due date and its deadlines, and when each flow out of a decision is taken. The checks run as the builder works and mark the shapes they concern. BPMN files download and import from here too.</li><li>Tasks: each person's inbox across apps, with the outcomes as buttons, and on every record page, where its processes are and who they wait for.</li><li>Sharing, the revision history, and the whole definition as JSON. New apps start blank, from a template, or from a file someone downloaded.</li><li>For team apps: delivery (environments, releases, deployments waiting for approval, rollback, history), change requests with their checks and reviews, the preview of each change, access per environment, and a prompt to sign in again when Prod needs fresh MFA.</li></ul> |
+| Governed delivery | Team apps follow design §3, §6.7 and §7.1:<ul><li>**Working copies.** *Edit in my space* makes a working copy of a team app in the builder's personal space, with the same stable IDs and sample records, never Prod data. The builder changes it freely.</li><li>**Change requests.** *Submit change* opens a change request with automatic checks: validation, what changes artifact by artifact, the migration Prod would need (steps that delete data flagged), who gains or loses access (from the compiled roles, with how many hold each role now), which agent tools change, and lint. A preview, a temporary environment, runs the change for reviewers and testers.</li><li>**Review.** Someone other than the author approves (a guardrail); a new version needs approval again. Builders work at the same time: the merge is three-way at the artifact level, and conflicts are shown.</li><li>**Releases.** A release is one main-line revision, hashed and signed, and a database trigger keeps it from changing. A change that deletes data goes in a release of its own.</li><li>**Deployments.** Staging deploys at once. Prod needs an approval from someone who wrote none of the changes, and fresh MFA. The migration, a smoke check and the switch to the new release happen in one transaction. Releases that delete data are deployed in order.</li><li>**Rollback.** It makes the previous release live again in milliseconds. The data keeps the newer shape (expand and contract), and a rollback across a release that deleted data is refused.</li><li>**Promotion.** *Move to a team space* turns a personal app into a change request in a team space, with the personal app's definition. The personal app keeps working until the team app first runs in Prod; then a guardrail makes it read-only, and it points to the team app. Its data stays where it is.</li></ul> |
+| Steps and a7c | An action's steps run when its change is worked out, so a preview and a proposal show their result, and a proposal's digest covers the skills it starts (design §6.2). Skill steps are switched off until an installation connects a7c (`A7C_URL`):<ul><li>Fields that steps set count as written by the person, so their role's field permissions apply, and the rules run on the result.</li><li>A skill step writes its call to an outbox, in the change's own transaction. A dispatcher starts each call in a7c through `runs.start`, with the call's ID as the idempotency key, tries again while a7c is away, and stops when a7c refuses. Every step of a call is audited.</li><li>A sandbox starts skills in a7c's personal tier, Staging and previews in its team tier, and only Prod in its production tier.</li><li>A call's input is never shown: it can hold values the reader can't see. Operators list an app's calls, and try a failed one again.</li></ul> |
+| Business processes | BPMN 2.0 processes in an app's definition (design §6.10): start and end events, user and service tasks, exclusive, parallel and inclusive gateways, timers, messages, events on a boundary (deadlines, messages and errors), sub-processes and call activities, with the diagram. Each instance is about one record, which is its data. An action starts a process when it commits; a user task waits in the inbox of the person a field names, or of anyone with its role; and running an outcome's action, from the inbox, a row button or an approved proposal, completes the task. Service tasks run the app's actions with the app's authority. The engine keeps instances, tokens, tasks and timers in PostgreSQL and moves a process in the transaction of the change that moves it, with its audit events. Instances stay on the revision they started on |
+| Agents | Every action and query a person may run is an MCP tool (`/mcp`), and AI clients such as Claude can build apps through a second MCP server (`/mcp/build`). An agent that serves many people, such as agentos or a Copilot Studio bot, is approved by a Security admin, then exchanges a person's IdP token for a 10-minute Ambit token that acts for that one person (RFC 8693). Agents work through errands only, never on raw records, and the audit log names both the agent and the person. A query can answer with numbers, such as the person's spending by category this year, so an agent asks the question rather than adding up records. When an API token runs an action that needs confirmation, the action becomes a proposal sealed with a digest. Only the person, signed in, can approve exactly that change, on a review page where they can also edit it |
 | Audit | Every change writes its audit event in the same transaction. The tables are append-only (database triggers). A background sealer signs chained RFC 6962 Merkle batches with Ed25519, and a verifier detects edits, deletions and insertions |
 | Operations | Health and readiness probes, OpenTelemetry traces and metrics (OTLP), structured logs, graceful shutdown, a container image, generated OpenAPI, and a hardened Helm chart (below) |
 
-Next, phase 2 (§13 of the design doc): working copies and change requests with previews, releases to Prod, and the page, dashboard and logic-flow designers.
+Next (§13 of the design doc): phase 3, approvals and the shared agent. Left from phase 2: signed release bundles between installations, Git sync, and watching error rates after a deployment.
 
 Later: workload identity federation, so CI systems can swap their own OIDC tokens for short-lived platform tokens with no stored secrets.
 
@@ -47,6 +55,7 @@ Later: workload identity federation, so CI systems can swap their own OIDC token
 ```text
 apps/api            Fastify API: auth, spaces, bindings, apps, records, actions, proposals, MCP, audit, health
 apps/studio         Ambit Studio (React, Vite, Tailwind): the designers and every app's screens, served by the API at /studio
+apps/cli            ambit, the command line: templates, export and import, releases and deployments
 packages/app-model  App definitions: validation, stable IDs, migration plans, roles, and the SQL behind record-level permissions
 packages/authz      Policy decision point (pure TypeScript, no I/O)
 packages/audit      Canonical hashing, Merkle seals, signatures, verification
@@ -120,8 +129,10 @@ The studio's browser test runs in Chromium through Playwright, which isn't a dep
 
 ```bash
 pnpm --filter @platform/studio build && STUDIO_E2E=1 SCREENSHOT_DIR=/tmp/shots \
-  TEST_DATABASE_URL=postgres://platform:platform@localhost:5432/platform pnpm --filter @platform/api test:integration -- studio
+  TEST_DATABASE_URL=postgres://platform:platform@localhost:5432/platform pnpm --filter @platform/api test:integration -- e2e
 ```
+
+That runs two: the studio's own (`studio.e2e`), and governed delivery from a working copy to Prod and back (`delivery.e2e`).
 
 Type-check and build everything:
 
@@ -167,7 +178,7 @@ For automation, a team-space admin creates a service account (`POST /v1/spaces/{
 
 ## Building an app and letting an agent use it
 
-Sign in as `alice` and open http://localhost:3000/studio/. Create an app, starting from the example, an expense-claim app. Change its fields in the data designer, lay out its form, and share it with `bob` as a requester. **Open the app** shows the screens everyone gets; sign in as `bob` to see his narrower view.
+Sign in as `alice` and open http://localhost:3000/studio/. Create an app, starting from the example, an expense-claim app. Change its fields in the data designer, lay out its form, arrange its pages, menu and dashboard, and share it with `bob` as a requester. **Open the app** shows its screens; sign in as `bob` to see his narrower view, without the page for approvers.
 
 Everything the studio does goes through the API, so you can do the same without it. `GET /v1/app-model/schema` returns the definition format and the example. Create an app in your personal space from it:
 
@@ -183,6 +194,82 @@ Then share it, or point an agent at it:
 - **Build with Claude:** add `http://localhost:3000/mcp/build`, with a token scoped to `app.create`, `app.read` and `app.edit`.
 
 When an agent submits a claim, the person gets a review link: they check the card, edit what's wrong, and approve.
+
+## Delivering a team app
+
+A team app lives in a team space and changes only through reviewed change requests. Give people the space roles first: builders (`space.builder`), reviewers (`space.reviewer`) and release managers (`space.release_manager`). Then, in the studio:
+
+1. **Create it** in the team space: it starts empty.
+2. **Edit in my space:** a builder gets a working copy in their personal space, with sample records. They build there, or let Claude build there through `/mcp/build` (`start_working_copy`, then `submit_change`).
+3. **Submit change:** the change request shows what changes, the migration Prod would need, who gains or loses access, and which agent tools change. **Try it in the preview** runs the change with test data.
+4. **Approve** (someone other than the author), then **Merge** (a release manager).
+5. **Cut a release**, then **Deploy to Staging** (at once) or **Ask to deploy to Prod**. A reviewer approves the Prod deployment, with fresh MFA, and the release manager selects **Deploy now**.
+6. Under **Access**, a space admin gives people the app's roles in Prod or Staging.
+7. **Roll back** makes the previous release live again at once.
+
+The same through the API: `POST /v1/apps/{teamAppId}/working-copy`, `POST /v1/apps/{copyId}/submit`, `POST /v1/change-requests/{id}/reviews` and `/merge`, `POST /v1/apps/{teamAppId}/releases`, `POST /v1/apps/{teamAppId}/deployments`, `POST /v1/deployments/{id}/approve` and `/execute`, and `POST /v1/apps/{teamAppId}/environments/prod/rollback`. Runtime calls take `?env=staging`, or a preview's environment ID, to use an environment other than Prod. Two settings change how many approvals are needed: `CHANGE_APPROVALS` and `DEPLOY_PROD_APPROVALS` (both 1 by default).
+
+### The command line
+
+`ambit` does from a terminal or CI what the studio does for delivery. Build it, then run it with an API token in `AMBIT_TOKEN`, never in the command:
+
+```bash
+pnpm --filter @platform/cli build
+```
+
+```bash
+export AMBIT_URL=https://ambit.example.com
+```
+
+```bash
+node apps/cli/dist/bin.js deploy expenses --release 4 --env prod --wait
+```
+
+`ambit help` lists the commands: `templates`, `apps`, `export`, `import`, `check` (offline), `release`, `releases`, `deploy`, `deployments` and `rollback`. Add `--json` for machine-readable output. The token's scopes limit what it can do: naming a space needs `space.read`, and deploying needs `deploy.request` and `deploy.execute`. In CI, use a team space's service account.
+
+### Templates, export and import
+
+A new app starts blank, or from a template: expense claims, leave requests or purchase requests (`GET /v1/templates`). **History** › **Download the definition** saves an app as a file (`GET /v1/apps/{appId}/export`): its definition, never its data. **Start from** › **A file…** imports one, edited or not (`POST /v1/spaces/{spaceId}/apps/import`, with a `template` or a `bundle`). In a personal space the app is ready at once; in a team space it arrives as a change request.
+
+### Moving a personal app to a team space
+
+When a personal app outgrows its owner and a few colleagues, its owner opens **Share** and chooses **Move to a team space** (`POST /v1/apps/{appId}/promote`, with the target `spaceId`). The team space gets a new app, and a change request that brings in the personal app's definition; its reviewers check it like any change. The personal app keeps working until the team app first runs in Prod. Then it is read-only, and points to the team app. Its records stay where they are.
+
+### Starting work in other systems with a7c
+
+a7c is left out for now: it is switched off until an installation connects it. Until then, a definition whose actions start a7c skills is refused, and the templates start none. When a7c is ready, an action's steps can start its skills, such as paying an approved claim. Point Ambit at a7c with two settings: `A7C_URL`, a7c's control plane, and `A7C_TOKEN_FILE`, a file that holds Ambit's a7c token. Ambit reads the file at each call, so whatever issues the token can renew it. In the Helm chart, set `a7c.url` and `a7c.tokenSecret`, a Secret with the token under the key `token`. Without them, the calls wait in the outbox.
+
+- `GET /v1/apps/{appId}/entities/{entity}/records/{id}/skill-calls`: the skills a record's actions started, for whoever can read the record.
+- `GET /v1/apps/{appId}/skill-calls?status=failed`: an app's calls, for its operators (its owner, in a personal space).
+- `POST /v1/apps/{appId}/skill-calls/{id}/retry`: try a failed call again, under the same idempotency key.
+
+`SKILL_DISPATCH_INTERVAL_SECONDS` (5) sets how often calls are sent, and `SKILL_CALL_MAX_ATTEMPTS` (12) how many tries a call gets.
+
+### Business processes
+
+A process starts when an action that its start event names commits on a record, or by hand (`POST /v1/apps/{appId}/processes/{process}/start`) for someone whose role may start it. The leave template has one: the manager the employee names decides within three days.
+
+- `GET /v1/me/tasks`: your tasks across apps, the soonest due first; `?status=closed` for the ones you finished.
+- `POST /v1/tasks/{taskId}/complete`, with an `outcome`: an outcome that runs an action runs it as you. From an API token, the action becomes a proposal, and the task completes when the person approves it.
+- `GET /v1/apps/{appId}/entities/{entity}/records/{id}/processes`: where a record's processes are, for whoever can read the record.
+- `GET /v1/apps/{appId}/process-instances?stuck=true`, `…/{instanceId}`, `…/{instanceId}/retry` and `…/{instanceId}/cancel`: for an app's operators (its owner, in a personal space).
+
+A task goes to whoever a field of the record names, or, from the directory, to the manager of whoever a field names, such as the requester's manager, up to five levels up the reporting line. A task for nobody in particular can be kept to the department of whoever a field names. Someone away names who covers for them (`PUT /v1/me/cover`), and new tasks go to their cover until then. A person hands their task to a colleague with the same role (`POST /v1/tasks/{taskId}/reassign`), operators move any task of an app they operate, and anyone with a task's role takes one that waits for nobody in particular (`…/claim`).
+
+The directory's departments and managers come from the IdP at each sign-in, from the claims that `OIDC_DEPARTMENT_CLAIM` and `OIDC_MANAGER_CLAIM` (the manager's email) name. Directory admins set them by hand where the IdP doesn't (`PATCH /v1/people/{userId}/directory`), and a loop in the reporting line is refused.
+
+A message is one of the app's update actions, saved on the process's record: a process can wait for it, or let it take a task away, as when the employee withdraws a request while the manager decides. An error event on a service task catches its action's failure, and the process takes the error's path instead of waiting for an operator.
+
+A sub-process is a part of a process with its own start and end: a deadline or a withdrawal on its boundary acts on all of it, and an error event on it catches an action that fails inside it. A call activity runs another process of the app and waits until it ends, on the same record or on the record that a reference field names; `calledBy` on an instance says which instance called it.
+
+Several people can decide one task, each with a vote in their inbox: everyone with the role, the people some fields of the record name, or the reporting line up from the requester, at once or one after another. The first vote decides, or enough votes for one outcome (a number, all, or a majority); for example, "all approve, or one rejection rejects". Once the votes decide, the outcome's action runs with the app's authority.
+
+Agents get `my_tasks` and `complete_task` on `/mcp` once an app they can use has a process. `PROCESS_TIMER_INTERVAL_SECONDS` (5) sets how often due timers fire; 0 leaves them to a worker.
+
+Processes move to and from other BPMN tools, such as Camunda Modeler or Signavio, as BPMN 2.0 files with their diagrams:
+
+- `GET /v1/apps/{appId}/processes/{process}/bpmn`, or `ambit bpmn export <app> <process>`: the process as a `.bpmn` file. A process without a diagram is laid out on the way.
+- `POST /v1/apps/{appId}/processes/import`, with the file's `xml`, or `ambit bpmn import <app> <file>`: adds its processes to a personal app, or to the working copy of a team app. Ambit's settings, such as the role of a task, travel in the namespace `urn:ambit:bpmn:1`, and conditions as text, such as `record.days > 10`. From another tool, a lane named after a role gives its tasks that role, and a simple condition such as `${days > 10}` is read with its names as the record's fields. An element Ambit can't run, such as a script task, is refused by name and ID.
 
 ### Connecting an agent that serves many people
 
