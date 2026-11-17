@@ -12,6 +12,7 @@
   - 2026-11-15: people ask for outcomes and builders publish capabilities; the agent is a separate project; the first processes keep their data on the platform; it stays a low-code platform like Joget and Mendix, with visual designers next to an AI copilot.
   - 2026-11-17: business processes are BPMN 2.0. Ambit imports and exports BPMN 2.0 XML, and runs BPMN 2.0 on its own engine in PostgreSQL rather than Temporal (§6.10).
   - 2026-11-17: Ambit does its own logic and integration, like Mendix, with no link to a7c. Steps grow into flows, Ambit's microflows: they run in one transaction and never wait for a person. Anything that waits for people is a BPMN process (§6.2). This replaces the decision of 2026-11-16, which gave automation across systems to a7c.
+  - 2026-11-17, later: a3t is one product, with one way to build what happens. A flow runs in one go, or waits for people and for time. A flow that waits replaces the BPMN process, and is built and drawn as any other flow, as Mendix lays out a microflow, in Ocean's grammar. a3t keeps no BPMN files: it neither imports nor exports them. Its engine keeps what BPMN taught it, underneath (§6.11). This replaces the decisions above that made BPMN 2.0 the notation and the interchange format, and that kept processes apart from flows. The studio's frame names the product a3t, with the mark a3, as the family does.
 
   Production is separated from everything else (§7.3), and §15 maps the design to ISO 27001 controls.
 - **People ask for outcomes; builders publish capabilities.** For the person doing the work, the app disappears: they ask an agent for an outcome, in Teams, Slack, Matrix, Signal or the web, then check a review card and confirm. For builders and governance, the app remains as the package that capabilities ship in: owned, versioned, reviewed, released and audited (§6).
@@ -603,8 +604,8 @@ steps:
 - **Control.** Decisions, loops, sub-flows with inputs and a result, and error handlers that roll back or go on.
 - **Integration.** Call REST services through named connections. Ambit keeps the secrets, and maps JSON to entities. Ambit already publishes every capability as an API operation and an MCP tool.
 - **Triggers.** Actions and rules, BPMN service and script tasks, schedules, and webhooks.
-- **A flow runs in one transaction, and never waits for a person.** Anything that waits is a BPMN process (§6.10), whose tasks start flows.
-- **The flow designer reuses the process canvas,** as Mendix microflows look much like BPMN.
+- **A flow runs in one transaction, and never waits for a person.** Anything that waits is a BPMN process (§6.10), whose tasks start flows. *Replaced later the same day: a flow may wait (§6.11).*
+- **The flow designer reuses the process canvas,** as Mendix microflows look much like BPMN. *Replaced: one canvas for all flows, drawn as Ocean's LogicNode (§6.11).*
 - **The same governance applies.** A flow runs with the permissions of whoever starts it, or with the app's authority from a process. A change request shows each change to a flow and each connection it calls. Steps that stay with a person (§5.7) stay with a person in a flow too.
 - **After flows** come the app-level gaps: conditional fields and validation in forms, multi-page forms, and later safe custom code (§10).
 
@@ -821,6 +822,8 @@ Running process instances stay on the release they started on, while new instanc
 
 ### 6.10 Business processes: BPMN 2.0
 
+> **Replaced in part, 2026-11-17 (§6.11).** What follows describes the engine as built, which stays. What changes is how builders make a process: as a flow that waits, on the one canvas, with no BPMN files.
+
 **Business processes and automation are different jobs, and they belong to different products.**
 
 | | Business process | Flow (§6.2, planned) |
@@ -938,6 +941,26 @@ So a change request's permission diff still says who can decide, and a process n
 - Not built yet: the elements that the list above names as not run yet, and reading the directory by SCIM.
 
 ---
+
+
+### 6.11 One product, one way to build what happens
+
+**Decided 2026-11-17.** a3t has to feel like one product. Until now it had three ways to build logic, each drawn its own way: an action's steps as a list, flows on a top-down canvas, and processes in BPMN's shapes. From now on there is one: the **flow**.
+
+- **A flow is what happens.** It starts, runs its steps, and ends. It runs in one go, or it waits for people and for time. "Process" is no longer a separate thing for builders: a flow that waits does what a process did.
+- **Actions are the ways in.** An action is what people and agents run: a form's button, a row's action, an agent's tool. It works out a change, shows it in its preview and its review card, saves it, and can then run a flow or carry one on. Inside a flow, running an action is a step like any other.
+- **One set of steps.** Records (find, create, change, add a line, delete), logic (decision, where ways meet, for each, handle errors, all at once, set a value, count or total, check, run a flow, run an action), people and time (a person's task with a way on for each outcome, a wait, a wait for an action, the first of several waits, a deadline that hangs below a task), and later, outside (call a service). The steps that wait are allowed only in a flow that starts on a record, because a flow that waits keeps its place on that record.
+- **One canvas, as Mendix lays out a microflow**, drawn with Ocean's LogicNode (`sreent/ocean`, `components/LogicNode`): left to right, a box for each step with its words inside, a diamond for each decision, a frame round a loop, rings where it starts, waits and ends, arrows at right angles. a7c and a5s draw their canvases as n8n does; a3t's shares their grammar, so the family reads as one.
+- **Beyond Mendix and BPMN.**
+  - Where a flow waits, the canvas marks that it saves. What's between two marks commits together, and a failure after a mark can't undo what came before it; only an undo can.
+  - Each step shows who acts: a person, an agent in a person's name, or the app's own authority. A step that stays with a person says so (§5.7).
+  - The same canvas shows the live cases: how many wait at each step now, and the longest wait. Design and operations are one view.
+  - A long flow wraps into rows where it saves, as text wraps, so each row is one stretch of work. Frames and the flows it runs fold to one box.
+- **No BPMN files.** a3t neither imports nor exports BPMN 2.0 XML, and its studio draws no BPMN shapes. BPMN's ideas stay where they earn their place: the engine's tokens, timers, multi-instance tasks, errors, escalations and undo (§6.10) run what a flow that waits compiles to.
+- **The engine stays.** A flow that waits compiles to the process engine's graph, with an element for each step, named by the step's path, so the history and the inbox say which step a case is on. Each stretch between two waits runs in one transaction, as the engine already runs the work between two waits.
+- **One workbench.** The studio's views are an app's parts (Data, Forms, Pages, Flows, Permissions), each with what someone can add on the left, the canvas in the middle and the chosen part on the right. The data model is drawn as entities with their fields, and lines for references and lines (Ocean's ModelDesigner).
+
+The order of work: this record; the studio's frame and workbench; the flows canvas for flows that run in one go; steps that wait, and the compiler to the engine; the leave template rebuilt as a flow that waits; BPMN import and export, and the process designer, removed; the live view; the data model canvas.
 
 ## 7. Deployment
 
