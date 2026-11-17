@@ -469,7 +469,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     // Once approved, a system task tells payroll; if its action fails, the path leads on.
     await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
     await page.getByRole('button', { name: 'System task', exact: true }).click();
-    await page.getByLabel("Runs, with the app's authority").selectOption('tell_payroll');
+    await page.getByLabel("The action, with the app's authority").selectOption('tell_payroll');
     await page.getByRole('button', { name: 'Catch the failure', exact: true }).click();
     await visible(page.getByText("The process leads on by the error's path."));
     await visible(canvas.getByText('Failed', { exact: true }));
@@ -622,7 +622,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.getByRole('heading', { name: 'Transaction', exact: true }));
     await page.getByTestId('rf__node-start_1').click();
     await page.getByRole('button', { name: 'System task', exact: true }).click();
-    await page.getByLabel("Runs, with the app's authority").selectOption('book_room');
+    await page.getByLabel("The action, with the app's authority").selectOption('book_room');
     await page.getByLabel('Undone by', { exact: true }).selectOption('free_room');
     // Its end cancels it: the transaction gets a cancel event to leave by.
     await page.getByTestId('rf__node-end_1').click();
@@ -815,6 +815,110 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
     expect(saved.elements['call_1']).toMatchObject({ type: 'callActivity', process: 'day_check', each: { field: 'request', sequential: true } });
+  });
+
+  it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);
+    await visible(page.getByText('No flows yet.', { exact: false }));
+    await page.getByLabel('New flow').fill('Count the lines');
+    await page.getByRole('button', { name: 'Add flow' }).click();
+    const settings = page.getByRole('region', { name: 'Flow' });
+    await settings.getByLabel('New input').fill('claim');
+    await settings.getByRole('button', { name: 'Add an input' }).click();
+    await settings.getByLabel('Input claim', { exact: true }).selectOption('record');
+    await settings.getByLabel('Input claim: entity', { exact: true }).selectOption('expense_claim');
+    await settings.getByLabel('Result', { exact: true }).selectOption('number');
+
+    // The first step goes in the empty flow's slot, the next on the arrow below it.
+    const canvas = page.getByTestId('flow-canvas');
+    await canvas.getByRole('button', { name: 'Add a step here' }).click();
+    await page.getByRole('button', { name: 'Count or total', exact: true }).click();
+    const step = page.getByRole('region', { name: 'Step' });
+    await visible(step.getByRole('heading', { name: 'Count or total' }));
+    expect(await step.getByLabel('Of', { exact: true }).inputValue()).toBe('claim.lines');
+    await visible(canvas.getByText('Count claim.lines → total'));
+    await canvas.getByRole('button', { name: 'Add a step at steps[1]' }).click();
+    await page.getByRole('button', { name: 'Return a result', exact: true }).click();
+    await step.getByLabel('Result: how', { exact: true }).selectOption('field');
+    await step.getByLabel('Result', { exact: true }).selectOption('total');
+    await visible(canvas.getByText('Return total'));
+    await shot(page, '24-flow-designer');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    let saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.flows.count_the_lines).toEqual({
+      label: 'Count the lines',
+      input: { claim: { type: 'record', entity: 'expense_claim' } },
+      output: { type: 'number' },
+      steps: [
+        { type: 'total', var: 'total', of: 'claim.lines', op: 'count' },
+        { type: 'return', value: { ref: 'total' } },
+      ],
+    });
+
+    // Trying it runs the saved flow on a real claim, and undoes what it did.
+    const claims = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records`, cookies: alice.cookies })).json().records;
+    const trip = claims.find((claim: { values: { title?: string } }) => claim.values.title === 'Singapore trip');
+    const record = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records/${trip.id}`, cookies: alice.cookies })).json();
+    await page.getByRole('button', { name: /^Count the lines/ }).click();
+    const trying = page.getByRole('region', { name: 'Try it' });
+    await trying.getByLabel('claim (Expense claim)', { exact: true }).selectOption(trip.id);
+    await trying.getByRole('button', { name: 'Try it', exact: true }).click();
+    await visible(trying.getByText('It would create 0, change 0 and delete 0 record(s).'));
+    await visible(trying.getByText(`Result: ${record.values.lines.length}`));
+    await shot(page, '25-flow-try');
+
+    // An action runs the flow on its record, after it saves it.
+    await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
+    await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
+    await page.getByLabel('Then runs a flow', { exact: true }).selectOption('count_the_lines');
+    await visible(page.getByText('is the expense claim itself.', { exact: false }));
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.actions.approve_claim.flow).toEqual({ flow: 'count_the_lines', input: { claim: { ref: 'record' } } });
+  });
+
+  it('shows a loop, a decision and an error handler on the flow canvas', async () => {
+    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json();
+    current.definition.flows.check_claim = {
+      label: 'Check a claim',
+      input: { claim: { type: 'record', entity: 'expense_claim' } },
+      steps: [
+        { type: 'set', var: 'big', value: 0 },
+        {
+          type: 'each',
+          in: 'claim.lines',
+          as: 'line',
+          steps: [{ type: 'if', when: { gt: [{ ref: 'line.amount' }, 100] }, then: [{ type: 'set', var: 'big', value: { add: [{ ref: 'big' }, 1] } }], else: [] }],
+        },
+        { type: 'try', steps: [{ type: 'change', record: 'claim', values: { title: { concat: [{ ref: 'claim.title' }, ' (checked)'] } } }], catch: [], rollback: true },
+        { type: 'check', assert: { lt: [{ ref: 'big' }, 5] }, message: 'Many receipts are over 100', severity: 'warning' },
+      ],
+    };
+    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    expect(put.statusCode, put.body).toBe(200);
+
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);
+    await page.getByRole('button', { name: /^Check a claim/ }).click();
+    const canvas = page.getByTestId('flow-canvas');
+    await visible(canvas.getByText('Next item', { exact: true }));
+    await visible(canvas.getByText('If it fails', { exact: true }));
+    await visible(canvas.getByText('If line.amount is more than 100', { exact: true }));
+    await shot(page, '26-flow-canvas');
+    // A step opens beside the canvas, and sees the loop's item.
+    await canvas.getByText('If line.amount is more than 100', { exact: true }).click();
+    const step = page.getByRole('region', { name: 'Step' });
+    await visible(step.getByRole('heading', { name: 'Decision' }));
+    await step.getByRole('button', { name: 'Remove the step' }).click();
+    await visible(page.getByText('Unsaved changes.'));
+    await page.getByRole('button', { name: 'Discard' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
   });
 
   it('builds by chat: the chat changes the draft, and the builder undoes it or reviews and saves it', async () => {

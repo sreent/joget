@@ -250,6 +250,14 @@ function StepFields({ definition, entity, step, name, onChange }: { definition: 
 // Values
 
 type Mode = 'fixed' | 'field' | 'person' | 'today' | 'now' | 'calc' | 'join' | 'formula';
+export type ValueMode = Mode;
+/** Where a value can come from, instead of the record's fields: a flow's variables. */
+export interface ValueSources {
+  readonly all: ReadonlyArray<{ readonly ref: string; readonly label: string }>;
+  readonly numbers: ReadonlyArray<{ readonly ref: string; readonly label: string }>;
+  /** What the builder reads for the mode that names a source. */
+  readonly label: string;
+}
 const CALC_LABELS: Readonly<Record<CalcOp, string>> = { add: 'plus', sub: 'minus', mul: 'times', div: 'divided by' };
 const MODE_LABELS: Readonly<Record<Mode, string>> = {
   fixed: 'A fixed value',
@@ -321,10 +329,31 @@ function startFor(mode: Mode, target: FieldDef | undefined, sources: ReadonlyArr
 }
 
 /** A value a step works out: a fixed value, a field, the person, today, a small calculation or joined text. */
-export function ValueEditor({ definition, entity, target, label, value, onChange }: { definition: Definition; entity: string; target?: FieldDef; label: string; value: Expression; onChange: (value: Expression) => void }) {
+export function ValueEditor({
+  definition,
+  entity,
+  target,
+  label,
+  value,
+  onChange,
+  from,
+  only,
+}: {
+  definition: Definition;
+  entity: string;
+  target?: FieldDef;
+  label: string;
+  value: Expression;
+  onChange: (value: Expression) => void;
+  /** Sources other than the record's fields, such as a flow's variables. */
+  from?: ValueSources;
+  /** The ways a value can be given here, instead of those that suit the target. */
+  only?: readonly Mode[];
+}) {
   const mode = modeOf(value);
-  const modes = modesFor(target);
-  const sources = valueSources(definition, entity, target);
+  const modes = only ? [...only] : modesFor(target);
+  const sources = from ? from.all : valueSources(definition, entity, target);
+  const numbers = from ? from.numbers : valueSources(definition, entity, 'number');
   const shown = modes.includes(mode) ? modes : [...modes, mode];
   const calculation = mode === 'calc' ? calcOf(value) : undefined;
   const parts = mode === 'join' ? joinOf(value) : undefined;
@@ -341,7 +370,7 @@ export function ValueEditor({ definition, entity, target, label, value, onChange
       >
         {shown.map((m) => (
           <option key={m} value={m} disabled={m === 'formula'}>
-            {MODE_LABELS[m]}
+            {m === 'field' && from ? from.label : MODE_LABELS[m]}
           </option>
         ))}
       </Select>
@@ -357,7 +386,7 @@ export function ValueEditor({ definition, entity, target, label, value, onChange
       ) : null}
       {calculation ? (
         <>
-          <OperandInput label={`${label}, first`} sources={valueSources(definition, entity, 'number')} value={calculation.a} numeric onChange={(a) => onChange(calc(calculation.op, a, calculation.b))} />
+          <OperandInput label={`${label}, first`} sources={numbers} value={calculation.a} numeric onChange={(a) => onChange(calc(calculation.op, a, calculation.b))} />
           <Select
             aria-label={`${label}, operation`}
             className="w-auto"
@@ -370,14 +399,14 @@ export function ValueEditor({ definition, entity, target, label, value, onChange
               </option>
             ))}
           </Select>
-          <OperandInput label={`${label}, second`} sources={valueSources(definition, entity, 'number')} value={calculation.b} numeric onChange={(b) => onChange(calc(calculation.op, calculation.a, b))} />
+          <OperandInput label={`${label}, second`} sources={numbers} value={calculation.b} numeric onChange={(b) => onChange(calc(calculation.op, calculation.a, b))} />
         </>
       ) : null}
       {parts ? (
         <>
           {parts.map((part, i) => (
             <span key={i} className="flex items-center gap-1">
-              <OperandInput label={`${label}, part ${i + 1}`} sources={valueSources(definition, entity)} value={part} onChange={(next) => onChange({ concat: parts.map((p, j) => (j === i ? next : p)) })} />
+              <OperandInput label={`${label}, part ${i + 1}`} sources={from ? from.all : valueSources(definition, entity)} value={part} onChange={(next) => onChange({ concat: parts.map((p, j) => (j === i ? next : p)) })} />
               {parts.length > 2 ? (
                 <Button size="sm" variant="ghost" aria-label={`${label}: remove part ${i + 1}`} onClick={() => onChange({ concat: parts.filter((_, j) => j !== i) })}>
                   ✕

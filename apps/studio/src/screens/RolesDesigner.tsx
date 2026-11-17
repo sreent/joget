@@ -60,7 +60,7 @@ export function RolesDesigner({ definition, onChange }: Props) {
                       </button>
                     </td>
                   ))}
-                  <td className="px-4 py-2 text-muted">{[...(r.actions ?? []), ...(r.queries ?? [])].join(', ') || '—'}</td>
+                  <td className="px-4 py-2 text-muted">{[...(r.actions ?? []), ...(r.queries ?? []), ...(r.flows ?? [])].join(', ') || '—'}</td>
                 </tr>
               );
             })}
@@ -130,6 +130,15 @@ function RolePanel({ definition, onChange, name, entity, onEntity, onRemove }: P
         hint="An action still runs under the role's access to records."
       />
       <Checklist label="Queries it may run" options={Object.entries(definition.queries).map(([query, q]) => ({ value: query, label: q.label }))} selected={role.queries ?? []} onChange={(queries) => set({ queries })} />
+      {Object.keys(definition.flows ?? {}).length ? (
+        <Checklist
+          label="Flows it may run through the API"
+          options={Object.entries(definition.flows ?? {}).map(([flow, f]) => ({ value: flow, label: f.label }))}
+          selected={role.flows ?? []}
+          onChange={(flows) => set({ flows: flows.length ? flows : undefined })}
+          hint="Actions and processes run their flows whatever the role. A flow runs with the app's authority, so name it only for roles that may do all it does."
+        />
+      ) : null}
       <div className="border-t border-line pt-3">
         <Button variant="danger" size="sm" onClick={onRemove}>
           Delete this role

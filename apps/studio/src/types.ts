@@ -421,3 +421,11 @@ export interface ComposeReply {
   readonly turns: number;
   readonly stopped: 'turns' | 'length' | 'declined' | null;
 }
+
+/** What running a flow gave: its result, its warnings and its writes. A dry run undid the writes. */
+export interface FlowRunResult {
+  readonly output: unknown;
+  readonly findings: ReadonlyArray<{ readonly flow: string; readonly message: string }>;
+  readonly writes: { readonly created: number; readonly changed: number; readonly deleted: number };
+  readonly dryRun: boolean;
+}

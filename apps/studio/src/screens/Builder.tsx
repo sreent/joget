@@ -9,6 +9,7 @@ import { AccessPanel, AdvancedPanel, HistoryPanel, MovedNotice, MovePanel, Share
 import { ComposePanel } from './Compose.js';
 import { ChangesPanel, DeliveryPanel, TeamAppNotice, WorkingCopyBar } from './Delivery.js';
 import { DataDesigner } from './DataDesigner.js';
+import { FlowsDesigner } from './FlowsDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
 import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from './LogicDesigners.js';
 import { MenuDesigner, PagesDesigner } from './PagesDesigner.js';
@@ -25,6 +26,7 @@ const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
   { tab: 'queries', label: 'Queries' },
   { tab: 'cards', label: 'Review cards' },
   { tab: 'roles', label: 'Roles' },
+  { tab: 'flows', label: 'Flows' },
   { tab: 'processes', label: 'Processes' },
 ];
 const TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [...DESIGNERS, { tab: 'share', label: 'Share' }, { tab: 'history', label: 'History' }, { tab: 'advanced', label: 'Advanced' }];
@@ -159,6 +161,7 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} /> : null}
         {tab === 'processes' ? (
           <ProcessDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} saved={Object.keys(saved.data.definition.processes ?? {})} />
         ) : null}

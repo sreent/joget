@@ -1,8 +1,8 @@
 import { COMPARISON_OPERATORS, conditionRefs, isRef, type Condition, type Operand } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
 import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { entityFields, isConditionKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
-import { MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type FlowRun, type FlowStep, type FlowType } from './schema.js';
+import { entityFields, fieldKind, isConditionKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
+import { MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStep, type FlowType } from './schema.js';
 import { canonicalValue } from './values.js';
 
 /*
@@ -82,12 +82,27 @@ export function flowSteps(steps: readonly FlowStep[], base = 'steps'): Array<{ r
 
 type Scope = Map<string, VarKind>;
 
+/** What walking a flow needs of the definition: its entities' fields and its flows. Saved or not. */
+interface FlowLookup {
+  readonly entities: Readonly<Record<string, { readonly label: string; readonly fields: readonly Field[] }>>;
+  readonly flows?: Readonly<Record<string, AppFlow>> | undefined;
+}
+
+const SYSTEM_KINDS: Readonly<Record<string, ValueKind>> = { id: 'uuid', version: 'number', owner: 'uuid', created_at: 'datetime', created_by: 'uuid', updated_at: 'datetime', updated_by: 'uuid' };
+
+/** The kind of a field of a record, or of a line, which has only its ID besides its own fields. */
+function fieldKindIn(entity: { readonly fields: readonly Field[] }, name: string, line: boolean): ValueKind | undefined {
+  if (line ? name === 'id' : Object.hasOwn(SYSTEM_KINDS, name)) return SYSTEM_KINDS[name];
+  const field = entity.fields.find((f) => f.name === name);
+  return field && field.type !== 'lines' ? fieldKind(field) : undefined;
+}
+
 /**
  * Walk a flow's steps with the kinds of its variables, as each step sees them. Each list of steps
  * is a block: a variable it gives a value first lives until the block ends.
  */
 function walk(
-  definition: StoredDefinition,
+  definition: FlowLookup,
   flow: AppFlow,
   visit: (step: FlowStep, scope: Scope, path: string, depth: number) => void,
   declare: (scope: Scope, name: string, kind: VarKind, path: string) => void = (scope, name, kind) => void scope.set(name, kind),
@@ -156,7 +171,7 @@ function walk(
 }
 
 /** The kind of value an expression gives, with the variables in scope. Unknown references give any. */
-function expressionKind(definition: StoredDefinition, expression: Expression, scope: Scope): ValueKind {
+function expressionKind(definition: FlowLookup, expression: Expression, scope: Scope): ValueKind {
   if (expression === null) return 'null';
   if (typeof expression === 'string') return 'text';
   if (typeof expression === 'number') return 'number';
@@ -179,7 +194,7 @@ type Resolved = { readonly ok: true; readonly kind: VarKind } | { readonly ok: f
  * What a reference names, with the variables in scope: `principal.id`, a variable, or a field of a
  * record or line variable. `record.<field>` is a find's own and is checked there.
  */
-function refKind(definition: StoredDefinition, ref: string, scope: Scope): Resolved {
+function refKind(definition: FlowLookup, ref: string, scope: Scope): Resolved {
   const [root, ...path] = ref.split('.') as [string, ...string[]];
   if (root === 'principal') return path.length === 1 ? { ok: true, kind: value(path[0] === 'id' ? 'uuid' : 'any') } : { ok: false, message: `${ref}: name a property, for example principal.id` };
   if (root === 'record') return { ok: false, message: `${ref}: a flow names records by its variables. record.<field> is for a find's condition` };
@@ -191,10 +206,42 @@ function refKind(definition: StoredDefinition, ref: string, scope: Scope): Resol
   if (path.length > 1) return { ok: false, message: `${ref}: refer to a field as ${root}.<field>` };
   const entity = definition.entities[held.entity];
   if (!entity) return { ok: false, message: `${ref}: no entity ${held.entity}` };
-  const info = entityFields(entity, { line: held.kind === 'line' }).get(path[0]!);
-  if (info) return { ok: true, kind: value(info.kind) };
+  const kind = fieldKindIn(entity, path[0]!, held.kind === 'line');
+  if (kind) return { ok: true, kind: value(kind) };
   const lines = entity.fields.some((f) => f.name === path[0] && f.type === 'lines');
   return { ok: false, message: lines ? `${ref}: a lines field. Loop over it with an each step, or total it` : `${ref}: ${entity.label} has no field ${path[0]}` };
+}
+
+/**
+ * The variables each step of a flow sees, by the step's path (`steps[2]`, `steps[0].then[1]`),
+ * with what each holds: for a designer that offers only what is there.
+ */
+export function flowScopes(definition: FlowLookup, flow: AppFlow): Map<string, ReadonlyMap<string, VarKind>> {
+  const scopes = new Map<string, ReadonlyMap<string, VarKind>>();
+  walk(definition, flow, (_step, scope, path) => void scopes.set(path, new Map(scope)));
+  return scopes;
+}
+
+/** The variables after the last step of a list of steps: for a step added at its end. */
+export function flowScopeAfter(definition: FlowLookup, flow: AppFlow, listPath: string): ReadonlyMap<string, VarKind> {
+  // Walk a copy of the flow with a placeholder at the end of the list, and read its scope.
+  const marker: FlowStep = { type: 'return' };
+  const insert = (steps: readonly FlowStep[], base: string): FlowStep[] => {
+    const out = steps.map((step, index) => {
+      const at = `${base}[${index}]`;
+      if (step.type === 'each') return { ...step, steps: insert(step.steps, `${at}.steps`) };
+      if (step.type === 'if') return { ...step, then: insert(step.then, `${at}.then`), else: insert(step.else, `${at}.else`) };
+      if (step.type === 'try') return { ...step, steps: insert(step.steps, `${at}.steps`), catch: insert(step.catch, `${at}.catch`) };
+      return step;
+    });
+    return base === listPath ? [...out, marker] : out;
+  };
+  const steps = insert(flow.steps, 'steps');
+  let found: ReadonlyMap<string, VarKind> = new Map();
+  walk(definition, { ...flow, steps }, (step, scope) => {
+    if (step === marker) found = new Map(scope);
+  });
+  return found;
 }
 
 /** Check a flow before it is saved: its variables, what each step names, and that values fit. */
@@ -445,6 +492,8 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
           return;
         }
         case 'try':
+          // The designer adds a handler with nothing in it yet: say what it needs, in words.
+          if (!step.steps.length) issue(`${at}.steps`, 'Put the steps that the handler guards inside it');
           return;
         case 'total': {
           const item = listOf(step.of, scope, `${at}.of`);

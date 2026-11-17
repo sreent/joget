@@ -78,8 +78,13 @@ export function Badge({ tone = 'idle', children }: { tone?: keyof typeof TONES; 
   return <span className={cx('inline-flex items-center rounded-full px-2 py-px text-xs font-semibold whitespace-nowrap', TONES[tone])}>{children}</span>;
 }
 
-export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <section className={cx('rounded-lg border border-line bg-surface p-5 shadow-card', className)}>{children}</section>;
+/** A panel. With a label, it is a region that screen readers and tests find by its name. */
+export function Card({ className, children, 'aria-label': label }: { className?: string; children: ReactNode; 'aria-label'?: string }) {
+  return (
+    <section aria-label={label} className={cx('rounded-lg border border-line bg-surface p-5 shadow-card', className)}>
+      {children}
+    </section>
+  );
 }
 
 export function Notice({ tone, children }: { tone: 'bad' | 'warn' | 'good'; children: ReactNode }) {

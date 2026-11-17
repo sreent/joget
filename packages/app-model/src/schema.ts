@@ -335,7 +335,7 @@ const FlowIf = z.strictObject({ type: z.literal('if'), when: ConditionSchema, th
  */
 const FlowTry = z.strictObject({
   type: z.literal('try'),
-  steps: flowSteps(1),
+  steps: flowSteps(),
   catch: flowSteps().default([]),
   rollback: z.boolean().default(true),
   error: Name.optional(),

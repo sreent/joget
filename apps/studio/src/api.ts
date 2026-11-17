@@ -15,7 +15,7 @@ import type {
   Revision,
   Share,
   Space,
-  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest } from './types.js';
+  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest, FlowRunResult } from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -158,6 +158,10 @@ export const api = {
       `${app(at(target).id)}/actions/${encodeURIComponent(action)}/run${envParams(target)}`,
       body,
     ),
+
+  /** Runs a flow of the app (design §6.2). Records and lists in the input go by their IDs. */
+  runFlow: (target: string | AppAt, flow: string, body: { input: Record<string, unknown>; dryRun?: boolean }) =>
+    call<FlowRunResult>('POST', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/run${envParams(target)}`, body),
 
   // Business processes (design §6.10).
   tasks: (status: 'open' | 'closed' = 'open') => call<{ tasks: Task[] }>('GET', `/v1/me/tasks?status=${status}`),

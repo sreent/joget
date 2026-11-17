@@ -7,6 +7,7 @@ import { isName, lineOwner } from '../model/edit.js';
 import { groupPaths } from '../model/pages.js';
 import { addItem, recordEntities, removeItem, renameItem, updateItem, writableFields, type Section } from '../model/logic.js';
 import type { Definition, Field as FieldDef } from '../types.js';
+import { FlowRunEditor } from './FlowRunEditor.js';
 import { StepsEditor } from './StepsEditor.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
@@ -260,7 +261,7 @@ function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
         <Field label="Label">{(id) => <TextInput id={id} value={action.label} onChange={(e) => set({ label: e.target.value })} />}</Field>
         <Field label="Works on">
           {(id) => (
-            <Select id={id} value={action.entity} onChange={(e) => set({ entity: e.target.value, input: writableFields(definition, e.target.value), set: {}, where: undefined, card: undefined, steps: undefined })}>
+            <Select id={id} value={action.entity} onChange={(e) => set({ entity: e.target.value, input: writableFields(definition, e.target.value), set: {}, where: undefined, card: undefined, steps: undefined, flow: undefined })}>
               {entityOptions(definition, false).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -336,6 +337,18 @@ function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
         />
       ) : null}
       <StepsEditor definition={definition} onChange={onChange} action={name} />
+      {Object.keys(definition.flows ?? {}).length || action.flow ? (
+        <FlowRunEditor
+          definition={definition}
+          entity={action.entity}
+          person
+          label="Then runs a flow"
+          hint="In the same transaction, after the record is saved: if the flow fails, nothing is saved."
+          none="No flow"
+          value={action.flow}
+          onChange={(flow) => set({ flow })}
+        />
+      ) : null}
       <Choice label="Before it commits, when an agent runs it" value={action.confirm ?? 'preview'} onChange={(confirm) => set({ confirm })} options={CONFIRM_OPTIONS} />
       <Field label="Review card" hint="What the person checks before they confirm.">
         {(id) => (

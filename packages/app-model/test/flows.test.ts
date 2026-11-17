@@ -104,6 +104,7 @@ describe('flows', () => {
             { type: 'check', assert: { gt: [{ ref: 'claim.title' }, 1] }, message: 'Never' },
             { type: 'call', flow: 'record_spend', input: { claim: { ref: 'title' }, extra: 1 } },
             { type: 'call', flow: 'nowhere', input: {} },
+            { type: 'try', steps: [], catch: [] },
             { type: 'return', value: 1 },
           ],
         };
@@ -126,7 +127,8 @@ describe('flows', () => {
       'flows.broken.steps[11].input.claim: Give a record of expense_claim: a variable that holds one',
       'flows.broken.steps[11].input.extra: Record the spend takes no extra',
       'flows.broken.steps[12].flow: No flow named nowhere',
-      'flows.broken.steps[13].value: Broken gives no result: leave the value out, or give the flow a result',
+      'flows.broken.steps[13].steps: Put the steps that the handler guards inside it',
+      'flows.broken.steps[14].value: Broken gives no result: leave the value out, or give the flow a result',
     ]);
   });
 

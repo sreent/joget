@@ -21,6 +21,7 @@ import { api, ApiError } from '../api.js';
 import { ConditionEditor } from '../components/condition.js';
 import { Badge, Button, Card, Checkbox, cx, Dialog, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type RefChoice } from '../model/conditions.js';
+import { startRun } from '../model/flows.js';
 import {
   addBoundary,
   addElement,
@@ -53,6 +54,7 @@ import {
 } from '../model/processes.js';
 import type { Definition } from '../types.js';
 import type { Message } from '@platform/app-model';
+import { FlowRunEditor } from './FlowRunEditor.js';
 import { StepsEditor } from './StepsEditor.js';
 
 type Selection = { readonly kind: 'element' | 'flow'; readonly id: string } | null;
@@ -1939,9 +1941,43 @@ function ElementPanel(props: {
         </>
       ) : null}
       {element.type === 'serviceTask' ? (
-        <Field label="Runs, with the app's authority" hint="An action that doesn't read the person running it: a process runs it with no person.">
+        <Field label="It runs">
           {(inputId) => (
-            <Select id={inputId} value={element.action} onChange={(event) => set((current) => ({ ...current, action: event.target.value }) as ProcessElement)}>
+            <Select
+              id={inputId}
+              value={element.flow ? 'flow' : 'action'}
+              onChange={(event) =>
+                set((current) => {
+                  if (current.type !== 'serviceTask') return current;
+                  const { action: _action, flow: _flow, ...rest } = current;
+                  if (event.target.value === 'flow') return { ...rest, flow: startRun(definition, Object.keys(definition.flows ?? {})[0] ?? '', process.entity) };
+                  return { ...rest, action: actions[0] ?? '' };
+                })
+              }
+            >
+              <option value="action">An action</option>
+              <option value="flow" disabled={!element.flow && !Object.keys(definition.flows ?? {}).length}>
+                A flow
+              </option>
+            </Select>
+          )}
+        </Field>
+      ) : null}
+      {element.type === 'serviceTask' && element.flow ? (
+        <FlowRunEditor
+          definition={definition}
+          entity={process.entity}
+          person={false}
+          label="The flow, with the app's authority"
+          hint="A process runs it with no person. If it fails, what it wrote is undone, and the task fails."
+          value={element.flow}
+          onChange={(flow) => set((current) => (current.type === 'serviceTask' && flow ? { ...current, flow } : current))}
+        />
+      ) : null}
+      {element.type === 'serviceTask' && !element.flow ? (
+        <Field label="The action, with the app's authority" hint="An action that doesn't read the person running it: a process runs it with no person.">
+          {(inputId) => (
+            <Select id={inputId} value={element.action ?? ''} onChange={(event) => set((current) => ({ ...current, action: event.target.value }) as ProcessElement)}>
               <option value="" disabled>
                 Choose an action
               </option>
@@ -1954,7 +1990,7 @@ function ElementPanel(props: {
           )}
         </Field>
       ) : null}
-      {element.type === 'serviceTask' && element.action ? <UndoPicker definition={definition} name={name} id={id} onChange={onChange} /> : null}
+      {element.type === 'serviceTask' && (element.action || element.flow) ? <UndoPicker definition={definition} name={name} id={id} onChange={onChange} /> : null}
       {element.type === 'serviceTask' ? <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} /> : null}
       {element.type === 'subProcess' && element.event ? (
         <p className="m-0 text-sm text-muted">
