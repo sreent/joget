@@ -1110,7 +1110,7 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         if (!outcomes) issues.push({ path: `${path}.outcome`, message: 'Only a flow out of a user task or a rule check follows an outcome' });
         else if (!outcomes.includes(flow.outcome)) issues.push({ path: `${path}.outcome`, message: `${label(flow.from)} has no outcome ${flow.outcome}` });
       }
-      if ((flow.when || flow.default) && from.type !== 'exclusiveGateway' && from.type !== 'inclusiveGateway') {
+      if ((flow.when || flow.default) && from.type !== 'exclusiveGateway' && from.type !== 'inclusiveGateway' && from.type !== 'complexGateway') {
         issues.push({ path, message: 'Only a flow out of an exclusive or inclusive gateway has a condition or is its default' });
       }
       if (flow.when && flow.default) issues.push({ path: `${path}.when`, message: "A default flow has no condition: it's taken when no other flow's condition holds" });
@@ -1476,7 +1476,11 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           }
           break;
         case 'exclusiveGateway':
+        case 'complexGateway':
         case 'inclusiveGateway': {
+          if (element.type === 'complexGateway' && element.waitFor > Math.max(into.length, 1)) {
+            issues.push({ path: `${path}.waitFor`, message: `${label(id)} waits for ${element.waitFor} paths, but ${into.length} lead into it` });
+          }
           if (!out.length) issues.push({ path, message: `${label(id)} needs a flow out` });
           const defaults = out.filter((flowId) => process.flows[flowId]!.default);
           if (defaults.length > 1) issues.push({ path, message: `${label(id)} has one default flow at most` });

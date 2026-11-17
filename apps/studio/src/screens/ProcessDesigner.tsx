@@ -228,6 +228,11 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         <div className={cx('absolute size-[35px] rotate-45 border-[1.5px] border-text bg-surface', ring)} />
         {element.type === 'inclusiveGateway' ? (
           <span className="relative size-4 rounded-full border-[2.5px] border-text" aria-hidden />
+        ) : element.type === 'complexGateway' ? (
+          // BPMN's marker for a complex gateway: an asterisk.
+          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden className="relative text-text">
+            <path d="M10 3v14M3 10h14M5 5l10 10M15 5 5 15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+          </svg>
         ) : element.type === 'eventBasedGateway' ? (
           <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden className="relative text-text">
             <circle cx="11" cy="11" r="9.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
@@ -824,6 +829,7 @@ const TYPE_LABELS: Readonly<Record<ProcessElement['type'], string>> = {
   exclusiveGateway: 'Decision',
   parallelGateway: 'Parallel',
   inclusiveGateway: 'Inclusive',
+  complexGateway: 'Complex gateway',
   eventBasedGateway: 'Event-based gateway',
   intermediateCatchEvent: 'Timer',
   intermediateThrowEvent: 'Milestone',
@@ -2070,6 +2076,23 @@ function ElementPanel(props: {
           It waits for the first of the events after it: a time, an action saved on the record, a condition, or a receive task. The first that happens takes the path, and the others no longer wait.
         </p>
       ) : null}
+      {element.type === 'complexGateway' ? (
+        <>
+          <Field label="Goes on once this many paths have arrived" hint="A path that arrives after that ends here, until no path can still arrive. Then it waits again.">
+            {(inputId) => (
+              <TextInput
+                id={inputId}
+                type="number"
+                min={1}
+                max={20}
+                value={element.waitFor}
+                onChange={(event) => set((current) => (current.type === 'complexGateway' ? { ...current, waitFor: Math.max(1, Math.min(20, Math.round(Number(event.target.value) || 1))) } : current))}
+              />
+            )}
+          </Field>
+          <p className="m-0 text-sm text-muted">Select a flow out of it to set when it is taken: every flow whose condition holds, or else the one marked Otherwise.</p>
+        </>
+      ) : null}
       {element.type === 'inclusiveGateway' ? (
         <p className="m-0 text-sm text-muted">
           Select a flow out of it to set when it is taken. Every flow whose condition holds is taken, or else the one marked Otherwise. With several flows in, it waits for each path that can still arrive.
@@ -2201,7 +2224,7 @@ function FlowPanel(props: {
           )}
         </Field>
       ) : null}
-      {from?.type === 'exclusiveGateway' || from?.type === 'inclusiveGateway' ? (
+      {from?.type === 'exclusiveGateway' || from?.type === 'inclusiveGateway' || from?.type === 'complexGateway' ? (
         <>
           <Checkbox
             label="Otherwise: taken when no other flow's condition holds"

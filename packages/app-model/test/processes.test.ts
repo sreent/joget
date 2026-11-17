@@ -753,6 +753,41 @@ describe('ad hoc sub-processes', () => {
   });
 });
 
+describe('complex gateways', () => {
+  /** The leave app where two of three checks are enough to go on to the decision. */
+  const complex = (edit: (process: Record<string, any>) => void = () => undefined) =>
+    leave((process) => {
+      Object.assign(process.elements, {
+        split: { type: 'parallelGateway' },
+        a: { type: 'manualTask', name: 'Check A' },
+        b: { type: 'manualTask', name: 'Check B' },
+        c: { type: 'manualTask', name: 'Check C' },
+        enough: { type: 'complexGateway', name: 'Two checks', waitFor: 2 },
+      });
+      process.flows.to_decide.to = 'split';
+      Object.assign(process.flows, {
+        s1: { from: 'split', to: 'a' },
+        s2: { from: 'split', to: 'b' },
+        s3: { from: 'split', to: 'c' },
+        j1: { from: 'a', to: 'enough' },
+        j2: { from: 'b', to: 'enough' },
+        j3: { from: 'c', to: 'enough' },
+        out: { from: 'enough', to: 'decide' },
+      });
+      delete process.diagram;
+      edit(process);
+    });
+
+  it('pass the checks, and take their flows out as an inclusive gateway does', () => {
+    const process = valid(complex()).processes!['leave_approval']!;
+    expect(flowsOut(process, processGraph(process), 'enough', { record: {}, outcomes: {} })).toEqual({ ok: true, flows: ['out'] });
+  });
+
+  it('are checked: they wait for no more paths than lead into them', () => {
+    expect(issuesOf(complex((process) => (process.elements.enough.waitFor = 4)))).toEqual(['processes.leave_approval.elements.enough.waitFor: Two checks waits for 4 paths, but 3 lead into it']);
+  });
+});
+
 describe('votes, when several people decide', () => {
   const all = { count: 'all', outcome: 'approve', otherwise: 'reject' } as const;
   it('decide as soon as the outcome is sure, either way', () => {

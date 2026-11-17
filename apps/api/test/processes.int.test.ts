@@ -1346,6 +1346,57 @@ describe('ad hoc sub-processes', () => {
   });
 });
 
+describe('complex gateways', () => {
+  it('go on once enough paths have arrived, and end a path that arrives after', async () => {
+    const app = await passingApp('Leave, with enough checks', (definition) => {
+      const process = definition['processes'].leave_approval;
+      const check = (name: string) => ({ type: 'userTask', name, role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] });
+      Object.assign(process.elements, {
+        split: { type: 'parallelGateway' },
+        a: check('Check A'),
+        b: check('Check B'),
+        c: check('Check C'),
+        enough: { type: 'complexGateway', name: 'Two checks', waitFor: 2 },
+      });
+      process.flows.to_decide.to = 'split';
+      Object.assign(process.flows, {
+        s1: { from: 'split', to: 'a' },
+        s2: { from: 'split', to: 'b' },
+        s3: { from: 'split', to: 'c' },
+        j1: { from: 'a', to: 'enough' },
+        j2: { from: 'b', to: 'enough' },
+        j3: { from: 'c', to: 'enough' },
+        out: { from: 'enough', to: 'decide' },
+      });
+      delete process.diagram;
+    });
+    const open = async (recordId: string) =>
+      (await inbox(bob))
+        .filter((task: { recordId: string }) => task.recordId === recordId)
+        .map((task: { element: string }) => task.element)
+        .sort();
+    const finish = async (recordId: string, element: string, outcome = 'done') =>
+      complete(bob, (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element).id, outcome);
+
+    const asked = await ask(app, { starts: '2028-07-03', ends: '2028-07-04', days: 2 });
+    expect(await open(asked.record.id)).toEqual(['a', 'b', 'c']);
+    // One check is not enough; two are: the manager decides.
+    await finish(asked.record.id, 'a');
+    expect(await open(asked.record.id)).toEqual(['b', 'c']);
+    await finish(asked.record.id, 'b');
+    expect(await open(asked.record.id)).toEqual(['c', 'decide']);
+    let [instance] = await processesOf(app, asked.record.id);
+    expect(instance.waiting.map((at: { element: string }) => at.element).sort()).toEqual(['c', 'decide']);
+    // The third check, done after, ends at the gateway: the decision still waits, once.
+    await finish(asked.record.id, 'c');
+    expect(await open(asked.record.id)).toEqual(['decide']);
+    await finish(asked.record.id, 'decide', 'approve');
+    [instance] = await processesOf(app, asked.record.id);
+    expect(instance).toMatchObject({ status: 'completed', waiting: [] });
+    expect(instance.events.filter((event: { kind: string; element: string | null }) => event.kind === 'task_opened' && event.element === 'decide')).toHaveLength(1);
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

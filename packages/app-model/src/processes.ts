@@ -51,6 +51,7 @@ const TYPE_WORDS: Readonly<Record<ProcessElementType, string>> = {
   exclusiveGateway: 'Exclusive gateway',
   parallelGateway: 'Parallel gateway',
   inclusiveGateway: 'Inclusive gateway',
+  complexGateway: 'Complex gateway',
   eventBasedGateway: 'Event-based gateway',
   intermediateCatchEvent: 'Event',
   intermediateThrowEvent: 'Event',
@@ -245,7 +246,7 @@ export function flowsOut(process: Process, graph: ProcessGraph, id: string, stat
     const fallback = out.find((flowId) => process.flows[flowId]!.default);
     return fallback ? { ok: true, flows: [fallback] } : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
   }
-  if (element.type === 'inclusiveGateway') {
+  if (element.type === 'inclusiveGateway' || element.type === 'complexGateway') {
     // Every flow whose condition holds, or else the default.
     const env = processConditionEnv(state);
     const taken = out.filter((flowId) => {

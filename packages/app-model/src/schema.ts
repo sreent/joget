@@ -673,6 +673,12 @@ const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), nam
 const EventBasedGateway = z.strictObject({ type: z.literal('eventBasedGateway'), name: Label.optional(), in: In });
 /** Takes every flow out whose condition holds, or else its default; with several flows in, waits for every path that can still arrive. */
 const InclusiveGateway = z.strictObject({ type: z.literal('inclusiveGateway'), name: Label.optional(), in: In });
+/**
+ * Goes on once some of the paths into it have arrived: `waitFor` of them. It takes the flows out
+ * as an inclusive gateway does. A path that arrives after that ends there, until no path can still
+ * arrive; then it waits again.
+ */
+const ComplexGateway = z.strictObject({ type: z.literal('complexGateway'), name: Label.optional(), in: In, waitFor: z.int().min(1).max(20) });
 /** Waits until a timer fires or a message comes; or, as a link, takes over from the throw link of the same name. One of these. */
 const CatchEvent = z.strictObject({
   type: z.literal('intermediateCatchEvent'),
@@ -780,6 +786,7 @@ export const ProcessElement = z.discriminatedUnion('type', [
   ExclusiveGateway,
   ParallelGateway,
   InclusiveGateway,
+  ComplexGateway,
   EventBasedGateway,
   CatchEvent,
   ThrowEvent,

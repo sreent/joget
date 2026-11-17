@@ -755,7 +755,8 @@ export const processTokens = pgTable(
     scope: uuid('scope'),
     /** The flow it came by: a parallel gateway waits for a token from each flow in. */
     arrivedBy: text('arrived_by'),
-    state: text('state', { enum: ['waiting', 'stuck'] }).notNull(),
+    /** A complex gateway that went on leaves a fired token, which ends the paths that arrive after, until none can still arrive. */
+    state: text('state', { enum: ['waiting', 'stuck', 'fired'] }).notNull(),
     /** Why it is stuck, for the operator who retries it. */
     error: text('error'),
     /** At a task that several people decide: who votes, in order. */

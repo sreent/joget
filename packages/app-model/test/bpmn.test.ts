@@ -542,6 +542,55 @@ describe('BPMN 2.0 files', () => {
     expect(read).toEqual(was);
   });
 
+  it("carry a complex gateway out and back, and read how many paths another tool's waits for", () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    const process = definition['processes'].leave_approval;
+    Object.assign(process.elements, {
+      split: { type: 'parallelGateway' },
+      a: { type: 'manualTask', name: 'Check A' },
+      b: { type: 'manualTask', name: 'Check B' },
+      enough: { type: 'complexGateway', name: 'One check', waitFor: 1 },
+    });
+    process.flows.to_decide.to = 'split';
+    Object.assign(process.flows, {
+      s1: { from: 'split', to: 'a' },
+      s2: { from: 'split', to: 'b' },
+      j1: { from: 'a', to: 'enough' },
+      j2: { from: 'b', to: 'enough' },
+      out: { from: 'enough', to: 'decide' },
+    });
+    delete process.diagram;
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:complexGateway id="enough" name="One check" ambit:waitFor="1">');
+    expect(xml).toContain('_activeTokens');
+    const back = bpmnToProcesses(xml, { ...app, processes: {} });
+    expect(back.ok ? [] : back.issues).toEqual([]);
+    const { diagram: _diagram, ...read } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    const { diagram: _was, ...was } = app.processes!['leave_approval']!;
+    expect(read).toEqual(was);
+
+    // Another tool says it in its activation condition.
+    const foreign = `<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <process id="p">
+    <startEvent id="s" />
+    <parallelGateway id="split" />
+    <task id="a" />
+    <task id="b" />
+    <complexGateway id="g"><activationCondition>\${_activeTokens >= 2}</activationCondition></complexGateway>
+    <endEvent id="e" />
+    <sequenceFlow id="f1" sourceRef="s" targetRef="split" />
+    <sequenceFlow id="f2" sourceRef="split" targetRef="a" />
+    <sequenceFlow id="f3" sourceRef="split" targetRef="b" />
+    <sequenceFlow id="f4" sourceRef="a" targetRef="g" />
+    <sequenceFlow id="f5" sourceRef="b" targetRef="g" />
+    <sequenceFlow id="f6" sourceRef="g" targetRef="e" />
+  </process>
+</definitions>`;
+    const read2 = bpmnToProcesses(foreign, leave, { entity: 'leave_request' });
+    expect(read2.ok ? read2.processes['p']!.elements['g'] : read2.issues).toEqual({ type: 'complexGateway', waitFor: 2 });
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);
@@ -629,7 +678,7 @@ describe('BPMN 2.0 files', () => {
           element: 't1',
           message: 'Ambit runs no code in javascript: write the script as Ambit\'s steps (scriptFormat urn:ambit:steps), or run one of the app\'s actions with a service task: "Compute" (t1)',
         },
-        { element: 'cx', message: "Ambit doesn't run a complex gateway yet: (cx)" },
+        { element: 'cx', message: 'Say how many paths the complex gateway waits for: ambit:waitFor, or an activation condition such as _activeTokens >= 2: (cx)' },
         { element: 'u', message: 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide: "Everyone decides" (u)' },
         { element: 'f', message: 'Ambit can\'t read the condition "amount > 5" of (f): Unknown name amount. Write it as a condition on the record\'s fields' },
       ],

@@ -1016,28 +1016,66 @@ export class ProcessEngine implements ProcessHooks {
     });
   }
 
-  /** An inclusive gateway's join goes on once no other token of its run can still reach it. */
-  async #tryJoin(turn: Turn, live: Live, id: string, scope: string | null): Promise<boolean> {
-    const db = turn.tx.db;
-    const tokens = (await db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id))).filter((token) => token.scope === scope);
-    const here = tokens.filter((token) => token.element === id && token.state === 'waiting');
-    if (!here.length) return false;
+  /** Whether a path of a run can still reach an element: a token elsewhere in the run, or a move on its way. A complex gateway's fired token is no path. */
+  #canArrive(turn: Turn, live: Live, id: string, scope: string | null, tokens: readonly TokenRow[]): boolean {
     const elsewhere = [
-      ...tokens.filter((token) => token.element !== id).map((token) => token.element),
+      ...tokens.filter((token) => token.element !== id && token.state !== 'fired').map((token) => token.element),
       ...turn.queue.filter((move) => move.instanceId === live.row.id && move.scope === scope).map((move) => move.element),
     ];
     for (const at of elsewhere) {
-      if (at === id) return false;
+      if (at === id) return true;
       let reach = live.reach.get(at);
       if (!reach) {
         reach = reachable(live.process, live.graph, at);
         live.reach.set(at, reach);
       }
-      if (reach.has(id)) return false;
+      if (reach.has(id)) return true;
     }
+    return false;
+  }
+
+  /** An inclusive gateway's join goes on once no other token of its run can still reach it. */
+  async #tryJoin(turn: Turn, live: Live, id: string, scope: string | null): Promise<boolean> {
+    const db = turn.tx.db;
+    const tokens = (await db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id))).filter((token) => token.scope === scope);
+    const here = tokens.filter((token) => token.element === id && token.state === 'waiting');
+    if (!here.length || this.#canArrive(turn, live, id, scope, tokens)) return false;
     await db.delete(processTokens).where(inArray(processTokens.id, here.map((token) => token.id)));
     await this.#leave(turn, live, id, scope);
     return true;
+  }
+
+  /**
+   * A complex gateway goes on once `waitFor` paths have arrived in its run, and leaves a fired
+   * token while more can still arrive: the paths that arrive after that end there. Once none can
+   * still arrive, the fired token goes, and the gateway waits again. One that waits for more paths
+   * than can still arrive is stuck. Returns whether anything changed.
+   */
+  async #tryComplex(turn: Turn, live: Live, id: string, scope: string | null): Promise<boolean> {
+    const element = live.process.elements[id];
+    if (element?.type !== 'complexGateway') return false;
+    const db = turn.tx.db;
+    const tokens = (await db.select().from(processTokens).where(eq(processTokens.instanceId, live.row.id))).filter((token) => token.scope === scope);
+    const waiting = tokens.filter((token) => token.element === id && token.state === 'waiting');
+    const fired = tokens.find((token) => token.element === id && token.state === 'fired');
+    const more = this.#canArrive(turn, live, id, scope, tokens);
+    if (fired) {
+      if (more) return false;
+      await db.delete(processTokens).where(eq(processTokens.id, fired.id));
+      return true;
+    }
+    if (waiting.length >= element.waitFor) {
+      await db.delete(processTokens).where(inArray(processTokens.id, waiting.map((token) => token.id)));
+      if (more) await db.insert(processTokens).values({ id: uuidv7(turn.now.getTime()), instanceId: live.row.id, element: id, scope, arrivedBy: null, state: 'fired', createdAt: turn.now });
+      await this.#leave(turn, live, id, scope);
+      return true;
+    }
+    if (!more && waiting.length) {
+      await db.delete(processTokens).where(inArray(processTokens.id, waiting.map((token) => token.id)));
+      await this.#stuck(turn, live, id, null, `${elementName(live.process, id)} waits for ${element.waitFor} paths, but only ${waiting.length} can arrive`, scope);
+      return true;
+    }
+    return false;
   }
 
   /** The run a token is in, by its ID: the scope that a task's token gives the paths that leave the task. */
@@ -1113,6 +1151,13 @@ export class ProcessEngine implements ProcessHooks {
           .where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.state, 'waiting')));
         const joins = new Map(waiting.filter((token) => live.process.elements[token.element]?.type === 'inclusiveGateway').map((token) => [`${token.element} ${token.scope ?? ''}`, token]));
         for (const token of joins.values()) if (await this.#tryJoin(turn, live, token.element, token.scope)) joined = true;
+        // A complex gateway that waits for paths, or that went on and ends the late ones, until none can still arrive.
+        const complex = await turn.tx.db
+          .select({ element: processTokens.element, scope: processTokens.scope })
+          .from(processTokens)
+          .where(and(eq(processTokens.instanceId, live.row.id), inArray(processTokens.state, ['waiting', 'fired'])));
+        const gates = new Map(complex.filter((token) => live.process.elements[token.element]?.type === 'complexGateway').map((token) => [`${token.element} ${token.scope ?? ''}`, token]));
+        for (const token of gates.values()) if (await this.#tryComplex(turn, live, token.element, token.scope)) joined = true;
       }
       if (joined || (await this.#finishScopes(turn))) continue;
       for (const live of [...turn.live.values()]) {
@@ -1555,6 +1600,18 @@ export class ProcessEngine implements ProcessHooks {
         if ((live.graph.incoming.get(id) ?? []).length < 2) return this.#leave(turn, live, id, scope);
         await this.#wait(turn, live, id, flow, scope);
         await this.#tryJoin(turn, live, id, scope);
+        return;
+      }
+      case 'complexGateway': {
+        if ((live.graph.incoming.get(id) ?? []).length < 2) return this.#leave(turn, live, id, scope);
+        // After it went on, a path that arrives ends here.
+        const [fired] = await turn.tx.db
+          .select({ id: processTokens.id })
+          .from(processTokens)
+          .where(and(eq(processTokens.instanceId, live.row.id), eq(processTokens.element, id), eq(processTokens.state, 'fired'), scope === null ? isNull(processTokens.scope) : eq(processTokens.scope, scope)));
+        if (fired) return;
+        await this.#wait(turn, live, id, flow, scope);
+        await this.#tryComplex(turn, live, id, scope);
         return;
       }
       case 'parallelGateway': {

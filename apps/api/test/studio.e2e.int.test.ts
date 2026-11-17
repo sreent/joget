@@ -730,4 +730,24 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.elements['task_1']).toMatchObject({ type: 'userTask', in: 'adhoc_1' });
     expect(Object.values(saved.flows).filter((flow: any) => flow.to === 'task_1' || flow.from === 'task_1')).toEqual([]);
   });
+
+  it('designs a complex gateway that goes on once enough paths have arrived', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a complex gateway', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    await visible(page.getByTestId('process-canvas').getByText('Decide on the leave', { exact: true }));
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('complexGateway');
+    await visible(page.getByRole('heading', { name: 'Complex gateway', exact: true }));
+    expect(await page.getByLabel('Goes on once this many paths have arrived', { exact: true }).inputValue()).toBe('1');
+    await shot(page, '15l-process-complex-gateway');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['complex_1']).toEqual({ type: 'complexGateway', name: 'Enough paths', waitFor: 1 });
+  });
 });

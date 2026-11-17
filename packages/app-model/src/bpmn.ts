@@ -239,6 +239,7 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
   exclusiveGateway: 'bpmn:exclusiveGateway',
   parallelGateway: 'bpmn:parallelGateway',
   inclusiveGateway: 'bpmn:inclusiveGateway',
+  complexGateway: 'bpmn:complexGateway',
   eventBasedGateway: 'bpmn:eventBasedGateway',
   intermediateCatchEvent: 'bpmn:intermediateCatchEvent',
   intermediateThrowEvent: 'bpmn:intermediateThrowEvent',
@@ -317,6 +318,12 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
       case 'exclusiveGateway':
       case 'inclusiveGateway':
         attributes['default'] = defaults.get(id);
+        break;
+      case 'complexGateway':
+        attributes['default'] = defaults.get(id);
+        attributes['ambit:waitFor'] = String(element.waitFor);
+        // Other tools read how many paths it waits for from its activation condition.
+        children.push({ name: 'bpmn:activationCondition', attributes: { 'xsi:type': 'bpmn:tFormalExpression' }, text: `_activeTokens >= ${element.waitFor}` });
         break;
       case 'boundaryEvent':
         attributes['attachedToRef'] = element.attachedTo;
@@ -503,11 +510,7 @@ export type BpmnImport =
 /** Elements that only document a model: an import leaves them out, and says so. */
 const DOCUMENTING = new Set(['textAnnotation', 'association', 'group', 'dataObject', 'dataObjectReference', 'dataStoreReference', 'dataStore', 'category', 'laneSet', 'documentation', 'extensionElements', 'ioSpecification', 'property', 'dataInputAssociation', 'dataOutputAssociation']);
 /** What a sub-process has as a node of its own, not as something it holds. */
-const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteristics', 'standardLoopCharacteristics', 'completionCondition']);
-/** The elements Ambit doesn't run yet, as a sentence names them. */
-const KINDS: Readonly<Record<string, string>> = {
-  complexGateway: 'a complex gateway',
-};
+const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteristics', 'standardLoopCharacteristics', 'completionCondition', 'activationCondition']);
 const EVENT_KINDS: Readonly<Record<string, string>> = {
   messageEventDefinition: 'message',
   signalEventDefinition: 'signal',
@@ -674,10 +677,6 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
         const definitions = childElements(node).filter((child) => child.ns === BPMN_MODEL && child.local.endsWith('EventDefinition'));
         const kinds = definitions.map((child) => EVENT_KINDS[child.local] ?? child.local);
         const refuse = (message: string) => issues.push({ element: attribute(node, 'id') ?? id, message: `${message}: ${describe(node)}` });
-        if (KINDS[node.local]) {
-          refuse(`Ambit doesn't run ${KINDS[node.local]!} yet`);
-          continue;
-        }
         const loop = bpmn(node, 'multiInstanceLoopCharacteristics')[0];
         if (bpmn(node, 'standardLoopCharacteristics').length || (loop && (node.local !== 'userTask' || !several(loop)))) {
           refuse(loop && node.local === 'userTask' ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide' : "Ambit doesn't run a task that repeats yet");
@@ -905,6 +904,20 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           case 'manualTask':
             elements[id] = { type: node.local === 'task' ? 'task' : 'manualTask', name: name ?? id, ...(documentation ? { description: documentation } : {}) };
             break;
+          case 'complexGateway': {
+            // How many paths it waits for: Ambit's setting, or another tool's activation condition on the paths that arrived.
+            const own = ambit(node, 'waitFor');
+            const activation = bpmn(node, 'activationCondition')[0];
+            const counted = activation ? /^\$?\{?\s*_activeTokens\s*(?:>=|==)\s*(\d+)\s*\}?$/.exec(textOf(activation).trim()) : null;
+            const waitFor = Number(own ?? counted?.[1]);
+            if (!Number.isInteger(waitFor) || waitFor < 1) {
+              refuse('Say how many paths the complex gateway waits for: ambit:waitFor, or an activation condition such as _activeTokens >= 2');
+              break;
+            }
+            elements[id] = { type: 'complexGateway', ...(name ? { name } : {}), waitFor };
+            if (attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
+            break;
+          }
           case 'eventBasedGateway':
             // An event-based gateway that starts a process has no record to start on.
             if (attribute(node, 'instantiate') === 'true') refuse("Ambit doesn't start a process at an event-based gateway: a process starts on a record");

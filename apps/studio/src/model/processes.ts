@@ -63,6 +63,7 @@ export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label
   { kind: 'task', label: 'Task', hint: 'Work that is only drawn', group: 'Tasks' },
   { kind: 'manualTask', label: 'Manual task', hint: 'Work away from any system', group: 'Tasks' },
   { kind: 'inclusiveGateway', label: 'Inclusive', hint: 'Each path whose condition holds, then wait for them', group: 'Gateways' },
+  { kind: 'complexGateway', label: 'Complex', hint: 'Go on once some of the paths into it have arrived', group: 'Gateways' },
   { kind: 'eventBasedGateway', label: 'Event-based', hint: 'Wait for the first of several events: a time, an action, a condition', group: 'Gateways' },
   { kind: 'messageEvent', label: 'Message', hint: 'Wait until an action is saved on the record', group: 'Events' },
   { kind: 'conditionEvent', label: 'Condition', hint: 'Wait until a condition on the record holds', group: 'Events' },
@@ -89,6 +90,7 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   exclusiveGateway: 'decision',
   parallelGateway: 'parallel',
   inclusiveGateway: 'inclusive',
+  complexGateway: 'complex',
   intermediateCatchEvent: 'wait',
   messageEvent: 'wait',
   subProcess: 'sub',
@@ -329,6 +331,8 @@ export function newElement(definition: Definition, process: Process, type: Eleme
     case 'parallelGateway':
     case 'inclusiveGateway':
       return { type };
+    case 'complexGateway':
+      return { type, name: 'Enough paths', waitFor: 1 };
     case 'intermediateCatchEvent':
       return { type, name: 'Wait', timer: { duration: 'P1D' } };
     case 'messageEvent':
@@ -538,7 +542,7 @@ function withOutcome(process: Process, from: string, flow: Flow): Flow {
     const free = outcomes.find((outcome) => !out.some((existing) => existing.outcome === outcome));
     return free ? { ...flow, outcome: free } : flow;
   }
-  if ((source?.type === 'exclusiveGateway' || source?.type === 'inclusiveGateway') && out.length && !out.some((existing) => existing.default)) return { ...flow, default: true };
+  if ((source?.type === 'exclusiveGateway' || source?.type === 'inclusiveGateway' || source?.type === 'complexGateway') && out.length && !out.some((existing) => existing.default)) return { ...flow, default: true };
   return flow;
 }
 
