@@ -6,8 +6,9 @@ const me = { ref: 'principal.id' } as const;
 const status = { ref: 'record.status' } as const;
 
 /**
- * Leave requests: an employee asks for days off, and their manager approves or rejects them. The
- * manager's decision records the day it was made; an overview counts the days taken.
+ * Leave requests: an employee asks for days off, and their manager approves or rejects them, in a
+ * BPMN process that puts the decision in the manager's inbox. The manager's decision records the
+ * day it was made; an overview counts the days taken.
  */
 export const LEAVE_APP = {
   entities: {
@@ -205,6 +206,48 @@ export const LEAVE_APP = {
   navigation: {
     home: 'my_leave',
     items: [{ page: 'my_leave' }, { form: 'leave_form' }, { heading: 'Managers' }, { page: 'to_decide' }, { page: 'overview' }],
+  },
+  processes: {
+    leave_approval: {
+      label: 'Leave approval',
+      description: 'The manager the employee names decides on the leave, within three days.',
+      entity: 'leave_request',
+      elements: {
+        requested: { type: 'startEvent', name: 'Leave requested', actions: ['request_leave'] },
+        decide: {
+          type: 'userTask',
+          name: 'Decide on the leave',
+          role: 'manager',
+          assignee: { field: 'manager' },
+          outcomes: [
+            { name: 'approve', label: 'Approve', action: 'approve_leave' },
+            { name: 'reject', label: 'Reject', action: 'reject_leave' },
+          ],
+          due: 'P3D',
+          card: 'leave_review',
+        },
+        approved: { type: 'endEvent', name: 'Leave approved' },
+        rejected: { type: 'endEvent', name: 'Leave rejected' },
+      },
+      flows: {
+        to_decide: { from: 'requested', to: 'decide' },
+        on_approve: { from: 'decide', to: 'approved', name: 'Approved', outcome: 'approve' },
+        on_reject: { from: 'decide', to: 'rejected', name: 'Rejected', outcome: 'reject' },
+      },
+      diagram: {
+        shapes: {
+          requested: { x: 152, y: 102, width: 36, height: 36, label: { x: 128, y: 145, width: 84, height: 14 } },
+          decide: { x: 250, y: 80, width: 100, height: 80 },
+          approved: { x: 432, y: 42, width: 36, height: 36, label: { x: 408, y: 85, width: 84, height: 14 } },
+          rejected: { x: 432, y: 162, width: 36, height: 36, label: { x: 408, y: 205, width: 84, height: 14 } },
+        },
+        edges: {
+          to_decide: { points: [{ x: 188, y: 120 }, { x: 250, y: 120 }] },
+          on_approve: { points: [{ x: 350, y: 105 }, { x: 390, y: 105 }, { x: 390, y: 60 }, { x: 432, y: 60 }] },
+          on_reject: { points: [{ x: 350, y: 135 }, { x: 390, y: 135 }, { x: 390, y: 180 }, { x: 432, y: 180 }] },
+        },
+      },
+    },
   },
 } as const satisfies AppDefinitionInput;
 

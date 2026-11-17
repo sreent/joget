@@ -2,6 +2,7 @@ import { evaluateCondition } from '@platform/authz';
 import { evaluateExpression, roundTo, type Expression, type ExpressionValue } from './expressions.js';
 import { entityFields, isWritable, type FieldInfo, type StoredDefinition } from './fields.js';
 import type { Finding } from './rules.js';
+import { processSkillTasks } from './processes.js';
 import type { SimpleStep, Step } from './schema.js';
 import { canonicalValue, conditionRecord, rollupValues, type FieldValue, type LineValues, type RecordLines, type RecordValues, type ValueIssue } from './values.js';
 
@@ -80,13 +81,22 @@ export function linesFieldsAddedTo(steps: readonly Step[]): string[] {
  * Where a definition starts a7c skills, as issues: for an installation that doesn't connect a7c,
  * which refuses such a definition rather than queue calls that nothing would ever send.
  */
-export function skillStepIssues(definition: { readonly actions: Readonly<Record<string, { readonly steps?: readonly Step[] }>> }): Array<{ path: string; message: string }> {
-  return Object.entries(definition.actions).flatMap(([name, action]) =>
-    skillSteps(action.steps ?? []).map(({ path, step }) => ({
-      path: `actions.${name}.${path}`,
-      message: `${step.label}: this installation doesn't connect a7c, so an action can't start an a7c skill. Leave the step out, or ask an admin to connect a7c`,
+export function skillStepIssues(definition: {
+  readonly actions: Readonly<Record<string, { readonly steps?: readonly Step[] }>>;
+  readonly processes?: StoredDefinition['processes'];
+}): Array<{ path: string; message: string }> {
+  return [
+    ...Object.entries(definition.actions).flatMap(([name, action]) =>
+      skillSteps(action.steps ?? []).map(({ path, step }) => ({
+        path: `actions.${name}.${path}`,
+        message: `${step.label}: this installation doesn't connect a7c, so an action can't start an a7c skill. Leave the step out, or ask an admin to connect a7c`,
+      })),
+    ),
+    ...processSkillTasks(definition).map(({ path, name }) => ({
+      path,
+      message: `${name}: this installation doesn't connect a7c, so a process can't start an a7c skill. Leave the task out, or ask an admin to connect a7c`,
     })),
-  );
+  ];
 }
 
 /** Every skill step of an action, at any depth, with where it is. */

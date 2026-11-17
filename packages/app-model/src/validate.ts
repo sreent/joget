@@ -13,8 +13,9 @@ import {
   type StoredEntity,
   type StoredField,
 } from './fields.js';
-import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Action, type Entity, type SimpleStep, type Step } from './schema.js';
+import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
+import { elementName, processGraph } from './processes.js';
+import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Action, type Entity, type ProcessElement, type SimpleStep, type Step, type Timer } from './schema.js';
 import { alwaysGiven } from './steps.js';
 import { canonicalValue } from './values.js';
 
@@ -59,7 +60,10 @@ export function validateDefinition(input: unknown, previous?: StoredDefinition, 
   const notes: string[] = [];
   let definition = assignIds(parsed.data, previous, generateId, issues);
   if (issues.length === 0 && previous) definition = propagateRenames(definition, previous, notes);
-  if (issues.length === 0) checkReferences(definition, issues);
+  if (issues.length === 0) {
+    checkReferences(definition, issues);
+    checkProcesses(definition, issues);
+  }
   return issues.length ? { ok: false, issues } : { ok: true, definition, notes };
 }
 
@@ -286,8 +290,44 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
   const navigation = definition.navigation
     ? { ...definition.navigation, items: definition.navigation.items.map((item) => ('entity' in item ? { ...item, entity: entityName(item.entity) } : item)) }
     : undefined;
+  const processes = definition.processes
+    ? mapRecord(definition.processes, (process) => {
+        const entity = entityName(process.entity);
+        const field = fieldName(entity);
+        return {
+          ...process,
+          entity,
+          elements: mapRecord(process.elements, (element): ProcessElement => {
+            switch (element.type) {
+              case 'userTask':
+                return element.assignee ? { ...element, assignee: { field: field(element.assignee.field) } } : element;
+              case 'serviceTask':
+                return element.input ? { ...element, input: mapRecord(element.input, (value) => mapExpressionRefs(value, refs(entity))) } : element;
+              case 'intermediateCatchEvent':
+              case 'boundaryEvent':
+                return 'date' in element.timer ? { ...element, timer: { date: field(element.timer.date) } } : element;
+              default:
+                return element;
+            }
+          }),
+          flows: mapRecord(process.flows, (flow) => (flow.when ? { ...flow, when: condition(entity, flow.when) } : flow)),
+        };
+      })
+    : undefined;
   for (const change of touched) notes.push(`Updated references for the rename ${change}`);
-  return { ...definition, entities, rules, actions, queries, cards, forms, roles, pages, ...(navigation ? { navigation } : {}) } as StoredDefinition;
+  return {
+    ...definition,
+    entities,
+    rules,
+    actions,
+    queries,
+    cards,
+    forms,
+    roles,
+    pages,
+    ...(navigation ? { navigation } : {}),
+    ...(processes ? { processes } : {}),
+  } as StoredDefinition;
 }
 
 function assignIds(
@@ -346,6 +386,11 @@ interface ConditionScope {
   /** The record's lines fields, which conditions can't test directly. */
   readonly lines?: ReadonlySet<string>;
   readonly input?: ReadonlyMap<string, 'text' | 'number' | 'boolean'>;
+  /**
+   * In a process: its user tasks and their outcomes, which conditions read as `tasks.<task>.outcome`.
+   * A timer can move a process when nobody is there, so its conditions can't use `principal`.
+   */
+  readonly tasks?: ReadonlyMap<string, readonly string[]>;
 }
 
 /** Check a condition's references and, where a record field meets a literal, their types. */
@@ -367,6 +412,11 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
           issues.push({ path, message: `${ref}: dates and times can't be compared in conditions yet, only tested with "exists"` });
         }
       }
+    } else if (root === 'tasks' && scope.tasks) {
+      if (!name || rest.length !== 1 || rest[0] !== 'outcome') issues.push({ path, message: `${ref}: refer to a task's outcome as tasks.<task>.outcome` });
+      else if (!scope.tasks.has(name)) issues.push({ path, message: `${ref}: the process has no user task ${name}` });
+    } else if (scope.tasks) {
+      issues.push({ path, message: `${ref}: a process's conditions can refer to the record and to its tasks' outcomes` });
     } else if (root === 'input') {
       if (!name || rest.length || !scope.input?.has(name)) issues.push({ path, message: `${ref}: no such parameter` });
     } else if (root === 'principal' || root === 'context') {
@@ -374,6 +424,12 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
     } else {
       issues.push({ path, message: `${ref}: conditions can refer to record, principal, context and input` });
     }
+  };
+  /** The outcomes a task reference can take, for `tasks.<task>.outcome`. */
+  const outcomesOf = (operand: Operand): readonly string[] | undefined => {
+    if (!isRef(operand) || !scope.tasks) return undefined;
+    const [root, task, prop] = operand.ref.split('.');
+    return root === 'tasks' && prop === 'outcome' && task ? scope.tasks.get(task) : undefined;
   };
 
   const literalMatches = (info: FieldInfo, literal: Operand): string | null => {
@@ -411,6 +467,10 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
     const [left, right] = (c as Record<string, readonly [Operand, Operand]>)[op]!;
     for (const operand of [left, right]) if (isRef(operand)) checkRef(operand.ref);
     for (const [a, b] of [[left, right], [right, left]] as const) {
+      const outcomes = outcomesOf(a);
+      if (outcomes && !isRef(b) && (op === 'eq' || op === 'ne') && (typeof b !== 'string' || !outcomes.includes(b))) {
+        issues.push({ path, message: `${(a as { ref: string }).ref} is ${outcomes.join(' or ')}, never ${JSON.stringify(b)}` });
+      }
       const info = fieldOf(a);
       if (!info) continue;
       if (op === 'eq' || op === 'ne') {
@@ -944,6 +1004,226 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       if ('page' in item && !definition.pages[item.page]) issues.push({ path, message: `No page named ${item.page}` });
       if ('form' in item && !definition.forms[item.form]) issues.push({ path, message: `No form named ${item.form}` });
       if ('entity' in item) recordEntityAt(item.entity, path);
+    });
+  }
+}
+
+/** System fields that name a person, which a user task can be assigned to. */
+const PERSON_FIELDS: readonly string[] = ['owner', 'created_by', 'updated_by'];
+
+/**
+ * Check the app's processes (design §6.10): each is about records of a real entity; its flows join
+ * elements that exist, in the directions BPMN 2.0 allows; each element has the flows it needs;
+ * tasks name roles, actions, outcomes and cards that exist and fit; conditions read the record and
+ * the tasks' outcomes; and every element can be reached from a start event.
+ */
+function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
+  const owners = lineOwners(definition);
+  for (const [name, process] of Object.entries(definition.processes ?? {})) {
+    const base = `processes.${name}`;
+    const entity = definition.entities[process.entity];
+    if (!entity) {
+      issues.push({ path: `${base}.entity`, message: `No entity named ${process.entity}` });
+      continue;
+    }
+    const owner = owners.get(process.entity);
+    if (owner) {
+      issues.push({ path: `${base}.entity`, message: `${process.entity} is the lines of ${owner.parent}.${owner.field}, so it has no records of its own: use ${owner.parent}` });
+      continue;
+    }
+    const fields = entityFields(entity);
+    const lines = new Set(entity.fields.filter((field) => field.type === 'lines').map((field) => field.name));
+    const graph = processGraph(process);
+    const label = (id: string) => elementName(process, id);
+    const tasks = new Map(
+      Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'userTask' ? [[id, element.outcomes.map((outcome) => outcome.name)] as const] : [])),
+    );
+    const scope = { record: fields, lines, tasks };
+
+    for (const id of Object.keys(process.flows)) {
+      if (id in process.elements) issues.push({ path: `${base}.flows.${id}`, message: `${id} is also an element's ID: elements and flows share one set of IDs` });
+    }
+    for (const [id, flow] of Object.entries(process.flows)) {
+      const path = `${base}.flows.${id}`;
+      const from = process.elements[flow.from];
+      const to = process.elements[flow.to];
+      if (!from) issues.push({ path: `${path}.from`, message: `No element ${flow.from}` });
+      if (!to) issues.push({ path: `${path}.to`, message: `No element ${flow.to}` });
+      if (!from || !to) continue;
+      if (from.type === 'endEvent') issues.push({ path: `${path}.from`, message: `${label(flow.from)} is an end event: no flow leaves it` });
+      if (to.type === 'startEvent') issues.push({ path: `${path}.to`, message: `${label(flow.to)} is a start event: no flow leads into it` });
+      if (to.type === 'boundaryEvent') issues.push({ path: `${path}.to`, message: `${label(flow.to)} sits on a task's boundary: no flow leads into it` });
+      if (flow.outcome !== undefined) {
+        if (from.type !== 'userTask') issues.push({ path: `${path}.outcome`, message: 'Only a flow out of a user task follows an outcome' });
+        else if (!from.outcomes.some((outcome) => outcome.name === flow.outcome)) issues.push({ path: `${path}.outcome`, message: `${label(flow.from)} has no outcome ${flow.outcome}` });
+      }
+      if ((flow.when || flow.default) && from.type !== 'exclusiveGateway') {
+        issues.push({ path, message: 'Only a flow out of an exclusive gateway has a condition or is its default' });
+      }
+      if (flow.when && flow.default) issues.push({ path: `${path}.when`, message: "A default flow has no condition: it's taken when no other flow's condition holds" });
+      if (flow.when) checkCondition(flow.when, scope, `${path}.when`, issues);
+    }
+
+    const checkTimer = (timer: Timer, path: string) => {
+      if (!('date' in timer)) return;
+      const info = fields.get(timer.date);
+      if (!info) issues.push({ path: `${path}.timer.date`, message: `No field ${timer.date}` });
+      else if (info.kind !== 'date' && info.kind !== 'datetime') issues.push({ path: `${path}.timer.date`, message: `${timer.date} isn't a date or a time` });
+    };
+    const updateAction = (action: string, path: string) => {
+      const found = definition.actions[action];
+      if (!found) issues.push({ path, message: `No action named ${action}` });
+      else if (found.entity !== process.entity) issues.push({ path, message: `${action} works on ${found.entity}, not on ${process.entity}` });
+      else if (found.operation !== 'update') issues.push({ path, message: `${action} creates a record; here an action changes the process's own record` });
+      return found;
+    };
+    /** An action that starts the process: it may create the record or change it. */
+    const startAction = (action: string, path: string) => {
+      const found = definition.actions[action];
+      if (!found) issues.push({ path, message: `No action named ${action}` });
+      else if (found.entity !== process.entity) issues.push({ path, message: `${action} works on ${found.entity}, not on ${process.entity}` });
+      else return found;
+      return undefined;
+    };
+    let starts = 0;
+    let ends = 0;
+    const startedBy = new Map<string, string>();
+    for (const [id, element] of Object.entries(process.elements)) {
+      const path = `${base}.elements.${id}`;
+      const into = graph.incoming.get(id) ?? [];
+      const out = graph.outgoing.get(id) ?? [];
+      const oneOut = () => {
+        if (out.length !== 1) issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
+      };
+      if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !into.length) issues.push({ path, message: `No flow leads to ${label(id)}` });
+      switch (element.type) {
+        case 'startEvent':
+          starts++;
+          oneOut();
+          element.actions.forEach((action, index) => {
+            if (!startAction(action, `${path}.actions[${index}]`)) return;
+            const other = startedBy.get(action);
+            if (other) issues.push({ path: `${path}.actions[${index}]`, message: `${action} already starts this process, at ${label(other)}` });
+            startedBy.set(action, id);
+          });
+          break;
+        case 'endEvent':
+          ends++;
+          break;
+        case 'userTask': {
+          const role = definition.roles[element.role];
+          if (!role) issues.push({ path: `${path}.role`, message: `No role named ${element.role}` });
+          if (element.assignee) {
+            const info = fields.get(element.assignee.field);
+            if (!info) issues.push({ path: `${path}.assignee.field`, message: `No field ${element.assignee.field}` });
+            else if (!(info.field?.type === 'user' || PERSON_FIELDS.includes(info.name))) issues.push({ path: `${path}.assignee.field`, message: `${info.name} doesn't name a person` });
+          }
+          const seen = new Set<string>();
+          element.outcomes.forEach((outcome, index) => {
+            const at = `${path}.outcomes[${index}]`;
+            if (seen.has(outcome.name)) issues.push({ path: `${at}.name`, message: `Another outcome is already named ${outcome.name}` });
+            seen.add(outcome.name);
+            if (!outcome.action) return;
+            const action = updateAction(outcome.action, `${at}.action`);
+            if (action && role && !role.actions.includes(outcome.action)) {
+              issues.push({ path: `${at}.action`, message: `${role.label} can't run ${outcome.action}, so nobody who may do the task could choose ${outcome.label}` });
+            }
+          });
+          if (element.card) {
+            const card = definition.cards[element.card];
+            if (!card) issues.push({ path: `${path}.card`, message: `No card named ${element.card}` });
+            else if (card.entity !== process.entity) issues.push({ path: `${path}.card`, message: `${element.card} shows ${card.entity}, not ${process.entity}` });
+          }
+          const named = out.filter((flowId) => process.flows[flowId]!.outcome !== undefined);
+          if (named.length) {
+            if (named.length !== out.length) issues.push({ path, message: `Every flow out of ${label(id)} follows an outcome, or one flow leads on to a gateway` });
+            for (const outcome of element.outcomes) {
+              const taken = named.filter((flowId) => process.flows[flowId]!.outcome === outcome.name).length;
+              if (taken !== 1) issues.push({ path, message: taken ? `${outcome.label}: one flow follows each outcome` : `${outcome.label} leads nowhere: draw a flow for it` });
+            }
+          } else {
+            oneOut();
+          }
+          break;
+        }
+        case 'serviceTask':
+          if (Boolean(element.action) === Boolean(element.skill)) issues.push({ path, message: `${label(id)} runs an action or starts an a7c skill: one of the two` });
+          if (element.action) updateAction(element.action, `${path}.action`);
+          if (element.input && !element.skill) issues.push({ path: `${path}.input`, message: 'Only a skill takes input' });
+          for (const [input, expression] of Object.entries(element.input ?? {})) {
+            for (const ref of expressionRefs(expression)) {
+              const [root, field, ...rest] = ref.split('.');
+              const ok = root === 'record' && field !== undefined && !rest.length && fields.has(field);
+              if (!ok) {
+                issues.push({
+                  path: `${path}.input.${input}`,
+                  message: root === 'record' && field && lines.has(field) ? `${ref}: a skill's input can't read lines one by one` : `${ref}: a process's skill input reads fields of the record`,
+                });
+              }
+            }
+          }
+          oneOut();
+          break;
+        case 'task':
+        case 'manualTask':
+        case 'intermediateCatchEvent':
+          oneOut();
+          if (element.type === 'intermediateCatchEvent') checkTimer(element.timer, path);
+          break;
+        case 'exclusiveGateway': {
+          if (!out.length) issues.push({ path, message: `${label(id)} needs a flow out` });
+          const defaults = out.filter((flowId) => process.flows[flowId]!.default);
+          if (defaults.length > 1) issues.push({ path, message: `${label(id)} has one default flow at most` });
+          if (out.length > 1) {
+            for (const flowId of out) {
+              const flow = process.flows[flowId]!;
+              if (!flow.default && !flow.when) issues.push({ path: `${base}.flows.${flowId}`, message: `A flow out of ${label(id)} needs a condition, or must be its default` });
+            }
+          }
+          break;
+        }
+        case 'parallelGateway':
+          if (!out.length) issues.push({ path, message: `${label(id)} needs a flow out` });
+          break;
+        case 'boundaryEvent': {
+          const host = process.elements[element.attachedTo];
+          if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
+          else if (host.type !== 'userTask') issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a user task: a timer sits on a user task` });
+          checkTimer(element.timer, path);
+          oneOut();
+          break;
+        }
+      }
+    }
+    if (!starts) issues.push({ path: `${base}.elements`, message: 'A process needs a start event' });
+    if (!ends) issues.push({ path: `${base}.elements`, message: 'A process needs an end event' });
+
+    // Every element can be reached from a start event: a boundary event, once its task can.
+    const reached = new Set<string>();
+    const queue = Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'startEvent' ? [id] : []));
+    while (queue.length) {
+      const id = queue.pop()!;
+      if (reached.has(id)) continue;
+      reached.add(id);
+      for (const flowId of graph.outgoing.get(id) ?? []) queue.push(process.flows[flowId]!.to);
+      for (const boundary of graph.boundaries.get(id) ?? []) queue.push(boundary);
+    }
+    for (const [id, element] of Object.entries(process.elements)) {
+      const flagged = element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !(graph.incoming.get(id) ?? []).length;
+      if (!reached.has(id) && !flagged) issues.push({ path: `${base}.elements.${id}`, message: `${label(id)} can't be reached from a start event` });
+    }
+
+    for (const id of Object.keys(process.diagram?.shapes ?? {})) {
+      if (!process.elements[id]) issues.push({ path: `${base}.diagram.shapes.${id}`, message: `No element ${id}` });
+    }
+    for (const id of Object.keys(process.diagram?.edges ?? {})) {
+      if (!process.flows[id]) issues.push({ path: `${base}.diagram.edges.${id}`, message: `No flow ${id}` });
+    }
+
+  }
+  for (const [roleName, role] of Object.entries(definition.roles)) {
+    (role.processes ?? []).forEach((process, index) => {
+      if (!definition.processes?.[process]) issues.push({ path: `roles.${roleName}.processes[${index}]`, message: `No process named ${process}` });
     });
   }
 }

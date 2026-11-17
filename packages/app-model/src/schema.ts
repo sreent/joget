@@ -464,6 +464,139 @@ export const Navigation = z.strictObject({
 });
 export type Navigation = z.infer<typeof Navigation>;
 
+/*
+ * Business processes, in BPMN 2.0 (design §6.10). A process is about one record of its entity,
+ * such as one claim, and the record is its data: conditions read the record as it is now. The
+ * elements and flows are BPMN 2.0's, under BPMN's names, so a model goes to and from other BPMN
+ * tools. Ambit runs the elements here; an import refuses the others.
+ */
+
+/** IDs of a process's elements and flows, as BPMN 2.0 tools give them: kept as they are, so a model goes back as it came. */
+export const ELEMENT_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/;
+export const ElementId = z.string().regex(ELEMENT_ID_PATTERN, 'Use letters, digits, hyphens and underscores, starting with a letter or an underscore');
+
+/** An ISO 8601 duration, as BPMN 2.0's timers use: P3D is three days, PT4H four hours. */
+export const DURATION_PATTERN = /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
+export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in ISO 8601, for example P3D for three days or PT4H for four hours');
+
+/** When a timer fires: after a duration, or on a date or time field of the record, such as the first day of a leave. */
+export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name })]);
+export type Timer = z.infer<typeof Timer>;
+
+/** Where an instance starts. An action that a start event names starts it when the action commits on a record. */
+const StartEvent = z.strictObject({
+  type: z.literal('startEvent'),
+  name: Label.optional(),
+  /** Without actions, a person whose role may start the process starts it on a record. */
+  actions: z.array(Name).max(10).default([]),
+});
+/** Where a path ends. A terminate end event ends the whole instance, other paths included. */
+const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optional(), terminate: z.boolean().default(false) });
+
+/** A choice that completes a user task, such as approve. It can run one of the app's actions on the record, as the person who decides. */
+const Outcome = z.strictObject({ name: Name, label: Label, action: Name.optional() });
+export type Outcome = z.infer<typeof Outcome>;
+
+/** Work a person does, such as deciding on a claim: it waits in their inbox until they choose an outcome. */
+const UserTask = z.strictObject({
+  type: z.literal('userTask'),
+  /** What the inbox calls the task. */
+  name: Label,
+  description: Description.optional(),
+  /** The app role whose holders may do the task. A role grants; routing only narrows. */
+  role: Name,
+  /** One person: whoever a user field of the record names, such as the manager the requester chose. Without one, anyone with the role can take it. */
+  assignee: z.strictObject({ field: Name }).optional(),
+  outcomes: z.array(Outcome).min(1).max(10),
+  /** How long the task may stay open, from when it opens: its due date. */
+  due: Duration.optional(),
+  /** The review card the task shows. */
+  card: Name.optional(),
+});
+/** Work the process does by itself: run one of the app's actions on the record, with the app's authority, or start an a7c skill. */
+const ServiceTask = z.strictObject({
+  type: z.literal('serviceTask'),
+  name: Label,
+  description: Description.optional(),
+  action: Name.optional(),
+  skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim').optional(),
+  /** The skill's input, worked out from the record. */
+  input: z.record(SkillInputName, ExpressionSchema).optional(),
+});
+/** A task with nothing to run, which passes straight on: work that is only drawn. */
+const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional() });
+/** Work done away from any system, such as posting a letter: the process passes straight on. */
+const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, description: Description.optional() });
+/** Takes the first flow whose condition holds, in order, or its default flow. With several flows in, it lets each token through. */
+const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), name: Label.optional() });
+/** Takes every flow out at once; with several flows in, waits for a token from each. */
+const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), name: Label.optional() });
+/** Waits until a timer fires. */
+const TimerCatchEvent = z.strictObject({ type: z.literal('intermediateCatchEvent'), name: Label.optional(), timer: Timer });
+/** A timer on a user task, for a deadline or an escalation. An interrupting one ends the task; one that doesn't interrupt starts another path beside it. */
+const BoundaryEvent = z.strictObject({
+  type: z.literal('boundaryEvent'),
+  name: Label.optional(),
+  attachedTo: ElementId,
+  interrupting: z.boolean().default(true),
+  timer: Timer,
+});
+
+export const ProcessElement = z.discriminatedUnion('type', [
+  StartEvent,
+  EndEvent,
+  UserTask,
+  ServiceTask,
+  PlainTask,
+  ManualTask,
+  ExclusiveGateway,
+  ParallelGateway,
+  TimerCatchEvent,
+  BoundaryEvent,
+]);
+export type ProcessElement = z.infer<typeof ProcessElement>;
+export type ProcessElementType = ProcessElement['type'];
+export type UserTaskElement = Extract<ProcessElement, { type: 'userTask' }>;
+export type ServiceTaskElement = Extract<ProcessElement, { type: 'serviceTask' }>;
+export type BoundaryEventElement = Extract<ProcessElement, { type: 'boundaryEvent' }>;
+
+/** A sequence flow: the arrow from one element to the next. */
+export const Flow = z.strictObject({
+  from: ElementId,
+  to: ElementId,
+  /** The label on the arrow, such as "Over SGD 1,000". */
+  name: Label.optional(),
+  /** Out of an exclusive gateway: take the flow only if this holds. */
+  when: ConditionSchema.optional(),
+  /** Out of a user task: the outcome that takes this flow. */
+  outcome: Name.optional(),
+  /** Out of an exclusive gateway: the flow it takes when no other flow's condition holds. */
+  default: z.boolean().optional(),
+});
+export type Flow = z.infer<typeof Flow>;
+
+const Coordinate = z.number().min(-1e6).max(1e6);
+const Bounds = z.strictObject({ x: Coordinate, y: Coordinate, width: z.number().positive().max(1e5), height: z.number().positive().max(1e5) });
+/** Where each element and flow is drawn: BPMN 2.0's diagram interchange, so a model looks the same in every tool. */
+export const Diagram = z.strictObject({
+  shapes: z.record(ElementId, z.strictObject({ ...Bounds.shape, label: Bounds.optional() })).default({}),
+  edges: z.record(ElementId, z.strictObject({ points: z.array(z.strictObject({ x: Coordinate, y: Coordinate })).min(2).max(50), label: Bounds.optional() })).default({}),
+});
+export type Diagram = z.infer<typeof Diagram>;
+
+export const MAX_PROCESS_ELEMENTS = 200;
+export const MAX_PROCESS_FLOWS = 400;
+
+export const Process = z.strictObject({
+  label: Label,
+  description: Description.optional(),
+  /** Each instance is about one record of this entity. */
+  entity: Name,
+  elements: z.record(ElementId, ProcessElement).refine((map) => Object.keys(map).length <= MAX_PROCESS_ELEMENTS, `At most ${MAX_PROCESS_ELEMENTS} elements`),
+  flows: z.record(ElementId, Flow).refine((map) => Object.keys(map).length <= MAX_PROCESS_FLOWS, `At most ${MAX_PROCESS_FLOWS} flows`),
+  diagram: Diagram.optional(),
+});
+export type Process = z.infer<typeof Process>;
 
 const FieldSelection = z.union([
   z.strictObject({ include: z.array(FieldPath).max(MAX_FIELDS * 2) }),
@@ -503,10 +636,12 @@ export const AppRole = z.strictObject({
   actions: z.array(Name).max(100).default([]),
   /** The queries this role may run. */
   queries: z.array(Name).max(100).default([]),
+  /** The processes this role may start on a record by hand. */
+  processes: z.array(Name).max(50).optional(),
 });
 export type AppRole = z.infer<typeof AppRole>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50 } as const;
+export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50 } as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
   z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
@@ -522,6 +657,14 @@ export const AppDefinition = z.strictObject({
   roles: bounded(AppRole, LIMITS.roles, 'roles'),
   pages: bounded(Page, LIMITS.pages, 'pages'),
   navigation: Navigation.optional(),
+  /**
+   * Business processes in BPMN 2.0. Optional rather than empty by default, so that the definitions
+   * of earlier releases keep their digests.
+   */
+  processes: z
+    .record(Name, Process)
+    .refine((map) => Object.keys(map).length <= LIMITS.processes, `At most ${LIMITS.processes} processes`)
+    .optional(),
 });
 export type AppDefinition = z.infer<typeof AppDefinition>;
 export type AppDefinitionInput = z.input<typeof AppDefinition>;

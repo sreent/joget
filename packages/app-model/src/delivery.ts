@@ -1,7 +1,8 @@
 import type { PermissionGrant } from '@platform/authz';
 import type { StoredDefinition, StoredEntity } from './fields.js';
 import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles.js';
-import type { Action, ConfirmationLevel, Query } from './schema.js';
+import { processWork } from './processes.js';
+import type { Action, ConfirmationLevel, Process, Query } from './schema.js';
 import { skillSteps } from './steps.js';
 
 /*
@@ -23,7 +24,7 @@ function stable(value: unknown): string {
 const same = (a: unknown, b: unknown): boolean => stable(a) === stable(b);
 
 /** The parts of a definition, each a map of named artifacts. The menu is one artifact on its own. */
-export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages'] as const;
+export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages', 'processes'] as const;
 export type DefinitionSection = (typeof DEFINITION_SECTIONS)[number] | 'navigation';
 
 export interface DefinitionChange {
@@ -57,8 +58,8 @@ export function diffDefinitions(base: StoredDefinition, head: StoredDefinition):
   }
   for (const section of DEFINITION_SECTIONS) {
     if (section === 'entities') continue;
-    const before: Readonly<Record<string, unknown>> = base[section];
-    const after: Readonly<Record<string, unknown>> = head[section];
+    const before: Readonly<Record<string, unknown>> = base[section] ?? {};
+    const after: Readonly<Record<string, unknown>> = head[section] ?? {};
     for (const name of Object.keys(after)) {
       if (!(name in before)) changes.push({ section, name, change: 'added', details: [] });
       else if (!same(before[name], after[name])) changes.push({ section, name, change: 'changed', details: [] });
@@ -118,6 +119,7 @@ const VERBS: Readonly<Record<string, string>> = {
   'record.export': 'export',
   'action.run': 'run',
   'query.run': 'run',
+  'process.start': 'start',
 };
 const ACCESS_RANK: Readonly<Record<FieldAccess, number>> = { hidden: 0, masked: 1, full: 2 };
 
@@ -162,6 +164,7 @@ export function accessChanges(base: StoredDefinition, head: StoredDefinition): A
   const labelOf = (permission: string, target: string): string => {
     if (permission === 'action.run') return head.actions[target]?.label ?? base.actions[target]?.label ?? target;
     if (permission === 'query.run') return head.queries[target]?.label ?? base.queries[target]?.label ?? target;
+    if (permission === 'process.start') return head.processes?.[target]?.label ?? base.processes?.[target]?.label ?? target;
     return (entityById(head, target) ?? entityById(base, target))?.label ?? target;
   };
 
@@ -261,7 +264,45 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
     else if (b && !h) changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
     else if (b && h && !same(b, h)) for (const text of queryChanges(name, b, h, entityLabel)) changes.push({ tool: name, change: 'changed', text });
   }
+  const [baseProcesses, headProcesses] = [base.processes ?? {}, head.processes ?? {}];
+  for (const name of new Set([...Object.keys(baseProcesses), ...Object.keys(headProcesses)])) {
+    const [b, h] = [baseProcesses[name], headProcesses[name]];
+    if (!b && h) {
+      const starts = startingActions(h);
+      const { actions, skills } = processWork(h);
+      const texts = [
+        `New process ${h.label}, on ${entityLabel(h.entity)}: ${starts.length ? `${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it` : 'people start it by hand'}`,
+        ...(actions.length ? [`It runs ${actions.join(', ')} by itself`] : []),
+        ...(skills.length ? [`It starts the a7c skill${skills.length > 1 ? 's' : ''} ${skills.join(', ')}`] : []),
+      ];
+      changes.push({ tool: name, change: 'added', text: texts.join('. ') });
+    } else if (b && !h) {
+      changes.push({ tool: name, change: 'removed', text: `${b.label} no longer starts. Running instances finish on the release they started on` });
+    } else if (b && h && !same(b, h)) {
+      for (const text of processChanges(b, h)) changes.push({ tool: name, change: 'changed', text });
+    }
+  }
   return changes;
+}
+
+/** The actions whose commit starts a process. */
+function startingActions(process: Process): string[] {
+  return [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'startEvent' ? element.actions : [])))];
+}
+
+/** What a reviewer weighs in a changed process: what starts it, what it does by itself, and whether its flow changed. Its layout doesn't count. */
+function processChanges(b: Process, h: Process): string[] {
+  const texts: string[] = [];
+  const [startsBefore, startsAfter] = [startingActions(b), startingActions(h)];
+  for (const action of startsAfter) if (!startsBefore.includes(action)) texts.push(`${action} now starts ${h.label}`);
+  for (const action of startsBefore) if (!startsAfter.includes(action)) texts.push(`${action} no longer starts ${h.label}`);
+  const [before, after] = [processWork(b), processWork(h)];
+  for (const action of after.actions) if (!before.actions.includes(action)) texts.push(`${h.label} now runs ${action} by itself`);
+  for (const action of before.actions) if (!after.actions.includes(action)) texts.push(`${h.label} no longer runs ${action} by itself`);
+  for (const skill of after.skills) if (!before.skills.includes(skill)) texts.push(`${h.label} now starts the a7c skill ${skill}`);
+  for (const skill of before.skills) if (!after.skills.includes(skill)) texts.push(`${h.label} no longer starts the a7c skill ${skill}`);
+  if (!texts.length && !same({ ...b, diagram: undefined }, { ...h, diagram: undefined })) texts.push(`The flow of ${h.label} changed`);
+  return texts;
 }
 
 function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: string) => string): string[] {
@@ -322,6 +363,11 @@ export function lintDefinition(definition: StoredDefinition): string[] {
   for (const [name, query] of Object.entries(definition.queries)) {
     if (!roles.some((role) => role.queries.includes(name))) findings.push(`No role can run the query ${query.label}`);
   }
+  for (const [name, process] of Object.entries(definition.processes ?? {})) {
+    if (!startingActions(process).length && !roles.some((role) => role.processes?.includes(name))) {
+      findings.push(`Nothing starts the process ${process.label}: no start event names an action, and no role may start it`);
+    }
+  }
   for (const [name, role] of Object.entries(definition.roles)) {
     const grants = Object.values(role.entities).some((p) => p.read || p.create || p.update || p.delete || p.export);
     if (!grants && !role.actions.length && !role.queries.length) findings.push(`The role ${role.label} (${name}) grants nothing`);
@@ -351,9 +397,9 @@ export function mergeDefinitions(base: StoredDefinition, ours: StoredDefinition,
   const merged: Record<string, unknown> = { formatVersion: theirs.formatVersion };
   const what = (from: unknown, to: unknown): MergeConflict['ours'] => (from === undefined ? 'added' : to === undefined ? 'removed' : 'changed');
   for (const section of DEFINITION_SECTIONS) {
-    const b: Readonly<Record<string, unknown>> = base[section];
-    const o: Readonly<Record<string, unknown>> = ours[section];
-    const t: Readonly<Record<string, unknown>> = theirs[section];
+    const b: Readonly<Record<string, unknown>> = base[section] ?? {};
+    const o: Readonly<Record<string, unknown>> = ours[section] ?? {};
+    const t: Readonly<Record<string, unknown>> = theirs[section] ?? {};
     const out: Record<string, unknown> = {};
     for (const name of new Set([...Object.keys(t), ...Object.keys(o), ...Object.keys(b)])) {
       const [bv, ov, tv] = [b[name], o[name], t[name]];
@@ -364,7 +410,8 @@ export function mergeDefinitions(base: StoredDefinition, ours: StoredDefinition,
       }
       if (pick !== undefined) out[name] = pick;
     }
-    merged[section] = out;
+    // A definition without processes leaves them out, so its digest stays as it was.
+    if (section !== 'processes' || Object.keys(out).length) merged[section] = out;
   }
   const [bn, on, tn] = [base.navigation, ours.navigation, theirs.navigation];
   const menu = same(on, tn) || same(bn, on) ? tn : same(bn, tn) ? on : null;
