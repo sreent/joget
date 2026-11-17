@@ -183,7 +183,7 @@ export function Home({ me }: { me: Me }) {
               )}
             </Field>
           ) : null}
-          <Field label="Start from" hint={template?.description ?? (start === 'file' ? 'A definition someone downloaded from Ambit. No data comes with it.' : undefined)}>
+          <Field label="Start from" hint={template?.description ?? (start === 'file' ? 'A definition someone downloaded from a3t. No data comes with it.' : undefined)}>
             {(id) => (
               <Select id={id} value={start} onChange={(e) => setStart(e.target.value)}>
                 <option value="blank">A blank app</option>

@@ -78,6 +78,6 @@ describe('Ocean, as Ambit uses it', () => {
   it('bundles the fonts it declares, with their licences', () => {
     const declared = [...OCEAN.matchAll(/url\(fonts\/([\w.-]+)\)/g)].map((m) => m[1]);
     expect(declared.sort()).toEqual([...FONTS].sort());
-    for (const file of [...FONTS, 'OFL-plex-sans.txt', 'OFL-plex-mono.txt']) expect(() => readFileSync(join(DESIGN_DIR, 'fonts', file))).not.toThrow();
+    for (const file of [...FONTS, 'OFL-plex-sans.txt', 'OFL-plex-sans-thai.txt', 'OFL-plex-mono.txt']) expect(() => readFileSync(join(DESIGN_DIR, 'fonts', file))).not.toThrow();
   });
 });

@@ -1,0 +1,27 @@
+{
+  "repository": "sreent/ocean",
+  "commit": "535b4c597eb6b8fe6e065557c27d00799a9e2cf0",
+  "files": [
+    "css/tokens.css",
+    "css/components.css",
+    "fonts/OFL-plex-mono.txt",
+    "fonts/OFL-plex-sans-thai.txt",
+    "fonts/OFL-plex-sans.txt",
+    "fonts/plex-mono-400.woff2",
+    "fonts/plex-mono-500.woff2",
+    "fonts/plex-mono-vietnamese-400.woff2",
+    "fonts/plex-mono-vietnamese-500.woff2",
+    "fonts/plex-sans-400.woff2",
+    "fonts/plex-sans-500.woff2",
+    "fonts/plex-sans-600.woff2",
+    "fonts/plex-sans-700.woff2",
+    "fonts/plex-sans-thai-400.woff2",
+    "fonts/plex-sans-thai-500.woff2",
+    "fonts/plex-sans-thai-600.woff2",
+    "fonts/plex-sans-thai-700.woff2",
+    "fonts/plex-sans-vietnamese-400.woff2",
+    "fonts/plex-sans-vietnamese-500.woff2",
+    "fonts/plex-sans-vietnamese-600.woff2",
+    "fonts/plex-sans-vietnamese-700.woff2"
+  ]
+}

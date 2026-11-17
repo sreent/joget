@@ -17,11 +17,12 @@ function App() {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me });
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b border-line bg-surface/95 backdrop-blur">
+      {/* The family's frame names the product by its name and its mark, as Ocean's Shell does: a3t, a3. */}
+      <header className="sticky top-0 z-10 block border-b border-line bg-surface/95 p-0 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4">
-          <Link to={{ name: 'home' }} className="flex items-center gap-2 font-semibold text-text no-underline">
-            <span aria-hidden className="grid size-7 place-items-center rounded-md bg-accent text-sm font-bold text-accent-text">a</span>
-            Ambit <span className="font-normal text-muted">Studio</span>
+          <Link to={{ name: 'home' }} className="brand p-0 no-underline" aria-label="a3t, your apps">
+            <span aria-hidden className="mark">a3</span>
+            a3t
           </Link>
           <span className="flex-1" />
           {me.data ? <TaskCount /> : null}
@@ -30,7 +31,7 @@ function App() {
       </header>
       <main className="mx-auto max-w-7xl px-4 py-6 has-[[data-wide]]:max-w-[110rem]">
         {me.isError ? (
-          <p className="text-bad">Ambit can't be reached right now.</p>
+          <p className="text-bad">a3t can't be reached right now.</p>
         ) : !me.data ? null : route.name === 'home' ? (
           <Home me={me.data} />
         ) : route.name === 'tasks' ? (

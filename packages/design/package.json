@@ -2,7 +2,7 @@
   "name": "@platform/design",
   "version": "0.1.0",
   "private": true,
-  "description": "Ambit's look: Ocean's tokens and IBM Plex (from agentos, a5s), and the styles of Ambit's pages.",
+  "description": "Ambit's look: Ocean's tokens, pieces and fonts, taken from sreent/ocean at a commit (ocean.json), and the styles of Ambit's pages.",
   "type": "module",
   "exports": {
     ".": {
@@ -11,13 +11,16 @@
       "default": "./dist/index.js"
     },
     "./ocean.css": "./ocean.css",
-    "./ambit.css": "./ambit.css"
+    "./ambit.css": "./ambit.css",
+    "./ocean-pieces.css": "./ocean-pieces.css"
   },
   "files": [
     "dist",
     "ocean.css",
     "ambit.css",
-    "fonts"
+    "fonts",
+    "ocean-pieces.css",
+    "ocean.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
