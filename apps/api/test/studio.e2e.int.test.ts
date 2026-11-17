@@ -837,12 +837,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const step = page.getByRole('region', { name: 'Step' });
     await visible(step.getByRole('heading', { name: 'Count or total' }));
     expect(await step.getByLabel('Of', { exact: true }).inputValue()).toBe('claim.lines');
-    await visible(canvas.getByText('Count claim.lines → total'));
+    await visible(canvas.getByTestId('flow-step-steps[0]').getByText('how many → total'));
     await canvas.getByRole('button', { name: 'Add a step at steps[1]' }).click();
     await page.getByRole('button', { name: 'Return a result', exact: true }).click();
     await step.getByLabel('Result: how', { exact: true }).selectOption('field');
     await step.getByLabel('Result', { exact: true }).selectOption('total');
-    await visible(canvas.getByText('Return total'));
+    await visible(canvas.getByText('returns total', { exact: true }));
     await shot(page, '24-flow-designer');
 
     await page.getByRole('button', { name: 'Review and save' }).click();
@@ -907,12 +907,13 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);
     await page.getByRole('button', { name: /^Check a claim/ }).click();
     const canvas = page.getByTestId('flow-canvas');
-    await visible(canvas.getByText('Next item', { exact: true }));
-    await visible(canvas.getByText('If it fails', { exact: true }));
-    await visible(canvas.getByText('If line.amount is more than 100', { exact: true }));
+    await visible(canvas.getByText('For each line in claim.lines', { exact: true }));
+    await shot(page, '26-flow-canvas');
+    await visible(canvas.getByText('if it fails', { exact: true }));
+    await visible(canvas.getByText('line.amount is more than 100', { exact: true }));
     await shot(page, '26-flow-canvas');
     // A step opens beside the canvas, and sees the loop's item.
-    await canvas.getByText('If line.amount is more than 100', { exact: true }).click();
+    await canvas.getByText('line.amount is more than 100', { exact: true }).click();
     const step = page.getByRole('region', { name: 'Step' });
     await visible(step.getByRole('heading', { name: 'Decision' }));
     await step.getByRole('button', { name: 'Remove the step' }).click();

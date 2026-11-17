@@ -32,8 +32,19 @@ mkdirSync(join(design, 'fonts'));
 const fonts = readdirSync(join(from, 'fonts')).sort();
 for (const file of fonts) copyFileSync(join(from, 'fonts', file), join(design, 'fonts', file));
 
+// The icons, as the markup inside each <svg>, for pages that draw them inline.
+const icons = readdirSync(join(from, 'icons')).filter((file) => file.endsWith('.svg')).sort();
+const inner = (file) => readFileSync(join(from, 'icons', file), 'utf8').replace(/^<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
+writeFileSync(
+  join(design, 'src/icons.ts'),
+  `// Ocean's icons, from sreent/ocean at ${commit}, taken by scripts/sync-ocean.mjs: the markup inside\n` +
+    `// each icon's <svg>, which draws in currentColor on a 24-unit square. Change them in Ocean.\n` +
+    `export const ICONS = {\n${icons.map((file) => `  ${JSON.stringify(file.slice(0, -4))}: ${JSON.stringify(inner(file))},`).join('\n')}\n} as const;\n\n` +
+    `export type IconName = keyof typeof ICONS;\n`,
+);
+
 writeFileSync(
   join(design, 'ocean.json'),
-  `${JSON.stringify({ repository: 'sreent/ocean', commit, files: ['css/tokens.css', 'css/components.css', ...fonts.map((file) => `fonts/${file}`)] }, null, 2)}\n`,
+  `${JSON.stringify({ repository: 'sreent/ocean', commit, files: ['css/tokens.css', 'css/components.css', ...fonts.map((file) => `fonts/${file}`), ...icons.map((file) => `icons/${file}`)] }, null, 2)}\n`,
 );
-console.log(`Took Ocean at ${commit}: its tokens, its pieces and ${fonts.length} font files.`);
+console.log(`Took Ocean at ${commit}: its tokens, its pieces, ${fonts.length} font files and ${icons.length} icons.`);

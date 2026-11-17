@@ -15,7 +15,6 @@ import {
 } from '@platform/app-model';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { applyNodeChanges, Background, Controls, Handle, MarkerType, Position, ReactFlow, type Connection, type Edge, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../api.js';
 import { ConditionEditor } from '../components/condition.js';

@@ -1,4 +1,4 @@
-/* Ocean's css/components.css, from sreent/ocean at 535b4c597eb6b8fe6e065557c27d00799a9e2cf0, taken by scripts/sync-ocean.mjs.
+/* Ocean's css/components.css, from sreent/ocean at 80c0548f8359b898b9116bb2cc42d838bd22d944, taken by scripts/sync-ocean.mjs.
    Change it in Ocean, not here. */
 /* Ocean's pieces: the look of every page of a5s, a7c and a3t, on css/tokens.css. Calm surfaces,
    a sidebar of the pages someone may use, cards for what belongs together, and colour only where
@@ -864,6 +864,14 @@ button.flow-row[aria-expanded="true"] { border-color: var(--focus); }
 /* Which flow, and whether the canvas shows its design or its cases now */
 .logic-view { position: absolute; top: var(--space-4); inset-inline-start: var(--space-4); z-index: 5; display: flex; gap: var(--space-2); align-items: center; }
 .logic-view select { padding: 0.3rem 0.5rem; }
+
+/* a3t's flows on React Flow: each piece fills its node, which React Flow places, and the product
+   lays the flow out itself. A step keeps one height, so a row's arrows run straight */
+.flow-canvas .logic-step, .flow-canvas .logic-decision, .flow-canvas .logic-ring, .flow-canvas .logic-frame { position: relative; }
+.flow-canvas .logic-step { width: 100%; height: 100%; min-height: 0; }
+.flow-canvas .logic-words { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.flow-canvas .logic-about { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-canvas .logic-frame { width: 100%; height: 100%; }
 
 /* a3t's data model (proposed): each entity a box of its fields, with arrows for its references and
    its lines, as Mendix's domain model draws it; a field's kind in the tag the form designer uses */

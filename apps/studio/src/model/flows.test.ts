@@ -171,31 +171,41 @@ describe('editing flows', () => {
 
 describe('the flow canvas', () => {
   /** Where the canvas offers to add a step: on its arrows, and in the slots of empty lists. */
-  const places = (definition: Definition, flow: string) => {
-    const laid = layoutFlow(definition, definition.flows![flow]!);
+  const places = (definition: Definition, flow: string, width = 5000) => {
+    const laid = layoutFlow(definition, definition.flows![flow]!, width);
     return [
       ...laid.edges.flatMap((edge) => (edge.insert ? [`${edge.insert.list}@${edge.insert.index}`] : [])),
       ...laid.nodes.flatMap((node) => (node.kind === 'slot' ? [`${node.list}@0`] : [])),
     ].sort();
   };
 
-  it('lays steps down the page, with a decision, a loop that goes back to its top, and an end', () => {
+  it('lays steps left to right: a loop as a frame, a decision as a diamond whose ways meet, and a return as the end', () => {
     const definition = app();
-    const { nodes, edges } = layoutFlow(definition, spend(definition));
+    const { nodes, edges } = layoutFlow(definition, spend(definition), 5000);
     const kinds = Object.fromEntries(nodes.map((node) => [node.id, node.kind]));
-    expect(kinds).toMatchObject({ start: 'start', end: 'end', 'steps[0]': 'step', 'steps[0]:frame': 'frame', 'steps[0].steps[1]': 'decision', 'steps[0].steps[1]:join': 'join', 'steps[3]': 'step' });
-    expect(edges.find((edge) => edge.back)).toMatchObject({ source: 'steps[0]:next', target: 'steps[0]', label: 'Next item' });
-    expect(edges.filter((edge) => edge.source === 'steps[0].steps[1]').map((edge) => [edge.sourceHandle, edge.label])).toEqual([
-      ['yes', 'Yes'],
-      ['no', 'No'],
-    ]);
-    // Nothing follows a return: the flow ends there.
-    expect(edges.filter((edge) => edge.source === 'steps[3]')).toEqual([{ id: 'steps[3]>end', source: 'steps[3]', target: 'end' }]);
-    // Each step sits below the one before it.
-    const y = (id: string) => nodes.find((node) => node.id === id)!.y;
-    expect(y('steps[0]')).toBeLessThan(y('steps[0].steps[0]'));
-    expect(y('steps[0].steps[1]')).toBeLessThan(y('steps[1]'));
-    expect(y('steps[2]')).toBeLessThan(y('steps[3]'));
+    expect(kinds).toMatchObject({
+      start: 'start',
+      'steps[0]': 'frame',
+      'steps[0].steps[0]': 'step',
+      'steps[0].steps[1]': 'decision',
+      'steps[0].steps[1]:merge': 'merge',
+      'steps[1]': 'step',
+      'steps[3]': 'end',
+    });
+    // A return ends the flow: no other end, and nothing after it.
+    expect(nodes.some((node) => node.id === 'end')).toBe(false);
+    expect(edges.some((edge) => edge.source === 'steps[3]')).toBe(false);
+    expect(edges.filter((edge) => edge.source === 'steps[0].steps[1]').map((edge) => edge.label?.text)).toEqual(['yes', 'no']);
+    // Each step sits to the right of the one before it, on one row.
+    const at = (id: string) => nodes.find((node) => node.id === id)!;
+    expect(at('start').x).toBeLessThan(at('steps[0]').x);
+    expect(at('steps[0]').x + at('steps[0]').width).toBeLessThan(at('steps[1]').x);
+    expect(at('steps[1]').x).toBeLessThan(at('steps[2]').x);
+    expect(at('steps[1]').y).toBe(at('steps[2]').y);
+    // The no way runs below the yes way; the find kept in the frame, and the box says what it does.
+    expect(at('steps[0].steps[1].else[0]').y).toBeGreaterThan(at('steps[0].steps[1].then[0]').y);
+    expect(at('steps[0].steps[0]')).toMatchObject({ kindLabel: 'Find', label: 'A Budget', tone: 'reads' });
+    expect(at('steps[0].steps[1].then[0]')).toMatchObject({ kindLabel: 'Change', tone: 'changes' });
   });
 
   it('offers each place for a new step once, except after a return', () => {
@@ -223,6 +233,22 @@ describe('the flow canvas', () => {
     definition = insertStep(definition, name, 'steps', 0, { type: 'try', steps: [], catch: [], rollback: true });
     expect(places(definition, name)).toEqual(['steps@0', 'steps@1', 'steps[0].catch@0', 'steps[0].steps@0']);
     const { edges } = layoutFlow(definition, definition.flows![name]!);
-    expect(edges.find((edge) => edge.sourceHandle === 'fail')).toMatchObject({ source: 'steps[0]', target: 'slot:steps[0].catch', label: 'If it fails' });
+    expect(edges.find((edge) => edge.label?.text === 'if it fails')).toMatchObject({ source: 'steps[0]:out', target: 'slot:steps[0].catch' });
+  });
+
+  it('wraps a long flow into rows, and carries it on from one row to the next', () => {
+    let { definition, name } = addFlow(app(), 'Long');
+    for (let i = 0; i < 8; i++) definition = insertStep(definition, name, 'steps', i, { type: 'set', var: `v${i}`, value: i });
+    const { nodes, edges } = layoutFlow(definition, definition.flows![name]!, 760);
+    const at = (id: string) => nodes.find((node) => node.id === id)!;
+    const rows = [...new Set(nodes.filter((node) => node.kind === 'step').map((node) => node.y))];
+    expect(rows.length).toBeGreaterThan(1);
+    expect(Math.max(...nodes.map((node) => node.x + node.width))).toBeLessThanOrEqual(760);
+    // The first step of a later row starts back at the left, and the arrow into it takes a new step.
+    const first = nodes.filter((node) => node.kind === 'step' && node.y === rows[1]).sort((a, b) => a.x - b.x)[0]!;
+    expect(first.x).toBeLessThan(at('steps[1]').x);
+    const index = Number(/\[(\d+)\]/.exec(first.id)![1]);
+    expect(edges.find((edge) => edge.target === first.id)?.insert).toMatchObject({ list: 'steps', index });
+    expect(places(definition, name, 760)).toEqual(Array.from({ length: 9 }, (_, i) => `steps@${i}`).sort());
   });
 });

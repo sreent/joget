@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./icons": {
+      "source": "./src/icons.ts",
+      "types": "./dist/icons.d.ts",
+      "default": "./dist/icons.js"
+    },
     "./ocean.css": "./ocean.css",
     "./ambit.css": "./ambit.css",
     "./ocean-pieces.css": "./ocean-pieces.css"

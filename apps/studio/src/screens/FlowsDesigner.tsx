@@ -1,25 +1,10 @@
 import type { AppFlow, FlowStep, FlowType, VarKind } from '@platform/app-model';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import {
-  BaseEdge,
-  Background,
-  Controls,
-  EdgeLabelRenderer,
-  getSmoothStepPath,
-  Handle,
-  MarkerType,
-  Position,
-  ReactFlow,
-  type Edge,
-  type EdgeProps,
-  type Node,
-  type NodeProps,
-  type ReactFlowInstance,
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
+import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import { useEffect, useMemo, useState } from 'react';
 import { api, ApiError } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
+import { Icon, type IconName } from '../components/icon.js';
 import { Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type RefChoice } from '../model/conditions.js';
 import {
@@ -198,76 +183,109 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
   );
 }
 
-// ---- The canvas
+// ---- The canvas: a3t's flows as Ocean's LogicNode draws them (sreent/ocean, components/LogicNode)
 
-type StepNodeData = { node: CanvasNode; selected: boolean; readOnly: boolean; onInsert: (place: { list: string; index: number }) => void };
-type CanvasFlowNode = Node<StepNodeData>;
-type EdgeData = { edge: CanvasEdge; readOnly: boolean; onInsert: (place: { list: string; index: number }) => void };
+type Place = { list: string; index: number };
+type NodeData = { node: CanvasNode; selected: boolean; readOnly: boolean; onInsert: (place: Place) => void; onSelect: (path: string) => void };
+type FlowNode = Node<NodeData>;
+type WireData = { edge: CanvasEdge; readOnly: boolean; onInsert: (place: Place) => void };
 
-const handle = '!size-2 !border-line-strong !bg-surface';
+/** Each kind of step's icon: Ocean's, in the colour of what the step does. */
+const STEP_ICONS: Readonly<Partial<Record<StepType, IconName>>> = {
+  set: 'settings',
+  find: 'find',
+  create: 'tool',
+  change: 'tool',
+  delete: 'tool',
+  add_line: 'tool',
+  check: 'shield',
+  call: 'studio',
+  total: 'total',
+};
+const WRITES = new Set<StepType>(['create', 'change', 'delete', 'add_line']);
 
-function StepNode({ data }: NodeProps<CanvasFlowNode>) {
+/** React Flow needs a handle at each end of an edge; the arrows are the layout's own, so these stay hidden. */
+const Handles = () => (
+  <>
+    <Handle type="target" position={Position.Left} />
+    <Handle type="source" position={Position.Right} />
+  </>
+);
+
+function StepNode({ data }: NodeProps<FlowNode>) {
   const { node, selected } = data;
-  const step = node.step!;
+  const type = node.step!.type;
   return (
-    <div
-      className={cx(
-        'flex h-full w-full flex-col justify-center rounded-md border border-l-4 bg-surface px-3 shadow-sm',
-        step.type === 'try' || step.type === 'each' ? 'border-line-strong' : 'border-line',
-        STEP_EDGES[step.type],
-        selected && 'ring-2 ring-focus',
-      )}
-      data-testid={`flow-step-${node.path}`}
-    >
-      <Handle type="target" position={Position.Top} className={handle} />
-      <span className="text-[11px] font-medium tracking-wide text-muted uppercase">{STEP_NAMES[step.type]}</span>
-      <span className="truncate text-sm" title={node.label}>
+    <div className={cx('logic-step', node.tone, selected && 'chosen')} data-testid={`flow-step-${node.path}`}>
+      <Icon name={STEP_ICONS[type] ?? 'settings'} />
+      <span className="logic-kind">{node.kindLabel}</span>
+      <span className="logic-words" title={node.label}>
         {node.label}
       </span>
-      <Handle type="source" position={Position.Bottom} className={handle} />
-      {step.type === 'try' ? <Handle id="fail" type="source" position={Position.Right} className={handle} /> : null}
+      {node.about ? (
+        <span className="logic-about" title={node.about}>
+          {node.about}
+        </span>
+      ) : null}
+      {/* A flow writes with the app's authority, in the name of whoever started it. */}
+      {WRITES.has(type) ? (
+        <span className="logic-who">
+          <b className="own">
+            <Icon name="audit" />
+          </b>
+          the app
+        </span>
+      ) : null}
+      <Handles />
     </div>
   );
 }
 
-function DecisionNode({ data }: NodeProps<CanvasFlowNode>) {
+function DecisionNode({ data }: NodeProps<FlowNode>) {
   const { node, selected } = data;
   return (
-    <div className="relative flex h-full w-full items-center gap-3" data-testid={`flow-step-${node.path}`}>
-      <Handle type="target" position={Position.Top} className={handle} />
-      <div className={cx('size-10 shrink-0 rotate-45 rounded-[3px] border-[1.5px] border-text bg-surface', selected && 'ring-2 ring-focus')} aria-hidden />
-      <span className="min-w-0 flex-1 truncate text-sm" title={node.label}>
-        {node.label}
+    <div className={cx('logic-decision', node.kind === 'merge' && 'merge', selected && 'chosen')} data-testid={node.path ? `flow-step-${node.path}` : undefined}>
+      <i />
+      {node.kind === 'decision' ? (
+        <span className="logic-caption above">
+          <strong>{node.label}</strong>
+        </span>
+      ) : null}
+      <Handles />
+    </div>
+  );
+}
+
+function RingNode({ data }: NodeProps<FlowNode>) {
+  const { node, selected } = data;
+  return (
+    <div className={cx('logic-ring', node.kind === 'end' && 'end', selected && 'ring-2 ring-focus')} role="img" aria-label={node.about ? `${node.label}: ${node.about}` : node.label}>
+      <span className="logic-caption below">
+        <strong>{node.label}</strong>
+        {node.about ? <span>{node.about}</span> : null}
       </span>
-      <Handle id="yes" type="source" position={Position.Bottom} className={handle} />
-      <Handle id="no" type="source" position={Position.Right} className={handle} />
+      <Handles />
     </div>
   );
 }
 
-function EventNode({ data }: NodeProps<CanvasFlowNode>) {
-  const end = data.node.kind === 'end';
+function FrameNode({ data }: NodeProps<FlowNode>) {
+  const { node, selected } = data;
   return (
-    <div className={cx('size-9 rounded-full bg-surface', end ? 'border-[3px] border-text' : 'border-[1.5px] border-text')} aria-label={end ? 'End' : 'Start'}>
-      {end ? <Handle type="target" position={Position.Top} className={handle} /> : <Handle type="source" position={Position.Bottom} className={handle} />}
+    <div className={cx('logic-frame', selected && 'ring-2 ring-focus')}>
+      <button type="button" className="logic-frame-head nodrag" onClick={() => node.path && data.onSelect(node.path)} data-testid={`flow-step-${node.path}`}>
+        <Icon name={node.step?.type === 'try' ? 'guard' : 'sync'} />
+        {node.label}
+        {node.about ? <span className="note"> · {node.about}</span> : null}
+      </button>
     </div>
   );
 }
 
-function JoinNode() {
+function SlotNode({ data }: NodeProps<FlowNode>) {
   return (
-    <div className="size-3 rounded-full bg-line-strong">
-      <Handle type="target" position={Position.Top} className="!size-1 !opacity-0" />
-      <Handle type="source" position={Position.Bottom} className="!size-1 !opacity-0" />
-      <Handle id="next" type="source" position={Position.Left} className="!size-1 !opacity-0" />
-    </div>
-  );
-}
-
-function SlotNode({ data }: NodeProps<CanvasFlowNode>) {
-  return (
-    <div className="flex h-full w-full items-center justify-center rounded-md border border-dashed border-line-strong">
-      <Handle type="target" position={Position.Top} className="!size-1 !opacity-0" />
+    <div className="grid h-full w-full place-items-center rounded-md border border-dashed border-line-strong">
+      <Handles />
       {data.readOnly ? (
         <span className="text-xs text-faint">No steps</span>
       ) : (
@@ -275,45 +293,59 @@ function SlotNode({ data }: NodeProps<CanvasFlowNode>) {
           Add a step here
         </Button>
       )}
-      <Handle type="source" position={Position.Bottom} className="!size-1 !opacity-0" />
     </div>
   );
 }
 
-function FrameNode({ data }: NodeProps<CanvasFlowNode>) {
-  const step = data.node.step!;
-  return <div className={cx('h-full w-full rounded-lg border bg-sunken/40', step.type === 'try' ? 'border-dashed border-line-strong' : 'border-line')} aria-hidden />;
-}
+const PortNode = () => (
+  <div className="h-px w-px">
+    <Handles />
+  </div>
+);
 
-function StepEdge(props: EdgeProps<Edge<EdgeData>>) {
-  const { data } = props;
-  const [path, labelX, labelY] = getSmoothStepPath({ ...props, borderRadius: 6 });
-  const edge = data?.edge;
+/** An arrow as the layout drew it: at right angles, with its head, its word, and a "+" for a new step. */
+function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
+  if (!data) return null;
+  const { edge, readOnly, onInsert } = data;
+  const head = edge.head;
+  const triangle = head
+    ? {
+        right: `M${head.x - 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x - 9} ${head.y + 4.6} Z`,
+        left: `M${head.x + 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x + 9} ${head.y + 4.6} Z`,
+        down: `M${head.x - 4.6} ${head.y - 9} L${head.x} ${head.y} L${head.x + 4.6} ${head.y - 9} Z`,
+        up: `M${head.x - 4.6} ${head.y + 9} L${head.x} ${head.y} L${head.x + 4.6} ${head.y + 9} Z`,
+      }[head.dir]
+    : null;
   return (
     <>
-      <BaseEdge path={path} {...(props.markerEnd ? { markerEnd: props.markerEnd } : {})} style={edge?.back ? { strokeDasharray: '4 4' } : undefined} />
+      <BaseEdge path={edge.d} />
+      {triangle ? <path d={triangle} style={{ fill: 'var(--faint)' }} /> : null}
       <EdgeLabelRenderer>
-        <div className="nodrag nopan absolute flex items-center gap-1" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}>
-          {edge?.label ? <span className="rounded-sm bg-surface px-1 text-[11px] text-muted">{edge.label}</span> : null}
-          {edge?.insert && !data?.readOnly ? (
-            <button
-              type="button"
-              className="grid size-5 place-items-center rounded-full border border-line-strong bg-surface text-xs leading-none text-muted hover:border-accent hover:text-accent"
-              aria-label={`Add a step at ${edge.insert.list}[${edge.insert.index}]`}
-              title="Add a step here"
-              onClick={() => data?.onInsert(edge.insert!)}
-            >
-              +
-            </button>
-          ) : null}
-        </div>
+        {edge.label ? (
+          <span className="flow-label" style={{ left: edge.label.x, top: edge.label.y }}>
+            {edge.label.text}
+          </span>
+        ) : null}
+        {edge.insert && !readOnly ? (
+          <button
+            type="button"
+            // Each arrow's "+" shows while the pointer is over the canvas, so the flow reads calmly otherwise.
+            className="logic-add nodrag nopan opacity-0 transition-opacity group-hover/canvas:opacity-70 hover:!opacity-100 focus-visible:!opacity-100"
+            style={{ left: edge.insert.x, top: edge.insert.y, pointerEvents: 'all' }}
+            aria-label={`Add a step at ${edge.insert.list}[${edge.insert.index}]`}
+            title="Add a step here"
+            onClick={() => onInsert({ list: edge.insert!.list, index: edge.insert!.index })}
+          >
+            +
+          </button>
+        ) : null}
       </EdgeLabelRenderer>
     </>
   );
 }
 
-const NODE_TYPES = { step: StepNode, decision: DecisionNode, start: EventNode, end: EventNode, join: JoinNode, slot: SlotNode, frame: FrameNode };
-const EDGE_TYPES = { step: StepEdge };
+const NODE_TYPES = { step: StepNode, decision: DecisionNode, merge: DecisionNode, start: RingNode, end: RingNode, frame: FrameNode, slot: SlotNode, port: PortNode };
+const EDGE_TYPES = { wire: WireEdge };
 
 function FlowCanvas(props: {
   definition: Definition;
@@ -321,38 +353,40 @@ function FlowCanvas(props: {
   selected: string | null;
   readOnly: boolean;
   onSelect: (path: string | null) => void;
-  onInsert: (place: { list: string; index: number }) => void;
+  onInsert: (place: Place) => void;
 }) {
   const { definition, flow, selected, readOnly, onSelect, onInsert } = props;
-  const laid = useMemo(() => layoutFlow(definition, flow), [definition, flow]);
-  // As steps come and go, the view fits the flow again: a new step is never out of sight.
-  const [view, setView] = useState<ReactFlowInstance<CanvasFlowNode, Edge<EdgeData>> | null>(null);
-  const count = laid.nodes.length;
+  // The flow wraps at the canvas's own width, so its rows fit at full size.
+  const [box, setBox] = useState<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(980);
   useEffect(() => {
-    void view?.fitView({ padding: 0.15, maxZoom: 1 });
-  }, [view, count]);
-  const nodes: CanvasFlowNode[] = laid.nodes.map((node) => ({
+    if (!box) return;
+    // Below the width of a laptop's canvas it zooms out rather than wraps, so short flows stay on one row.
+    const observer = new ResizeObserver(([entry]) => entry && setWidth(Math.max(980, Math.round(entry.contentRect.width))));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [box]);
+  const laid = useMemo(() => layoutFlow(definition, flow, width), [definition, flow, width]);
+  // As steps come and go, the view fits the flow again: a new step is never out of sight.
+  const [view, setView] = useState<ReactFlowInstance<FlowNode, Edge<WireData>> | null>(null);
+  useEffect(() => {
+    void view?.fitView({ padding: 0.08, maxZoom: 1 });
+  }, [view, laid]);
+  const nodes: FlowNode[] = laid.nodes.map((node) => ({
     id: node.id,
     type: node.kind,
     position: { x: node.x, y: node.y },
-    data: { node, selected: node.path !== undefined && node.path === selected && node.kind !== 'frame', readOnly, onInsert },
+    data: { node, selected: node.path !== undefined && node.path === selected, readOnly, onInsert, onSelect },
     draggable: false,
     connectable: false,
     selectable: false,
-    style: { width: node.width, height: node.height },
+    // React Flow draws an edge only between nodes with a size: a port gets a pixel.
+    style: { width: Math.max(1, node.width), height: Math.max(1, node.height) },
     zIndex: node.kind === 'frame' ? -1 : 1,
   }));
-  const edges: Edge<EdgeData>[] = laid.edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
-    type: 'step',
-    data: { edge, readOnly, onInsert },
-    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-  }));
+  const edges: Edge<WireData>[] = laid.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, type: 'wire', data: { edge, readOnly, onInsert } }));
   return (
-    <div className="h-[34rem]" data-testid="flow-canvas">
+    <div ref={setBox} className="group/canvas flow flow-canvas h-[36rem]" data-testid="flow-canvas">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -361,7 +395,7 @@ function FlowCanvas(props: {
         nodesDraggable={false}
         nodesConnectable={false}
         fitView
-        fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+        fitViewOptions={{ padding: 0.08, maxZoom: 1 }}
         onInit={setView}
         minZoom={0.3}
         onNodeClick={(_event, node) => {
@@ -371,9 +405,18 @@ function FlowCanvas(props: {
         onPaneClick={() => onSelect(null)}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={16} size={1} />
-        <Controls showInteractive={false} />
       </ReactFlow>
+      <div className="flow-tools">
+        <button type="button" aria-label="Zoom in" onClick={() => void view?.zoomIn()}>
+          +
+        </button>
+        <button type="button" aria-label="Zoom out" onClick={() => void view?.zoomOut()}>
+          −
+        </button>
+        <button type="button" onClick={() => void view?.fitView({ padding: 0.08, maxZoom: 1 })}>
+          Show all of it
+        </button>
+      </div>
     </div>
   );
 }
