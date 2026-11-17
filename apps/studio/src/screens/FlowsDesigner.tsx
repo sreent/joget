@@ -73,112 +73,109 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
   };
 
   return (
-    <div className="grid gap-4 @min-[62rem]:grid-cols-[14rem_minmax(0,1fr)_22rem]">
-      <Card className="grid content-start gap-3 self-start p-4">
-        <h2 className="m-0 text-sm font-semibold text-muted">Flows</h2>
-        {names.length ? (
-          <ul className="m-0 grid list-none gap-1 p-0">
-            {names.map((each) => (
-              <li key={each}>
-                <button
-                  type="button"
-                  aria-current={each === name ? 'true' : undefined}
-                  className={cx('w-full rounded-md px-3 py-2 text-left', each === name ? 'bg-accent-soft' : 'hover:bg-sunken')}
-                  onClick={() => {
-                    setChosen(each);
-                    select(null);
-                  }}
-                >
-                  <span className="block font-medium">{flows[each]!.label}</span>
-                  <span className="block font-mono text-xs text-muted">{each}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="m-0 text-sm text-muted">No flows yet. A flow is the app's logic: it finds, creates and changes records, loops and decides, in one go.</p>
-        )}
-        {readOnly ? null : (
-          <form
-            className="grid gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!label.trim()) return;
-              const added = addFlow(definition, label.trim());
-              onChange(added.definition);
-              setChosen(added.name);
-              select(null);
-              setLabel('');
+    // As Ocean's FlowDesigner lays it out: the canvas is the whole middle, with which flow at its top
+    // left, and the chosen step, or the flow's settings, on the right.
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[minmax(0,1fr)_24rem]">
+      <Card className="relative min-w-0 self-start overflow-hidden p-0">
+        <div className="logic-view">
+          {names.length ? (
+            <select
+              aria-label="Which flow"
+              value={name ?? ''}
+              onChange={(event) => {
+                setChosen(event.target.value);
+                select(null);
+              }}
+            >
+              {names.map((each) => (
+                <option key={each} value={each}>
+                  {flows[each]!.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {readOnly ? null : (
+            <form
+              className="flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!label.trim()) return;
+                const added = addFlow(definition, label.trim());
+                onChange(added.definition);
+                setChosen(added.name);
+                select(null);
+                setLabel('');
+              }}
+            >
+              <TextInput aria-label="New flow" className="w-56" placeholder="New flow, e.g. Record the spend" value={label} onChange={(e) => setLabel(e.target.value)} />
+              <Button type="submit" disabled={!label.trim()}>
+                Add flow
+              </Button>
+            </form>
+          )}
+        </div>
+        {flow && name ? (
+          <FlowCanvas
+            key={name}
+            definition={definition}
+            flow={flow}
+            selected={selected}
+            readOnly={readOnly}
+            onSelect={select}
+            onInsert={(place) => {
+              setSelected(null);
+              setAdding(place);
             }}
-          >
-            <TextInput aria-label="New flow" placeholder="New flow, e.g. Record the spend" value={label} onChange={(e) => setLabel(e.target.value)} />
-            <Button type="submit" disabled={!label.trim()}>
-              Add flow
-            </Button>
-          </form>
+          />
+        ) : (
+          <div className="flow grid h-[40rem] place-items-center p-6">
+            <EmptyState title="Add a flow to design it">
+              A flow is what happens in an app: it finds, creates and changes records, decides and loops, as a Mendix microflow does. Actions run flows, and so can process tasks and roles, through the API.
+            </EmptyState>
+          </div>
         )}
       </Card>
-
       {flow && name ? (
-        <>
-          <Card className="min-w-0 self-start p-2">
-            <FlowCanvas
-              key={name}
-              definition={definition}
-              flow={flow}
-              selected={selected}
-              readOnly={readOnly}
-              onSelect={select}
-              onInsert={(place) => {
-                setSelected(null);
-                setAdding(place);
+        <div className="grid content-start gap-4">
+          {adding && !readOnly ? (
+            <AddStep
+              onCancel={() => setAdding(null)}
+              onAdd={(type) => {
+                const scope = scopeAt(definition, name, adding);
+                onChange(insertStep(definition, name, adding.list, adding.index, newStep(definition, name, scope, type)));
+                setAdding(null);
+                setSelected(`${adding.list}[${adding.index}]`);
               }}
             />
-          </Card>
-          <div className="grid content-start gap-4">
-            {adding && !readOnly ? (
-              <AddStep
-                onCancel={() => setAdding(null)}
-                onAdd={(type) => {
-                  const scope = scopeAt(definition, name, adding);
-                  onChange(insertStep(definition, name, adding.list, adding.index, newStep(definition, name, scope, type)));
-                  setAdding(null);
-                  setSelected(`${adding.list}[${adding.index}]`);
-                }}
-              />
-            ) : selected && stepAt(flow, selected) ? (
-              <StepEditor
+          ) : selected && stepAt(flow, selected) ? (
+            <StepEditor
+              definition={definition}
+              name={name}
+              path={selected}
+              readOnly={readOnly}
+              onChange={onChange}
+              onRemoved={() => select(null)}
+              onMoved={(path) => setSelected(path)}
+              onClosed={() => select(null)}
+            />
+          ) : (
+            <>
+              <FlowSettings
                 definition={definition}
                 name={name}
-                path={selected}
                 readOnly={readOnly}
                 onChange={onChange}
-                onRemoved={() => select(null)}
-                onMoved={(path) => setSelected(path)}
+                onRemove={() => {
+                  onChange(removeFlow(definition, name));
+                  setChosen(null);
+                  select(null);
+                }}
               />
-            ) : (
-              <>
-                <FlowSettings
-                  definition={definition}
-                  name={name}
-                  readOnly={readOnly}
-                  onChange={onChange}
-                  onRemove={() => {
-                    onChange(removeFlow(definition, name));
-                    setChosen(null);
-                    select(null);
-                  }}
-                />
-                <TryFlow appId={appId} definition={definition} name={name} flow={flow} dirty={dirty} />
-              </>
-            )}
-          </div>
-        </>
-      ) : (
-        <div className="@min-[62rem]:col-span-2">
-          <EmptyState title="Add a flow to design it">Flows hold the app's logic, as Mendix microflows do. Actions and process tasks run them, and so can roles, through the API.</EmptyState>
+              <TryFlow appId={appId} definition={definition} name={name} flow={flow} dirty={dirty} />
+            </>
+          )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -386,7 +383,7 @@ function FlowCanvas(props: {
   }));
   const edges: Edge<WireData>[] = laid.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, type: 'wire', data: { edge, readOnly, onInsert } }));
   return (
-    <div ref={setBox} className="group/canvas flow flow-canvas h-[36rem]" data-testid="flow-canvas">
+    <div ref={setBox} className="group/canvas flow flow-canvas h-[40rem]" data-testid="flow-canvas">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -455,7 +452,7 @@ function sourcesFor(definition: Definition, scope: ReadonlyMap<string, VarKind>)
 
 const ANY_VALUE: readonly ValueMode[] = ['fixed', 'field', 'calc', 'join', 'person', 'today', 'now'];
 
-function StepEditor(props: { definition: Definition; name: string; path: string; readOnly: boolean; onChange: (definition: Definition) => void; onRemoved: () => void; onMoved: (path: string) => void }) {
+function StepEditor(props: { definition: Definition; name: string; path: string; readOnly: boolean; onChange: (definition: Definition) => void; onRemoved: () => void; onMoved: (path: string) => void; onClosed: () => void }) {
   const { definition, name, path, readOnly, onChange } = props;
   const flow = definition.flows![name]!;
   const step = stepAt(flow, path)!;
@@ -480,6 +477,9 @@ function StepEditor(props: { definition: Definition; name: string; path: string;
             </Button>
             <Button size="sm" variant="danger" aria-label="Remove the step" onClick={() => (onChange(removeStep(definition, name, path)), props.onRemoved())}>
               Remove
+            </Button>
+            <Button size="sm" variant="ghost" aria-label="Close the step" onClick={props.onClosed}>
+              ✕
             </Button>
           </div>
         )}

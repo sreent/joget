@@ -820,7 +820,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);
-    await visible(page.getByText('No flows yet.', { exact: false }));
+    await visible(page.getByText('Add a flow to design it', { exact: false }));
     await page.getByLabel('New flow').fill('Count the lines');
     await page.getByRole('button', { name: 'Add flow' }).click();
     const settings = page.getByRole('region', { name: 'Flow' });
@@ -863,7 +863,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const claims = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records`, cookies: alice.cookies })).json().records;
     const trip = claims.find((claim: { values: { title?: string } }) => claim.values.title === 'Singapore trip');
     const record = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records/${trip.id}`, cookies: alice.cookies })).json();
-    await page.getByRole('button', { name: /^Count the lines/ }).click();
+    await page.getByRole('button', { name: 'Close the step' }).click();
     const trying = page.getByRole('region', { name: 'Try it' });
     await trying.getByLabel('claim (Expense claim)', { exact: true }).selectOption(trip.id);
     await trying.getByRole('button', { name: 'Try it', exact: true }).click();
@@ -905,7 +905,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
 
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);
-    await page.getByRole('button', { name: /^Check a claim/ }).click();
+    await page.getByLabel('Which flow', { exact: true }).selectOption('check_claim');
     const canvas = page.getByTestId('flow-canvas');
     await visible(canvas.getByText('For each line in claim.lines', { exact: true }));
     await shot(page, '26-flow-canvas');
