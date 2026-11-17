@@ -281,44 +281,80 @@ const FlowTotal = z.strictObject({
 });
 /** End the flow, with its result. */
 const FlowReturn = z.strictObject({ type: z.literal('return'), value: ExpressionSchema.optional() });
+/** A step of a flow. Written out, because a step can hold steps, and declarations keep only what is written. */
+export type FlowStep =
+  | { readonly type: 'set'; readonly var: string; readonly value: Expression }
+  | {
+      readonly type: 'find';
+      readonly var: string;
+      readonly entity: string;
+      readonly where?: Condition | undefined;
+      readonly sort?: Array<{ readonly field: string; readonly direction: 'asc' | 'desc' }> | undefined;
+      readonly limit: number;
+      readonly first?: boolean | undefined;
+    }
+  | { readonly type: 'create'; readonly entity: string; readonly values: Record<string, Expression>; readonly var?: string | undefined }
+  | { readonly type: 'change'; readonly record: string; readonly values: Record<string, Expression> }
+  | { readonly type: 'delete'; readonly record: string }
+  | { readonly type: 'add_line'; readonly record: string; readonly field: string; readonly values: Record<string, Expression> }
+  | { readonly type: 'each'; readonly in: string; readonly as: string; readonly steps: FlowStep[] }
+  | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStep[]; readonly else: FlowStep[] }
+  | { readonly type: 'check'; readonly assert: Condition; readonly message: string; readonly severity: 'error' | 'warning' }
+  | { readonly type: 'call'; readonly flow: string; readonly input: Record<string, Expression>; readonly var?: string | undefined }
+  | { readonly type: 'try'; readonly steps: FlowStep[]; readonly catch: FlowStep[]; readonly rollback: boolean; readonly error?: string | undefined }
+  | { readonly type: 'total'; readonly var: string; readonly of: string; readonly op: 'count' | 'sum' | 'avg' | 'min' | 'max'; readonly field?: string | undefined }
+  | { readonly type: 'return'; readonly value?: Expression | undefined };
+
+/** A step as it is written, before defaults fill in. */
+export type FlowStepInput =
+  | Extract<FlowStep, { type: 'set' | 'delete' | 'add_line' | 'change' | 'total' | 'return' }>
+  | (Omit<Extract<FlowStep, { type: 'find' }>, 'limit' | 'sort'> & { readonly limit?: number | undefined; readonly sort?: Array<{ readonly field: string; readonly direction?: 'asc' | 'desc' | undefined }> | undefined })
+  | (Omit<Extract<FlowStep, { type: 'create' }>, 'values'> & { readonly values?: Record<string, Expression> | undefined })
+  | { readonly type: 'each'; readonly in: string; readonly as: string; readonly steps: FlowStepInput[] }
+  | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStepInput[]; readonly else?: FlowStepInput[] | undefined }
+  | (Omit<Extract<FlowStep, { type: 'check' }>, 'severity'> & { readonly severity?: 'error' | 'warning' | undefined })
+  | (Omit<Extract<FlowStep, { type: 'call' }>, 'input'> & { readonly input?: Record<string, Expression> | undefined })
+  | { readonly type: 'try'; readonly steps: FlowStepInput[]; readonly catch?: FlowStepInput[] | undefined; readonly rollback?: boolean | undefined; readonly error?: string | undefined };
+
+/** A list of steps, which a loop, a branch or an error handler holds. */
+const flowSteps = (min = 0) => z.array(z.lazy(() => FlowStep)).min(min).max(MAX_FLOW_BLOCK);
+
 /** Run steps for each item of a list. */
 const FlowEach = z.strictObject({
   type: z.literal('each'),
   in: FlowList,
   /** The variable that holds the item. */
   as: Name,
-  get steps() {
-    return z.array(FlowStep).max(MAX_FLOW_BLOCK);
-  },
+  steps: flowSteps(),
 });
 /** Take one of two lists of steps, depending on a condition. */
-const FlowIf = z.strictObject({
-  type: z.literal('if'),
-  when: ConditionSchema,
-  get then() {
-    return z.array(FlowStep).max(MAX_FLOW_BLOCK);
-  },
-  get else() {
-    return z.array(FlowStep).max(MAX_FLOW_BLOCK).default([]);
-  },
-});
+const FlowIf = z.strictObject({ type: z.literal('if'), when: ConditionSchema, then: flowSteps(), else: flowSteps().default([]) });
 /**
  * Run steps, and if one fails, run others instead. By default what the steps changed is undone
  * first; `rollback: false` keeps it. `error` names the variable that holds the failure's message.
  */
 const FlowTry = z.strictObject({
   type: z.literal('try'),
-  get steps() {
-    return z.array(FlowStep).min(1).max(MAX_FLOW_BLOCK);
-  },
-  get catch() {
-    return z.array(FlowStep).max(MAX_FLOW_BLOCK).default([]);
-  },
+  steps: flowSteps(1),
+  catch: flowSteps().default([]),
   rollback: z.boolean().default(true),
   error: Name.optional(),
 });
-export const FlowStep = z.discriminatedUnion('type', [FlowSet, FlowFind, FlowCreate, FlowChange, FlowDelete, FlowAddLine, FlowEach, FlowIf, FlowCheck, FlowCall, FlowTry, FlowTotal, FlowReturn]);
-export type FlowStep = z.infer<typeof FlowStep>;
+export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion('type', [
+  FlowSet,
+  FlowFind,
+  FlowCreate,
+  FlowChange,
+  FlowDelete,
+  FlowAddLine,
+  FlowEach,
+  FlowIf,
+  FlowCheck,
+  FlowCall,
+  FlowTry,
+  FlowTotal,
+  FlowReturn,
+]);
 
 export const AppFlow = z.strictObject({
   label: Label,
