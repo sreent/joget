@@ -678,6 +678,7 @@ sequenceDiagram
   - apply the change to the personal sandbox;
   - run scenario tests;
   - open a change request.
+- **Operators have an MCP server too (`/mcp/ops`, built in phase 3).** An operator's AI client lists the apps they operate, shows where each process instance waits and why one is stuck, tries stuck instances and failed skill calls again, cancels an instance, throws a signal, and moves a task to someone who holds its role. Its tools share the checks of the operator routes: the owner operates a personal app, and in a team space operators do, with the ops permissions. Deciding tasks, approving and deleting data are not among its tools (§5.7).
 - **The same gates apply.**
   - In a personal space, AI changes apply live like the builder's own, except changes that would lose data. Those wait for the builder's confirmation, as a proposal.
   - In a team space, AI can only open change requests, and can never approve them.

@@ -1,14 +1,13 @@
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { checkAnyPermission } from '../access/check.js';
 import { once, requireAuth } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
-import { appResource } from '../apps/resources.js';
 import { envOf } from '../apps/routes.js';
 import type { AppRuntime } from '../apps/runtime.js';
 import { AppParams, EnvQuery, SkillCallOut } from '../apps/schemas.js';
 import type { AppContext } from '../context.js';
+import { requireOperator } from '../processes/operators.js';
 
 /**
  * The a7c skill calls of an app's actions, for whoever runs the app: its owner in a personal space,
@@ -17,10 +16,7 @@ import type { AppContext } from '../context.js';
 export function skillRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginAsyncZod {
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
   // The check needs the space's kind, so the handler makes it, with the same audited refusal an access rule gives.
-  const allow = async (request: FastifyRequest, loaded: LoadedApp, operation: 'ops.monitor.read' | 'ops.job.retry') => {
-    const actions = loaded.space.kind === 'personal' ? ['app.edit'] : [operation];
-    await checkAnyPermission(ctx, request, requireAuth(request), actions, appResource(ctx.org.id, loaded), { policy: await runtime.policy(loaded) });
-  };
+  const allow = (request: FastifyRequest, loaded: LoadedApp, operation: 'ops.monitor.read' | 'ops.job.retry') => requireOperator(ctx, runtime, request, requireAuth(request), loaded, operation);
 
   return async (app) => {
     app.get(

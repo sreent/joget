@@ -12,6 +12,7 @@ import { HttpError, notFound, unprocessable } from '../errors.js';
 import { changeRequestRequired, type AppBuilder } from './builder.js';
 import { isTeamApp, type LoadedApp } from './catalog.js';
 import type { Delivery } from '../delivery/service.js';
+import { opsTools } from '../ops/tools.js';
 import type { ProcessEngine } from '../processes/engine.js';
 import { appResource } from './resources.js';
 import { definitionGuide } from './guide.js';
@@ -31,7 +32,7 @@ import type { AppRuntime } from './runtime.js';
 
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 
-interface Tool {
+export interface Tool {
   readonly name: string;
   readonly title: string;
   readonly description: string;
@@ -596,6 +597,18 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
             "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change. Changes apply at once to the person's sandbox; anything that deletes data waits for them. A team app changes through change requests: start_working_copy, change the copy, then submit_change for review.",
         },
         async (request, auth) => builderTools(ctx, builder, runtime, delivery, request, auth),
+      ),
+    );
+    await app.register(
+      serve(
+        ctx,
+        '/mcp/ops',
+        {
+          name: 'ambit-ops',
+          instructions:
+            "Operate apps within the caller's operator permissions: watch process instances and a7c skill calls, try stuck or failed work again, cancel an instance, throw a signal, and give a task to someone else. Start with list_apps. Cancelling ends an instance for good: confirm with the person first. Deciding tasks, approving and deleting data are not here: they stay with people.",
+        },
+        async (request, auth) => opsTools(ctx, runtime, processes, request, auth),
       ),
     );
   };

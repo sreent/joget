@@ -2,7 +2,7 @@ import { bpmnToProcesses, NAME_PATTERN, processToBpmn } from '@platform/app-mode
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { checkAnyPermission, checkPermission } from '../access/check.js';
+import { checkPermission } from '../access/check.js';
 import { once, requireAuth } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import { changeRequestRequired, type AppBuilder } from '../apps/builder.js';
@@ -14,6 +14,7 @@ import { ActionResultOut, AppParams, EnvQuery, PlanOut } from '../apps/schemas.j
 import type { AppContext } from '../context.js';
 import { notFound, unprocessable } from '../errors.js';
 import type { ProcessEngine } from './engine.js';
+import { reassignTask, requireOperator, type Operation } from './operators.js';
 
 const TaskOut = z.object({
   id: z.uuid(),
@@ -82,10 +83,7 @@ const SignalOut = z.object({
 export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: ProcessEngine, builder: AppBuilder): FastifyPluginAsyncZod {
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
   // The check needs the space's kind, so the handler makes it, with the same audited refusal an access rule gives.
-  const operate = async (request: FastifyRequest, loaded: LoadedApp, operation: 'ops.monitor.read' | 'ops.job.retry' | 'process.admin') => {
-    const actions = loaded.space.kind === 'personal' && operation !== 'process.admin' ? ['app.edit'] : [operation];
-    await checkAnyPermission(ctx, request, requireAuth(request), actions, appResource(ctx.org.id, loaded), { policy: await runtime.policy(loaded) });
-  };
+  const operate = (request: FastifyRequest, loaded: LoadedApp, operation: Operation) => requireOperator(ctx, runtime, request, requireAuth(request), loaded, operation);
 
   const appRule = (action: string) => ({
     kind: 'permission' as const,
@@ -193,16 +191,7 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
       },
     );
 
-    const reassign = async (request: FastifyRequest, taskId: string, to: string) => {
-      const auth = requireAuth(request);
-      const place = await engine.taskPlace(taskId);
-      if (!place) throw notFound('Task');
-      const loaded = await ctx.apps.load(place.appId, { id: place.environmentId });
-      // Operators move any task of the app: its owner in a personal space, ops.task.reassign in a team space.
-      const action = loaded.space.kind === 'personal' ? 'app.edit' : 'ops.task.reassign';
-      const operator = (await ctx.policy.authorize(auth.principal, action, appResource(ctx.org.id, loaded), undefined, await runtime.policy(loaded))).allowed;
-      return engine.reassign(request, auth, taskId, to, { operator });
-    };
+    const reassign = (request: FastifyRequest, taskId: string, to: string) => reassignTask(ctx, runtime, engine, request, requireAuth(request), taskId, to);
 
     app.post(
       '/v1/tasks/:taskId/reassign',
