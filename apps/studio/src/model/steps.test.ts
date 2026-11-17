@@ -15,8 +15,6 @@ describe('editing steps', () => {
       'Set Approver to the person running it',
       'Warn unless Total (SGD) is at most 1000: A claim over SGD 1,000: check that a director agreed to it',
     ]);
-    // A step that starts an a7c skill, where an installation connects a7c.
-    expect(describeStep(definition, 'expense_claim', { type: 'skill', label: 'Pay the claim', skill: 'finance/pay-expense-claim', input: {} })).toBe('Pay the claim (a7c: finance/pay-expense-claim)');
   });
 
   it('adds steps with defaults that pass the checks, at the end or inside a branch', () => {

@@ -43,7 +43,6 @@ import {
   type LinesChange,
   type LineValues,
   type RecordValues,
-  type SkillCall,
   type StoredEntity,
   type StoredLine,
   type StoredLinesField,
@@ -61,7 +60,7 @@ import {
   type Period,
   type TimeRange,
 } from '@platform/app-model';
-import { proposals, skillCalls, users } from '@platform/db';
+import { proposals, users } from '@platform/db';
 import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -70,7 +69,6 @@ import { requirePerson, type AllowedQuery } from '../access/rules.js';
 import { auditScopeFor, recordAudit, type AuditScope } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import type { FileUse } from '../files/service.js';
-import type { SkillTier } from '../skills/dispatcher.js';
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
 import type { LoadedApp } from './catalog.js';
 import { capabilityResource, recordResource } from './resources.js';
@@ -166,53 +164,12 @@ interface SealedEffect {
   readonly values: Record<string, FieldValue>;
   /** The lines it writes, complete, by lines field. New lines have their IDs already, so a revision can follow them. */
   readonly lines?: Record<string, StoredLine[]>;
-  /** For a create with steps: the new record's ID, which the steps and the skills they start already name. */
+  /** For a create with steps: the new record's ID, which the steps already name. */
   readonly id?: string;
   /** The fields the steps set, which the permission check counts as written. */
   readonly stepFields?: string[];
-  /** The a7c skills the change starts once it is approved. */
-  readonly skills?: SkillCall[];
 }
 
-type SkillCallRow = typeof skillCalls.$inferSelect;
-
-/** A skill call as the API shows it: never its input, which may hold values the reader can't see. */
-export interface SkillCallView {
-  readonly id: string;
-  readonly action: string;
-  readonly recordId: string;
-  readonly step: string;
-  readonly skill: string;
-  readonly label: string;
-  readonly tier: SkillCallRow['tier'];
-  readonly status: SkillCallRow['status'];
-  readonly attempts: number;
-  readonly lastError: string | null;
-  readonly runId: string | null;
-  readonly createdAt: string;
-  readonly startedAt: string | null;
-}
-
-function skillCallView(row: SkillCallRow): SkillCallView {
-  return {
-    id: row.id,
-    action: row.action,
-    recordId: row.recordId,
-    step: row.step,
-    skill: row.skill,
-    label: row.label,
-    tier: row.tier,
-    status: row.status,
-    attempts: row.attempts,
-    lastError: row.lastError,
-    runId: row.runId,
-    createdAt: row.createdAt.toISOString(),
-    startedAt: row.startedAt?.toISOString() ?? null,
-  };
-}
-
-/** Which a7c tier runs the skills an environment's actions start. */
-const SKILL_TIERS: Readonly<Record<LoadedApp['env']['kind'], SkillTier>> = { sandbox: 'personal', preview: 'team', staging: 'team', prod: 'production' };
 
 /** What a caller gives an action. */
 export interface ActionInput {
@@ -1271,7 +1228,7 @@ export class AppRuntime {
     const commit = !input.dryRun && !needsConfirmation;
     // A revision edits the proposal's lines, which may include new lines with the IDs it gave them.
     const proposed = (options.revises?.effect as unknown as SealedEffect | undefined)?.lines ?? {};
-    // A new record gets its ID now, so that steps, and the skills they start, can name it.
+    // A new record gets its ID now, so that steps can name it.
     const newId = action.operation === 'create' ? uuidv7(now.getTime()) : undefined;
     // Lines fields that only the steps add to: the caller sent none of their lines.
     const stepLines = linesFieldsAddedTo(steps).filter((field) => !(field in check.lines));
@@ -1334,7 +1291,6 @@ export class AppRuntime {
         : { ...beforeValues, ...check.values, ...prepared.rollups };
     let worked: Record<string, LineValues[]> = prepared.lines;
     let stepFindings: readonly Finding[] = [];
-    let skills: readonly SkillCall[] = [];
     let stepSet: readonly string[] = [];
     let linesAdded: readonly string[] = [];
     if (steps.length) {
@@ -1344,7 +1300,6 @@ export class AppRuntime {
       draft = ran.record;
       worked = ran.lines;
       stepFindings = ran.findings;
-      skills = ran.skills;
       stepSet = ran.set;
       linesAdded = ran.linesAdded;
     }
@@ -1396,7 +1351,6 @@ export class AppRuntime {
       findings,
       provenance: sources,
       files: await ctx.files.describe(tx, loaded, this.#fileIds(loaded, entity, { values: { ...after, ...Object.fromEntries(Object.entries(lines).map(([field, list]) => [field, list.map((line) => line.values)])) } })),
-      skills,
     });
     if (input.dryRun) return { status: 'preview' as const, needsConfirmation, findings, card };
     if (!commit) {
@@ -1416,7 +1370,6 @@ export class AppRuntime {
           ...(Object.keys(sealedLines).length ? { lines: sealedLines } : {}),
           ...(newId && steps.length ? { id: newId } : {}),
           ...(stepSet.length ? { stepFields: [...stepSet] } : {}),
-          ...(skills.length ? { skills: [...skills] } : {}),
         },
         findings,
         provenance: sources,
@@ -1436,7 +1389,6 @@ export class AppRuntime {
       lines: Object.fromEntries(delta.changed.map((field) => [field, { next: lines[field]!, current: current[field] ?? [] }])),
       files,
     }))!;
-    await this.queueSkills(run.writer, loaded, tx, { action: name, recordId: record.id, calls: skills, onBehalfOf: run.onBehalfOf });
     // The processes it moves: tasks it decides complete, and processes it starts begin (design §6.10).
     if (run.origin.kind === 'request') {
       await this.#processes?.afterAction(tx, loaded, { action: name, recordId: record.id, by: run.origin.auth.actor, writer: run.writer, before: before ? beforeValues : null });
@@ -1456,57 +1408,6 @@ export class AppRuntime {
       if (written.length) changed.push(field);
     }
     return { paths, changed };
-  }
-
-  /**
-   * Queue the a7c skills a change starts, in the change's own transaction: they exist exactly when
-   * it commits. A sandbox calls a7c's personal tier, Staging and previews its team tier, and only
-   * Prod its production tier, so trying a change never starts production work.
-   */
-  async queueSkills(
-    writer: Writer,
-    loaded: LoadedApp,
-    tx: AppTransaction,
-    queue: {
-      /** The action that starts them, or `process:<name>` for a process's service task. */
-      readonly action: string;
-      readonly recordId: string;
-      readonly calls: readonly SkillCall[];
-      readonly proposalId?: string;
-      readonly onBehalfOf: string | null;
-    },
-  ): Promise<void> {
-    const ctx = this.#ctx;
-    const now = ctx.now();
-    const tier = SKILL_TIERS[loaded.env.kind];
-    for (const call of queue.calls) {
-      const id = uuidv7(now.getTime());
-      await tx.db.insert(skillCalls).values({
-        id,
-        orgId: ctx.org.id,
-        appId: loaded.app.id,
-        environmentId: loaded.env.id,
-        action: queue.action,
-        recordId: queue.recordId,
-        step: call.step,
-        skill: call.skill,
-        label: call.label,
-        tier,
-        input: call.input as unknown as Record<string, unknown>,
-        onBehalfOf: queue.onBehalfOf,
-        proposalId: queue.proposalId ?? null,
-        nextAttemptAt: now,
-        createdAt: now,
-      });
-      await recordAudit(tx.db, writer.scope(now), {
-        action: 'skill_call.queue',
-        target: { type: 'skill_call', id, name: call.skill },
-        spaceId: loaded.space.id,
-        appId: loaded.app.id,
-        env: loaded.env.kind,
-        reason: { action: queue.action, recordId: queue.recordId, step: call.step, skill: call.skill, tier, ...(queue.proposalId ? { proposal: queue.proposalId } : {}) },
-      });
-    }
   }
 
   /**
@@ -1605,7 +1506,6 @@ export class AppRuntime {
         values: proposal.effect.values,
         ...(proposal.effect.lines ? { lines: proposal.effect.lines } : {}),
         ...(proposal.effect.id ? { id: proposal.effect.id } : {}),
-        ...(proposal.effect.skills ? { skills: proposal.effect.skills } : {}),
         onBehalfOf,
       }),
     );
@@ -1742,7 +1642,6 @@ export class AppRuntime {
         lines: Object.fromEntries(Object.entries(sealedLines).map(([field, lines]) => [field, { next: lines, current: current[field] ?? [] }])),
         files,
       });
-      await this.queueSkills(writer, loaded, tx, { action: proposal.action, recordId: record!.id, calls: effect.skills ?? [], proposalId: id, onBehalfOf: locked!.onBehalfOf });
       await this.#processes?.afterAction(tx, loaded, { action: proposal.action, recordId: record!.id, by: auth.actor, writer, before: before ? recordValues(before) : null });
       await tx.db.update(proposals).set({ status: 'approved', decidedAt: now, resultRecordId: record!.id }).where(eq(proposals.id, id));
       await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
@@ -1825,53 +1724,6 @@ export class AppRuntime {
       },
       { revises: proposal },
     );
-  }
-
-  /** The skill calls of an app's actions in one environment, newest first, without their input. */
-  async skillCalls(loaded: LoadedApp, filter: { readonly status?: SkillCallRow['status']; readonly recordId?: string; readonly limit: number }): Promise<SkillCallView[]> {
-    const rows = await this.#ctx.db
-      .select()
-      .from(skillCalls)
-      .where(
-        and(
-          eq(skillCalls.orgId, this.#ctx.org.id),
-          eq(skillCalls.appId, loaded.app.id),
-          eq(skillCalls.environmentId, loaded.env.id),
-          ...(filter.status ? [eq(skillCalls.status, filter.status)] : []),
-          ...(filter.recordId ? [eq(skillCalls.recordId, filter.recordId)] : []),
-        ),
-      )
-      .orderBy(desc(skillCalls.createdAt), desc(skillCalls.id))
-      .limit(filter.limit);
-    return rows.map(skillCallView);
-  }
-
-  /**
-   * Try a failed skill call again. It keeps its ID, which a7c has as the idempotency key: if a7c
-   * did start a run before, it starts no second one.
-   */
-  async retrySkillCall(request: FastifyRequest, loaded: LoadedApp, id: string): Promise<SkillCallView> {
-    const ctx = this.#ctx;
-    const now = ctx.now();
-    return ctx.db.transaction(async (tx) => {
-      const [row] = await tx
-        .select()
-        .from(skillCalls)
-        .where(and(eq(skillCalls.id, id), eq(skillCalls.orgId, ctx.org.id), eq(skillCalls.appId, loaded.app.id), eq(skillCalls.environmentId, loaded.env.id)))
-        .for('update');
-      if (!row) throw notFound('Skill call');
-      if (row.status !== 'failed') throw conflict('not_failed', `This call is ${row.status}: only a failed call can be tried again`);
-      const [updated] = await tx.update(skillCalls).set({ status: 'pending', attempts: 0, nextAttemptAt: now }).where(eq(skillCalls.id, id)).returning();
-      await recordAudit(tx, auditScopeFor(request, ctx.org.id, now), {
-        action: 'skill_call.retry',
-        target: { type: 'skill_call', id, name: row.skill },
-        spaceId: loaded.space.id,
-        appId: loaded.app.id,
-        env: loaded.env.kind,
-        reason: { skill: row.skill, tier: row.tier, action: row.action, recordId: row.recordId, lastError: row.lastError },
-      });
-      return skillCallView(updated!);
-    });
   }
 
   /** The capability resource for an action or query, for permission checks. */

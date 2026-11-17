@@ -416,32 +416,21 @@ export function decisionsBy(definition: Pick<StoredDefinition, 'processes'>, act
 
 /**
  * What a process does by itself, which a change request names: the actions its service tasks run
- * and its messages send, the a7c skills it starts, the processes it calls, and its script tasks,
- * which change the record with steps.
+ * and its messages send, the processes it calls, and its script tasks, which change the record
+ * with steps.
  */
 export function processWork(process: Process): {
   readonly actions: readonly string[];
-  readonly skills: readonly string[];
   readonly calls: readonly string[];
   readonly scripts: readonly string[];
 } {
   const tasks = Object.values(process.elements).filter((element): element is Extract<ProcessElement, { type: 'serviceTask' }> => element.type === 'serviceTask');
   const undoes = Object.values(process.elements).flatMap((element) => ('undo' in element && element.undo ? [element.undo] : []));
   return {
-    actions: [...new Set([...tasks.flatMap((task) => (task.action ? [task.action] : [])), ...sentMessages(process).map((message) => message.action), ...undoes])],
-    skills: [...new Set(tasks.flatMap((task) => (task.skill ? [task.skill] : [])))],
+    actions: [...new Set([...tasks.map((task) => task.action), ...sentMessages(process).map((message) => message.action), ...undoes])],
     calls: [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'callActivity' ? [element.process] : [])))],
     scripts: Object.values(process.elements).flatMap((element) => (element.type === 'scriptTask' ? [element.name] : [])),
   };
-}
-
-/** Every service task of the app's processes that starts an a7c skill, with where it is. */
-export function processSkillTasks(definition: Pick<StoredDefinition, 'processes'>): Array<{ readonly path: string; readonly name: string; readonly skill: string }> {
-  return Object.entries(definition.processes ?? {}).flatMap(([process, model]) =>
-    Object.entries(model.elements).flatMap(([id, element]) =>
-      element.type === 'serviceTask' && element.skill ? [{ path: `processes.${process}.elements.${id}`, name: element.name, skill: element.skill }] : [],
-    ),
-  );
 }
 
 /**

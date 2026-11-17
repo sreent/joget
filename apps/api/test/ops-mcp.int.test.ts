@@ -3,9 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startTestApp, type Session, type TestApp } from './helpers.js';
 
 /**
- * The operators' MCP server (`/mcp/ops`): an AI client watches an app's processes and skill calls,
- * tries stuck work again, cancels an instance, throws a signal and moves a task, with the same
- * checks as the API's operator routes.
+ * The operators' MCP server (`/mcp/ops`): an AI client watches an app's processes, tries stuck
+ * work again, cancels an instance, throws a signal and moves a task, with the same checks as the
+ * API's operator routes.
  */
 
 let t: TestApp;
@@ -71,8 +71,6 @@ describe('the operators\' MCP server', () => {
       'throw_signal',
       'reassign_task',
       'find_people',
-      'list_skill_calls',
-      'retry_skill_call',
     ]);
     const cancel = tools.find((tool) => tool.name === 'cancel_instance')!;
     expect(cancel.annotations).toMatchObject({ destructiveHint: true });
@@ -87,7 +85,6 @@ describe('the operators\' MCP server', () => {
     const instance = await ok(operator, 'get_instance', { app_id: appId, instance_id: instanceId });
     expect(instance.tasks).toMatchObject([{ name: 'Decide on the leave', status: 'open', assignee: { id: bob.userId } }]);
     taskId = instance.tasks[0].id;
-    expect((await ok(operator, 'list_skill_calls', { app_id: appId })).calls).toEqual([]);
   });
 
   it('moves a task to someone else who holds its role, while its assignee is away', async () => {

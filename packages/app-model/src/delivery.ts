@@ -4,7 +4,6 @@ import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles
 import { conditionText } from './condition-text.js';
 import { processWork } from './processes.js';
 import type { Action, ConfirmationLevel, Process, Query } from './schema.js';
-import { skillSteps } from './steps.js';
 
 /*
  * What a change request shows its reviewers (design §6.7): what changed, who gains or loses
@@ -249,10 +248,7 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
   for (const name of new Set([...Object.keys(base.actions), ...Object.keys(head.actions)])) {
     const [b, h] = [base.actions[name], head.actions[name]];
     if (!b && h) {
-      // Work in other systems matters most to a reviewer, so a new tool names the a7c skills it starts.
-      const skills = [...new Set(skillSteps(h.steps ?? []).map(({ step }) => step.skill))];
-      const starts = skills.length ? `. It starts the a7c skill${skills.length > 1 ? 's' : ''} ${skills.join(', ')}` : '';
-      changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}, and ${CONFIRMATION_TEXT[h.confirm]}${starts}` });
+      changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}, and ${CONFIRMATION_TEXT[h.confirm]}` });
     } else if (b && !h) {
       changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
     } else if (b && h && !same(b, h)) {
@@ -270,13 +266,12 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
     const [b, h] = [baseProcesses[name], headProcesses[name]];
     if (!b && h) {
       const starts = startingActions(h);
-      const { actions, skills, calls, scripts } = processWork(h);
+      const { actions, calls, scripts } = processWork(h);
       const called = Object.values(headProcesses).some((other) => processWork(other).calls.includes(name));
       const how = [...(starts.length ? [`${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it`] : []), ...automaticStarts(h).map((words) => `it starts by itself ${words}`)];
       const texts = [
         `New process ${h.label}, on ${entityLabel(h.entity)}: ${how.length ? how.join('; ') : called ? 'another process calls it' : 'people start it by hand'}`,
         ...(actions.length ? [`It runs ${actions.join(', ')} by itself`] : []),
-        ...(skills.length ? [`It starts the a7c skill${skills.length > 1 ? 's' : ''} ${skills.join(', ')}`] : []),
         ...(calls.length ? [`It calls ${calls.join(', ')}`] : []),
         ...(scripts.length ? [`It changes the record by itself in ${scripts.join(', ')}`] : []),
       ];
@@ -318,8 +313,6 @@ function processChanges(b: Process, h: Process): string[] {
   const [before, after] = [processWork(b), processWork(h)];
   for (const action of after.actions) if (!before.actions.includes(action)) texts.push(`${h.label} now runs ${action} by itself`);
   for (const action of before.actions) if (!after.actions.includes(action)) texts.push(`${h.label} no longer runs ${action} by itself`);
-  for (const skill of after.skills) if (!before.skills.includes(skill)) texts.push(`${h.label} now starts the a7c skill ${skill}`);
-  for (const skill of before.skills) if (!after.skills.includes(skill)) texts.push(`${h.label} no longer starts the a7c skill ${skill}`);
   for (const call of after.calls) if (!before.calls.includes(call)) texts.push(`${h.label} now calls ${call}`);
   for (const call of before.calls) if (!after.calls.includes(call)) texts.push(`${h.label} no longer calls ${call}`);
   for (const script of after.scripts) if (!before.scripts.includes(script)) texts.push(`${h.label} now changes the record by itself in ${script}`);
@@ -340,15 +333,7 @@ function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: s
   for (const [field, value] of Object.entries(h.set)) if (!same(b.set[field], value)) texts.push(`${name} now sets ${field} to ${JSON.stringify(value)}`);
   for (const field of Object.keys(b.set)) if (!(field in h.set)) texts.push(`${name} no longer sets ${field}`);
   if (!same(b.where, h.where)) texts.push(`${name} now applies to a different set of records`);
-  if (!same(b.steps ?? [], h.steps ?? [])) {
-    // Work in other systems matters most to a reviewer, so each skill gained or lost is named.
-    const skillsOf = (action: Action) => new Map(skillSteps(action.steps ?? []).map(({ step }) => [step.skill, step.label]));
-    const [before, after] = [skillsOf(b), skillsOf(h)];
-    const named = texts.length;
-    for (const [skill, label] of after) if (!before.has(skill)) texts.push(`${name} now starts the a7c skill ${skill}: ${label}`);
-    for (const skill of before.keys()) if (!after.has(skill)) texts.push(`${name} no longer starts the a7c skill ${skill}`);
-    if (texts.length === named) texts.push(`${name} runs different steps`);
-  }
+  if (!same(b.steps ?? [], h.steps ?? [])) texts.push(`${name} runs different steps`);
   if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);
   if (b.card !== h.card) texts.push(`${name} shows a different review card`);
   if (b.label !== h.label && !texts.length) texts.push(`${name} has a new label`);

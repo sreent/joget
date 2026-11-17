@@ -67,8 +67,8 @@ const MAX_TOKENS = 16_000;
 const MAX_REPORTED = 40;
 
 /** The instructions of the chat, with the definition's format: the same for every request, so the provider caches them. */
-function instructions(config: Pick<Config, 'A7C_URL'>): string {
-  const guide = definitionGuide(config);
+function instructions(): string {
+  const guide = definitionGuide();
   return [
     'You build apps in Ambit, a governed low-code platform, together with a builder who works in the studio. You change the app by changing its definition: JSON, whose format follows.',
     '',
@@ -201,7 +201,7 @@ export class Composer {
       max_iterations: config.AI_MAX_TURNS,
       // The full conversation each turn, held by Ambit: no state stays with the provider.
       thread: false,
-      system: [{ type: 'text', text: instructions(config), cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: instructions(), cache_control: { type: 'ephemeral' } }],
       // The conversation grows each turn: the provider caches it up to the last block.
       cache_control: { type: 'ephemeral' },
       tools: [read, edit],

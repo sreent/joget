@@ -187,10 +187,6 @@ export type ConfirmationLevel = (typeof CONFIRMATION_LEVELS)[number];
 
 export const ExpressionSchema = z.custom<Expression>((value) => isExpression(value), { message: 'Not a valid expression' });
 
-/** An a7c skill, as `<project>/<skill>`, for example `finance/pay-expense-claim`. */
-export const SKILL_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}\/[a-z0-9][a-z0-9-]{0,62}$/;
-const SkillInputName = z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,62}$/, 'Name an input with letters, digits and underscores, starting with a letter');
-
 /** Set a field of the record to a value that the step works out. */
 const SetStep = z.strictObject({ type: z.literal('set'), field: Name, value: ExpressionSchema });
 /** Add a line to a lines field of the record, such as a receipt to a claim. */
@@ -204,20 +200,8 @@ const CheckStep = z.strictObject({
   /** The fields the message points at, so screens can highlight them. */
   fields: z.array(Name).max(20).optional(),
 });
-/**
- * Start an a7c skill once the change is saved (design §6.2): automation across other systems
- * belongs to a7c. The call waits in an outbox, so it starts once, and only if the change commits.
- */
-const SkillStep = z.strictObject({
-  type: z.literal('skill'),
-  /** What the skill does, in the words a person reads on the review card. */
-  label: Label,
-  skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim'),
-  /** The skill's input, worked out from the record. */
-  input: z.record(SkillInputName, ExpressionSchema).default({}),
-});
 /** A step that a branch can hold. Branches go one level deep, so that an action's logic stays a short list. */
-export const SimpleStep = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, SkillStep]);
+export const SimpleStep = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep]);
 export type SimpleStep = z.infer<typeof SimpleStep>;
 /** Take one of two short lists of steps, depending on a condition. */
 const IfStep = z.strictObject({
@@ -226,7 +210,7 @@ const IfStep = z.strictObject({
   then: z.array(SimpleStep).max(10),
   else: z.array(SimpleStep).max(10).default([]),
 });
-export const Step = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, SkillStep, IfStep]);
+export const Step = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, IfStep]);
 export type Step = z.infer<typeof Step>;
 export const MAX_STEPS = 20;
 
@@ -248,7 +232,7 @@ export const Action = z.strictObject({
   card: Name.optional(),
   /**
    * What the action does after it takes its input and sets its values, step by step: set values,
-   * add lines, check, branch, and start a7c skills. The steps run when the change is worked out,
+   * add lines, check and branch. The steps run when the change is worked out,
    * so a preview and a proposal show their result, and a person approves exactly that.
    */
   steps: z.array(Step).max(MAX_STEPS).optional(),
@@ -623,19 +607,16 @@ const UserTask = z.strictObject({
   card: Name.optional(),
   repeat: Repeat.optional(),
 });
-/** Work the process does by itself: run one of the app's actions on the record, with the app's authority, or start an a7c skill. */
 /** An update action that undoes what a task did, which a compensation runs on the same record. */
 const Undo = Name.optional();
+/** Work the process does by itself: run one of the app's actions on the record, with the app's authority. */
 const ServiceTask = z.strictObject({
   type: z.literal('serviceTask'),
   name: Label,
   description: Description.optional(),
   in: In,
   undo: Undo,
-  action: Name.optional(),
-  skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim').optional(),
-  /** The skill's input, worked out from the record. */
-  input: z.record(SkillInputName, ExpressionSchema).optional(),
+  action: Name,
   repeat: Repeat.optional(),
 });
 /**

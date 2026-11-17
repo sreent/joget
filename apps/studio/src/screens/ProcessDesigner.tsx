@@ -1127,7 +1127,7 @@ function BoundaryEvents(props: {
   const { definition, name, id, problems, onChange } = props;
   const process = definition.processes![name]!;
   const host = process.elements[id];
-  if (!host || (host.type === 'serviceTask' && host.skill)) return null;
+  if (!host) return null;
   const kinds = boundaryKinds(host);
   const words = ENDS[host.type] ?? ENDS['userTask']!;
   const actions = updateActions(definition, process.entity);
@@ -1939,26 +1939,20 @@ function ElementPanel(props: {
         </>
       ) : null}
       {element.type === 'serviceTask' ? (
-        element.skill ? (
-          <p className="m-0 text-sm">
-            Starts the a7c skill <code>{element.skill}</code>.
-          </p>
-        ) : (
-          <Field label="Runs, with the app's authority" hint="An action that doesn't read the person running it: a process runs it with no person.">
-            {(inputId) => (
-              <Select id={inputId} value={element.action ?? ''} onChange={(event) => set((current) => ({ ...current, action: event.target.value }) as ProcessElement)}>
-                <option value="" disabled>
-                  Choose an action
+        <Field label="Runs, with the app's authority" hint="An action that doesn't read the person running it: a process runs it with no person.">
+          {(inputId) => (
+            <Select id={inputId} value={element.action} onChange={(event) => set((current) => ({ ...current, action: event.target.value }) as ProcessElement)}>
+              <option value="" disabled>
+                Choose an action
+              </option>
+              {actions.map((action) => (
+                <option key={action} value={action}>
+                  {definition.actions[action]!.label}
                 </option>
-                {actions.map((action) => (
-                  <option key={action} value={action}>
-                    {definition.actions[action]!.label}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-        )
+              ))}
+            </Select>
+          )}
+        </Field>
       ) : null}
       {element.type === 'serviceTask' && element.action ? <UndoPicker definition={definition} name={name} id={id} onChange={onChange} /> : null}
       {element.type === 'serviceTask' ? <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} /> : null}

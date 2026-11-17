@@ -6,7 +6,6 @@ import { startFileSweeper } from './files/service.js';
 import { createResilientOidcProvider } from './auth/oidc.js';
 import { loadConfig } from './config.js';
 import { buildServer } from './server.js';
-import { a7cRunner, SkillDispatcher, startSkillDispatcher } from './skills/dispatcher.js';
 import { startProcessTimers } from './processes/engine.js';
 
 const config = loadConfig();
@@ -42,15 +41,7 @@ const stopSealer =
     : () => {};
 
 const stopSweeper = config.FILE_SWEEP_INTERVAL_SECONDS > 0 ? startFileSweeper(ctx.files, { intervalSeconds: config.FILE_SWEEP_INTERVAL_SECONDS, logger: app.log }) : () => {};
-const stopDispatcher =
-  config.A7C_URL && config.A7C_TOKEN_FILE && config.SKILL_DISPATCH_INTERVAL_SECONDS > 0
-    ? startSkillDispatcher(new SkillDispatcher(ctx.db, a7cRunner({ url: config.A7C_URL, tokenFile: config.A7C_TOKEN_FILE }), { now: ctx.now, maxAttempts: config.SKILL_CALL_MAX_ATTEMPTS }), {
-        intervalSeconds: config.SKILL_DISPATCH_INTERVAL_SECONDS,
-        logger: app.log,
-      })
-    : () => {};
 const stopTimers = config.PROCESS_TIMER_INTERVAL_SECONDS > 0 ? startProcessTimers(processes, { intervalSeconds: config.PROCESS_TIMER_INTERVAL_SECONDS, logger: app.log }) : () => {};
-if (!config.A7C_URL) app.log.warn('A7C_URL is not set: the a7c skills that actions call wait until it is');
 if (config.FILE_SCANNER === 'none') {
   app.log.warn(config.NODE_ENV === 'production' ? 'FILE_SCANNER is none, so uploads are refused: set up a clamd server' : 'FILE_SCANNER is none: uploads are kept without a malware check');
 }
@@ -59,7 +50,6 @@ async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'Shutting down');
   stopSealer();
   stopSweeper();
-  stopDispatcher();
   stopTimers();
   await app.close();
   await database.close();

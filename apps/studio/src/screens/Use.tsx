@@ -10,7 +10,7 @@ import { asLines, display, ValueInput, ValueView } from '../components/values.js
 import { atRoute, Link, navigate, type Route } from '../router.js';
 import { MovedNotice } from './BuilderPanels.js';
 import { ProcessCard } from './Tasks.js';
-import type { HistoryEntry, Line, RecordOut, RecordValue, SkillCall, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
+import type { HistoryEntry, Line, RecordOut, RecordValue, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
 /** What the screen shows: one of the app's pages, a form, an entity's records, or one record. */
 type View =
@@ -560,10 +560,9 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
   const entity: UiEntity = manifest.entities[entityName]!;
   const record = useQuery({ queryKey: ['record', at.id, at.env, entityName, recordId], queryFn: () => api.record(at, entityName, recordId) });
   const history = useQuery({ queryKey: ['history', at.id, at.env, entityName, recordId], queryFn: () => api.history(at, entityName, recordId) });
-  const skills = useQuery({ queryKey: ['skillCalls', at.id, at.env, entityName, recordId], queryFn: () => api.skillCalls(at, entityName, recordId) });
   const [edits, setEdits] = useState<Record<string, RecordValue> | null>(null);
   const refresh = () =>
-    Promise.all([...['record', 'records', 'history', 'skillCalls', 'processes'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] })), client.invalidateQueries({ queryKey: ['tasks'] })]);
+    Promise.all([...['record', 'records', 'history', 'processes'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] })), client.invalidateQueries({ queryKey: ['tasks'] })]);
   // Lines are sent whole, with their IDs, so the platform knows which changed; empty new rows are dropped.
   const changes = () => Object.fromEntries(Object.entries(edits ?? {}).map(([field, value]) => [field, entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]));
   const save = useMutation({ mutationFn: () => api.updateRecord(at, entityName, recordId, changes(), record.data!.version), onSuccess: async () => (setEdits(null), await refresh()) });
@@ -647,7 +646,6 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
       </Card>
       <div className="grid content-start gap-4">
       <ProcessCard at={at} entity={entityName} recordId={recordId} />
-      {skills.data?.calls.length ? <SkillCallsCard calls={skills.data.calls} /> : null}
       <Card className="grid content-start gap-3">
         <h3 className="m-0 text-sm font-semibold text-muted">History</h3>
         <ol className="m-0 grid list-none gap-3 p-0">
@@ -662,35 +660,6 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
       </div>
     </div>
     </FilesProvider>
-  );
-}
-
-const SKILL_STATUS: Readonly<Record<SkillCall['status'], { text: string; tone: 'idle' | 'good' | 'bad' }>> = {
-  pending: { text: 'Waiting', tone: 'idle' },
-  started: { text: 'Started', tone: 'good' },
-  failed: { text: 'Failed', tone: 'bad' },
-};
-
-/** The work in other systems that actions on the record started, through a7c, and how each call went. */
-function SkillCallsCard({ calls }: { calls: SkillCall[] }) {
-  return (
-    <Card className="grid content-start gap-3">
-      <h3 className="m-0 text-sm font-semibold text-muted">In other systems</h3>
-      <ul className="m-0 grid list-none gap-2 p-0" aria-label="In other systems">
-        {calls.map((call) => (
-          <li key={call.id} className="grid gap-0.5">
-            <span className="flex items-center justify-between gap-2">
-              <span className="font-medium">{call.label}</span>
-              <Badge tone={SKILL_STATUS[call.status].tone}>{SKILL_STATUS[call.status].text}</Badge>
-            </span>
-            <span className="text-xs text-muted">
-              a7c: {call.skill}
-              {call.status === 'failed' && call.lastError ? ` · ${call.lastError}` : call.status === 'pending' && call.attempts > 0 ? ' · trying again' : ''}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </Card>
   );
 }
 

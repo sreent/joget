@@ -8,7 +8,7 @@ import { notFound } from '../errors.js';
 import type { ProcessEngine, TaskView } from './engine.js';
 
 /*
- * Operating an app: watching its processes and skill calls, trying failed work again, and steering
+ * Operating an app: watching its processes, trying stuck work again, and steering
  * its processes. The owner of a personal app operates it. In a team space, operators do, with the
  * ops permissions. Steering a process (cancelling it, throwing a signal) needs process.admin in
  * both. The API's routes and the operators' MCP tools share these checks.

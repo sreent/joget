@@ -1,5 +1,5 @@
 import { EXPENSE_APP } from '@platform/app-model';
-import { appEnvironments, auditEvents, changeRequests, skillCalls } from '@platform/db';
+import { appEnvironments, auditEvents, changeRequests } from '@platform/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -68,8 +68,7 @@ async function deployToProd(releaseId: string, confirmDestructive = false): Prom
 }
 
 beforeAll(async () => {
-  // This installation connects a7c, so the team app's approval can start a skill: in the tier of its environment.
-  t = await startTestApp({ A7C_URL: 'https://a7c.test', A7C_TOKEN_FILE: '/run/secrets/a7c-token' });
+  t = await startTestApp();
   [alice, olivia, carol, gina, dave, erin, frank] = await Promise.all([
     t.login('alice'),
     t.login('olivia'),
@@ -122,7 +121,6 @@ describe('team apps and working copies', () => {
   it('lets the builder change the copy at once, with test data that stays in their space', async () => {
     await editCopy(carol, copyId, (definition) => {
       Object.assign(definition, structuredClone(EXPENSE_APP));
-      definition.actions.approve_claim.steps.push({ type: 'skill', label: 'Pay the claim', skill: 'finance/pay-expense-claim', input: { claim: { ref: 'record.id' }, amount: { ref: 'record.total' } } });
     });
     await inject(
       { method: 'POST', url: `/v1/apps/${copyId}/entities/expense_claim/records`, ...as(carol), payload: { values: { title: 'Test claim', lines: [line('Cafe', 12)] } } },
@@ -162,11 +160,8 @@ describe('change requests', () => {
     await inject({ method: 'POST', url: prodRecords(preview), ...as(dave), payload: { values: { title: 'Preview claim', status: 'submitted', lines: [line('Taxi', 30)] } } }, 201);
     const listed = await json({ method: 'GET', url: prodRecords(preview), ...as(dave) }, 200);
     expect(listed.records.map((r: Json) => r.values.title)).toEqual(['Preview claim']);
-    // Trying a change starts its skills in a7c's team tier, never in production.
+    // Reviewers try the change's actions on the preview's own data.
     await inject({ method: 'POST', url: `/v1/apps/${teamId}/actions/approve_claim/run${preview}`, ...as(carol), payload: { recordId: listed.records[0].id } }, 200);
-    expect(await t.ctx.db.select().from(skillCalls).where(eq(skillCalls.recordId, listed.records[0].id))).toEqual([
-      expect.objectContaining({ tier: 'team', environmentId: firstCr.preview.environmentId, skill: 'finance/pay-expense-claim' }),
-    ]);
 
     // Frank has no role in the space: no preview for him.
     await inject({ method: 'GET', url: `/v1/apps/${teamId}/ui${preview}`, ...as(frank) }, 403);
@@ -277,11 +272,11 @@ describe('releases and deployments', () => {
     // Builders and reviewers build the app; they don't see its Prod data.
     await inject({ method: 'GET', url: prodRecords(), ...as(carol) }, 403);
     await inject({ method: 'GET', url: prodRecords(), ...as(dave) }, 403);
-    // In Prod, the skills an action starts run in a7c's production tier.
+    // An approver in Prod approves a claim there.
     await inject({ method: 'POST', url: `/v1/apps/${teamId}/shares?env=prod`, ...as(olivia), payload: { email: 'gina@example.com', role: 'approver' } }, 201);
     const prodClaim = listed.records[0];
-    await inject({ method: 'POST', url: `/v1/apps/${teamId}/actions/approve_claim/run`, ...as(gina), payload: { recordId: prodClaim.id } }, 200);
-    expect(await t.ctx.db.select().from(skillCalls).where(eq(skillCalls.recordId, prodClaim.id))).toEqual([expect.objectContaining({ tier: 'production', onBehalfOf: gina.userId })]);
+    const approved = await json({ method: 'POST', url: `/v1/apps/${teamId}/actions/approve_claim/run`, ...as(gina), payload: { recordId: prodClaim.id } }, 200);
+    expect(approved.record.values.status).toBe('approved');
   });
 
   it('goes to Prod with a second change, then rolls back in under a minute, keeping the data', async () => {

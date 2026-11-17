@@ -362,14 +362,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.queries.my_spending.summary).toMatchObject({ measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, limit: 5 });
   });
 
-  it('designs the steps of an action, without a7c until the installation connects it', async () => {
+  it('designs the steps of an action', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
     await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
     const steps = page.getByRole('region', { name: 'Steps' });
     await visible(steps.getByRole('button', { name: /^Step 3: Warn unless Total \(SGD\) is at most 1000/ }));
-    // This installation doesn't connect a7c, so there is no skill step to add.
-    expect(await steps.getByRole('button', { name: 'Start an a7c skill', exact: true }).count()).toBe(0);
     await steps.getByRole('button', { name: 'Check', exact: true }).click();
     await steps.getByLabel('Message', { exact: true }).fill('A claim needs a title');
     await steps.getByLabel("When it doesn't hold", { exact: true }).selectOption('warning');

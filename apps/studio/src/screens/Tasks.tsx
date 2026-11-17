@@ -212,7 +212,6 @@ const EVENTS: Readonly<Record<string, string>> = {
   signal: 'Signal heard',
   compensated: 'Undone',
   transaction_cancelled: 'Transaction cancelled',
-  skill_queued: 'Started work in a7c',
   sent: 'Sent a message',
   checked: 'Checked the rules',
   reached: 'Milestone reached',

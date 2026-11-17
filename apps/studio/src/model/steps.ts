@@ -4,8 +4,8 @@ import { lineOwner } from './edit.js';
 import { writableFields } from './logic.js';
 
 /**
- * An action's steps as builders edit them (design §6.2): set a value, add a line, check, branch,
- * and start an a7c skill. Each edit returns a new definition. A step is found by its place: its
+ * An action's steps as builders edit them (design §6.2): set a value, add a line, check and
+ * branch. Each edit returns a new definition. A step is found by its place: its
  * index, and for a step inside a branch, the side and its index there.
  */
 
@@ -32,7 +32,6 @@ export const STEP_NAMES: Readonly<Record<StepType, string>> = {
   add_line: 'Add a line',
   check: 'Check',
   if: 'Branch',
-  skill: 'Start an a7c skill',
 };
 
 /** Fields a step can set: written by the caller, not lines, files or worked out from lines. */
@@ -93,8 +92,6 @@ export function newStep(definition: Definition, entity: string, type: StepType):
       const when = firstTest(definition, entity);
       return { type, when, then: [{ type: 'check', assert: when, message: 'Say what must hold, and why', severity: 'warning' }], else: [] };
     }
-    case 'skill':
-      return { type, label: 'Start a skill', skill: 'project/skill', input: {} };
   }
 }
 
@@ -251,8 +248,6 @@ export function describeStep(definition: Definition, entity: string, step: Step)
       return `${step.severity === 'warning' ? 'Warn' : 'Stop'} unless ${describeCondition(definition, entity, step.assert)}: ${step.message}`;
     case 'if':
       return `If ${describeCondition(definition, entity, step.when)}`;
-    case 'skill':
-      return `${step.label} (a7c: ${step.skill})`;
   }
 }
 
@@ -319,7 +314,7 @@ const SYSTEM_SOURCES: ReadonlyArray<{ ref: string; label: string; kind: ValueKin
 
 /**
  * The record's fields a value can come from. For a field, those that hold the same kind of value;
- * a date takes a time's day. For a skill's input, which takes anything, every field but files.
+ * a date takes a time's day. Without a target, every field but files.
  */
 export function valueSources(definition: Definition, entity: string, target?: Field | 'number'): Array<{ ref: string; label: string }> {
   const own = (definition.entities[entity]?.fields ?? []).flatMap((field) => {

@@ -41,7 +41,7 @@ import type { FastifyRequest } from 'fastify';
 import type pg from 'pg';
 import { checkPermission } from '../access/check.js';
 import { spaceResource } from '../access/resources.js';
-import { digestOf, insertRevision, refuseSkillsWithoutA7c, type AppBuilder, type PlannedStep } from '../apps/builder.js';
+import { digestOf, insertRevision, type AppBuilder, type PlannedStep } from '../apps/builder.js';
 import { isTeamApp, type AppRef, type EnvironmentRow, type LoadedApp, type SpaceRow } from '../apps/catalog.js';
 import type { AppRuntime } from '../apps/runtime.js';
 import { pgError } from '../apps/pg-errors.js';
@@ -218,7 +218,6 @@ export class Delivery {
     await checkPermission(ctx, request, auth, 'change.open', target);
     const validated = validateDefinition(input.definition);
     if (!validated.ok) throw unprocessable('invalid_definition', 'The definition has problems', { issues: validated.issues });
-    refuseSkillsWithoutA7c(ctx, validated.definition);
     const [personal] = await ctx.db.select().from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
     if (!personal) throw notFound('Personal space');
 

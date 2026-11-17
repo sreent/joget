@@ -28,7 +28,6 @@ import {
   scopeOf,
   sentMessages,
   signalStarts,
-  skillStepIssues,
   startsOf,
   thrownSignals,
   timerFiresAt,
@@ -175,16 +174,6 @@ describe('inclusive gateways, messages and errors', () => {
       'processes.leave_approval.elements.wait: Until withdrawn waits for a timer, a message, a condition or a signal, or is a link: one of these',
       "processes.leave_approval.elements.also.message.action: approve_leave decides Decide on the leave, so it can't also interrupt it",
     ]);
-  });
-
-  it('catch an error where an action runs, not where an a7c skill starts', () => {
-    expect(
-      issuesOf(
-        more((process) => {
-          process.elements.payroll = { type: 'serviceTask', name: 'Tell payroll', skill: 'hr/record-leave' };
-        }),
-      ),
-    ).toEqual(['processes.leave_approval.elements.failed.attachedTo: Tell payroll starts an a7c skill, which runs later in a7c: an error event catches the failure of an action']);
   });
 });
 
@@ -962,7 +951,7 @@ describe('the checks of a process', () => {
           process.elements.decide.assignee = { field: 'reason' };
           process.elements.decide.outcomes[1].action = 'request_leave';
           process.elements.decide.card = 'nowhere';
-          process.elements.pay = { type: 'serviceTask', name: 'Pay', action: 'approve_leave', skill: 'hr/pay', input: { who: { ref: 'principal.id' } } };
+          process.elements.pay = { type: 'serviceTask', name: 'Pay', action: 'approve_leave' };
           process.flows.to_pay = { from: 'requested', to: 'pay' };
           definition['roles'].employee.processes = ['nothing'];
         }),
@@ -973,9 +962,7 @@ describe('the checks of a process', () => {
       "processes.leave_approval.elements.decide.assignee.field: reason doesn't name a person",
       "processes.leave_approval.elements.decide.outcomes[1].action: request_leave creates a record; here an action changes the process's own record",
       'processes.leave_approval.elements.decide.card: No card named nowhere',
-      'processes.leave_approval.elements.pay: Pay runs an action or starts an a7c skill: one of the two',
       'processes.leave_approval.elements.pay.action: approve_leave reads the person who runs it, but a service task runs it with no person',
-      "processes.leave_approval.elements.pay.input.who: principal.id: a process's skill input reads fields of the record",
       'processes.leave_approval.elements.pay: Pay leads on by one flow',
       'roles.employee.processes[0]: No process named nothing',
     ]);
@@ -1113,21 +1100,5 @@ describe('a process in review', () => {
     expect(merged.ok && Object.keys((merged.definition['processes'] ?? {}) as object)).toEqual(['leave_approval']);
     const none = mergeDefinitions(base, base, base);
     expect(none.ok && 'processes' in none.definition).toBe(false);
-  });
-
-  it('refuses a skill in a process where no a7c is connected', () => {
-    const skilled = valid(
-      leave((process) => {
-        process.elements.pay = { type: 'serviceTask', name: 'Tell payroll', skill: 'hr/record-leave', input: { days: { ref: 'record.days' } } };
-        process.flows.on_approve.to = 'pay';
-        process.flows.told = { from: 'pay', to: 'approved' };
-      }),
-    );
-    expect(skillStepIssues(skilled)).toEqual([
-      {
-        path: 'processes.leave_approval.elements.pay',
-        message: "Tell payroll: this installation doesn't connect a7c, so a process can't start an a7c skill. Leave the task out, or ask an admin to connect a7c",
-      },
-    ]);
   });
 });

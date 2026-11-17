@@ -45,19 +45,6 @@ function entitiesOf(definition: (typeof TEMPLATES)[number]['definition']): strin
 export function bundleRoutes(ctx: AppContext, builder: AppBuilder, delivery: Delivery, runtime: AppRuntime): FastifyPluginAsyncZod {
   return async (app) => {
     app.get(
-      '/v1/features',
-      {
-        config: { access: { kind: 'authenticated' } },
-        schema: {
-          tags: ['apps'],
-          summary: 'What this installation offers builders: whether it connects a7c, so actions can start a7c skills',
-          response: { 200: z.object({ a7c: z.boolean() }) },
-        },
-      },
-      async () => ({ a7c: Boolean(ctx.config.A7C_URL) }),
-    );
-
-    app.get(
       '/v1/templates',
       {
         config: { access: { kind: 'authenticated' } },

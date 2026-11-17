@@ -13,8 +13,8 @@ import type { ProcessEngine } from '../processes/engine.js';
 import { operates, reassignTask, requireOperator, type Operation } from '../processes/operators.js';
 
 /*
- * The operators' MCP tools (`/mcp/ops`): watch an app's process instances and a7c skill calls, try
- * stuck or failed work again, cancel an instance, throw a signal and move a task. They do what the
+ * The operators' MCP tools (`/mcp/ops`): watch an app's process instances, try stuck work again,
+ * cancel an instance, throw a signal and move a task. They do what the
  * API's operator routes do, with the same checks. Deciding tasks, approving and deleting data are
  * not here: those steps stay with people (design §5.7).
  */
@@ -177,23 +177,6 @@ export function opsTools(ctx: AppContext, runtime: AppRuntime, engine: ProcessEn
         if (auth.actor.type !== 'user') throw forbidden('person_required', 'Only people, and agents acting for them, look people up');
         return { people: await searchPeople(ctx, args.search) };
       },
-    }),
-    tool({
-      name: 'list_skill_calls',
-      title: 'Skill calls',
-      description: "The a7c skills that an app's actions started, newest first. A failed call says why; try it again with retry_skill_call.",
-      input: AppArgs.extend({ status: z.enum(['pending', 'started', 'failed']).optional(), limit: z.int().min(1).max(200).default(50) }),
-      annotations: watching,
-      run: async (args) => ({ calls: await runtime.skillCalls(await operated(args, 'ops.monitor.read'), { limit: args.limit, ...(args.status ? { status: args.status } : {}) }) }),
-      summarize: (result) => `${count((result as { calls: unknown[] }).calls.length, 'call')}.`,
-    }),
-    tool({
-      name: 'retry_skill_call',
-      title: 'Try a failed skill call again',
-      description: 'Try a failed skill call again. a7c gets the same idempotency key, so it never starts a run twice.',
-      input: AppArgs.extend({ call_id: z.uuid().describe('From list_skill_calls') }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      run: async (args) => runtime.retrySkillCall(request, await operated(args, 'ops.job.retry'), args.call_id),
     }),
   ];
 }

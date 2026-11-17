@@ -2,18 +2,8 @@ import { conditionRefs, evaluateCondition, type Condition } from '@platform/auth
 import { evaluateExpression, expressionRefs, roundTo, type Expression, type ExpressionValue } from './expressions.js';
 import { entityFields, isWritable, type FieldInfo, type StoredDefinition } from './fields.js';
 import type { Finding } from './rules.js';
-import { processSkillTasks } from './processes.js';
 import type { SimpleStep, Step } from './schema.js';
 import { canonicalValue, conditionRecord, rollupValues, type FieldValue, type LineValues, type RecordLines, type RecordValues, type ValueIssue } from './values.js';
-
-/** A call to an a7c skill that an action makes once its change is saved. */
-export interface SkillCall {
-  /** Where the step is, as `steps[2]` or `steps[3].then[0]`. */
-  readonly step: string;
-  readonly label: string;
-  readonly skill: string;
-  readonly input: Readonly<Record<string, ExpressionValue>>;
-}
 
 export interface StepsResult {
   /** The record after the steps: every value it had, with what the steps set and the rollups of their lines. */
@@ -25,7 +15,6 @@ export interface StepsResult {
   readonly linesAdded: readonly string[];
   /** Warnings from checks, which travel with the change. */
   readonly findings: readonly Finding[];
-  readonly skills: readonly SkillCall[];
   /** Values that a step worked out but its field can't hold. Any issue stops the action. */
   readonly issues: readonly ValueIssue[];
   /** The check that failed, if one did. The action stops with its message. */
@@ -78,50 +67,12 @@ export function linesFieldsAddedTo(steps: readonly Step[]): string[] {
 }
 
 /**
- * Where a definition starts a7c skills, as issues: for an installation that doesn't connect a7c,
- * which refuses such a definition rather than queue calls that nothing would ever send.
- */
-export function skillStepIssues(definition: {
-  readonly actions: Readonly<Record<string, { readonly steps?: readonly Step[] }>>;
-  readonly processes?: StoredDefinition['processes'];
-}): Array<{ path: string; message: string }> {
-  return [
-    ...Object.entries(definition.actions).flatMap(([name, action]) =>
-      skillSteps(action.steps ?? []).map(({ path, step }) => ({
-        path: `actions.${name}.${path}`,
-        message: `${step.label}: this installation doesn't connect a7c, so an action can't start an a7c skill. Leave the step out, or ask an admin to connect a7c`,
-      })),
-    ),
-    ...processSkillTasks(definition).map(({ path, name }) => ({
-      path,
-      message: `${name}: this installation doesn't connect a7c, so a process can't start an a7c skill. Leave the task out, or ask an admin to connect a7c`,
-    })),
-  ];
-}
-
-/** Every skill step of an action, at any depth, with where it is. */
-export function skillSteps(steps: readonly Step[]): Array<{ readonly path: string; readonly step: Extract<Step, { type: 'skill' }> }> {
-  const found: Array<{ path: string; step: Extract<Step, { type: 'skill' }> }> = [];
-  steps.forEach((step, index) => {
-    if (step.type === 'skill') found.push({ path: `steps[${index}]`, step });
-    if (step.type === 'if') {
-      for (const branch of ['then', 'else'] as const) {
-        step[branch].forEach((inner, i) => {
-          if (inner.type === 'skill') found.push({ path: `steps[${index}].${branch}[${i}]`, step: inner });
-        });
-      }
-    }
-  });
-  return found;
-}
-
-/**
  * Run an action's steps on the record as the action has shaped it so far: its values before, the
  * caller's input and the values the action sets. Steps see the record's real values, not masked
  * ones: they are the app's own logic, which a change request reviews.
  *
  * It is a pure function of the record, its lines, the person and the time. It changes nothing
- * and calls nothing: skill calls come back as a list, for the caller to queue with the change.
+ * and calls nothing.
  */
 export function runSteps(input: {
   readonly definition: StoredDefinition;
@@ -141,7 +92,6 @@ export function runSteps(input: {
   const set = new Set<string>();
   const linesAdded = new Set<string>();
   const findings: Finding[] = [];
-  const skills: SkillCall[] = [];
   const issues: ValueIssue[] = [];
   let failed: Finding | undefined;
 
@@ -227,15 +177,6 @@ export function runSteps(input: {
         failed = finding;
         return false;
       }
-      case 'skill': {
-        const values: Record<string, ExpressionValue> = {};
-        for (const [name, expression] of Object.entries(step.input)) {
-          const raw = work(expression, at, `${at}.input.${name}`);
-          if (raw !== undefined) values[name] = raw;
-        }
-        skills.push({ step: at, label: step.label, skill: step.skill, input: values });
-        return true;
-      }
       case 'if': {
         const branch = evaluateCondition(step.when, { record: conditionRecord(record), principal, context: {} }) ? 'then' : 'else';
         return step[branch].every((inner, index) => run(inner, `${at}.${branch}[${index}]`) && issues.length === 0);
@@ -244,7 +185,7 @@ export function runSteps(input: {
   };
 
   input.steps.every((step, index) => run(step, `steps[${index}]`) && issues.length === 0);
-  return { record, lines, set: [...set], linesAdded: [...linesAdded], findings, skills, issues, ...(failed ? { failed } : {}) };
+  return { record, lines, set: [...set], linesAdded: [...linesAdded], findings, issues, ...(failed ? { failed } : {}) };
 }
 
 /** Whether an action reads the person who runs it: in its condition or its steps. A process's service task runs actions with no person. */
@@ -260,9 +201,6 @@ export function readsPrincipal(action: { readonly where?: Condition; readonly st
         break;
       case 'check':
         refs.push(...conditionRefs(step.assert));
-        break;
-      case 'skill':
-        for (const value of Object.values(step.input)) refs.push(...expressionRefs(value));
         break;
       case 'if':
         refs.push(...conditionRefs(step.when));

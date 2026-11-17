@@ -51,23 +51,11 @@ config:
   # that a Prod deployment needs, from people who wrote none of its changes.
   CHANGE_APPROVALS: "1"
   DEPLOY_PROD_APPROVALS: "1"
-  # How often skill calls are sent to a7c, and how many tries each gets before it fails for good.
-  SKILL_DISPATCH_INTERVAL_SECONDS: "5"
-  SKILL_CALL_MAX_ATTEMPTS: "12"
   # How often the timers of business processes that are due fire: deadlines, escalations and waits.
   PROCESS_TIMER_INTERVAL_SECONDS: "5"
 
 # Extra environment variables for the API container, in Kubernetes `env` format.
 extraEnv: []
-
-# a7c runs the skills that actions start, for work in other systems. Without a URL, skill calls
-# wait in the outbox until one is set.
-a7c:
-  # a7c's control plane, for example https://a7c.example.com.
-  url: ""
-  # A Secret with Ambit's a7c token under the key `token`. Whatever issues the token renews the
-  # Secret; the API reads the file at each call.
-  tokenSecret: ""
 
 # The model that the studio's chat builds apps with (design §6.5). Without a provider, the chat is
 # off. The API reads the key file at each request, so a renewed Secret needs no restart.
@@ -144,7 +132,7 @@ networkPolicy:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
   # Where the API may connect: the database, the identity provider, the OTLP collector, the malware
-  # scanner and, over HTTPS, an object store, a7c and the model provider of the studio's chat.
+  # scanner and, over HTTPS, an object store and the model provider of the studio's chat.
   # Narrow these with `to:` selectors or CIDRs for your environment.
   egress:
     - ports:

@@ -59,7 +59,6 @@ jobs:
           helm template platform deploy/helm/platform \
             --set ingress.enabled=true --set autoscaling.enabled=false \
             --set telemetry.otlpEndpoint=http://otel-collector:4318 \
-            --set a7c.url=https://a7c.example.com --set a7c.tokenSecret=a7c-token \
             --set ai.provider=anthropic --set ai.model=a-model --set ai.keySecret=ai-key \
             --set ai.baseUrl=https://gateway.example.com > variant.yaml
           ./kubeconform -strict -summary -kubernetes-version 1.31.0 default.yaml variant.yaml
@@ -69,8 +68,6 @@ jobs:
                       "--set config.DATABASE_URL=postgres://user:pass@db/platform" \
                       "--set existingSecret=" \
                       "--set config.MFA_EVIDENCE=assume" \
-                      "--set a7c.url=http://a7c.example.com --set a7c.tokenSecret=a7c-token" \
-                      "--set a7c.url=https://a7c.example.com" \
                       "--set ai.provider=anthropic --set ai.model=a-model" \
                       "--set ai.provider=anthropic --set ai.keySecret=ai-key" \
                       "--set ai.provider=anthropic --set ai.model=a-model --set ai.keySecret=ai-key --set ai.baseUrl=http://gateway.example.com" \

@@ -20,7 +20,6 @@ import { proposalRoutes } from './apps/proposal-routes.js';
 import { appRoutes } from './apps/routes.js';
 import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
-import { skillRoutes } from './skills/routes.js';
 import { ProcessEngine } from './processes/engine.js';
 import { processRoutes } from './processes/routes.js';
 import { Composer, type ModelClient } from './compose/composer.js';
@@ -136,7 +135,6 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   const processes = new ProcessEngine(ctx, runtime);
   await app.register(appRoutes(ctx, builder, runtime));
   await app.register(runtimeRoutes(ctx, runtime));
-  await app.register(skillRoutes(ctx, runtime));
   await app.register(processRoutes(ctx, runtime, processes, builder));
   await app.register(proposalRoutes(ctx, runtime));
   const delivery = new Delivery(ctx, builder, runtime);

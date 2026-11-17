@@ -129,10 +129,6 @@ export const ConfigSchema = z
         ctx.addIssue({ code: 'custom', message: 'Must be a JSON object of keyId to PEM public key' });
         return z.NEVER;
       }),
-    /** The a7c control plane that runs the skills actions call, for example https://a7c.example.com. Without it, skill calls wait. */
-    A7C_URL: z.url().optional(),
-    /** A file that holds Ambit's bearer token for a7c. It is read at each call, so whatever issues the token can renew it. */
-    A7C_TOKEN_FILE: z.string().min(1).optional(),
     /**
      * The model provider that the studio's chat builds apps with (vibe composition). Without it, the
      * chat is off. Only Anthropic for now.
@@ -150,10 +146,6 @@ export const ConfigSchema = z
     AI_FALLBACK: z.enum(['default', 'off']).default('default'),
     /** The most turns of the model in one request to the chat: each turn can read or change the definition. */
     AI_MAX_TURNS: z.coerce.number().int().min(1).max(30).default(12),
-    /** How often the dispatcher starts the skill calls that are due. 0 disables it (for example, when a worker does it). */
-    SKILL_DISPATCH_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
-    /** How many times a skill call is tried before it fails for good. */
-    SKILL_CALL_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(12),
     /** How often the timers of processes that are due fire. 0 disables it (for example, when a worker fires them). */
     PROCESS_TIMER_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How often the in-process sealer runs. 0 disables it (for example, when a worker seals). */
@@ -169,7 +161,6 @@ export const ConfigSchema = z
       [config.OIDC_ALLOW_HTTP, 'OIDC_ALLOW_HTTP', 'OIDC_ALLOW_HTTP must be false in production'],
       [!config.AUDIT_SIGNING_KEY_PEM, 'AUDIT_SIGNING_KEY_PEM', 'AUDIT_SIGNING_KEY_PEM is required in production'],
       [!config.PUBLIC_BASE_URL.startsWith('https://'), 'PUBLIC_BASE_URL', 'PUBLIC_BASE_URL must use https in production'],
-      [Boolean(config.A7C_URL) && !config.A7C_URL!.startsWith('https://'), 'A7C_URL', 'A7C_URL must use https in production'],
       [Boolean(config.AI_BASE_URL) && !config.AI_BASE_URL!.startsWith('https://'), 'AI_BASE_URL', 'AI_BASE_URL must use https in production'],
     ];
     for (const [broken, path, message] of rules) {
@@ -180,9 +171,6 @@ export const ConfigSchema = z
     if (config.FILE_STORE === 's3' && !config.S3_BUCKET) ctx.addIssue({ code: 'custom', message: 'FILE_STORE=s3 needs S3_BUCKET', path: ['S3_BUCKET'] });
     if (Boolean(config.S3_ACCESS_KEY_ID) !== Boolean(config.S3_SECRET_ACCESS_KEY)) {
       ctx.addIssue({ code: 'custom', message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither', path: ['S3_ACCESS_KEY_ID'] });
-    }
-    if (Boolean(config.A7C_URL) !== Boolean(config.A7C_TOKEN_FILE)) {
-      ctx.addIssue({ code: 'custom', message: 'Set both A7C_URL and A7C_TOKEN_FILE, or neither', path: ['A7C_URL'] });
     }
     if (config.AI_PROVIDER && (!config.AI_MODEL || !config.AI_API_KEY_FILE)) {
       ctx.addIssue({ code: 'custom', message: 'AI_PROVIDER needs AI_MODEL and AI_API_KEY_FILE', path: ['AI_PROVIDER'] });

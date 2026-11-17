@@ -10,7 +10,6 @@ import {
   caughtSignals,
   decideVotes,
   elementName,
-  evaluateExpression,
   eventSubCatcher,
   eventSubsIn,
   flowsOut,
@@ -29,7 +28,6 @@ import {
   type BoundaryEventElement,
   type BusinessRuleTaskElement,
   type CallActivityElement,
-  type ExpressionValue,
   type Message,
   type ScriptTaskElement,
   type Process,
@@ -46,12 +44,16 @@ import { and, asc, desc, eq, inArray, isNull, lte, or, sql, type SQL } from 'dri
 import type { FastifyRequest } from 'fastify';
 import { auditScopeFor, recordAudit, SYSTEM_ACTOR, type AuditScope } from '../audit/writer.js';
 import type { LoadedApp } from '../apps/catalog.js';
-import { processWriter, type AppRuntime, type ProcessHooks, type ProcessOrigin, type Writer } from '../apps/runtime.js';
+import { type AppRuntime, type ProcessHooks, type ProcessOrigin, type Writer } from '../apps/runtime.js';
 import { withAppTransaction, type AppTransaction } from '../apps/transaction.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
 import { coverFor, departmentOf, managerUp } from '../people/directory.js';
-import { backoffSeconds } from '../skills/dispatcher.js';
+
+/** Wait before the next try: 10 seconds, doubling, at most an hour. */
+function backoffSeconds(attempts: number): number {
+  return Math.min(10 * 2 ** Math.max(0, attempts - 1), 3600);
+}
 
 /*
  * The process engine (design §6.10). Instances, tokens, tasks and timers are rows in PostgreSQL,
@@ -1886,7 +1888,7 @@ export class ProcessEngine implements ProcessHooks {
     const events = await turn.tx.db
       .select()
       .from(processEvents)
-      .where(and(eq(processEvents.instanceId, live.row.id), inArray(processEvents.kind, ['ran', 'sent', 'skill_queued', 'exited', 'compensated'])))
+      .where(and(eq(processEvents.instanceId, live.row.id), inArray(processEvents.kind, ['ran', 'sent', 'exited', 'compensated'])))
       .orderBy(asc(processEvents.seq));
     const detailOf = (event: (typeof events)[number]) => (isDetail(event.detail) ? event.detail : {});
     const done = new Set(events.flatMap((event) => (event.kind === 'compensated' && typeof detailOf(event)['of'] === 'string' ? [String(detailOf(event)['of'])] : [])));
@@ -2229,35 +2231,17 @@ export class ProcessEngine implements ProcessHooks {
     await this.#event(turn, live, 'task_cancelled', task.element, { task: task.id, reason });
   }
 
-  /** A service task: run the app's action on the record with the app's authority, or start an a7c skill. */
+  /** A service task: run the app's action on the record with the app's authority. */
   async #serve(turn: Turn, live: Live, id: string, element: Extract<Process['elements'][string], { type: 'serviceTask' }>, scope: string | null): Promise<void> {
     const origin: ProcessOrigin = { kind: 'process', instanceId: live.row.id, process: live.row.process, element: id, onBehalfOf: turn.by ?? live.row.startedBy };
-    if (element.action) {
-      if (turn.loaded.app.movedTo) return this.#stuck(turn, live, id, null, `${element.name}: the app moved to a team space, so it changes no records here`, scope);
-      const before = await this.#record(turn, live);
-      const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, element.action, live.row.recordId, origin);
-      if (!ran.ok) return this.#failed(turn, live, id, null, ran.message, scope);
-      turn.records.delete(live.row.recordId);
-      await this.#event(turn, live, 'ran', id, { action: element.action, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
-      await this.#actionCommitted(turn, element.action, live.row.recordId, null);
-      await this.#recordChanged(turn, live.entity, live.row.recordId, before);
-    } else if (element.skill) {
-      if (!this.#ctx.config.A7C_URL) return this.#stuck(turn, live, id, null, `${element.name}: this installation doesn't connect a7c`, scope);
-      const record = (await this.#record(turn, live)) ?? {};
-      const input: Record<string, ExpressionValue> = {};
-      for (const [name, expression] of Object.entries(element.input ?? {})) {
-        const value = evaluateExpression(expression, { record, principal: {}, now: turn.now });
-        if (!value.ok) return this.#stuck(turn, live, id, null, `${element.name}: ${name}: ${value.message}`, scope);
-        input[name] = value.value;
-      }
-      await this.#runtime.queueSkills(processWriter(this.#ctx.org.id, origin), turn.loaded, turn.tx, {
-        action: `process:${live.row.process}`,
-        recordId: live.row.recordId,
-        calls: [{ step: id, label: element.name, skill: element.skill, input }],
-        onBehalfOf: origin.onBehalfOf,
-      });
-      await this.#event(turn, live, 'skill_queued', id, { skill: element.skill, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
-    }
+    if (turn.loaded.app.movedTo) return this.#stuck(turn, live, id, null, `${element.name}: the app moved to a team space, so it changes no records here`, scope);
+    const before = await this.#record(turn, live);
+    const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, element.action, live.row.recordId, origin);
+    if (!ran.ok) return this.#failed(turn, live, id, null, ran.message, scope);
+    turn.records.delete(live.row.recordId);
+    await this.#event(turn, live, 'ran', id, { action: element.action, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
+    await this.#actionCommitted(turn, element.action, live.row.recordId, null);
+    await this.#recordChanged(turn, live.entity, live.row.recordId, before);
     return this.#leave(turn, live, id, scope);
   }
 

@@ -7,7 +7,6 @@ import {
   NAME_PATTERN,
   planMigration,
   provisionEnvironment,
-  skillStepIssues,
   validateDefinition,
   type MigrationPlan,
   type StoredDefinition,
@@ -64,16 +63,6 @@ function invalid(issues: readonly { path: string; message: string }[]): HttpErro
   return unprocessable('invalid_definition', 'The definition has problems', { issues });
 }
 
-/**
- * a7c is left out until an installation connects it (A7C_URL): until then a definition that starts
- * a7c skills is refused, rather than queue calls that nothing would ever send.
- */
-export function refuseSkillsWithoutA7c(ctx: AppContext, definition: StoredDefinition): void {
-  if (ctx.config.A7C_URL) return;
-  const issues = skillStepIssues(definition);
-  if (issues.length) throw invalid(issues);
-}
-
 
 /** Creating apps, changing their definitions, sharing and deleting them (design §6). */
 export class AppBuilder {
@@ -114,7 +103,6 @@ export class AppBuilder {
     }
     const result = validateDefinition(input.definition ?? {});
     if (!result.ok) throw invalid(result.issues);
-    refuseSkillsWithoutA7c(ctx, result.definition);
     const { appId, plan } = await this.#createSandboxApp(request, auth, space, {
       name: input.name,
       handle,
@@ -291,7 +279,6 @@ export class AppBuilder {
     if (isTeamApp(loaded)) throw changeRequestRequired(loaded);
     const result = validateDefinition(input, loaded.definition);
     if (!result.ok) throw invalid(result.issues);
-    refuseSkillsWithoutA7c(this.#ctx, result.definition);
     const names = { schema: loaded.env.schemaName, role: loaded.env.dbRole };
     const migration = planMigration(loaded.definition, result.definition, names);
     const counts = new Map<number, number>();

@@ -1,4 +1,4 @@
-import { AppDefinition, lintDefinition, skillStepIssues, validateDefinition } from '@platform/app-model';
+import { AppDefinition, lintDefinition, validateDefinition } from '@platform/app-model';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -74,8 +74,7 @@ export function composeRoutes(ctx: AppContext, composer: Composer): FastifyPlugi
         const check = (draft: unknown): DraftCheck => {
           const result = validateDefinition(draft, previous);
           if (!result.ok) return { issues: result.issues, findings: [] };
-          const skills = ctx.config.A7C_URL ? [] : skillStepIssues(result.definition);
-          return { issues: skills, findings: lintDefinition(result.definition) };
+          return { issues: [], findings: lintDefinition(result.definition) };
         };
         // The history starts with what the builder said.
         const first = body.history.findIndex((turn) => turn.role === 'user');

@@ -120,6 +120,13 @@
       "when": 1794925392756,
       "tag": "0016_loops",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794930537561,
+      "tag": "0017_drop_skill_calls",
+      "breakpoints": true
     }
   ]
 }

@@ -7,7 +7,7 @@ import { badRequest, notFound } from '../errors.js';
 import { recordResource } from './resources.js';
 import type { AppRuntime } from './runtime.js';
 import { envOf } from './routes.js';
-import { ActionResultOut, AppParams, EntityParams, EnvQuery, PageOut, ProvenanceIn, RecordOut, RecordParams, SkillCallOut } from './schemas.js';
+import { ActionResultOut, AppParams, EntityParams, EnvQuery, PageOut, ProvenanceIn, RecordOut, RecordParams } from './schemas.js';
 
 /** `amount,-created_at` → ascending amount, then newest first. */
 function parseSort(sort: string | undefined) {
@@ -161,26 +161,6 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
       async (request) => ({
         history: await runtime.history(request, requireAuth(request), await theApp(request), request.params.entity, request.params.recordId),
       }),
-    );
-
-    app.get(
-      '/v1/apps/:appId/entities/:entity/records/:recordId/skill-calls',
-      {
-        config: { access: recordRule('record.read') },
-        schema: {
-          tags: ['records'],
-          summary: 'The a7c skills that actions on a record started, and how each went',
-          params: RecordParams,
-          querystring: EnvQuery,
-          response: { 200: z.object({ calls: z.array(SkillCallOut) }) },
-        },
-      },
-      async (request) => {
-        const loaded = await theApp(request);
-        // Only for a record the person may read: get() answers 404 for any other.
-        await runtime.get(request, requireAuth(request), loaded, request.params.entity, request.params.recordId, requireQueryDecision(request));
-        return { calls: await runtime.skillCalls(loaded, { recordId: request.params.recordId, limit: 50 }) };
-      },
     );
 
     app.get(

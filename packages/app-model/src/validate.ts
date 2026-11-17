@@ -13,7 +13,7 @@ import {
   type StoredEntity,
   type StoredField,
 } from './fields.js';
-import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
+import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
 import { adHocStarts, canRepeat, catcherOn, elementName, eventSubCatcher, eventSubsIn, isAdHoc, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
 import {
   AppDefinition,
@@ -186,8 +186,6 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       }
       case 'check':
         return { ...step, assert: condition(entity, step.assert), ...(step.fields ? { fields: step.fields.map(fieldName(entity)) } : {}) };
-      case 'skill':
-        return { ...step, input: Object.fromEntries(Object.entries(step.input).map(([name, v]) => [name, value(v)])) };
     }
   };
   const step = (entity: string, s: Step): Step =>
@@ -340,8 +338,6 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
                       }
                     : {}),
                 };
-              case 'serviceTask':
-                return element.input ? { ...element, input: mapRecord(element.input, (value) => mapExpressionRefs(value, refs(entity))) } : element;
               case 'startEvent':
               case 'intermediateCatchEvent':
               case 'boundaryEvent':
@@ -653,9 +649,6 @@ function checkSteps(
         case 'check':
           condition(step.assert, `${at}.assert`);
           for (const field of step.fields ?? []) if (!fields.has(field)) issues.push({ path: `${at}.fields`, message: `No field named ${field}` });
-          return;
-        case 'skill':
-          for (const [name, expression] of Object.entries(step.input)) kindOf(expression, `${at}.input.${name}`);
           return;
         case 'if':
           condition(step.when, `${at}.when`);
@@ -1277,9 +1270,6 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           const script: Action = { label: element.name, description: element.name, entity: process.entity, operation: 'update', input: [], set: {}, confirm: 'none', steps: element.steps };
           checkSteps(definition, script, path, fields, lines, issues);
           if (readsPrincipal(script)) issues.push({ path: `${path}.steps`, message: `${label(id)} reads the person who runs it, but a process runs it with no person` });
-          if (element.steps.some((each) => each.type === 'skill' || (each.type === 'if' && [...each.then, ...each.else].some((inner) => inner.type === 'skill')))) {
-            issues.push({ path: `${path}.steps`, message: 'A script task changes the record: a service task starts an a7c skill' });
-          }
           oneOut();
           break;
         }
@@ -1461,23 +1451,9 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           break;
         }
         case 'serviceTask':
-          if (Boolean(element.action) === Boolean(element.skill)) issues.push({ path, message: `${label(id)} runs an action or starts an a7c skill: one of the two` });
           if (element.undo) undoAction(element.undo, process.entity, `${path}.undo`);
-          if (element.action && updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
+          if (updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
             issues.push({ path: `${path}.action`, message: `${element.action} reads the person who runs it, but a service task runs it with no person` });
-          }
-          if (element.input && !element.skill) issues.push({ path: `${path}.input`, message: 'Only a skill takes input' });
-          for (const [input, expression] of Object.entries(element.input ?? {})) {
-            for (const ref of expressionRefs(expression)) {
-              const [root, field, ...rest] = ref.split('.');
-              const ok = root === 'record' && field !== undefined && !rest.length && fields.has(field);
-              if (!ok) {
-                issues.push({
-                  path: `${path}.input.${input}`,
-                  message: root === 'record' && field && lines.has(field) ? `${ref}: a skill's input can't read lines one by one` : `${ref}: a process's skill input reads fields of the record`,
-                });
-              }
-            }
           }
           oneOut();
           break;
@@ -1549,8 +1525,6 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
                 path: `${path}.attachedTo`,
                 message: `${label(element.attachedTo)} can't catch an error: an error sits on a task that changes a record, which can fail, or on a sub-process or a call, for what fails inside it`,
               });
-            } else if (host.type === 'serviceTask' && host.skill) {
-              issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} starts an a7c skill, which runs later in a7c: an error event catches the failure of an action` });
             } else if (host.type !== 'subProcess' && host.type !== 'callActivity' && raisedCode(element.error) !== undefined) {
               // A task's failure has no code: only an error end event inside a sub-process or a called process raises one.
               issues.push({ path: `${path}.error`, message: `${label(id)} catches only the error ${raisedCode(element.error)}, but a task that fails raises no code: leave the code out` });

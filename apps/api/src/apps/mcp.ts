@@ -1,4 +1,4 @@
-import { applyEdits, DefinitionEdits, MAX_EDITS, skillSteps, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { applyEdits, DefinitionEdits, MAX_EDITS, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
 import { spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -268,13 +268,10 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
     action.confirm === 'none'
       ? 'It runs straight away.'
       : `The person must confirm it before it commits (${action.confirm}): the call returns a proposal with a review link to give them.`;
-  // Work in other systems is part of what the tool does, so an agent knows of it before it calls.
-  const skills = [...new Set(skillSteps(action.steps ?? []).map(({ step }) => step.label))];
-  const then = skills.length ? ` Once saved, it starts work in other systems: ${skills.join('; ')}.` : '';
   return {
     name: tool,
     title: action.label,
-    description: `${action.description} (App: ${loaded.app.name}. ${confirm}${then} Use dry_run to see the review card and any rule findings first.)`,
+    description: `${action.description} (App: ${loaded.app.name}. ${confirm} Use dry_run to see the review card and any rule findings first.)`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -332,7 +329,7 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
         'The JSON Schema of app definitions, a complete example (an expense-claim app), and notes on conditions. Read it before writing a definition.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true },
-      run: async () => definitionGuide(ctx.config),
+      run: async () => definitionGuide(),
     },
     {
       name: 'list_apps',
@@ -606,7 +603,7 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         {
           name: 'ambit-ops',
           instructions:
-            "Operate apps within the caller's operator permissions: watch process instances and a7c skill calls, try stuck or failed work again, cancel an instance, throw a signal, and give a task to someone else. Start with list_apps. Cancelling ends an instance for good: confirm with the person first. Deciding tasks, approving and deleting data are not here: they stay with people.",
+            "Operate apps within the caller's operator permissions: watch process instances, try stuck work again, cancel an instance, throw a signal, and give a task to someone else. Start with list_apps. Cancelling ends an instance for good: confirm with the person first. Deciding tasks, approving and deleting data are not here: they stay with people.",
         },
         async (request, auth) => opsTools(ctx, runtime, processes, request, auth),
       ),

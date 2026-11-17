@@ -38,7 +38,6 @@ const BADGES: Readonly<Record<StepType, { text: string; tone: 'accent' | 'warn' 
   add_line: { text: 'Add a line', tone: 'accent' },
   check: { text: 'Check', tone: 'warn' },
   if: { text: 'If', tone: 'idle' },
-  skill: { text: 'a7c skill', tone: 'outside' },
 };
 
 const keyOf = (place: StepPlace) => (place.side === undefined ? `${place.index}` : `${place.index}.${place.side}.${place.inner}`);
@@ -47,13 +46,10 @@ const nameOf = (place: StepPlace) => (place.side === undefined ? `Step ${place.i
 
 /**
  * An action's steps: a short list, run in order once the action has its input and its set values
- * (design §6.2). A branch holds two short lists. Work in other systems is an a7c skill, which a
- * step starts once the change is saved.
+ * (design §6.2). A branch holds two short lists.
  */
 export function StepsEditor({ definition, onChange, action, kinds }: Props & { action: string; /** The kinds of step it offers, where fewer fit, such as in a script task. */ kinds?: StepType[] }) {
-  // a7c is left out until the installation connects it: until then, no new skill steps.
-  const features = useQuery({ queryKey: ['features'], queryFn: api.features, staleTime: Infinity });
-  const simple: StepType[] = kinds ?? (features.data?.a7c ? ['set', 'add_line', 'check', 'skill'] : ['set', 'add_line', 'check']);
+  const simple: StepType[] = kinds ?? ['set', 'add_line', 'check'];
   const current = definition.actions[action]!;
   const steps = (current.steps ?? []) as Step[];
   const [open, setOpen] = useState<string | null>(null);
@@ -123,11 +119,10 @@ export function StepsEditor({ definition, onChange, action, kinds }: Props & { a
         <h3 className="m-0 text-sm font-semibold text-muted">Then, step by step</h3>
         <p className="m-0 text-xs text-faint">
           After it takes its input and sets its values. The review card shows what the steps did. Steps can set only what the person running the action may set.
-          {features.data?.a7c ? ' a7c skills start once the change is saved.' : ''}
         </p>
       </div>
       {steps.length ? <ol className="m-0 grid list-none grid-cols-1 gap-1.5 p-0">{steps.map((step, index) => item(step, { index }, steps.length))}</ol> : <p className="m-0 text-sm text-muted">No steps: it saves what it takes and sets.</p>}
-      <AddButtons can={can} types={[...simple.filter((type) => type !== 'skill'), 'if', ...simple.filter((type) => type === 'skill')]} prefix="" onAdd={(type) => add(type)} />
+      <AddButtons can={can} types={[...simple, 'if']} prefix="" onAdd={(type) => add(type)} />
     </section>
   );
 }
@@ -249,55 +244,7 @@ function StepFields({ definition, entity, step, name, onChange }: { definition: 
       );
     case 'if':
       return <ConditionEditor label="If" value={step.when} onChange={(when) => onChange({ ...step, when: test(when, step.when) })} choices={choices} compareWith={[THE_PERSON]} />;
-    case 'skill':
-      return <SkillFields definition={definition} entity={entity} step={step} name={name} onChange={onChange} />;
   }
-}
-
-function SkillFields({ definition, entity, step, name, onChange }: { definition: Definition; entity: string; step: Extract<SimpleStep, { type: 'skill' }>; name: string; onChange: (step: Step) => void }) {
-  const [newInput, setNewInput] = useState('');
-  const inputs = Object.entries(step.input ?? {});
-  const valid = /^[A-Za-z][A-Za-z0-9_]{0,62}$/.test(newInput) && !(newInput in (step.input ?? {}));
-  return (
-    <>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="What it does" hint="The review card shows this.">
-          {(id) => <TextInput id={id} value={step.label} onChange={(e) => onChange({ ...step, label: e.target.value })} />}
-        </Field>
-        <Field label="a7c skill" hint="As project/skill, for example finance/pay-expense-claim.">
-          {(id) => <TextInput id={id} className="font-mono" value={step.skill} onChange={(e) => onChange({ ...step, skill: e.target.value.trim() })} />}
-        </Field>
-      </div>
-      <div className="grid gap-2">
-        <span className="text-sm text-muted">Its input</span>
-        {inputs.length ? null : <p className="m-0 text-xs text-faint">None yet. A skill usually needs the record's ID, to come back to it.</p>}
-        {inputs.map(([input, value]) => (
-          <div key={input} className="grid gap-1">
-            <div className="flex items-center gap-2">
-              <code className="text-sm">{input}</code>
-              <Button size="sm" variant="ghost" aria-label={`${name}: remove the input ${input}`} onClick={() => onChange({ ...step, input: Object.fromEntries(inputs.filter(([key]) => key !== input)) })}>
-                ✕
-              </Button>
-            </div>
-            <ValueEditor definition={definition} entity={entity} label={`${name}, input ${input}`} value={value} onChange={(next) => onChange({ ...step, input: { ...step.input, [input]: next } })} />
-          </div>
-        ))}
-        <div className="flex flex-wrap items-center gap-2">
-          <TextInput aria-label={`${name}: new input`} className="w-48 font-mono" placeholder="e.g. claim" value={newInput} onChange={(e) => setNewInput(e.target.value)} />
-          <Button
-            size="sm"
-            disabled={!valid}
-            onClick={() => {
-              onChange({ ...step, input: { ...step.input, [newInput]: { ref: 'record.id' } } });
-              setNewInput('');
-            }}
-          >
-            Add an input
-          </Button>
-        </div>
-      </div>
-    </>
-  );
 }
 
 // Values
@@ -328,7 +275,7 @@ function modeOf(value: Expression): Mode {
   return 'formula';
 }
 
-/** The ways a value can be given, for a field of a type; for a skill's input, which takes anything, the common ones. */
+/** The ways a value can be given, for a field of a type; without one, the common ones. */
 function modesFor(target: FieldDef | undefined): Mode[] {
   if (!target) return ['field', 'fixed', 'person', 'today', 'now', 'join'];
   switch (target.type) {

@@ -332,7 +332,8 @@ export function newElement(definition: Definition, process: Process, type: Eleme
       return { type, name: 'New task', role: Object.keys(definition.roles)[0] ?? 'role', outcomes: [{ name: 'done', label: 'Done' }] };
     case 'serviceTask': {
       const action = updateActions(definition, process.entity)[0];
-      return { type, name: 'New system task', ...(action ? { action } : {}) };
+      // With no update action yet, the task names none, and the checks say to choose one.
+      return { type, name: 'New system task', action: action ?? '' };
     }
     case 'exclusiveGateway':
       return { type, name: 'Decision' };
@@ -688,7 +689,7 @@ export const BOUNDARY_HOSTS: Readonly<Record<BoundaryKind, readonly ProcessEleme
 /** The kinds of event that an element's boundary takes. */
 export function boundaryKinds(host: ProcessElement): BoundaryKind[] {
   return (Object.keys(BOUNDARY_HOSTS) as BoundaryKind[]).filter(
-    (kind) => BOUNDARY_HOSTS[kind].includes(host.type) && (kind !== 'cancel' || (host.type === 'subProcess' && host.transaction === true)) && !(kind === 'error' && host.type === 'serviceTask' && host.skill),
+    (kind) => BOUNDARY_HOSTS[kind].includes(host.type) && (kind !== 'cancel' || (host.type === 'subProcess' && host.transaction === true)),
   );
 }
 
@@ -845,7 +846,7 @@ export function forgetInProcesses(definition: Definition, gone: { readonly actio
           }
         }
       }
-      if (element.type === 'serviceTask' && gone.action && element.action === gone.action) delete element.action;
+      if (element.type === 'serviceTask' && gone.action && element.action === gone.action) element.action = '';
       if (element.type === 'callActivity' && gone.field && gone.entity === process.entity && element.record === gone.field) delete element.record;
       if ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && gone.field && gone.entity === process.entity && element.timer && 'date' in element.timer && element.timer.date === gone.field) {
         element.timer = { duration: 'P1D' };
