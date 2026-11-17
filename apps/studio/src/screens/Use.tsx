@@ -1,6 +1,7 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, ApiError, type AppAt } from '../api.js';
+import { ChartCard, StatTile } from '../components/charts.js';
 import { FilesProvider } from '../components/files.js';
 import { filledLines, LinesChangeView, LinesEditor, LinesTable, rollupValue } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
@@ -145,6 +146,18 @@ function AppMenu({ at, manifest, view }: { at: AppAt; manifest: UiManifest; view
   );
 }
 
+/** Blocks laid out: numbers side by side in a row, half-width charts two by two, everything else on its own. */
+function rowsOf(blocks: readonly UiBlock[]): Array<{ kind: 'stats' | 'charts' | 'one'; blocks: UiBlock[] }> {
+  const rows: Array<{ kind: 'stats' | 'charts' | 'one'; blocks: UiBlock[] }> = [];
+  for (const block of blocks) {
+    const kind = block.type === 'stat' ? 'stats' : block.type === 'chart' && block.width === 'half' ? 'charts' : 'one';
+    const last = rows.at(-1);
+    if (kind !== 'one' && last?.kind === kind) last.blocks.push(block);
+    else rows.push({ kind, blocks: [block] });
+  }
+  return rows;
+}
+
 /** One of the app's pages: its blocks, top to bottom. */
 function PageView({ at, manifest, name }: { at: AppAt; manifest: UiManifest; name: string }) {
   const page = manifest.pages[name]!;
@@ -154,8 +167,53 @@ function PageView({ at, manifest, name }: { at: AppAt; manifest: UiManifest; nam
         <h2 className="m-0 text-2xl font-semibold tracking-tight">{page.label}</h2>
         {page.description ? <p className="m-0 mt-1 text-muted">{page.description}</p> : null}
       </div>
-      {page.blocks.map((block, index) =>
-        block.type === 'text' ? (
+      {rowsOf(page.blocks).map((row, r) =>
+        row.kind === 'stats' ? (
+          <div key={r} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {row.blocks.map((block) => (block.type === 'stat' ? <StatBlockView key={block.index} at={at} page={name} block={block} /> : null))}
+          </div>
+        ) : row.kind === 'charts' ? (
+          <div key={r} className="grid gap-4 lg:grid-cols-2">
+            {row.blocks.map((block) => (block.type === 'chart' ? <ChartBlockView key={block.index} at={at} page={name} block={block} /> : null))}
+          </div>
+        ) : (
+          <BlockView key={r} at={at} manifest={manifest} page={name} block={row.blocks[0]!} index={r} />
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Where a summary stands: loading, ready, refused because the role hides what it counts, or failed. */
+function summaryState(query: { isPending: boolean; isError: boolean; error: unknown }): 'loading' | 'ready' | 'refused' | 'error' {
+  if (query.isPending) return 'loading';
+  if (query.isError) return query.error instanceof ApiError && query.error.status === 403 ? 'refused' : 'error';
+  return 'ready';
+}
+
+function StatBlockView({ at, page, block }: { at: AppAt; page: string; block: Extract<UiBlock, { type: 'stat' }> }) {
+  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.index], queryFn: () => api.pageSummary(at, page, block.index), placeholderData: keepPreviousData });
+  const value = summary.data && 'value' in summary.data ? summary.data.value : undefined;
+  return <StatTile label={block.label} value={value} decimals={block.decimals} state={summaryState(summary)} />;
+}
+
+function ChartBlockView({ at, page, block }: { at: AppAt; page: string; block: Extract<UiBlock, { type: 'chart' }> }) {
+  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.index], queryFn: () => api.pageSummary(at, page, block.index), placeholderData: keepPreviousData });
+  const data = summary.data && 'groups' in summary.data ? summary.data : undefined;
+  return <ChartCard spec={block} data={data} state={summaryState(summary)} refreshing={summary.isFetching && !summary.isPending} />;
+}
+
+/** A block on its own row: text, buttons, a list, or a full-width chart. */
+function BlockView({ at, manifest, page, block, index }: { at: AppAt; manifest: UiManifest; page: string; block: UiBlock; index: number }) {
+  const name = page;
+  return (
+    <>
+      {[block].map((block) =>
+        block.type === 'stat' ? (
+          <StatBlockView key={index} at={at} page={page} block={block} />
+        ) : block.type === 'chart' ? (
+          <ChartBlockView key={index} at={at} page={page} block={block} />
+        ) : block.type === 'text' ? (
           block.style === 'heading' ? (
             <h3 key={index} className="m-0 text-lg font-semibold">
               {block.text}
@@ -187,7 +245,7 @@ function PageView({ at, manifest, name }: { at: AppAt; manifest: UiManifest; nam
           <ListBlockView key={index} at={at} manifest={manifest} page={name} block={block} />
         ),
       )}
-    </div>
+    </>
   );
 }
 

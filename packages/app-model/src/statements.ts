@@ -2,6 +2,7 @@ import type { Condition } from '@platform/authz';
 import { entityFields, tableName, type FieldInfo, type StoredEntity } from './fields.js';
 import type { EnvironmentNames } from './migrations.js';
 import { afterCursor, compileCondition, fromDatabase, ident, orderBy, selectExpression, SqlBuilder, toDatabase, type SortKey, type SqlQuery } from './sql.js';
+import type { Period, TimeRange } from './schema.js';
 import type { FieldValue, RecordValues } from './values.js';
 
 /** A record as the platform returns it: system fields, and the values of user fields. */
@@ -381,4 +382,98 @@ export function selectHistory(names: EnvironmentNames, entity: StoredEntity, rec
 /** Field infos by name, for callers that need column details. */
 export function fieldInfo(entity: StoredEntity, name: string): FieldInfo | undefined {
   return entityFields(entity).get(name);
+}
+
+/** How a summary works out its number, and on which column. */
+export interface SummaryMeasure {
+  readonly op: 'count' | 'sum' | 'avg' | 'min' | 'max';
+  /** The number field, or for a count of lines, nothing. */
+  readonly info?: FieldInfo;
+  /** True if the field (or the count) is of the lines. */
+  readonly onLines: boolean;
+}
+
+export interface Summarize {
+  readonly names: EnvironmentNames;
+  readonly entity: StoredEntity;
+  /** When the summary works over lines: their entity. Each record then appears once per line. */
+  readonly lineEntity?: StoredEntity;
+  /** As for selectRecords: the record filters of the read grants, and what guardrails hide. */
+  readonly grants: readonly (true | Condition)[];
+  readonly exclude?: readonly Condition[];
+  readonly where?: readonly (true | Condition)[];
+  readonly measure: SummaryMeasure;
+  /** Groups: a field's values, or periods of a date. Without one, a single number. */
+  readonly group?: { readonly info: FieldInfo; readonly onLines: boolean; readonly period?: Period; readonly limit: number };
+  /** Only rows from this moment on: an ISO date for a date field, an ISO time for a time. */
+  readonly since?: { readonly info: FieldInfo; readonly onLines: boolean; readonly from: string };
+}
+
+/**
+ * Work out a number over the records a decision lets the caller read, or over their lines: one
+ * number, or one per group. Rows: `value`, and with groups `key`, the total of every group, and
+ * how many groups there are, so the caller can fold the rest into "Other". Numbers come back as
+ * text, so no precision is lost.
+ */
+export function summarize(query: Summarize): SqlQuery {
+  const sql = new SqlBuilder();
+  const fields = entityFields(query.entity);
+  const condition = (c: true | Condition) => (c === true ? 'TRUE' : compileCondition(c, fields, sql));
+  const joined = query.lineEntity !== undefined;
+  const column = (info: FieldInfo, onLines: boolean) => `${onLines ? 'l' : 'r'}.${ident(info.column)}`;
+
+  const { measure } = query;
+  const aggregate =
+    measure.op === 'count'
+      ? measure.onLines
+        ? 'count(l.id)'
+        : joined
+          ? 'count(distinct r.id)'
+          : 'count(*)'
+      : `${measure.op}(${column(measure.info!, measure.onLines)})`;
+
+  const where = [
+    query.grants.length ? `(${query.grants.map(condition).join(' OR ')})` : 'FALSE',
+    ...(query.exclude ?? []).map((c) => `NOT ${condition(c)}`),
+    ...(query.where ?? []).map(condition),
+  ];
+  if (query.since) {
+    const type = query.since.info.kind === 'date' ? 'date' : 'timestamptz';
+    where.push(`${column(query.since.info, query.since.onLines)} >= ${sql.param(query.since.from, type)}`);
+  }
+  const from = `${tableOf(query.names, query.entity)} r${joined ? ` join ${tableOf(query.names, query.lineEntity!)} l on l.parent_id = r.id` : ''}`;
+  if (!query.group) return { text: `select (${aggregate})::text as value from ${from} where ${where.join(' and ')}`, values: sql.values };
+
+  const { info, onLines, period, limit } = query.group;
+  const at = column(info, onLines);
+  const key = period
+    ? `to_char(date_trunc(${sql.param(period, 'text')}, ${info.kind === 'date' ? `${at}::timestamp` : `${at} AT TIME ZONE 'UTC'`}), 'YYYY-MM-DD')`
+    : info.kind === 'uuid'
+      ? `${at}::text`
+      : at;
+  // Periods: the latest; anything else: the largest.
+  const order = period ? 'key desc nulls last' : 'value_n desc nulls last, key asc nulls last';
+  const text =
+    `select ${key} as key, (${aggregate})::text as value, ${aggregate} as value_n, (sum(${aggregate}) over ())::text as total, count(*) over () as groups` +
+    ` from ${from} where ${where.join(' and ')} group by 1 order by ${order} limit ${sql.param(limit, 'int')}`;
+  return { text, values: sql.values };
+}
+
+/** When a time range starts, in UTC: as a date for date fields, and as a time for time fields. */
+export function rangeStart(within: TimeRange['within'], now: Date): { readonly date: string; readonly time: string } {
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  const d = now.getUTCDate();
+  const start =
+    within === 'this_month'
+      ? Date.UTC(y, m, 1)
+      : within === 'this_quarter'
+        ? Date.UTC(y, m - (m % 3), 1)
+        : within === 'this_year'
+          ? Date.UTC(y, 0, 1)
+          : within === 'last_12_months'
+            ? Date.UTC(y, m - 11, 1)
+            : Date.UTC(y, m, d - (within === 'last_30_days' ? 30 : 90));
+  const time = new Date(start).toISOString();
+  return { date: time.slice(0, 10), time };
 }

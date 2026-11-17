@@ -26,9 +26,15 @@ import {
   updateBlock,
   updateNavItem,
   updatePage,
+  groupPaths,
+  newChart,
+  numberPaths,
   type Block,
   type BlockType,
+  type ChartBlock,
   type ListBlock,
+  type Measure,
+  type StatBlock,
   type NavItem,
   type PageButton,
 } from '../model/pages.js';
@@ -37,7 +43,7 @@ import { Checklist, Choice } from './LogicDesigners.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
-const BLOCK_NAMES: Readonly<Record<BlockType, string>> = { text: 'Text', list: 'List', buttons: 'Buttons' };
+const BLOCK_NAMES: Readonly<Record<BlockType, string>> = { text: 'Text', list: 'List', buttons: 'Buttons', stat: 'Number', chart: 'Chart' };
 
 /** A vertical list whose rows drag to reorder, by a handle, or with the keyboard. */
 function SortableRows({ ids, onMove, children }: { ids: string[]; onMove: (from: number, to: number) => void; children: ReactNode }) {
@@ -49,7 +55,7 @@ function SortableRows({ ids, onMove, children }: { ids: string[]; onMove: (from:
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-        <ul className="m-0 grid list-none gap-1.5 p-0">{children}</ul>
+        <ul className="m-0 grid list-none grid-cols-1 gap-1.5 p-0">{children}</ul>
       </SortableContext>
     </DndContext>
   );
@@ -174,7 +180,8 @@ function PageCanvas(props: Props & { name: string; block: number | null; onBlock
   const can = (type: BlockType) => addBlock(definition, name, type).index !== -1;
 
   return (
-    <Card className="grid content-start gap-4">
+    // One column that may shrink, so that a long block description truncates and does not widen the card.
+    <Card className="grid grid-cols-1 content-start gap-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Label">{(id) => <TextInput id={id} value={page.label} onChange={(e) => onChange(updatePage(definition, name, { label: e.target.value }))} />}</Field>
         <Field label="Name" hint="Links to the page use it.">
@@ -210,7 +217,7 @@ function PageCanvas(props: Props & { name: string; block: number | null; onBlock
         />
       ) : null}
 
-      <div className="grid gap-2">
+      <div className="grid grid-cols-1 gap-2">
         <h3 className="m-0 text-sm font-semibold text-muted">Blocks, top to bottom</h3>
         <SortableRows
           ids={ids}
@@ -221,13 +228,15 @@ function PageCanvas(props: Props & { name: string; block: number | null; onBlock
         >
           {page.blocks.map((block, index) => (
             <Row key={ids[index]} id={ids[index]!} label={`${BLOCK_NAMES[block.type]} block ${index + 1}`} selected={props.block === index} onSelect={() => props.onBlock(index)}>
-              <Badge tone={block.type === 'list' ? 'accent' : block.type === 'buttons' ? 'good' : 'idle'}>{block.type === 'text' && block.style === 'heading' ? 'Heading' : BLOCK_NAMES[block.type]}</Badge>
-              <span className="min-w-0 flex-1 truncate">{describeBlock(definition, block)}</span>
+              <Badge tone={block.type === 'list' ? 'accent' : block.type === 'buttons' ? 'good' : block.type === 'stat' || block.type === 'chart' ? 'agent' : 'idle'}>{block.type === 'text' && block.style === 'heading' ? 'Heading' : BLOCK_NAMES[block.type]}</Badge>
+              <span className="min-w-0 flex-1 truncate" title={describeBlock(definition, block)}>
+                {describeBlock(definition, block)}
+              </span>
             </Row>
           ))}
         </SortableRows>
         <div className="flex flex-wrap gap-2">
-          {(['text', 'list', 'buttons'] as const).map((type) => (
+          {(['text', 'list', 'buttons', 'stat', 'chart'] as const).map((type) => (
             <Button key={type} size="sm" onClick={() => add(type)} disabled={!can(type)} title={can(type) ? undefined : type === 'list' ? 'Add an entity first' : 'Add a form or another page first'}>
               Add {BLOCK_NAMES[type].toLowerCase()}
             </Button>
@@ -278,7 +287,200 @@ function BlockPanel({ definition, onChange, page, index }: Props & { page: strin
     );
   }
   if (block.type === 'buttons') return <ButtonsPanel definition={definition} buttons={block.buttons} onButtons={(buttons) => set({ buttons })} page={page} />;
+  if (block.type === 'stat' || block.type === 'chart') return <SummaryPanel definition={definition} block={block} set={set} />;
   return <ListPanel definition={definition} onChange={onChange} page={page} index={index} block={block} set={set} />;
+}
+
+const OPS: ReadonlyArray<{ value: Measure['op']; label: string }> = [
+  { value: 'count', label: 'How many' },
+  { value: 'sum', label: 'The total of' },
+  { value: 'avg', label: 'The average of' },
+  { value: 'min', label: 'The smallest' },
+  { value: 'max', label: 'The largest' },
+];
+const WITHIN = [
+  { value: 'this_month', label: 'this month' },
+  { value: 'this_quarter', label: 'this quarter' },
+  { value: 'this_year', label: 'this year' },
+  { value: 'last_30_days', label: 'the last 30 days' },
+  { value: 'last_90_days', label: 'the last 90 days' },
+  { value: 'last_12_months', label: 'the last 12 months' },
+] as const;
+const PERIOD_NAMES = { day: 'Day', week: 'Week', month: 'Month', quarter: 'Quarter', year: 'Year' } as const;
+
+/** A number or a chart: what it works out, over which records, and, for a chart, by what and how it shows. */
+function SummaryPanel({ definition, block, set }: { definition: Definition; block: StatBlock | ChartBlock; set: (patch: Record<string, unknown>) => void }) {
+  const numbers = numberPaths(definition, block.entity);
+  const linesFields = (definition.entities[block.entity]?.fields ?? []).filter((field) => field.type === 'lines');
+  const groups = groupPaths(definition, block.entity);
+  const dated = groups.filter((g) => g.dated);
+  const chart = block.type === 'chart' ? block : null;
+  const grouped = chart ? groups.find((g) => g.value === chart.group.field) : undefined;
+  const { measure } = block;
+  return (
+    <>
+      {chart ? (
+        <Field label="Title">{(id) => <TextInput id={id} value={chart.title} onChange={(e) => set({ title: e.target.value })} />}</Field>
+      ) : (
+        <Field label="Label">{(id) => <TextInput id={id} value={(block as StatBlock).label} onChange={(e) => set({ label: e.target.value })} />}</Field>
+      )}
+      <Field label="Of">
+        {(id) => (
+          <Select
+            id={id}
+            value={block.entity}
+            onChange={(e) =>
+              set(chart ? { ...newChart(definition, e.target.value), title: chart.title, filter: undefined, range: undefined } : { entity: e.target.value, measure: { op: 'count' }, filter: undefined, range: undefined })
+            }
+          >
+            {listable(definition).map((entity) => (
+              <option key={entity} value={entity}>
+                {definition.entities[entity]!.pluralLabel ?? definition.entities[entity]!.label}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Field label="Works out">
+          {(id) => (
+            <Select
+              id={id}
+              value={measure.op}
+              onChange={(e) => {
+                const op = e.target.value as Measure['op'];
+                set({ measure: op === 'count' ? { op } : { op, field: measure.field && numbers.some((n) => n.value === measure.field) ? measure.field : numbers[0]!.value } });
+              }}
+            >
+              {OPS.map((op) => (
+                <option key={op.value} value={op.value} disabled={op.value !== 'count' && !numbers.length}>
+                  {op.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+        <Field label={measure.op === 'count' ? 'Counting' : 'Field'}>
+          {(id) => (
+            <Select id={id} value={measure.field ?? ''} onChange={(e) => set({ measure: e.target.value ? { op: measure.op, field: e.target.value } : { op: 'count' } })}>
+              {measure.op === 'count' ? (
+                <>
+                  <option value="">Records</option>
+                  {linesFields.map((field) => (
+                    <option key={field.name} value={field.name}>
+                      {field.label}, one per line
+                    </option>
+                  ))}
+                </>
+              ) : (
+                numbers.map((n) => (
+                  <option key={n.value} value={n.value}>
+                    {n.label}
+                  </option>
+                ))
+              )}
+            </Select>
+          )}
+        </Field>
+      </div>
+      {chart ? (
+        <>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Field label="For each">
+              {(id) => (
+                <Select
+                  id={id}
+                  value={chart.group.field}
+                  onChange={(e) => {
+                    const next = groups.find((g) => g.value === e.target.value)!;
+                    set({ group: next.dated ? { field: next.value, period: chart.group.period ?? 'month' } : { field: next.value }, ...(next.dated ? {} : chart.show === 'line' ? { show: 'bar' } : {}) });
+                  }}
+                >
+                  {groups.map((g) => (
+                    <option key={g.value} value={g.value}>
+                      {g.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            {grouped?.dated ? (
+              <Field label="By">
+                {(id) => (
+                  <Select id={id} value={chart.group.period ?? 'month'} onChange={(e) => set({ group: { field: chart.group.field, period: e.target.value } })}>
+                    {Object.entries(PERIOD_NAMES).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
+            ) : null}
+          </div>
+          <Choice
+            label="Shown as"
+            value={chart.show}
+            options={[
+              { value: 'bar', label: 'Bars, largest first', hint: 'To compare groups' },
+              { value: 'column', label: 'Columns', hint: 'For periods, in order' },
+              ...(chart.group.period ? [{ value: 'line' as const, label: 'A line over time', hint: 'For a trend' }] : []),
+              { value: 'table', label: 'A table' },
+            ]}
+            onChange={(show) => set({ show })}
+          />
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Field label={chart.group.period ? 'Latest periods' : 'Largest groups'} hint={chart.group.period ? undefined : 'The rest show as Other.'}>
+              {(id) => <TextInput id={id} type="number" min={2} max={24} value={chart.limit ?? 8} onChange={(e) => set({ limit: Math.min(24, Math.max(2, Number(e.target.value) || 2)) })} />}
+            </Field>
+            <Field label="Width">
+              {(id) => (
+                <Select id={id} value={chart.width ?? 'half'} onChange={(e) => set({ width: e.target.value })}>
+                  <option value="half">Half</option>
+                  <option value="full">Full</option>
+                </Select>
+              )}
+            </Field>
+          </div>
+        </>
+      ) : null}
+      <ConditionEditor
+        label="Only records where"
+        value={block.filter}
+        onChange={(filter) => set({ filter })}
+        choices={recordChoices(definition, block.entity)}
+        compareWith={[THE_PERSON]}
+        empty="Every record the person may see."
+      />
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Field label="When" hint="Times are in UTC.">
+          {(id) => (
+            <Select id={id} value={block.range?.field ?? ''} onChange={(e) => set({ range: e.target.value ? { field: e.target.value, within: block.range?.within ?? 'this_year' } : undefined })}>
+              <option value="">Any time</option>
+              {dated.map((g) => (
+                <option key={g.value} value={g.value}>
+                  {g.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+        {block.range ? (
+          <Field label="Within">
+            {(id) => (
+              <Select id={id} value={block.range!.within} onChange={(e) => set({ range: { field: block.range!.field, within: e.target.value } })}>
+                {WITHIN.map((w) => (
+                  <option key={w.value} value={w.value}>
+                    {w.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        ) : null}
+      </div>
+    </>
+  );
 }
 
 function ListPanel({ definition, onChange, page, index, block, set }: Props & { page: string; index: number; block: ListBlock; set: (patch: Record<string, unknown>) => void }) {
@@ -438,6 +640,10 @@ export function MenuDesigner({ definition, onChange }: Props) {
     const value = 'page' in item ? item.page : 'form' in item ? item.form : item.entity;
     return targets(kind).find((option) => option.value === value)?.label ?? value;
   };
+  // A new item opens what the menu does not have yet, so that adding one is seldom followed by a change.
+  const targetOf = (item: NavItem) => ('page' in item ? item.page : 'form' in item ? item.form : 'entity' in item ? item.entity : undefined);
+  const firstNew = (kind: Exclude<ItemKind, 'heading'>) =>
+    targets(kind).find((option) => !navigation?.items.some((item) => kindOfItem(item) === kind && targetOf(item) === option.value)) ?? targets(kind)[0];
   const make = (kind: ItemKind, value: string, label?: string): NavItem =>
     kind === 'heading' ? { heading: value } : kind === 'page' ? { page: value, ...(label ? { label } : {}) } : kind === 'form' ? { form: value, ...(label ? { label } : {}) } : { entity: value, ...(label ? { label } : {}) };
   const ids = (navigation?.items ?? []).map((_, index) => `item:${index}`);
@@ -513,7 +719,7 @@ export function MenuDesigner({ definition, onChange }: Props) {
               </SortableRows>
               <div className="flex flex-wrap gap-2">
                 {(['page', 'form', 'entity'] as const).map((kind) => (
-                  <Button key={kind} size="sm" disabled={!targets(kind)[0]} onClick={() => onChange(addNavItem(definition, make(kind, targets(kind)[0]!.value)))}>
+                  <Button key={kind} size="sm" disabled={!targets(kind)[0]} onClick={() => onChange(addNavItem(definition, make(kind, firstNew(kind)!.value)))}>
                     Add {kind === 'entity' ? 'a list' : `a ${kind}`}
                   </Button>
                 ))}

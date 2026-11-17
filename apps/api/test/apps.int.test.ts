@@ -184,18 +184,25 @@ describe('sharing with colleagues', () => {
     const ui = async (session: Session) => (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(session) }, 200)).json();
     const [alices, bobs, carols] = [await ui(alice), await ui(bob), await ui(carol)];
     // The builder holds none of the app's roles, so sees every page; each colleague sees the pages for their role.
-    expect(Object.keys(alices.pages)).toEqual(['my_claims', 'to_approve']);
-    expect(Object.keys(bobs.pages)).toEqual(['my_claims']);
-    expect(Object.keys(carols.pages)).toEqual(['my_claims', 'to_approve']);
+    // The menu orders pages; the definition's map of them has no order of its own.
+    expect(Object.keys(alices.pages).sort()).toEqual(['my_claims', 'spending', 'to_approve']);
+    expect(Object.keys(bobs.pages).sort()).toEqual(['my_claims', 'spending']);
+    expect(Object.keys(carols.pages).sort()).toEqual(['my_claims', 'spending', 'to_approve']);
     expect(bobs.navigation).toEqual({
       home: 'my_claims',
       // The heading over the page for approvers goes with it: nothing is left under it for Bob.
-      items: [{ page: 'my_claims', label: 'My claims' }, { form: 'claim_form', label: 'Claim an expense' }, { entity: 'expense_claim', label: 'All claims' }],
+      items: [
+        { page: 'my_claims', label: 'My claims' },
+        { form: 'claim_form', label: 'Claim an expense' },
+        { entity: 'expense_claim', label: 'All claims' },
+        { page: 'spending', label: 'Spending' },
+      ],
     });
     // Carol can't claim, so she gets no button and no menu item for it. She can approve, so the row action is hers.
     expect(carols.navigation.items).toEqual([
       { page: 'my_claims', label: 'My claims' },
       { entity: 'expense_claim', label: 'All claims' },
+      { page: 'spending', label: 'Spending' },
       { heading: 'Approvals' },
       { page: 'to_approve', label: 'To approve' },
     ]);
@@ -218,6 +225,47 @@ describe('sharing with colleagues', () => {
     expect(Object.keys((await rows(bob, 'my_claims', 1))[0]!.values).sort()).toEqual(['status', 'title', 'total']);
     await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/my_claims/blocks/0/records`, ...as(bob) }, 404);
     await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/nowhere/blocks/1/records`, ...as(bob) }, 404);
+  });
+
+  it('works out a dashboard\'s numbers over what each person may read, and never over what their role hides', async () => {
+    const summary = async (session: Session, block: number, expected = 200) =>
+      (await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/spending/blocks/${block}/summary`, ...as(session) }, expected)).json();
+    const carols = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(carol) }, 200)).json();
+    expect(carols.pages.spending.blocks.map((block: { type: string; index: number }) => `${block.type}:${block.index}`)).toEqual(['stat:0', 'stat:1', 'stat:2', 'chart:3', 'chart:4']);
+    expect(carols.pages.spending.blocks[3]).toMatchObject({ title: 'Spending by category (SGD)', show: 'bar', width: 'half', op: 'sum', decimals: 2, group: { label: 'Category', kind: 'value' } });
+    expect(carols.pages.spending.blocks[4]).toMatchObject({ show: 'column', group: { label: 'Date', kind: 'period', period: 'month' } });
+
+    // Bob's taxi claim is the one submitted claim; Alice's is a draft, which Carol can't read.
+    expect(await summary(carol, 0)).toEqual({ value: 1 });
+    expect(await summary(bob, 0)).toEqual({ value: 1 });
+    expect(await summary(alice, 0)).toEqual({ value: 1 });
+    // Receipts: Carol reads only submitted and approved claims; Alice reads all of them.
+    expect(await summary(carol, 2)).toEqual({ value: 1 });
+    expect((await summary(alice, 2)).value).toBeGreaterThan(1);
+    expect(await summary(carol, 3)).toEqual({ groups: [{ key: 'travel', label: 'Travel', value: 32.4 }], other: null, more: 0 });
+    const months = await summary(carol, 4);
+    expect(months.groups).toEqual([{ key: '2026-11-01', label: '2026-11-01', value: 32.4 }]);
+
+    // Approved this year: a range on when claims were made, and nothing approved yet.
+    expect(await summary(carol, 1)).toEqual({ value: 0 });
+    await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/my_claims/blocks/1/summary`, ...as(bob) }, 404);
+  });
+
+  it('refuses a number over a field a role masks, and leaves it off that person\'s page', async () => {
+    const { revision, definition } = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json();
+    definition.pages.spending.blocks.push({ type: 'chart', title: 'By bank account', entity: 'expense_claim', measure: { op: 'count' }, group: { field: 'iban' } });
+    await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), payload: { definition, baseRevision: revision } }, 200);
+    // Carol sees bank accounts masked, so the chart isn't on her page, and its numbers are refused.
+    const carols = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(carol) }, 200)).json();
+    expect(carols.pages.spending.blocks.map((block: { index: number }) => block.index)).not.toContain(5);
+    const refused = await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/spending/blocks/5/summary`, ...as(carol) }, 403);
+    expect(refused.json().error).toBe('hidden_field');
+    // Bob reads his own bank account in full, so he may group by it.
+    expect((await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/spending/blocks/5/summary`, ...as(bob) }, 200)).json()).toEqual({
+      groups: [{ key: 'SG11 BOB', label: 'SG11 BOB', value: 1 }],
+      other: null,
+      more: 0,
+    });
   });
 
   it('runs actions under the caller\'s record permissions, and keeps the history', async () => {

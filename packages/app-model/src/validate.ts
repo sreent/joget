@@ -227,6 +227,18 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
   const pages = mapRecord(definition.pages ?? {}, (page) => ({
     ...page,
     blocks: page.blocks.map((block) => {
+      if (block.type === 'stat' || block.type === 'chart') {
+        const entity = entityName(block.entity);
+        const path = pathName(entity);
+        return {
+          ...block,
+          entity,
+          measure: { ...block.measure, ...(block.measure.field ? { field: path(block.measure.field) } : {}) },
+          ...(block.type === 'chart' ? { group: { ...block.group, field: path(block.group.field) } } : {}),
+          ...(block.range ? { range: { ...block.range, field: path(block.range.field) } } : {}),
+          ...(block.filter ? { filter: condition(entity, block.filter) } : {}),
+        };
+      }
       if (block.type !== 'list') return block;
       const entity = entityName(block.entity);
       return {
@@ -629,6 +641,71 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     for (const query of role.queries) if (!definition.queries[query]) issues.push({ path: `${base}.queries`, message: `No query named ${query}` });
   }
 
+  /** A field of an entity's records, or a field of its lines as `lines.amount`, with the lines field it belongs to. */
+  const summaryField = (entity: string, path: string): { info: FieldInfo; lines?: string } | undefined => {
+    const match = LINE_PATH_PATTERN.exec(path);
+    if (!match) {
+      const info = fieldsOf.get(entity)?.get(path);
+      return info ? { info } : undefined;
+    }
+    const lineEntity = lineEntityOf(entity, match[1]!);
+    const info = lineEntity ? entityFields(lineEntity, { line: true }).get(match[2]!) : undefined;
+    return info && !info.system ? { info, lines: match[1]! } : undefined;
+  };
+  const isDated = (info: FieldInfo) => info.kind === 'date' || info.kind === 'datetime';
+  /** Fields whose values make sensible groups: choices, text, yes or no, and people. */
+  const groupable = (info: FieldInfo) =>
+    info.kind === 'text' || info.kind === 'boolean' || (info.kind === 'uuid' && info.name !== 'id' && info.field?.type !== 'reference' && info.field?.type !== 'file');
+  const OPS = { sum: 'total', avg: 'average', min: 'find the smallest of', max: 'find the largest of' } as const;
+
+  /** A number or a chart: what it works out, over what, grouped how, and over which lines. */
+  const checkSummary = (block: Extract<StoredDefinition['pages'][string]['blocks'][number], { type: 'stat' | 'chart' }>, path: string): void => {
+    const fields = recordEntityAt(block.entity, `${path}.entity`);
+    if (!fields) return;
+    const lines = linesOf.get(block.entity)!;
+    const over = new Set<string>();
+    const { measure } = block;
+    if (measure.op === 'count') {
+      if (measure.field !== undefined) {
+        if (lines.has(measure.field)) over.add(measure.field);
+        else issues.push({ path: `${path}.measure.field`, message: `Count records, or name a lines field to count lines: ${measure.field} isn't one` });
+      }
+    } else if (!measure.field) {
+      issues.push({ path: `${path}.measure.field`, message: `Name the number field to ${OPS[measure.op]}` });
+    } else {
+      const found = summaryField(block.entity, measure.field);
+      if (!found) issues.push({ path: `${path}.measure.field`, message: `No field named ${measure.field}` });
+      else if (found.info.kind !== 'number') issues.push({ path: `${path}.measure.field`, message: `${measure.field} isn't a number` });
+      else if (found.lines) over.add(found.lines);
+    }
+    if (block.type === 'chart') {
+      const { field, period } = block.group;
+      const found = summaryField(block.entity, field);
+      if (!found) {
+        issues.push({ path: `${path}.group.field`, message: lines.has(field) ? `${field} holds lines: group by a field of them, such as ${field}.category` : `No field named ${field}` });
+      } else {
+        if (found.lines) over.add(found.lines);
+        if (isDated(found.info) && !period) issues.push({ path: `${path}.group.period`, message: `${field} is a date: group it by periods, such as month` });
+        else if (!isDated(found.info) && period) issues.push({ path: `${path}.group.period`, message: `Only dates group by periods: ${field} isn't one` });
+        else if (!isDated(found.info) && !groupable(found.info)) {
+          issues.push({ path: `${path}.group.field`, message: `${field} can't group records: group by a choice, text, a yes or no, a person or a date` });
+        }
+        if (block.show === 'line' && !period) issues.push({ path: `${path}.show`, message: 'A line shows change over time: group by periods of a date, or show bars' });
+      }
+    }
+    if (block.range) {
+      const found = summaryField(block.entity, block.range.field);
+      if (!found || !isDated(found.info)) issues.push({ path: `${path}.range.field`, message: `${block.range.field} isn't a date or a time` });
+      else if (found.lines) over.add(found.lines);
+    }
+    if (over.size > 1) issues.push({ path, message: `A number or a chart works over the lines of one lines field at most, not ${[...over].join(' and ')}` });
+    // Over lines, each record appears once per line: a field of the records would count again and again.
+    if (over.size && measure.op !== 'count' && measure.field && !LINE_PATH_PATTERN.test(measure.field)) {
+      issues.push({ path: `${path}.measure.field`, message: `This works over lines, so ${OPS[measure.op]} a field of them, such as ${[...over][0]}.amount` });
+    }
+    if (block.filter) checkCondition(block.filter, { record: fields, lines }, `${path}.filter`, issues);
+  };
+
   for (const [name, page] of Object.entries(definition.pages ?? {})) {
     for (const role of page.roles ?? []) if (!definition.roles[role]) issues.push({ path: `pages.${name}.roles`, message: `No role named ${role}` });
     page.blocks.forEach((block, index) => {
@@ -638,6 +715,10 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
           if ('form' in button && !definition.forms[button.form]) issues.push({ path: `${path}.buttons[${b}]`, message: `No form named ${button.form}` });
           if ('page' in button && !definition.pages[button.page]) issues.push({ path: `${path}.buttons[${b}]`, message: `No page named ${button.page}` });
         });
+      }
+      if (block.type === 'stat' || block.type === 'chart') {
+        checkSummary(block, path);
+        return;
       }
       if (block.type !== 'list') return;
       const fields = recordEntityAt(block.entity, `${path}.entity`);

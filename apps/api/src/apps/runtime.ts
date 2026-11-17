@@ -46,6 +46,10 @@ import {
   type StoredRecord,
   type ValueIssue,
   type ValueKind,
+  rangeStart,
+  summarize,
+  type ChartBlock,
+  type StatBlock,
   type ListBlock,
 } from '@platform/app-model';
 import { proposals, users } from '@platform/db';
@@ -70,6 +74,17 @@ export type LineOut = { readonly id: string } & Readonly<Record<string, FieldVal
  * A record as the API returns it. Fields the caller can't see are left out; masked ones are
  * listed, fields of lines as `lines.amount`. A lines field's value is its lines, in order.
  */
+/** A page's number, or its chart's numbers: one per group, in order, and what didn't fit. */
+export type SummaryOut =
+  | { readonly value: number | null }
+  | {
+      readonly groups: Array<{ readonly key: string | null; readonly label: string | null; readonly value: number | null }>;
+      /** The groups that didn't fit, as one number, where their parts add up. */
+      readonly other: number | null;
+      /** How many groups didn't fit. */
+      readonly more: number;
+    };
+
 export interface RecordOut {
   readonly id: string;
   readonly version: number;
@@ -843,6 +858,90 @@ export class AppRuntime {
       limit: Math.min(input.limit ?? query.limit, query.limit),
       ...(input.cursor ? { cursor: input.cursor } : {}),
     });
+  }
+
+  /** The number or chart block of a page, or a 404 if the page has none there. */
+  summaryBlock(loaded: LoadedApp, page: string, index: number): StatBlock | ChartBlock {
+    const block = loaded.definition.pages[page]?.blocks[index];
+    if (block?.type !== 'stat' && block?.type !== 'chart') throw notFound('Chart');
+    return block;
+  }
+
+  /**
+   * Work out a page's number, or its chart's numbers, over the records the caller may read, or
+   * their lines. A field it totals, groups by or filters on must show in full to the caller in
+   * every record: otherwise the number would tell them what their role hides.
+   */
+  async runSummary(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, page: string, index: number, decision: AllowedQuery): Promise<SummaryOut> {
+    const block = this.summaryBlock(loaded, page, index);
+    const entity = this.entity(loaded, block.entity);
+    const group = block.type === 'chart' ? block.group : undefined;
+    const paths = [block.measure.field, group?.field, block.range?.field].filter((path): path is string => path !== undefined);
+    this.#requireVisible(decision, paths, 'work out numbers from');
+    if (block.filter) this.#requireVisible(decision, conditionRefs(block.filter).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : [])), 'filter on');
+    const where = block.filter ? partialEvaluate(block.filter, { principal: principalEnv(auth), input: {}, context: {} }, ['record']) : true;
+    if (where === false) return block.type === 'stat' ? { value: block.measure.op === 'count' || block.measure.op === 'sum' ? 0 : null } : { groups: [], other: null, more: 0 };
+
+    // A summary over lines names them as `lines.amount`, or counts them by their lines field.
+    const linesFieldOf = (path: string | undefined) => (path?.includes('.') ? path.split('.')[0] : undefined);
+    const over = linesFieldOf(block.measure.field) ?? (block.measure.op === 'count' ? block.measure.field : undefined) ?? linesFieldOf(group?.field) ?? linesFieldOf(block.range?.field);
+    const linesField = over ? entity.fields.find((field) => field.name === over) : undefined;
+    const lineEntity = linesField?.type === 'lines' ? loaded.definition.entities[linesField.entity] : undefined;
+    const at = (path: string) => {
+      const [first, sub] = path.split('.') as [string, string | undefined];
+      const info = sub ? entityFields(lineEntity!, { line: true }).get(sub) : entityFields(entity).get(first);
+      return { info: info!, onLines: sub !== undefined };
+    };
+    const { measure } = block;
+    const statement = summarize({
+      names: this.#names(loaded),
+      entity,
+      ...(lineEntity ? { lineEntity } : {}),
+      grants: decision.grants.map((grant) => grant.filter),
+      exclude: decision.exclude.map((exclusion) => exclusion.when),
+      where: [where],
+      measure:
+        measure.op === 'count'
+          ? { op: 'count', onLines: measure.field !== undefined }
+          : { op: measure.op, ...at(measure.field!) },
+      ...(group ? { group: { ...at(group.field), ...(group.period ? { period: group.period } : {}), limit: (block as ChartBlock).limit } } : {}),
+      ...(block.range
+        ? (() => {
+            const range = at(block.range.field);
+            const start = rangeStart(block.range.within, this.#ctx.now());
+            return { since: { ...range, from: range.info.kind === 'date' ? start.date : start.time } };
+          })()
+        : {}),
+    });
+    const rows = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
+      this.#sameRevision(tx, loaded);
+      return (await tx.query(statement.text, statement.values)).rows;
+    });
+    const number = (raw: unknown) => (raw === null || raw === undefined ? null : Number(raw));
+    if (block.type === 'stat') {
+      const value = number(rows[0]?.['value']);
+      return { value: value ?? (measure.op === 'sum' ? 0 : null) };
+    }
+    const info = at(group!.field).info;
+    const options = info.field?.type === 'choice' ? new Map(info.field.options.map((option) => [option.value, option.label])) : undefined;
+    const label = (key: string | null): string | null => {
+      if (key === null) return null;
+      if (options) return options.get(key) ?? key;
+      if (info.kind === 'boolean') return key === 'true' ? 'Yes' : 'No';
+      return info.kind === 'uuid' ? null : key;
+    };
+    const groups = rows.map((row) => {
+      const key = row['key'] === null ? null : String(row['key']);
+      return { key, label: label(key), value: number(row['value']) };
+    });
+    if (group!.period) groups.reverse();
+    const all = Number(rows[0]?.['groups'] ?? 0);
+    const more = Math.max(0, all - groups.length);
+    // The rest can be told as one more bar only where the parts add up to the whole.
+    const additive = measure.op === 'count' || measure.op === 'sum';
+    const shown = groups.reduce((sum, g) => sum + (g.value ?? 0), 0);
+    const other = more && additive && !group!.period ? Number(((number(rows[0]?.['total']) ?? 0) - shown).toFixed(6)) : null;
+    return { groups, other, more };
   }
 
   /** The list block of a page, or a 404 if the page has no list there. */

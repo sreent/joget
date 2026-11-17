@@ -135,6 +135,11 @@ export const api = {
       'GET',
       `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/records${envParams(target, cursor ? { cursor } : {})}`,
     ),
+  pageSummary: (target: string | AppAt, page: string, block: number) =>
+    call<{ value: number | null } | { groups: Array<{ key: string | null; label: string | null; value: number | null }>; other: number | null; more: number }>(
+      'GET',
+      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/summary${envParams(target)}`,
+    ),
   history: (target: string | AppAt, entity: string, recordId: string) =>
     call<{ history: HistoryEntry[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/history${envParams(target)}`),
   runAction: (target: string | AppAt, action: string, body: { values: Record<string, unknown>; recordId?: string; version?: number }) =>

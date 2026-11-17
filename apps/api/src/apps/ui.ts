@@ -1,4 +1,4 @@
-import { appRoleName, covers, fieldAccess, lineOwners, rollupOf, type FieldAccess, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { appRoleName, covers, fieldAccess, lineOwners, rollupOf, type ChartBlock, type FieldAccess, type StatBlock, type StoredDefinition, type StoredField } from '@platform/app-model';
 import type { PermissionGrant } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
 import type { AppContext, AuthContext } from '../context.js';
@@ -135,6 +135,36 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
   return { entities, forms, actions, queries, pages, navigation };
 }
 
+/** What screens need to draw a number or a chart: its labels, and how to show its values. */
+function describeSummary(definition: StoredDefinition, index: number, block: StatBlock | ChartBlock): Record<string, unknown> & { type: string } {
+  const entity = definition.entities[block.entity]!;
+  /** A field of the records, or of their lines. */
+  const fieldOf = (path: string): StoredField | undefined => {
+    const [first, sub] = path.split('.') as [string, string | undefined];
+    const field = entity.fields.find((f) => f.name === first);
+    if (!sub) return field;
+    return field?.type === 'lines' ? definition.entities[field.entity]?.fields.find((f) => f.name === sub) : undefined;
+  };
+  const measured = block.measure.field ? fieldOf(block.measure.field) : undefined;
+  const decimals = block.measure.op === 'count' ? 0 : measured?.type === 'number' ? measured.decimals : 0;
+  const base = { index, entity: block.entity, op: block.measure.op, decimals };
+  if (block.type === 'stat') return { type: 'stat', label: block.label, ...base };
+  const grouped = fieldOf(block.group.field);
+  const people = grouped?.type === 'user' || ['owner', 'created_by', 'updated_by'].includes(block.group.field);
+  return {
+    type: 'chart',
+    title: block.title,
+    show: block.show,
+    width: block.width,
+    ...base,
+    group: {
+      label: grouped?.label ?? SYSTEM_COLUMNS[block.group.field] ?? block.group.field,
+      kind: block.group.period ? 'period' : people ? 'person' : 'value',
+      ...(block.group.period ? { period: block.group.period } : {}),
+    },
+  };
+}
+
 /** Labels for the system fields a list may show as columns. */
 const SYSTEM_COLUMNS: Readonly<Record<string, string>> = {
   created_at: 'Created',
@@ -190,6 +220,20 @@ async function describePages(ctx: AppContext, auth: AuthContext, loaded: LoadedA
       }
       const entity = fieldsOf(block.entity);
       if (!entity?.can.read) return;
+      if (block.type === 'stat' || block.type === 'chart') {
+        // A number about fields the person can't see would tell them what their role hides.
+        const read = (path: string): UiField['read'] => {
+          if (path in SYSTEM_COLUMNS) return 'full';
+          const [first, sub] = path.split('.') as [string, string | undefined];
+          const field = entity.fields.find((f) => f.name === first);
+          return sub ? (field?.lines?.fields.find((f) => f.name === sub)?.read ?? null) : (field?.read ?? null);
+        };
+        const paths = [block.measure.field, block.type === 'chart' ? block.group.field : undefined, block.range?.field].filter((path): path is string => path !== undefined);
+        if (paths.some((path) => read(path) !== 'full')) return;
+        usable++;
+        blocks.push(describeSummary(definition, index, block));
+        return;
+      }
       const fields = new Map(entity.fields.filter((field) => field.read).map((field) => [field.name, field]));
       const columns = block.columns.flatMap((column) => {
         const field = fields.get(column);

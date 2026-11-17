@@ -268,7 +268,8 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
 
     await page.getByRole('link', { name: 'Menu', exact: true }).click();
     await page.getByRole('button', { name: 'Add a page' }).click();
-    await page.getByLabel('Item 6 opens').selectOption('recent_claims');
+    // The new item opens the page that the menu does not have yet.
+    expect(await page.getByLabel('Item 7 opens').inputValue()).toBe('recent_claims');
     await shot(page, '15-menu-designer');
     await page.getByRole('button', { name: 'Review and save' }).click();
     await page.getByRole('button', { name: /^Save as revision/ }).click();
@@ -301,5 +302,38 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await expect.poll(() => rows.count()).toBe(before - 1);
     // No claiming for an approver: no form in the menu, and no button for it on My claims.
     await hidden(approver.getByRole('link', { name: '+ Claim an expense' }));
+  });
+
+  it('shows a dashboard of numbers and charts, and builds one more chart in the page designer', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: 'Spending' }).click();
+    await visible(page.getByRole('heading', { name: 'Claims waiting for approval' }));
+    await visible(page.getByRole('heading', { name: 'Spending by category (SGD)' }));
+    await visible(page.getByRole('heading', { name: 'Spending by month (SGD)' }));
+    await visible(page.locator('ul[aria-label="Spending by category (SGD)"] li').first());
+    await shot(page, '18-dashboard');
+    // Every chart has a table view, the twin of what it draws.
+    await page.getByRole('button', { name: 'Table' }).first().click();
+    await visible(page.getByRole('columnheader', { name: 'Category' }));
+    await page.getByRole('button', { name: 'Chart' }).first().click();
+
+    const dark = await open(alice, 'dark');
+    await dark.goto(`${BASE}/studio/apps/${appId}/pages/spending`);
+    await visible(dark.locator('ul[aria-label="Spending by category (SGD)"] li').first());
+    await shot(dark, '19-dashboard-dark');
+
+    await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);
+    await page.getByRole('button', { name: /^Spending/ }).click();
+    await page.getByRole('button', { name: 'Add chart' }).click();
+    await page.getByLabel('Title', { exact: true }).fill('Claims by status');
+    await page.getByLabel('Width').selectOption('full');
+    await shot(page, '20-chart-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    await page.goto(`${BASE}/studio/apps/${appId}/pages/spending`);
+    await visible(page.getByRole('heading', { name: 'Claims by status' }));
+    await visible(page.locator('ul[aria-label="Claims by status"] li').first());
   });
 });

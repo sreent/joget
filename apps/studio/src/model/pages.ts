@@ -11,6 +11,9 @@ export type Page = Definition['pages'][string];
 export type Block = Page['blocks'][number];
 export type BlockType = Block['type'];
 export type ListBlock = Extract<Block, { type: 'list' }>;
+export type StatBlock = Extract<Block, { type: 'stat' }>;
+export type ChartBlock = Extract<Block, { type: 'chart' }>;
+export type Measure = StatBlock['measure'];
 export type ButtonsBlock = Extract<Block, { type: 'buttons' }>;
 export type PageButton = ButtonsBlock['buttons'][number];
 export type Navigation = NonNullable<Definition['navigation']>;
@@ -50,7 +53,61 @@ export function newBlock(definition: Definition, type: BlockType): Block | null 
       const page = Object.keys(definition.pages)[0];
       return form ? { type: 'buttons', buttons: [{ form }] } : page ? { type: 'buttons', buttons: [{ page }] } : null;
     }
+    case 'stat': {
+      const entity = listable(definition)[0];
+      if (!entity) return null;
+      const label = definition.entities[entity]!.pluralLabel ?? definition.entities[entity]!.label;
+      return { type: 'stat', label: `How many ${label.toLowerCase()}`, entity, measure: { op: 'count' } };
+    }
+    case 'chart': {
+      const entity = listable(definition)[0];
+      return entity ? newChart(definition, entity) : null;
+    }
   }
+}
+
+/** A chart that counts an entity's records by its first choice field, or by the month they were made. */
+export function newChart(definition: Definition, entity: string): ChartBlock {
+  const plural = definition.entities[entity]!.pluralLabel ?? definition.entities[entity]!.label;
+  const choice = definition.entities[entity]!.fields.find((field) => field.type === 'choice' && !field.multiple);
+  return choice
+    ? { type: 'chart', title: `${plural} by ${choice.label.toLowerCase()}`, entity, measure: { op: 'count' }, group: { field: choice.name }, show: 'bar', limit: 8, width: 'half' }
+    : { type: 'chart', title: `${plural} by month`, entity, measure: { op: 'count' }, group: { field: 'created_at', period: 'month' }, show: 'column', limit: 12, width: 'half' };
+}
+
+/** A field of the lines, after the lines that hold it: "Receipts › Amount (SGD)". Labels keep their case. */
+const linePath = (lines: string, field: string) => `${lines} › ${field}`;
+
+/** Fields a number or a chart can total: number fields of the records, and of their lines as `lines.amount`. */
+export function numberPaths(definition: Definition, entity: string): Array<{ value: string; label: string }> {
+  const paths: Array<{ value: string; label: string }> = [];
+  for (const field of definition.entities[entity]?.fields ?? []) {
+    if (field.type === 'number') paths.push({ value: field.name, label: field.label });
+    if (field.type !== 'lines') continue;
+    for (const sub of definition.entities[field.entity]?.fields ?? []) {
+      if (sub.type === 'number') paths.push({ value: `${field.name}.${sub.name}`, label: linePath(field.label, sub.label) });
+    }
+  }
+  return paths;
+}
+
+/** Fields a chart can group by: choices, text, yes or no and people, of the records or their lines; and dates, by period. */
+export function groupPaths(definition: Definition, entity: string): Array<{ value: string; label: string; dated: boolean }> {
+  const groupable = (type: string, multiple?: boolean) => ['text', 'email', 'boolean', 'user'].includes(type) || (type === 'choice' && !multiple);
+  const paths: Array<{ value: string; label: string; dated: boolean }> = [];
+  for (const field of definition.entities[entity]?.fields ?? []) {
+    const dated = field.type === 'date' || field.type === 'datetime';
+    if (dated || groupable(field.type, field.type === 'choice' ? field.multiple : undefined)) paths.push({ value: field.name, label: field.label, dated });
+    if (field.type !== 'lines') continue;
+    for (const sub of definition.entities[field.entity]?.fields ?? []) {
+      const subDated = sub.type === 'date' || sub.type === 'datetime';
+      if (subDated || groupable(sub.type, sub.type === 'choice' ? sub.multiple : undefined)) {
+        paths.push({ value: `${field.name}.${sub.name}`, label: linePath(field.label, sub.label), dated: subDated });
+      }
+    }
+  }
+  paths.push({ value: 'owner', label: 'Owner', dated: false }, { value: 'created_at', label: 'Created', dated: true }, { value: 'updated_at', label: 'Last changed', dated: true });
+  return paths;
 }
 
 const placeholder = (): Block => ({ type: 'text', style: 'paragraph', text: 'This page is empty.' });
@@ -218,24 +275,40 @@ function dropButtons(definition: Definition, gone: (button: PageButton) => boole
   }
 }
 
-/** An entity went: its lists go, and so does its menu item. */
+/** An entity went: its lists, numbers and charts go, and so does its menu item. */
 export function forgetEntity(definition: Definition, entity: string): void {
   for (const page of Object.values(definition.pages)) {
-    page.blocks = page.blocks.filter((block) => block.type !== 'list' || block.entity !== entity);
+    page.blocks = page.blocks.filter((block) => !('entity' in block) || block.entity !== entity);
     if (!page.blocks.length) page.blocks = [placeholder()];
   }
   if (definition.navigation) definition.navigation.items = definition.navigation.items.filter((item) => !('entity' in item && item.entity === entity));
 }
 
-/** A field went: lists stop showing it and sorting by it. */
+/**
+ * A field went: lists stop showing it and sorting by it; a number or chart stops totalling it
+ * (and counts instead), a chart grouped by it goes, and a time range on it goes. A field of lines
+ * is named on its record's entity as `lines.amount`.
+ */
 export function forgetField(definition: Definition, entity: string, field: string): void {
+  const owner = lineOwner(definition, entity);
+  const [target, path] = owner ? [owner.parent, `${owner.field}.${field}`] : [entity, field];
+  const gone = (name: string | undefined) => name !== undefined && (name === path || name.startsWith(`${path}.`));
   for (const page of Object.values(definition.pages)) {
-    for (const block of page.blocks) {
-      if (block.type !== 'list' || block.entity !== entity) continue;
-      block.columns = block.columns.filter((column) => column !== field);
-      if (!block.columns.length) block.columns = ['created_at'];
-      block.sort = (block.sort ?? []).filter((key) => key.field !== field);
-    }
+    page.blocks = page.blocks.flatMap((block): Block[] => {
+      if (!('entity' in block) || block.entity !== target) return [block];
+      if (block.type === 'list') {
+        if (owner) return [block];
+        block.columns = block.columns.filter((column) => column !== field);
+        if (!block.columns.length) block.columns = ['created_at'];
+        block.sort = (block.sort ?? []).filter((key) => key.field !== field);
+        return [block];
+      }
+      if (block.type === 'chart' && gone(block.group.field)) return [];
+      if (gone(block.measure.field)) block.measure = { op: 'count' };
+      if (block.range && gone(block.range.field)) delete block.range;
+      return [block];
+    });
+    if (!page.blocks.length) page.blocks = [placeholder()];
   }
 }
 
@@ -285,5 +358,27 @@ export function describeBlock(definition: Definition, block: Block): string {
       return block.buttons
         .map((button) => button.label ?? ('form' in button ? (definition.forms[button.form]?.label ?? button.form) : (definition.pages[button.page]?.label ?? button.page)))
         .join(' · ');
+    case 'stat':
+      return `${block.label}: ${describeMeasure(definition, block.entity, block.measure)}`;
+    case 'chart':
+      return `${block.title}: ${describeMeasure(definition, block.entity, block.measure)}, by ${block.group.period ? `${block.group.period} of ` : ''}${pathLabel(definition, block.entity, block.group.field)}`;
   }
+}
+
+/** A field of an entity's records, or of their lines as `lines.amount`, as people call it. */
+export function pathLabel(definition: Definition, entity: string, path: string): string {
+  const [first, sub] = path.split('.') as [string, string | undefined];
+  const field = definition.entities[entity]?.fields.find((f) => f.name === first);
+  if (!field) return SYSTEM_COLUMNS.find((c) => c.value === first)?.label ?? path;
+  if (!sub) return field.label;
+  const line = field.type === 'lines' ? definition.entities[field.entity]?.fields.find((f) => f.name === sub) : undefined;
+  return line ? linePath(field.label, line.label) : path;
+}
+
+const OP_WORDS: Readonly<Record<Measure['op'], string>> = { count: 'Count', sum: 'Sum', avg: 'Average', min: 'Lowest', max: 'Highest' };
+
+/** What a number works out, in a few words: "Count", "Count of Receipts", "Sum of Total (SGD)". */
+export function describeMeasure(definition: Definition, entity: string, measure: Measure): string {
+  if (!measure.field) return OP_WORDS[measure.op];
+  return `${OP_WORDS[measure.op]} of ${pathLabel(definition, entity, measure.field)}`;
 }

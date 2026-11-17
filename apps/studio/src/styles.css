@@ -38,7 +38,12 @@
   --color-idle-bg: var(--idle-bg);
   --shadow-card: var(--shadow);
   --shadow-raised: var(--shadow-raised);
+  --color-series: var(--chart-series);
 }
+
+/* The one series colour of dashboard charts: Ocean 500, which clears the lightness band and 3:1
+   contrast on the card surface in light and in dark (checked with the data-viz palette checks). */
+:root { --chart-series: var(--ocean-500); }
 
 html, body, #root { min-height: 100%; }
 body { margin: 0; background: var(--page); color: var(--text); font: var(--text-base)/1.5 var(--font-sans); }

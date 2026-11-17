@@ -183,6 +183,42 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         }),
     );
 
+    app.get(
+      '/v1/apps/:appId/pages/:page/blocks/:block/summary',
+      {
+        config: {
+          access: {
+            kind: 'query',
+            action: 'record.read',
+            resource: async (request) => {
+              const loaded = await theApp(request);
+              const { page, block } = request.params as { page: string; block: string };
+              return recordResource(ctx.org.id, loaded, runtime.summaryBlock(loaded, page, Number(block)).entity);
+            },
+            policy,
+          },
+        },
+        schema: {
+          tags: ['records'],
+          summary: "A number, or a chart's numbers, on one of the app's pages: worked out over the records you may read",
+          params: AppParams.extend({ page: z.string().min(1).max(63), block: z.coerce.number().int().min(0).max(29) }),
+          querystring: EnvQuery,
+          response: {
+            200: z.union([
+              z.object({ value: z.number().nullable() }),
+              z.object({
+                groups: z.array(z.object({ key: z.string().nullable(), label: z.string().nullable(), value: z.number().nullable() })),
+                other: z.number().nullable(),
+                more: z.number().int(),
+              }),
+            ]),
+          },
+        },
+      },
+      async (request) =>
+        runtime.runSummary(request, requireAuth(request), await theApp(request), request.params.page, request.params.block, requireQueryDecision(request)),
+    );
+
     app.post(
       '/v1/apps/:appId/queries/:name/run',
       {

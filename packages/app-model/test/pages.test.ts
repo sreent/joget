@@ -22,7 +22,7 @@ const example = () => structuredClone(EXPENSE_APP) as any;
 describe('pages and the menu', () => {
   it('accept the example: a page of my records, a page for approvers, and a menu', () => {
     const definition = valid(EXPENSE_APP);
-    expect(Object.keys(definition.pages)).toEqual(['my_claims', 'to_approve']);
+    expect(Object.keys(definition.pages)).toEqual(['my_claims', 'to_approve', 'spending']);
     expect(definition.pages['to_approve']!.blocks[1]).toMatchObject({ type: 'list', limit: 20, actions: ['approve_claim'] });
     expect(definition.navigation?.home).toBe('my_claims');
   });

@@ -261,6 +261,9 @@ export const Form = z.strictObject({
 });
 export type Form = z.infer<typeof Form>;
 
+/** A field, or a field of lines as `lines.amount`. */
+const FieldPath = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a field, or a field of lines such as lines.amount');
+
 /** A heading or some text on a page. */
 const TextBlock = z.strictObject({
   type: z.literal('text'),
@@ -299,9 +302,63 @@ const ButtonsBlock = z.strictObject({
     .max(8),
 });
 
-export const PageBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock]);
+/**
+ * What a number or a chart works out: how many records, or lines; or the total, average, smallest
+ * or largest of a number field, which may be a field of lines as `lines.amount`.
+ */
+export const Measure = z.strictObject({
+  op: z.enum(['count', 'sum', 'avg', 'min', 'max']),
+  /** The number field. For `count`, leave it out to count records, or name a lines field to count lines. */
+  field: FieldPath.optional(),
+});
+export type Measure = z.infer<typeof Measure>;
+
+export const PERIODS = ['day', 'week', 'month', 'quarter', 'year'] as const;
+export type Period = (typeof PERIODS)[number];
+
+/** Only records, or lines, of a recent time: dates can't be compared in conditions yet. Times are in UTC. */
+export const TimeRange = z.strictObject({
+  /** A date or time field, or one of lines, such as `lines.date`. */
+  field: FieldPath,
+  within: z.enum(['this_month', 'this_quarter', 'this_year', 'last_30_days', 'last_90_days', 'last_12_months']),
+});
+export type TimeRange = z.infer<typeof TimeRange>;
+
+/** One number, such as how many claims wait for approval: a tile on a dashboard. */
+const StatBlock = z.strictObject({
+  type: z.literal('stat'),
+  label: Label,
+  entity: Name,
+  measure: Measure,
+  filter: ConditionSchema.optional(),
+  range: TimeRange.optional(),
+});
+
+/**
+ * A number for each value of a field, or each period of a date, such as spending by category:
+ * as bars, columns, a line over time, or a table. Like a list, it counts only what the person
+ * may read.
+ */
+const ChartBlock = z.strictObject({
+  type: z.literal('chart'),
+  title: Label,
+  entity: Name,
+  measure: Measure,
+  /** What each bar or point stands for: the values of a field, or periods of a date field. */
+  group: z.strictObject({ field: FieldPath, period: z.enum(PERIODS).optional() }),
+  filter: ConditionSchema.optional(),
+  range: TimeRange.optional(),
+  show: z.enum(['bar', 'column', 'line', 'table']).default('bar'),
+  /** At most this many bars or points: for periods, the latest; otherwise the largest, the rest as "Other". */
+  limit: z.int().min(2).max(24).default(8),
+  width: z.enum(['full', 'half']).default('half'),
+});
+
+export const PageBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock, StatBlock, ChartBlock]);
 export type PageBlock = z.infer<typeof PageBlock>;
 export type ListBlock = z.infer<typeof ListBlock>;
+export type StatBlock = z.infer<typeof StatBlock>;
+export type ChartBlock = z.infer<typeof ChartBlock>;
 
 /**
  * A page of an app's screens: blocks, top to bottom. The page is shown to whoever may use
@@ -340,8 +397,6 @@ export const Navigation = z.strictObject({
 });
 export type Navigation = z.infer<typeof Navigation>;
 
-/** A field, or a field of lines as `lines.amount`. */
-const FieldPath = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a field, or a field of lines such as lines.amount');
 
 const FieldSelection = z.union([
   z.strictObject({ include: z.array(FieldPath).max(MAX_FIELDS * 2) }),

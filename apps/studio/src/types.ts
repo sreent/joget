@@ -244,7 +244,19 @@ export interface UiColumn {
 export type UiBlock =
   | { type: 'text'; style: 'heading' | 'paragraph' | 'note'; text: string }
   | { type: 'list'; index: number; entity: string; title?: string; columns: UiColumn[]; actions: string[]; empty?: string }
-  | { type: 'buttons'; buttons: Array<{ form: string; label?: string } | { page: string; label?: string }> };
+  | { type: 'buttons'; buttons: Array<{ form: string; label?: string } | { page: string; label?: string }> }
+  | { type: 'stat'; index: number; entity: string; label: string; op: string; decimals: number }
+  | {
+      type: 'chart';
+      index: number;
+      entity: string;
+      title: string;
+      show: 'bar' | 'column' | 'line' | 'table';
+      width: 'full' | 'half';
+      op: string;
+      decimals: number;
+      group: { label: string; kind: 'value' | 'person' | 'period'; period?: string };
+    };
 
 export interface UiPage {
   label: string;

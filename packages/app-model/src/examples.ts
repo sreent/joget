@@ -7,7 +7,7 @@ const status = { ref: 'record.status' } as const;
 /**
  * A small expense-claim app: a claim with one line per receipt, each with its file, and a total worked out from them,
  * rules on each line, two actions, a query, a review card with the lines as a table, a form,
- * two roles, two pages and a menu. It's the running example in the design doc (§6.2) and in the tests.
+ * two roles, three pages (one a dashboard) and a menu. It's the running example in the design doc (§6.2) and in the tests.
  */
 export const EXPENSE_APP = {
   entities: {
@@ -172,9 +172,50 @@ export const EXPENSE_APP = {
         },
       ],
     },
+    spending: {
+      label: 'Spending',
+      description: 'Where the money goes, from the claims you may see.',
+      blocks: [
+        { type: 'stat', label: 'Claims waiting for approval', entity: 'expense_claim', measure: { op: 'count' }, filter: { eq: [status, 'submitted'] } },
+        {
+          type: 'stat',
+          label: 'Approved this year (SGD)',
+          entity: 'expense_claim',
+          measure: { op: 'sum', field: 'total' },
+          filter: { eq: [status, 'approved'] },
+          range: { field: 'created_at', within: 'this_year' },
+        },
+        { type: 'stat', label: 'Receipts', entity: 'expense_claim', measure: { op: 'count', field: 'lines' } },
+        {
+          type: 'chart',
+          title: 'Spending by category (SGD)',
+          entity: 'expense_claim',
+          measure: { op: 'sum', field: 'lines.amount' },
+          group: { field: 'lines.category' },
+          show: 'bar',
+        },
+        {
+          type: 'chart',
+          title: 'Spending by month (SGD)',
+          entity: 'expense_claim',
+          measure: { op: 'sum', field: 'lines.amount' },
+          group: { field: 'lines.date', period: 'month' },
+          range: { field: 'lines.date', within: 'last_12_months' },
+          show: 'column',
+          limit: 12,
+        },
+      ],
+    },
   },
   navigation: {
     home: 'my_claims',
-    items: [{ page: 'my_claims' }, { form: 'claim_form' }, { entity: 'expense_claim', label: 'All claims' }, { heading: 'Approvals' }, { page: 'to_approve' }],
+    items: [
+      { page: 'my_claims' },
+      { form: 'claim_form' },
+      { entity: 'expense_claim', label: 'All claims' },
+      { page: 'spending' },
+      { heading: 'Approvals' },
+      { page: 'to_approve' },
+    ],
   },
 } as const satisfies AppDefinitionInput;
