@@ -1,5 +1,6 @@
 import type { Definition } from '../types.js';
 import { isName, lineOwner, toName } from './edit.js';
+import { forgetRole, renameRowAction } from './pages.js';
 
 /**
  * Pure edits of rules, actions, queries, review cards and roles in a draft. Each returns a new
@@ -87,6 +88,7 @@ export function renameItem(definition: Definition, section: Section, from: strin
   if (section === 'actions') {
     for (const form of Object.values(next.forms)) if (form.action === from) form.action = to;
     for (const role of Object.values(next.roles)) role.actions = (role.actions ?? []).map((a) => (a === from ? to : a));
+    renameRowAction(next, from, to);
   }
   if (section === 'queries') for (const role of Object.values(next.roles)) role.queries = (role.queries ?? []).map((q) => (q === from ? to : q));
   if (section === 'cards') for (const action of Object.values(next.actions)) if (action.card === from) action.card = to;
@@ -100,7 +102,9 @@ export function removeItem(definition: Definition, section: Section, name: strin
   if (section === 'actions') {
     for (const form of Object.values(next.forms)) if (form.action === name) delete form.action;
     for (const role of Object.values(next.roles)) role.actions = (role.actions ?? []).filter((a) => a !== name);
+    renameRowAction(next, name);
   }
+  if (section === 'roles') forgetRole(next, name);
   if (section === 'queries') for (const role of Object.values(next.roles)) role.queries = (role.queries ?? []).filter((q) => q !== name);
   if (section === 'cards') for (const action of Object.values(next.actions)) if (action.card === name) delete action.card;
   return next;

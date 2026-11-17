@@ -261,6 +261,85 @@ export const Form = z.strictObject({
 });
 export type Form = z.infer<typeof Form>;
 
+/** A heading or some text on a page. */
+const TextBlock = z.strictObject({
+  type: z.literal('text'),
+  /** `heading` titles a part of the page; `note` stands out, for a hint or a warning. */
+  style: z.enum(['heading', 'paragraph', 'note']).default('paragraph'),
+  text: z.string().trim().min(1).max(5000),
+});
+
+/**
+ * Records of one entity, as a table. The person's own permissions always apply on top: a list
+ * never shows a record or a field that their role doesn't let them read.
+ */
+const ListBlock = z.strictObject({
+  type: z.literal('list'),
+  title: Label.optional(),
+  entity: Name,
+  /** The columns, in order: fields of the records, or system fields such as created_at. */
+  columns: z.array(Name).min(1).max(12),
+  /** Which records. May use `principal.*`, as in "my claims". */
+  filter: ConditionSchema.optional(),
+  sort: z.array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') })).max(3).default([]),
+  /** How many records show at first; more come on request. */
+  limit: z.int().min(1).max(100).default(20),
+  /** Update actions that run on a row in one click, such as Approve. */
+  actions: z.array(Name).max(5).default([]),
+  /** What to say when there are no records. */
+  empty: z.string().trim().min(1).max(200).optional(),
+});
+
+/** Buttons that open a form, or another page. */
+const ButtonsBlock = z.strictObject({
+  type: z.literal('buttons'),
+  buttons: z
+    .array(z.union([z.strictObject({ form: Name, label: Label.optional() }), z.strictObject({ page: Name, label: Label.optional() })]))
+    .min(1)
+    .max(8),
+});
+
+export const PageBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock]);
+export type PageBlock = z.infer<typeof PageBlock>;
+export type ListBlock = z.infer<typeof ListBlock>;
+
+/**
+ * A page of an app's screens: blocks, top to bottom. The page is shown to whoever may use
+ * something on it, so there is no separate permission for pages (design §5.5).
+ */
+export const Page = z.strictObject({
+  label: Label,
+  description: Description.optional(),
+  /**
+   * Shown only to people who hold one of these roles, such as a page for approvers. This tidies
+   * screens; it protects nothing, as the data's own permissions do that. People who hold none of
+   * the app's roles, such as its builder, see every page.
+   */
+  roles: z.array(Name).max(20).optional(),
+  blocks: z.array(PageBlock).min(1).max(30),
+});
+export type Page = z.infer<typeof Page>;
+
+/** One item of an app's menu: a page, a form, an entity's records, or a heading over the items below it. */
+export const NavItem = z.union([
+  z.strictObject({ page: Name, label: Label.optional() }),
+  z.strictObject({ form: Name, label: Label.optional() }),
+  z.strictObject({ entity: Name, label: Label.optional() }),
+  z.strictObject({ heading: Label }),
+]);
+export type NavItem = z.infer<typeof NavItem>;
+
+/**
+ * An app's menu. Each person sees only the items they may use. Without a menu, an app lists its
+ * forms and its entities' records.
+ */
+export const Navigation = z.strictObject({
+  /** The page the app opens on. Without one, it opens on its first menu item. */
+  home: Name.optional(),
+  items: z.array(NavItem).max(50),
+});
+export type Navigation = z.infer<typeof Navigation>;
+
 /** A field, or a field of lines as `lines.amount`. */
 const FieldPath = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a field, or a field of lines such as lines.amount');
 
@@ -305,7 +384,7 @@ export const AppRole = z.strictObject({
 });
 export type AppRole = z.infer<typeof AppRole>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20 } as const;
+export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50 } as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
   z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
@@ -319,6 +398,8 @@ export const AppDefinition = z.strictObject({
   cards: bounded(Card, LIMITS.cards, 'cards'),
   forms: bounded(Form, LIMITS.forms, 'forms'),
   roles: bounded(AppRole, LIMITS.roles, 'roles'),
+  pages: bounded(Page, LIMITS.pages, 'pages'),
+  navigation: Navigation.optional(),
 });
 export type AppDefinition = z.infer<typeof AppDefinition>;
 export type AppDefinitionInput = z.input<typeof AppDefinition>;

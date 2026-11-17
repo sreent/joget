@@ -88,6 +88,7 @@ describe('who gains or loses access', () => {
     const head = changed(base, (d) => {
       d.roles.auditor = { label: 'Auditor', entities: { expense_claim: { read: true } } };
       delete d.roles.approver;
+      delete d.pages.to_approve.roles;
       d.entities.expense_claim.fields.push({ name: 'vendor', type: 'text', label: 'Vendor' });
     });
     const texts = accessChanges(base, head).map((c) => `${c.kind}: ${c.text}`);
@@ -128,6 +129,7 @@ describe('lint', () => {
     const head = changed(base, (d) => {
       d.roles.requester.actions = [];
       delete d.roles.approver;
+      delete d.pages.to_approve.roles;
     });
     expect(lintDefinition(head)).toEqual(['No role can run the action Submit an expense claim', 'No role can run the action Approve an expense claim']);
     expect(lintDefinition(base)).toEqual([]);
@@ -157,7 +159,7 @@ describe('the three-way merge', () => {
     const theirs = changed(base, (d) => {
       delete d.actions.submit_claim;
       d.roles.requester.actions = [];
-      d.forms = Object.fromEntries(Object.entries(d.forms).filter(([, f]) => (f as { action?: string }).action !== 'submit_claim'));
+      delete d.forms.claim_form.action;
     });
     const result = mergeDefinitions(base, ours, theirs);
     expect(result).toEqual({ ok: false, conflicts: [{ section: 'actions', name: 'submit_claim', ours: 'changed', theirs: 'removed' }] });

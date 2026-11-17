@@ -224,8 +224,25 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       }),
     ),
   }));
+  const pages = mapRecord(definition.pages ?? {}, (page) => ({
+    ...page,
+    blocks: page.blocks.map((block) => {
+      if (block.type !== 'list') return block;
+      const entity = entityName(block.entity);
+      return {
+        ...block,
+        entity,
+        columns: block.columns.map(fieldName(entity)),
+        ...(block.filter ? { filter: condition(entity, block.filter) } : {}),
+        sort: block.sort.map((sort) => ({ ...sort, field: fieldName(entity)(sort.field) })),
+      };
+    }),
+  }));
+  const navigation = definition.navigation
+    ? { ...definition.navigation, items: definition.navigation.items.map((item) => ('entity' in item ? { ...item, entity: entityName(item.entity) } : item)) }
+    : undefined;
   for (const change of touched) notes.push(`Updated references for the rename ${change}`);
-  return { ...definition, entities, rules, actions, queries, cards, forms, roles } as StoredDefinition;
+  return { ...definition, entities, rules, actions, queries, cards, forms, roles, pages, ...(navigation ? { navigation } : {}) } as StoredDefinition;
 }
 
 function assignIds(
@@ -610,5 +627,56 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     }
     for (const action of role.actions) if (!definition.actions[action]) issues.push({ path: `${base}.actions`, message: `No action named ${action}` });
     for (const query of role.queries) if (!definition.queries[query]) issues.push({ path: `${base}.queries`, message: `No query named ${query}` });
+  }
+
+  for (const [name, page] of Object.entries(definition.pages ?? {})) {
+    for (const role of page.roles ?? []) if (!definition.roles[role]) issues.push({ path: `pages.${name}.roles`, message: `No role named ${role}` });
+    page.blocks.forEach((block, index) => {
+      const path = `pages.${name}.blocks[${index}]`;
+      if (block.type === 'buttons') {
+        block.buttons.forEach((button, b) => {
+          if ('form' in button && !definition.forms[button.form]) issues.push({ path: `${path}.buttons[${b}]`, message: `No form named ${button.form}` });
+          if ('page' in button && !definition.pages[button.page]) issues.push({ path: `${path}.buttons[${b}]`, message: `No page named ${button.page}` });
+        });
+      }
+      if (block.type !== 'list') return;
+      const fields = recordEntityAt(block.entity, `${path}.entity`);
+      if (!fields) return;
+      const lines = linesOf.get(block.entity)!;
+      const shown = new Set<string>();
+      for (const column of block.columns) {
+        const info = fields.get(column);
+        if (lines.has(column)) issues.push({ path: `${path}.columns`, message: `${column} holds lines: show a rollup, such as a total, instead` });
+        else if (!info || column === 'id' || column === 'version') issues.push({ path: `${path}.columns`, message: `No field named ${column}` });
+        if (shown.has(column)) issues.push({ path: `${path}.columns`, message: `${column} is a column twice` });
+        shown.add(column);
+      }
+      if (block.filter) checkCondition(block.filter, { record: fields, lines }, `${path}.filter`, issues);
+      block.sort.forEach((sort, s) => {
+        const info = fields.get(sort.field);
+        if (!info) issues.push({ path: `${path}.sort[${s}]`, message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}` });
+        else if (!isSortableKind(info.kind)) issues.push({ path: `${path}.sort[${s}]`, message: `${sort.field} can't be sorted` });
+      });
+      for (const actionName of block.actions) {
+        const action = definition.actions[actionName];
+        if (!action) issues.push({ path: `${path}.actions`, message: `No action named ${actionName}` });
+        else if (action.entity !== block.entity || action.operation !== 'update') {
+          issues.push({ path: `${path}.actions`, message: `${actionName} doesn't change a ${block.entity} record, so it can't run on a row` });
+        } else if (action.input.length) {
+          issues.push({ path: `${path}.actions`, message: `${actionName} takes input, so it can't run in one click: open it from a form instead` });
+        }
+      }
+    });
+  }
+
+  if (definition.navigation) {
+    const { home, items } = definition.navigation;
+    if (home && !definition.pages[home]) issues.push({ path: 'navigation.home', message: `No page named ${home}` });
+    items.forEach((item, index) => {
+      const path = `navigation.items[${index}]`;
+      if ('page' in item && !definition.pages[item.page]) issues.push({ path, message: `No page named ${item.page}` });
+      if ('form' in item && !definition.forms[item.form]) issues.push({ path, message: `No form named ${item.form}` });
+      if ('entity' in item) recordEntityAt(item.entity, path);
+    });
   }
 }

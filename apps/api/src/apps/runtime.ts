@@ -46,6 +46,7 @@ import {
   type StoredRecord,
   type ValueIssue,
   type ValueKind,
+  type ListBlock,
 } from '@platform/app-model';
 import { proposals, users } from '@platform/db';
 import { and, desc, eq, gt, inArray } from 'drizzle-orm';
@@ -840,6 +841,39 @@ export class AppRuntime {
       fields: userFields,
       sort: query.sort,
       limit: Math.min(input.limit ?? query.limit, query.limit),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+    });
+  }
+
+  /** The list block of a page, or a 404 if the page has no list there. */
+  listBlock(loaded: LoadedApp, page: string, index: number): ListBlock {
+    const block = loaded.definition.pages[page]?.blocks[index];
+    if (block?.type !== 'list') throw notFound('List');
+    return block;
+  }
+
+  /**
+   * The records of a page's list: its filter, order and columns, under the caller's own record
+   * permissions. A filter on `principal.*` is worked out for the caller, as in "my claims".
+   */
+  async runList(
+    request: FastifyRequest,
+    auth: AuthContext,
+    loaded: LoadedApp,
+    page: string,
+    index: number,
+    input: { readonly decision: AllowedQuery; readonly cursor?: string },
+  ): Promise<Page> {
+    const block = this.listBlock(loaded, page, index);
+    const where = block.filter ? partialEvaluate(block.filter, { principal: principalEnv(auth), input: {}, context: {} }, ['record']) : true;
+    if (where === false) return { records: [], nextCursor: null };
+    const entity = this.entity(loaded, block.entity);
+    return this.list(request, auth, loaded, block.entity, {
+      decision: input.decision,
+      where,
+      fields: block.columns.filter((column) => entity.fields.some((field) => field.name === column)),
+      sort: block.sort,
+      limit: block.limit,
       ...(input.cursor ? { cursor: input.cursor } : {}),
     });
   }

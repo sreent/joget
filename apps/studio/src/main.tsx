@@ -39,6 +39,7 @@ function App() {
           <Use
             appId={route.appId}
             {...(route.env ? { env: route.env } : {})}
+            {...(route.appPage ? { appPage: route.appPage } : {})}
             {...(route.page ? { page: route.page } : {})}
             {...(route.recordId ? { recordId: route.recordId } : {})}
           />

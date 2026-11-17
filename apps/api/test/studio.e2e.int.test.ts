@@ -13,6 +13,7 @@ import { startTestApp, type Session, type TestApp } from './helpers.js';
 
 /** Playwright is installed with the environment's browser, not as a dependency: the little of it used here. */
 interface Locator {
+  count(): Promise<number>;
   click(): Promise<void>;
   fill(value: string): Promise<void>;
   blur(): Promise<void>;
@@ -52,13 +53,14 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   let t: TestApp;
   let alice: Session;
   let bob: Session;
+  let carol: Session;
   let browser: Browser;
   let appId: string;
 
   beforeAll(async () => {
     t = await startTestApp({ PUBLIC_BASE_URL: BASE });
     await t.app.listen({ host: '127.0.0.1', port: PORT });
-    [alice, bob] = [await t.login('alice'), await t.login('bob')];
+    [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
     const { chromium } = createRequire(import.meta.url)('playwright') as { chromium: { launch(): Promise<Browser> } };
     browser = await chromium.launch();
   }, 60_000);
@@ -199,7 +201,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const page = await open(bob, 'dark');
     await page.goto(`${BASE}/studio/apps/${appId}`);
     await visible(page.getByText('requester'));
-    await visible(page.getByText('No expense claims you can see'));
+    // The app opens on its home page, "My claims", which is empty for Bob so far.
+    await visible(page.getByRole('heading', { name: 'My claims' }));
+    await visible(page.getByText('You have no claims yet.'));
+    await hidden(page.getByRole('link', { name: 'To approve' }));
     await hidden(page.getByText('Build this app'));
     await shot(page, '7-shared-dark');
 
@@ -245,5 +250,56 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByLabel('Receipt 1, Amount (SGD)').fill('1200');
     await page.getByRole('button', { name: 'Submit an expense claim' }).click();
     await visible(page.getByText('Claims over SGD 1,000 need a director'));
+  });
+
+  it('designs a page and the menu, and each role sees its own pages', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);
+    await visible(page.getByRole('button', { name: /^To approve/ }));
+    await page.getByLabel('New page').fill('Recent claims');
+    await page.getByRole('button', { name: 'Add page' }).click();
+    await page.getByLabel('Title (optional)').fill('The latest ten');
+    await page.getByLabel('Shows at first').fill('10');
+    await page.getByLabel('Journey', { exact: true }).click();
+    await page.getByRole('button', { name: 'Add text' }).click();
+    await page.getByLabel('A note that stands out').click();
+    await page.getByLabel('Text', { exact: true }).fill('Newest first. Open one to see its receipts.');
+    await shot(page, '14-page-designer');
+
+    await page.getByRole('link', { name: 'Menu', exact: true }).click();
+    await page.getByRole('button', { name: 'Add a page' }).click();
+    await page.getByLabel('Item 6 opens').selectOption('recent_claims');
+    await shot(page, '15-menu-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.pages.recent_claims.blocks).toEqual([
+      expect.objectContaining({ type: 'list', title: 'The latest ten', limit: 10, columns: ['title', 'total', 'created_at'] }),
+      { type: 'text', style: 'note', text: 'Newest first. Open one to see its receipts.' },
+    ]);
+    expect(saved.navigation.items.at(-1)).toEqual({ page: 'recent_claims' });
+
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: 'Recent claims' }).click();
+    await visible(page.getByRole('heading', { name: 'The latest ten' }));
+    await visible(page.getByText('Newest first. Open one to see its receipts.'));
+    await shot(page, '16-page');
+
+    // An approver gets the page for approvers, and approves from its list in one click.
+    const share = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, cookies: alice.cookies, payload: { email: 'carol@example.com', role: 'approver' } });
+    expect(share.statusCode, share.body).toBe(201);
+    const approver = await open(carol);
+    await approver.goto(`${BASE}/studio/apps/${appId}`);
+    await approver.getByRole('link', { name: 'To approve' }).click();
+    await visible(approver.getByText('Check the receipts of each claim before you approve it.'));
+    const rows = approver.locator('tbody tr');
+    await visible(rows.first());
+    const before = await rows.count();
+    await shot(approver, '17-to-approve');
+    await approver.getByRole('button', { name: 'Approve an expense claim' }).first().click();
+    await expect.poll(() => rows.count()).toBe(before - 1);
+    // No claiming for an approver: no form in the menu, and no button for it on My claims.
+    await hidden(approver.getByRole('link', { name: '+ Claim an expense' }));
   });
 });

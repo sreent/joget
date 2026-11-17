@@ -153,6 +153,36 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
       }),
     );
 
+    app.get(
+      '/v1/apps/:appId/pages/:page/blocks/:block/records',
+      {
+        config: {
+          access: {
+            kind: 'query',
+            action: 'record.read',
+            resource: async (request) => {
+              const loaded = await theApp(request);
+              const { page, block } = request.params as { page: string; block: string };
+              return recordResource(ctx.org.id, loaded, runtime.listBlock(loaded, page, Number(block)).entity);
+            },
+            policy,
+          },
+        },
+        schema: {
+          tags: ['records'],
+          summary: "The records of a list on one of the app's pages, under your record permissions",
+          params: AppParams.extend({ page: z.string().min(1).max(63), block: z.coerce.number().int().min(0).max(29) }),
+          querystring: EnvQuery.extend({ cursor: z.string().max(4000).optional() }),
+          response: { 200: PageOut },
+        },
+      },
+      async (request) =>
+        runtime.runList(request, requireAuth(request), await theApp(request), request.params.page, request.params.block, {
+          decision: requireQueryDecision(request),
+          ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
+        }),
+    );
+
     app.post(
       '/v1/apps/:appId/queries/:name/run',
       {

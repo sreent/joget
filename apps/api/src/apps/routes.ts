@@ -315,6 +315,10 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
               forms: z.record(z.string(), z.unknown()),
               actions: z.record(z.string(), z.unknown()),
               queries: z.record(z.string(), z.unknown()),
+              /** The pages you may use, with the columns and buttons that are yours. */
+              pages: z.record(z.string(), z.unknown()),
+              /** The app's menu as yours, or null for the default: every form and list you may use. */
+              navigation: z.object({ home: z.string().nullable(), items: z.array(z.record(z.string(), z.string())) }).nullable(),
             }),
           },
         },

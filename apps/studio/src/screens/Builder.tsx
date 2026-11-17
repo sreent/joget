@@ -10,11 +10,14 @@ import { ChangesPanel, DeliveryPanel, TeamAppNotice, WorkingCopyBar } from './De
 import { DataDesigner } from './DataDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
 import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from './LogicDesigners.js';
+import { MenuDesigner, PagesDesigner } from './PagesDesigner.js';
 import { RolesDesigner } from './RolesDesigner.js';
 
 const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
   { tab: 'data', label: 'Data' },
   { tab: 'forms', label: 'Forms' },
+  { tab: 'pages', label: 'Pages' },
+  { tab: 'menu', label: 'Menu' },
   { tab: 'rules', label: 'Rules' },
   { tab: 'actions', label: 'Actions' },
   { tab: 'queries', label: 'Queries' },
@@ -130,6 +133,8 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
       <fieldset disabled={team} className="m-0 min-w-0 border-0 p-0">
         {tab === 'data' ? <DataDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'forms' ? <FormDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'pages' ? <PagesDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'menu' ? <MenuDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'rules' ? <RulesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'actions' ? <ActionsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={setDraft} /> : null}

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, ApiError, type AppAt } from '../api.js';
 import { FilesProvider } from '../components/files.js';
@@ -6,72 +6,297 @@ import { filledLines, LinesChangeView, LinesEditor, LinesTable, rollupValue } fr
 import { PersonName } from '../components/people.js';
 import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
 import { asLines, display, ValueInput, ValueView } from '../components/values.js';
-import { atRoute, Link, navigate } from '../router.js';
-import type { HistoryEntry, Line, RecordOut, RecordValue, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
+import { atRoute, Link, navigate, type Route } from '../router.js';
+import type { HistoryEntry, Line, RecordOut, RecordValue, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
-/** An app's screens, generated from what the signed-in person may use: their entities, fields, forms and actions. */
-export function Use({ appId, env, page, recordId }: { appId: string; env?: string; page?: string; recordId?: string }) {
+/** What the screen shows: one of the app's pages, a form, an entity's records, or one record. */
+type View =
+  | { readonly kind: 'page'; readonly name: string }
+  | { readonly kind: 'form'; readonly name: string }
+  | { readonly kind: 'list'; readonly entity: string }
+  | { readonly kind: 'record'; readonly entity: string; readonly id: string }
+  | { readonly kind: 'none' };
+
+/** Where the app opens: its home page, else its first menu item, else its first list. */
+function landing(manifest: UiManifest): View {
+  const navigation = manifest.navigation;
+  if (navigation?.home && manifest.pages[navigation.home]) return { kind: 'page', name: navigation.home };
+  const first = navigation?.items.find((item) => !('heading' in item));
+  if (first && 'page' in first) return { kind: 'page', name: first.page };
+  if (first && 'form' in first) return { kind: 'form', name: first.form };
+  if (first && 'entity' in first) return { kind: 'list', entity: first.entity };
+  const entity = Object.entries(manifest.entities).find(([, e]) => e.can.read)?.[0];
+  return entity ? { kind: 'list', entity } : { kind: 'none' };
+}
+
+/**
+ * An app's screens, generated from what the signed-in person may use: the app's pages and menu,
+ * or, without a menu of its own, its forms and lists; and records, with their history.
+ */
+export function Use({ appId, env, page, recordId, appPage }: { appId: string; env?: string; page?: string; recordId?: string; appPage?: string }) {
   const at: AppAt = { id: appId, ...(env ? { env } : {}) };
   const ui = useQuery({ queryKey: ['ui', appId, env], queryFn: () => api.ui(at) });
   if (ui.isError) return <Notice tone="bad">{ui.error instanceof ApiError && ui.error.status === 403 ? "This app isn't shared with you." : "This app can't be opened."}</Notice>;
   if (!ui.data) return <p className="text-muted">Loading…</p>;
   const manifest = ui.data;
-  const entities = Object.entries(manifest.entities).filter(([, e]) => e.can.read);
-  const forms = Object.entries(manifest.forms);
-  const current = page ?? entities[0]?.[0];
+  const view: View = appPage
+    ? { kind: 'page', name: appPage }
+    : page === 'new' && recordId
+      ? { kind: 'form', name: recordId }
+      : page
+        ? recordId
+          ? { kind: 'record', entity: page, id: recordId }
+          : { kind: 'list', entity: page }
+        : landing(manifest);
 
   return (
     <FilesProvider at={at}>
-    <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
-      <nav aria-label={manifest.app.name} className="grid content-start gap-4">
-        <div>
-          <h1 className="m-0 text-xl font-semibold tracking-tight">{manifest.app.name}</h1>
-          <EnvironmentBadge app={manifest.app} />
-          {manifest.app.access.build ? (
-            <Link to={{ name: 'build', appId, tab: manifest.app.kind === 'team' ? 'delivery' : 'data' }} className="text-sm">
-              {manifest.app.kind === 'team' ? 'Delivery' : 'Build this app'}
-            </Link>
+      <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <nav aria-label={manifest.app.name} className="grid content-start gap-4">
+          <div>
+            <h1 className="m-0 text-xl font-semibold tracking-tight">{manifest.app.name}</h1>
+            <EnvironmentBadge app={manifest.app} />
+            {manifest.app.access.build ? (
+              <Link to={{ name: 'build', appId, tab: manifest.app.kind === 'team' ? 'delivery' : 'data' }} className="text-sm">
+                {manifest.app.kind === 'team' ? 'Delivery' : 'Build this app'}
+              </Link>
+            ) : (
+              <div className="mt-1 flex flex-wrap gap-1">{manifest.app.access.roles.map((role) => <Badge key={role}>{role}</Badge>)}</div>
+            )}
+          </div>
+          <AppMenu at={at} manifest={manifest} view={view} />
+        </nav>
+
+        <div className="min-w-0">
+          {view.kind === 'page' ? (
+            manifest.pages[view.name] ? (
+              <PageView at={at} manifest={manifest} name={view.name} />
+            ) : (
+              <EmptyState title="This page isn't here for you">It doesn't exist, or it's meant for people in other roles.</EmptyState>
+            )
+          ) : view.kind === 'form' && manifest.forms[view.name] ? (
+            <FormRunner at={at} manifest={manifest} name={view.name} form={manifest.forms[view.name]!} />
+          ) : view.kind === 'record' && manifest.entities[view.entity] ? (
+            <RecordView at={at} manifest={manifest} entityName={view.entity} recordId={view.id} />
+          ) : view.kind === 'list' && manifest.entities[view.entity] ? (
+            <RecordList at={at} manifest={manifest} entityName={view.entity} />
           ) : (
-            <div className="mt-1 flex flex-wrap gap-1">{manifest.app.access.roles.map((role) => <Badge key={role}>{role}</Badge>)}</div>
+            <EmptyState title="Nothing to see here yet">This app has nothing you can read.</EmptyState>
           )}
         </div>
-        {forms.length ? (
-          <ul className="m-0 grid list-none gap-1 p-0">
-            {forms.map(([name, form]) => (
-              <li key={name}>
-                <Link to={{ name: 'use', ...atRoute(at), page: 'new', recordId: name }} className={cx('block rounded-md px-2.5 py-1.5 font-medium no-underline', page === 'new' && recordId === name ? 'bg-accent text-accent-text' : 'bg-accent-soft text-accent')}>
-                  + {form.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+      </div>
+    </FilesProvider>
+  );
+}
+
+/** The app's menu: its own, or every form and list the person may use. */
+function AppMenu({ at, manifest, view }: { at: AppAt; manifest: UiManifest; view: View }) {
+  const item = (to: Route, label: string, active: boolean, form = false) => (
+    <Link
+      to={to}
+      aria-current={active ? 'page' : undefined}
+      className={cx(
+        'block rounded-md px-2.5 py-1.5 no-underline',
+        form ? (active ? 'bg-accent font-medium text-accent-text' : 'bg-accent-soft font-medium text-accent') : active ? 'bg-sunken text-text' : 'text-muted hover:text-text',
+      )}
+    >
+      {form ? `+ ${label}` : label}
+    </Link>
+  );
+  const isPage = (name: string) => view.kind === 'page' && view.name === name;
+  const isForm = (name: string) => view.kind === 'form' && view.name === name;
+  const isList = (entity: string) => (view.kind === 'list' || view.kind === 'record') && view.entity === entity;
+  if (manifest.navigation) {
+    return (
+      <ul className="m-0 grid list-none gap-1 p-0">
+        {manifest.navigation.items.map((entry, index) => (
+          <li key={index}>
+            {'heading' in entry ? (
+              <span className="mt-3 block px-2.5 text-xs font-semibold tracking-wide text-faint uppercase">{entry.heading}</span>
+            ) : 'page' in entry ? (
+              item({ name: 'use', ...atRoute(at), appPage: entry.page }, entry.label, isPage(entry.page))
+            ) : 'form' in entry ? (
+              item({ name: 'use', ...atRoute(at), page: 'new', recordId: entry.form }, entry.label, isForm(entry.form), true)
+            ) : (
+              item({ name: 'use', ...atRoute(at), page: entry.entity }, entry.label, isList(entry.entity))
+            )}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  const forms = Object.entries(manifest.forms);
+  const entities = Object.entries(manifest.entities).filter(([, e]) => e.can.read);
+  return (
+    <>
+      {forms.length ? (
         <ul className="m-0 grid list-none gap-1 p-0">
-          {entities.map(([name, entity]) => (
-            <li key={name}>
-              <Link to={{ name: 'use', ...atRoute(at), page: name }} aria-current={current === name && page !== 'new' ? 'page' : undefined} className={cx('block rounded-md px-2.5 py-1.5 no-underline', current === name && page !== 'new' ? 'bg-sunken text-text' : 'text-muted hover:text-text')}>
-                {entity.pluralLabel}
-              </Link>
-            </li>
+          {forms.map(([name, form]) => (
+            <li key={name}>{item({ name: 'use', ...atRoute(at), page: 'new', recordId: name }, form.label, isForm(name), true)}</li>
           ))}
         </ul>
-      </nav>
+      ) : null}
+      <ul className="m-0 grid list-none gap-1 p-0">
+        {entities.map(([name, entity]) => (
+          <li key={name}>{item({ name: 'use', ...atRoute(at), page: name }, entity.pluralLabel, isList(name))}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
 
-      <div className="min-w-0">
-        {page === 'new' && recordId && manifest.forms[recordId] ? (
-          <FormRunner at={at} manifest={manifest} name={recordId} form={manifest.forms[recordId]} />
-        ) : current && manifest.entities[current] ? (
-          recordId ? (
-            <RecordView at={at} manifest={manifest} entityName={current} recordId={recordId} />
-          ) : (
-            <RecordList at={at} manifest={manifest} entityName={current} />
-          )
-        ) : (
-          <EmptyState title="Nothing to see here yet">This app has nothing you can read.</EmptyState>
-        )}
+/** One of the app's pages: its blocks, top to bottom. */
+function PageView({ at, manifest, name }: { at: AppAt; manifest: UiManifest; name: string }) {
+  const page = manifest.pages[name]!;
+  return (
+    <div className="grid gap-5">
+      <div>
+        <h2 className="m-0 text-2xl font-semibold tracking-tight">{page.label}</h2>
+        {page.description ? <p className="m-0 mt-1 text-muted">{page.description}</p> : null}
       </div>
+      {page.blocks.map((block, index) =>
+        block.type === 'text' ? (
+          block.style === 'heading' ? (
+            <h3 key={index} className="m-0 text-lg font-semibold">
+              {block.text}
+            </h3>
+          ) : block.style === 'note' ? (
+            <p key={index} className="m-0 rounded-md border-l-4 border-accent bg-accent-soft px-3 py-2 text-sm whitespace-pre-line">
+              {block.text}
+            </p>
+          ) : (
+            <p key={index} className="m-0 whitespace-pre-line">
+              {block.text}
+            </p>
+          )
+        ) : block.type === 'buttons' ? (
+          <div key={index} className="flex flex-wrap gap-2">
+            {block.buttons.map((button, b) => {
+              const to: Route = 'form' in button ? { name: 'use', ...atRoute(at), page: 'new', recordId: button.form } : { name: 'use', ...atRoute(at), appPage: button.page };
+              const label = button.label ?? ('form' in button ? manifest.forms[button.form]?.label : manifest.pages[button.page]?.label) ?? '';
+              return (
+                <Link key={b} to={to} className="no-underline">
+                  <Button variant={b === 0 ? 'primary' : 'secondary'} tabIndex={-1}>
+                    {label}
+                  </Button>
+                </Link>
+              );
+            })}
+          </div>
+        ) : (
+          <ListBlockView key={index} at={at} manifest={manifest} page={name} block={block} />
+        ),
+      )}
     </div>
-    </FilesProvider>
+  );
+}
+
+const SYSTEM_TIMES = new Set(['created_at', 'updated_at']);
+const SYSTEM_PEOPLE: Readonly<Record<string, 'owner' | 'createdBy' | 'updatedBy'>> = { owner: 'owner', created_by: 'createdBy', updated_by: 'updatedBy' };
+
+/** A list on a page: its records under the person's own permissions, with more on request, and its row actions. */
+function ListBlockView({ at, manifest, page, block }: { at: AppAt; manifest: UiManifest; page: string; block: Extract<UiBlock, { type: 'list' }> }) {
+  const client = useQueryClient();
+  const entity = manifest.entities[block.entity];
+  const rows = useInfiniteQuery({
+    queryKey: ['pageList', at.id, at.env, page, block.index],
+    queryFn: ({ pageParam }) => api.pageRecords(at, page, block.index, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+  const run = useMutation({
+    mutationFn: ({ action, record }: { action: string; record: RecordOut }) => api.runAction(at, action, { values: {}, recordId: record.id, version: record.version }),
+    onSuccess: () => Promise.all(['pageList', 'records', 'record', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] }))),
+  });
+  const records = rows.data?.pages.flatMap((p) => p.records) ?? [];
+  const cell = (column: (typeof block.columns)[number], record: RecordOut) => {
+    if (SYSTEM_TIMES.has(column.name)) {
+      const value = column.name === 'created_at' ? record.createdAt : record.updatedAt;
+      return value ? new Date(value).toLocaleDateString() : '—';
+    }
+    const person = SYSTEM_PEOPLE[column.name];
+    if (person) {
+      const id = record[person];
+      return id ? <PersonName id={id} /> : '—';
+    }
+    const field = entity?.fields.find((f) => f.name === column.name);
+    return field ? <Cell field={field} record={record} /> : '—';
+  };
+  return (
+    <Card className="grid gap-0 overflow-x-auto p-0">
+      {block.title ? <h3 className="m-0 border-b border-line px-4 py-3 text-base font-semibold">{block.title}</h3> : null}
+      {rows.isError ? (
+        <div className="p-4">
+          <Notice tone="bad">{rows.error instanceof ApiError ? rows.error.message : 'This list can\'t be shown.'}</Notice>
+        </div>
+      ) : rows.data && records.length === 0 ? (
+        <p className="m-0 px-4 py-6 text-center text-sm text-muted">{block.empty ?? 'Nothing here yet.'}</p>
+      ) : records.length ? (
+        <FilesProvider at={at} known={Object.assign({}, ...records.map((r) => r.files ?? {}))}>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-line text-left text-muted">
+                {block.columns.map((column) => (
+                  <th key={column.name} scope="col" className="px-4 py-2.5 font-medium">
+                    {column.label}
+                  </th>
+                ))}
+                {block.actions.length ? <th scope="col" className="px-4 py-2.5" /> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((record) => (
+                <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate({ name: 'use', ...atRoute(at), page: block.entity, recordId: record.id })}>
+                  {block.columns.map((column, i) => (
+                    <td key={column.name} className="px-4 py-2.5">
+                      {i === 0 ? (
+                        <Link to={{ name: 'use', ...atRoute(at), page: block.entity, recordId: record.id }} className="font-medium" onClick={(e) => e.stopPropagation()}>
+                          {cell(column, record)}
+                        </Link>
+                      ) : (
+                        cell(column, record)
+                      )}
+                    </td>
+                  ))}
+                  {block.actions.length ? (
+                    <td className="px-4 py-2 text-right whitespace-nowrap">
+                      {block.actions.map((action) => (
+                        <Button
+                          key={action}
+                          size="sm"
+                          className="ml-2"
+                          disabled={run.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            run.mutate({ action, record });
+                          }}
+                        >
+                          {manifest.actions[action]?.label ?? action}
+                        </Button>
+                      ))}
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </FilesProvider>
+      ) : (
+        <p className="m-0 px-4 py-6 text-sm text-muted">Loading…</p>
+      )}
+      {run.error ? (
+        <div className="p-4 pt-0">
+          <Notice tone="bad">{run.error instanceof ApiError ? run.error.message : 'That didn\'t work.'}</Notice>
+        </div>
+      ) : null}
+      {rows.hasNextPage ? (
+        <div className="border-t border-line p-3 text-center">
+          <Button size="sm" onClick={() => void rows.fetchNextPage()} disabled={rows.isFetchingNextPage}>
+            {rows.isFetchingNextPage ? 'Loading…' : 'Show more'}
+          </Button>
+        </div>
+      ) : null}
+    </Card>
   );
 }
 

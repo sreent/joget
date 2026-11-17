@@ -14,6 +14,8 @@ const SECTION_NAMES: Readonly<Record<string, string>> = {
   cards: 'Review card',
   forms: 'Form',
   roles: 'Role',
+  pages: 'Page',
+  navigation: 'The',
 };
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const messageOf = (error: unknown) => (error instanceof ApiError ? error.message : 'Something went wrong');

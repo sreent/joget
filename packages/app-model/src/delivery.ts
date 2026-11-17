@@ -21,9 +21,9 @@ function stable(value: unknown): string {
 }
 const same = (a: unknown, b: unknown): boolean => stable(a) === stable(b);
 
-/** The parts of a definition, each a map of named artifacts. */
-export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles'] as const;
-export type DefinitionSection = (typeof DEFINITION_SECTIONS)[number];
+/** The parts of a definition, each a map of named artifacts. The menu is one artifact on its own. */
+export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages'] as const;
+export type DefinitionSection = (typeof DEFINITION_SECTIONS)[number] | 'navigation';
 
 export interface DefinitionChange {
   readonly section: DefinitionSection;
@@ -65,6 +65,9 @@ export function diffDefinitions(base: StoredDefinition, head: StoredDefinition):
     for (const name of Object.keys(before)) {
       if (!(name in after)) changes.push({ section, name, change: 'removed', details: [] });
     }
+  }
+  if (!same(base.navigation, head.navigation)) {
+    changes.push({ section: 'navigation', name: 'menu', change: !base.navigation ? 'added' : !head.navigation ? 'removed' : 'changed', details: [] });
   }
   return changes;
 }
@@ -349,5 +352,9 @@ export function mergeDefinitions(base: StoredDefinition, ours: StoredDefinition,
     }
     merged[section] = out;
   }
+  const [bn, on, tn] = [base.navigation, ours.navigation, theirs.navigation];
+  const menu = same(on, tn) || same(bn, on) ? tn : same(bn, tn) ? on : null;
+  if (menu === null) conflicts.push({ section: 'navigation', name: 'menu', ours: what(bn, on), theirs: what(bn, tn) });
+  else if (menu !== undefined) merged['navigation'] = menu;
   return conflicts.length ? { ok: false, conflicts } : { ok: true, definition: merged };
 }

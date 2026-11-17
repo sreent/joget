@@ -1,4 +1,5 @@
 import type { Definition, Entity, Field, FieldType, Form, FormField } from '../types.js';
+import { forgetEntity, forgetField, forgetForm } from './pages.js';
 
 /**
  * Pure edits of a draft definition, for the designers. Each returns a new definition and leaves
@@ -83,7 +84,7 @@ function renameKey<T>(record: Readonly<Record<string, T>>, from: string, to: str
 }
 
 export function emptyDefinition(): Definition {
-  return { formatVersion: 1, entities: {}, rules: {}, actions: {}, queries: {}, cards: {}, forms: {}, roles: {} };
+  return { formatVersion: 1, entities: {}, rules: {}, actions: {}, queries: {}, cards: {}, forms: {}, roles: {}, pages: {} };
 }
 
 /** A definition with every section present, as the designers expect. */
@@ -129,7 +130,12 @@ export function removeEntity(definition: Definition, name: string): Definition {
   if (owner) next = removeField(next, owner.parent, next.entities[owner.parent]!.fields.findIndex((f) => f.name === owner.field), false);
   for (const field of next.entities[name]?.fields ?? []) if (field.type === 'lines') delete next.entities[field.entity];
   delete next.entities[name];
-  for (const [formName, form] of Object.entries(next.forms)) if (form.entity === name) delete next.forms[formName];
+  for (const [formName, form] of Object.entries(next.forms)) {
+    if (form.entity !== name) continue;
+    delete next.forms[formName];
+    forgetForm(next, formName);
+  }
+  forgetEntity(next, name);
   return next;
 }
 
@@ -287,6 +293,7 @@ export function removeField(definition: Definition, entity: string, index: numbe
     if (form.entity !== entity) continue;
     for (const section of form.sections) section.fields = section.fields.filter((item) => item.field !== removed!.name);
   }
+  forgetField(next, entity, removed!.name);
   return next;
 }
 
@@ -323,6 +330,7 @@ export function updateForm(definition: Definition, form: string, patch: Partial<
 export function removeForm(definition: Definition, form: string): Definition {
   const next = clone(definition);
   delete next.forms[form];
+  forgetForm(next, form);
   return next;
 }
 

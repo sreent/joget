@@ -106,6 +106,8 @@ describe('validateDefinition', () => {
   it('catches actions that could never succeed, and conditions with the wrong types', () => {
     const broken = clone(EXPENSE_APP) as any;
     broken.forms = {}; // the form would rightly complain too; this test is about the action
+    broken.pages = {};
+    delete broken.navigation;
     broken.actions.submit_claim.input = ['title', 'total'];
     broken.rules.hotel_cap.assert = { lte: [{ ref: 'record.category' }, 250] };
     broken.roles.requester.entities.expense_claim.read.where = { eq: [{ ref: 'record.total' }, 'lots'] };

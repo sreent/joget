@@ -6,8 +6,8 @@ const status = { ref: 'record.status' } as const;
 
 /**
  * A small expense-claim app: a claim with one line per receipt, each with its file, and a total worked out from them,
- * rules on each line, two actions, a query, a review card with the lines as a table, a form and
- * two roles. It's the running example in the design doc (§6.2) and in the tests.
+ * rules on each line, two actions, a query, a review card with the lines as a table, a form,
+ * two roles, two pages and a menu. It's the running example in the design doc (§6.2) and in the tests.
  */
 export const EXPENSE_APP = {
   entities: {
@@ -138,5 +138,43 @@ export const EXPENSE_APP = {
       },
       actions: ['approve_claim'],
     },
+  },
+  pages: {
+    my_claims: {
+      label: 'My claims',
+      description: 'Your expense claims, newest first.',
+      blocks: [
+        { type: 'buttons', buttons: [{ form: 'claim_form' }] },
+        {
+          type: 'list',
+          entity: 'expense_claim',
+          columns: ['title', 'total', 'status', 'created_at'],
+          filter: { eq: [owner, me] },
+          sort: [{ field: 'created_at', direction: 'desc' }],
+          empty: 'You have no claims yet.',
+        },
+      ],
+    },
+    to_approve: {
+      label: 'To approve',
+      roles: ['approver'],
+      blocks: [
+        { type: 'text', style: 'note', text: 'Check the receipts of each claim before you approve it.' },
+        {
+          type: 'list',
+          title: 'Submitted claims',
+          entity: 'expense_claim',
+          columns: ['title', 'total', 'owner', 'created_at'],
+          filter: { eq: [status, 'submitted'] },
+          sort: [{ field: 'created_at', direction: 'asc' }],
+          actions: ['approve_claim'],
+          empty: 'Nothing waits for approval.',
+        },
+      ],
+    },
+  },
+  navigation: {
+    home: 'my_claims',
+    items: [{ page: 'my_claims' }, { form: 'claim_form' }, { entity: 'expense_claim', label: 'All claims' }, { heading: 'Approvals' }, { page: 'to_approve' }],
   },
 } as const satisfies AppDefinitionInput;

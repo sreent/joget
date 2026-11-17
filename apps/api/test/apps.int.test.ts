@@ -180,6 +180,46 @@ describe('sharing with colleagues', () => {
     await inject({ method: 'PATCH', url: `${records()}/${aliceDraft.id}`, ...as(carol), payload: { values: { status: 'approved' } } }, 404);
   });
 
+  it('gives each person the pages and menu their role uses, and runs a page\'s list under their permissions', async () => {
+    const ui = async (session: Session) => (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(session) }, 200)).json();
+    const [alices, bobs, carols] = [await ui(alice), await ui(bob), await ui(carol)];
+    // The builder holds none of the app's roles, so sees every page; each colleague sees the pages for their role.
+    expect(Object.keys(alices.pages)).toEqual(['my_claims', 'to_approve']);
+    expect(Object.keys(bobs.pages)).toEqual(['my_claims']);
+    expect(Object.keys(carols.pages)).toEqual(['my_claims', 'to_approve']);
+    expect(bobs.navigation).toEqual({
+      home: 'my_claims',
+      // The heading over the page for approvers goes with it: nothing is left under it for Bob.
+      items: [{ page: 'my_claims', label: 'My claims' }, { form: 'claim_form', label: 'Claim an expense' }, { entity: 'expense_claim', label: 'All claims' }],
+    });
+    // Carol can't claim, so she gets no button and no menu item for it. She can approve, so the row action is hers.
+    expect(carols.navigation.items).toEqual([
+      { page: 'my_claims', label: 'My claims' },
+      { entity: 'expense_claim', label: 'All claims' },
+      { heading: 'Approvals' },
+      { page: 'to_approve', label: 'To approve' },
+    ]);
+    expect(carols.pages.my_claims.blocks.map((block: { type: string }) => block.type)).toEqual(['list']);
+    expect(carols.pages.to_approve.blocks[1]).toMatchObject({
+      type: 'list',
+      index: 1,
+      actions: ['approve_claim'],
+      columns: [{ name: 'title' }, { name: 'total' }, { name: 'owner', label: 'Owner' }, { name: 'created_at', label: 'Created' }],
+    });
+    expect(bobs.pages.my_claims.blocks[1].actions).toEqual([]);
+
+    const rows = async (session: Session, page: string, block: number) =>
+      (await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/${page}/blocks/${block}/records`, ...as(session) }, 200)).json().records as Array<{ values: Record<string, unknown> }>;
+    // "To approve" is the submitted claims that Carol may read; "My claims" is whoever asks.
+    expect((await rows(carol, 'to_approve', 1)).map((record) => record.values['title'])).toEqual(['Taxi to the airport']);
+    expect((await rows(bob, 'my_claims', 1)).map((record) => record.values['title'])).toEqual(['Taxi to the airport']);
+    expect(await rows(carol, 'my_claims', 1)).toEqual([]);
+    // A list reads its columns only.
+    expect(Object.keys((await rows(bob, 'my_claims', 1))[0]!.values).sort()).toEqual(['status', 'title', 'total']);
+    await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/my_claims/blocks/0/records`, ...as(bob) }, 404);
+    await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/nowhere/blocks/1/records`, ...as(bob) }, 404);
+  });
+
   it('runs actions under the caller\'s record permissions, and keeps the history', async () => {
     const claim = (await inject({ method: 'GET', url: records(), ...as(carol) }, 200)).json().records[0];
     const approved = await inject({ method: 'POST', url: `/v1/apps/${appId}/actions/approve_claim/run`, ...as(carol), payload: { recordId: claim.id } }, 200);

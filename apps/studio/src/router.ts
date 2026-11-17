@@ -4,16 +4,21 @@ import { createElement, useSyncExternalStore, type AnchorHTMLAttributes, type Re
  * The studio's pages. Building needs `app.read`; using an app needs only `app.run`. A team app has
  * delivery tabs too: its change requests, and its releases and environments.
  */
-export type BuildTab = 'delivery' | 'changes' | 'data' | 'forms' | 'rules' | 'actions' | 'queries' | 'cards' | 'roles' | 'share' | 'history' | 'advanced';
+export type BuildTab = 'delivery' | 'changes' | 'data' | 'forms' | 'pages' | 'menu' | 'rules' | 'actions' | 'queries' | 'cards' | 'roles' | 'share' | 'history' | 'advanced';
 export type Route =
   | { readonly name: 'home' }
   | { readonly name: 'build'; readonly appId: string; readonly tab: BuildTab }
   | { readonly name: 'change'; readonly changeRequestId: string }
-  /** `env` picks a team app's environment: `staging`, or a preview's environment ID. Prod by default. */
-  | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string; readonly env?: string };
+  /**
+   * Using an app: an entity's records (`page`, and a record), a form (`page` is `new`), or one of
+   * the app's own pages (`appPage`). `env` picks a team app's environment: `staging`, or a
+   * preview's environment ID. Prod by default.
+   */
+  | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string; readonly appPage?: string; readonly env?: string };
 
 const BASE = '/studio';
-const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'rules', 'actions', 'queries', 'cards', 'roles', 'share', 'history', 'advanced'];
+const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'share', 'history', 'advanced'];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function parse(pathname: string, search = ''): Route {
   const parts = pathname.replace(/^\/studio\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
@@ -25,6 +30,8 @@ export function parse(pathname: string, search = ''): Route {
     return { name: 'build', appId, tab };
   }
   const env = new URLSearchParams(search).get('env');
+  // An app's page is /pages/<name>. A name is never a UUID, so a record of an entity called "pages" is still reachable.
+  if (parts[2] === 'pages' && parts[3] && !UUID.test(parts[3])) return { name: 'use', appId, appPage: parts[3], ...(env ? { env } : {}) };
   return { name: 'use', appId, ...(parts[2] ? { page: parts[2] } : {}), ...(parts[3] ? { recordId: parts[3] } : {}), ...(env ? { env } : {}) };
 }
 
@@ -37,7 +44,8 @@ export function href(route: Route): string {
     case 'change':
       return `${BASE}/changes/${encodeURIComponent(route.changeRequestId)}`;
     case 'use': {
-      const path = [`${BASE}/apps/${encodeURIComponent(route.appId)}`, route.page, route.recordId].filter(Boolean).map((p, i) => (i ? encodeURIComponent(p!) : p)).join('/');
+      const parts = route.appPage ? ['pages', route.appPage] : [route.page, route.recordId];
+      const path = [`${BASE}/apps/${encodeURIComponent(route.appId)}`, ...parts].filter(Boolean).map((p, i) => (i ? encodeURIComponent(p!) : p)).join('/');
       return route.env ? `${path}?env=${encodeURIComponent(route.env)}` : path;
     }
   }

@@ -231,12 +231,42 @@ export interface UiAction {
   confirm: 'none' | 'preview' | 'review';
 }
 
+/** A column of a page's list: a field, or a system field such as `created_at`. */
+export interface UiColumn {
+  name: string;
+  label: string;
+  type: string;
+  options?: Array<{ value: string; label: string }>;
+  decimals?: number;
+}
+
+/** A block of a page, as the person may use it. A list names its place in the page, which reads its records. */
+export type UiBlock =
+  | { type: 'text'; style: 'heading' | 'paragraph' | 'note'; text: string }
+  | { type: 'list'; index: number; entity: string; title?: string; columns: UiColumn[]; actions: string[]; empty?: string }
+  | { type: 'buttons'; buttons: Array<{ form: string; label?: string } | { page: string; label?: string }> };
+
+export interface UiPage {
+  label: string;
+  description?: string;
+  blocks: UiBlock[];
+}
+
+/** The app's own menu, as the person may use it. */
+export interface UiNavigation {
+  home: string | null;
+  items: Array<{ page: string; label: string } | { form: string; label: string } | { entity: string; label: string } | { heading: string }>;
+}
+
 export interface UiManifest {
   app: AppSummary;
   entities: Record<string, UiEntity>;
   forms: Record<string, UiForm>;
   actions: Record<string, UiAction>;
   queries: Record<string, { label: string; description: string; entity: string; fields: string[] }>;
+  pages: Record<string, UiPage>;
+  /** Null when the app has no menu of its own: then it lists every form and list. */
+  navigation: UiNavigation | null;
 }
 
 export type Value = string | number | boolean | string[] | null;
