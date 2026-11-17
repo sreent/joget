@@ -269,11 +269,13 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
     const [b, h] = [baseProcesses[name], headProcesses[name]];
     if (!b && h) {
       const starts = startingActions(h);
-      const { actions, skills } = processWork(h);
+      const { actions, skills, calls } = processWork(h);
+      const called = Object.values(headProcesses).some((other) => processWork(other).calls.includes(name));
       const texts = [
-        `New process ${h.label}, on ${entityLabel(h.entity)}: ${starts.length ? `${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it` : 'people start it by hand'}`,
+        `New process ${h.label}, on ${entityLabel(h.entity)}: ${starts.length ? `${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it` : called ? 'another process calls it' : 'people start it by hand'}`,
         ...(actions.length ? [`It runs ${actions.join(', ')} by itself`] : []),
         ...(skills.length ? [`It starts the a7c skill${skills.length > 1 ? 's' : ''} ${skills.join(', ')}`] : []),
+        ...(calls.length ? [`It calls ${calls.join(', ')}`] : []),
       ];
       changes.push({ tool: name, change: 'added', text: texts.join('. ') });
     } else if (b && !h) {
@@ -301,6 +303,8 @@ function processChanges(b: Process, h: Process): string[] {
   for (const action of before.actions) if (!after.actions.includes(action)) texts.push(`${h.label} no longer runs ${action} by itself`);
   for (const skill of after.skills) if (!before.skills.includes(skill)) texts.push(`${h.label} now starts the a7c skill ${skill}`);
   for (const skill of before.skills) if (!after.skills.includes(skill)) texts.push(`${h.label} no longer starts the a7c skill ${skill}`);
+  for (const call of after.calls) if (!before.calls.includes(call)) texts.push(`${h.label} now calls ${call}`);
+  for (const call of before.calls) if (!after.calls.includes(call)) texts.push(`${h.label} no longer calls ${call}`);
   if (!texts.length && !same({ ...b, diagram: undefined }, { ...h, diagram: undefined })) texts.push(`The flow of ${h.label} changed`);
   return texts;
 }
@@ -363,9 +367,10 @@ export function lintDefinition(definition: StoredDefinition): string[] {
   for (const [name, query] of Object.entries(definition.queries)) {
     if (!roles.some((role) => role.queries.includes(name))) findings.push(`No role can run the query ${query.label}`);
   }
+  const called = new Set(Object.values(definition.processes ?? {}).flatMap((process) => processWork(process).calls));
   for (const [name, process] of Object.entries(definition.processes ?? {})) {
-    if (!startingActions(process).length && !roles.some((role) => role.processes?.includes(name))) {
-      findings.push(`Nothing starts the process ${process.label}: no start event names an action, and no role may start it`);
+    if (!startingActions(process).length && !roles.some((role) => role.processes?.includes(name)) && !called.has(name)) {
+      findings.push(`Nothing starts the process ${process.label}: no start event names an action, no role may start it, and no process calls it`);
     }
   }
   for (const [name, role] of Object.entries(definition.roles)) {

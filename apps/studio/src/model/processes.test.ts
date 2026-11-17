@@ -7,6 +7,7 @@ import {
   addBoundary,
   addElement,
   arrange,
+  callChoices,
   connect,
   durationOf,
   durationParts,
@@ -123,6 +124,61 @@ describe('editing a process', () => {
     expect(leave(definition).flows[joined.id]).toEqual({ from: gateway.id, to: 'rejected', default: true });
     const wait = addElement(definition, 'leave_approval', 'messageEvent', { on: 'on_reject' });
     expect(leave(wait.definition).elements[wait.id]).toEqual({ type: 'intermediateCatchEvent', name: 'Approve the leave', message: { action: 'approve_leave' } });
+  });
+
+  it('adds a sub-process on a flow, with its own start and end, and adds inside it on its flows', () => {
+    const sub = addElement(app(), 'leave_approval', 'subProcess', { on: 'on_approve' });
+    expect(sub.id).toBe('sub_1');
+    let definition = sub.definition;
+    let process = leave(definition);
+    expect(process.flows['on_approve']!.to).toBe('sub_1');
+    const inner = Object.entries(process.elements).filter(([, element]) => element.type !== 'boundaryEvent' && element.in === 'sub_1');
+    expect(inner.map(([id, element]) => [id, element.type])).toEqual([
+      ['start_1', 'startEvent'],
+      ['end_1', 'endEvent'],
+    ]);
+    expect(valid(definition)).toEqual([]);
+
+    // On the flow inside it, a task goes inside it, and the sub-process grows to hold it.
+    const innerFlow = Object.entries(process.flows).find(([, flow]) => flow.from === 'start_1')![0];
+    const before = process.diagram!.shapes['sub_1']!;
+    const task = addElement(definition, 'leave_approval', 'manualTask', { on: innerFlow });
+    definition = task.definition;
+    process = leave(definition);
+    expect(process.elements[task.id]).toMatchObject({ type: 'manualTask', in: 'sub_1' });
+    const [box, shape] = [process.diagram!.shapes['sub_1']!, process.diagram!.shapes[task.id]!];
+    expect(box.width).toBeGreaterThanOrEqual(before.width);
+    expect(shape.x).toBeGreaterThan(box.x);
+    expect(shape.x + shape.width).toBeLessThan(box.x + box.width);
+    expect(valid(definition)).toEqual([]);
+
+    // A flow can't cross its edge.
+    expect(connect(definition, 'leave_approval', task.id, 'approved')).toBeNull();
+
+    // Moving it moves what it holds; removing it removes what it holds, and the path joins up again.
+    const moved = moveElement(definition, 'leave_approval', 'sub_1', { x: box.x + 40, y: box.y + 10 });
+    expect(leave(moved).diagram!.shapes[task.id]).toMatchObject({ x: shape.x + 40, y: shape.y + 10 });
+    const removed = removeElement(definition, 'leave_approval', 'sub_1');
+    expect(Object.keys(leave(removed).elements).sort()).toEqual(['approved', 'decide', 'rejected', 'requested']);
+    expect(leave(removed).flows['on_approve']!.to).toBe('approved');
+    expect(valid(removed)).toEqual([]);
+  });
+
+  it('puts deadlines, messages and errors on a sub-process, and calls another process of the app', () => {
+    let definition = addElement(app(), 'leave_approval', 'subProcess', { on: 'on_approve' }).definition;
+    definition = addBoundary(definition, 'leave_approval', 'sub_1', 'timer').definition;
+    definition = addBoundary(definition, 'leave_approval', 'sub_1', 'error').definition;
+    expect(valid(definition)).toEqual([]);
+    const process = leave(definition);
+    expect(Object.values(process.elements).filter((element) => element.type === 'boundaryEvent' && element.attachedTo === 'sub_1').map((element) => element.type === 'boundaryEvent' && (element.timer ? 'timer' : 'error'))).toEqual(['timer', 'error']);
+
+    expect(callChoices(definition, 'leave_approval')).toEqual([]);
+    const second = newProcess(definition, 'Second look', 'leave_request');
+    definition = second.definition;
+    expect(callChoices(definition, 'leave_approval')).toEqual([{ process: 'second_look', label: 'Second look' }]);
+    const call = addElement(definition, 'leave_approval', 'callActivity', { on: 'on_reject' });
+    expect(leave(call.definition).elements[call.id]).toEqual({ type: 'callActivity', name: 'Second look', process: 'second_look' });
+    expect(valid(call.definition)).toEqual([]);
   });
 
   it('lets go of an action or a field that the app no longer has', () => {

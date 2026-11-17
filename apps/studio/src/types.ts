@@ -404,6 +404,7 @@ export interface ProcessInstance {
   waiting: Array<{ element: string; name: string }>;
   startedBy: string | null;
   startedByAction: string | null;
+  calledBy: string | null;
   startedAt: string;
   endedAt: string | null;
   tasks?: Task[];

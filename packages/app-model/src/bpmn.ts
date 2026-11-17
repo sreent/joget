@@ -2,7 +2,7 @@ import { isRef } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { messageActions, processGraph } from './processes.js';
+import { messageActions, processGraph, scopeOf, scopesOf } from './processes.js';
 import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Process, type ProcessElement, type Several, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
@@ -31,16 +31,65 @@ const SIZES: Readonly<Record<string, { readonly width: number; readonly height: 
 const sizeOf = (element: ProcessElement) =>
   element.type.endsWith('Event') ? SIZES['event']! : element.type.endsWith('Gateway') ? SIZES['gateway']! : SIZES['task']!;
 
+type Size = { readonly width: number; readonly height: number };
+type Shape = Diagram['shapes'][string];
+
+/** The room inside a sub-process around what it holds: its name sits at the top. */
+const INSIDE = { x: 30, top: 40, bottom: 40 } as const;
+
 /**
  * Lay a process out from left to right, for a process drawn without a diagram: each element one
  * column after everything that leads to it; the longest way to an end on one straight row; the
  * other ways out of an element, and the paths from a task's boundary, in the rows below; flows as
- * lines with right angles.
+ * lines with right angles. A sub-process is laid out inside first, and then stands as one large
+ * shape among the others.
  */
 export function layoutProcess(process: Process): Diagram {
   const graph = processGraph(process);
+  const depth = (id: string) => scopesOf(process, id).length;
+  const subs = Object.keys(process.elements).filter((id) => process.elements[id]!.type === 'subProcess');
+  // What each sub-process holds, laid out from its own corner, the innermost first so that each size is known where it stands.
+  const sizes = new Map<string, Size>();
+  const contents = new Map<string, Record<string, Shape>>();
+  for (const sub of [...subs].sort((a, b) => depth(b) - depth(a))) {
+    const content = layoutScope(process, graph, sub, sizes);
+    const boxes = Object.values(content);
+    const [minX, minY] = boxes.length ? [Math.min(...boxes.map((b) => b.x)), Math.min(...boxes.map((b) => b.y))] : [0, 0];
+    const [maxX, maxY] = boxes.length ? [Math.max(...boxes.map((b) => b.x + b.width)), Math.max(...boxes.map((b) => b.y + b.height))] : [200, 80];
+    const moved = Object.fromEntries(Object.entries(content).map(([id, box]) => [id, { ...box, x: box.x - minX + INSIDE.x, y: box.y - minY + INSIDE.top }]));
+    contents.set(sub, moved);
+    sizes.set(sub, { width: Math.max(200, maxX - minX + 2 * INSIDE.x), height: Math.max(140, maxY - minY + INSIDE.top + INSIDE.bottom) });
+  }
+  const shapes: Record<string, Shape> = layoutScope(process, graph, undefined, sizes);
+  // What a sub-process holds stands where the sub-process does: the outermost first.
+  for (const sub of [...subs].sort((a, b) => depth(a) - depth(b))) {
+    const at = shapes[sub];
+    if (!at) continue;
+    for (const [id, box] of Object.entries(contents.get(sub) ?? {})) shapes[id] = { ...box, x: at.x + box.x, y: at.y + box.y };
+  }
+  const onTask = new Map<string, number>();
+  for (const [id, element] of Object.entries(process.elements)) {
+    if (element.type !== 'boundaryEvent') continue;
+    const host = shapes[element.attachedTo];
+    if (!host) continue;
+    const index = onTask.get(element.attachedTo) ?? 0;
+    onTask.set(element.attachedTo, index + 1);
+    shapes[id] = { x: host.x + host.width - 30 - index * 40, y: host.y + host.height - 18, width: 36, height: 36 };
+  }
+  const edges: Record<string, Diagram['edges'][string]> = {};
+  for (const [id, flow] of Object.entries(process.flows)) {
+    const from = shapes[flow.from];
+    const to = shapes[flow.to];
+    if (from && to) edges[id] = { points: routeFlow(from, to, process.elements[flow.from]?.type === 'boundaryEvent') };
+  }
+  return { shapes, edges };
+}
+
+/** Lay out what stands in the process itself, or in one sub-process: the columns and rows of its elements, without the events on boundaries. */
+function layoutScope(process: Process, graph: ReturnType<typeof processGraph>, scope: string | undefined, sizes: ReadonlyMap<string, Size>): Record<string, Shape> {
   const ids = Object.keys(process.elements);
-  const placed = ids.filter((id) => process.elements[id]!.type !== 'boundaryEvent');
+  const placed = ids.filter((id) => process.elements[id]!.type !== 'boundaryEvent' && scopeOf(process, id) === scope);
+  const sized = (id: string): Size => sizes.get(id) ?? sizeOf(process.elements[id]!);
   // Where a token goes next from an element: its own flows, then those of the timers on its boundary, which lead below it.
   const next = (id: string): Array<{ to: string; boundary: boolean }> => [
     ...(graph.outgoing.get(id) ?? []).map((flow) => ({ to: process.flows[flow]!.to, boundary: false })),
@@ -130,29 +179,38 @@ export function layoutProcess(process: Process): Diagram {
   }
   const top = Math.min(0, ...row.values());
 
-  const shapes: Record<string, Diagram['shapes'][string]> = {};
+  // A column is as wide as its widest shape, and a row as tall as its tallest: a task's size at least, with room between them.
+  const widths = new Map<number, number>();
+  const heights = new Map<number, number>();
   for (const id of placed) {
-    const size = sizeOf(process.elements[id]!);
-    const centerX = 120 + column.get(id)! * 180;
-    const centerY = 120 + (row.get(id)! - top) * 130;
-    shapes[id] = { x: centerX - size.width / 2, y: centerY - size.height / 2, ...size };
+    const size = sized(id);
+    const [col, line] = [column.get(id)!, row.get(id)! - top];
+    widths.set(col, Math.max(widths.get(col) ?? SIZES['task']!.width, size.width));
+    heights.set(line, Math.max(heights.get(line) ?? SIZES['task']!.height, size.height));
   }
-  const onTask = new Map<string, number>();
-  for (const [id, element] of Object.entries(process.elements)) {
-    if (element.type !== 'boundaryEvent') continue;
-    const host = shapes[element.attachedTo];
-    if (!host) continue;
-    const index = onTask.get(element.attachedTo) ?? 0;
-    onTask.set(element.attachedTo, index + 1);
-    shapes[id] = { x: host.x + host.width - 30 - index * 40, y: host.y + host.height - 18, width: 36, height: 36 };
+  const offsets = (spans: ReadonlyMap<number, number>, start: number, gap: number, fallback: number) => {
+    const last = Math.max(0, ...spans.keys());
+    const centers: number[] = [];
+    let at = start;
+    for (let index = 0; index <= last; index++) {
+      const span = spans.get(index) ?? fallback;
+      centers.push(at + span / 2);
+      at += span + gap;
+    }
+    return centers;
+  };
+  const xs = offsets(widths, 70, 80, SIZES['task']!.width);
+  const ys = offsets(heights, 80, 50, SIZES['task']!.height);
+  const shapes: Record<string, Shape> = {};
+  for (const id of placed) {
+    const size = sized(id);
+    // In a column that a sub-process widens, a smaller shape stands at its left, as in a task's column: a flow to it then bends before the sub-process, not across it.
+    const col = column.get(id)!;
+    const span = widths.get(col) ?? SIZES['task']!.width;
+    const center = size.width < span ? xs[col]! - span / 2 + Math.max(size.width, SIZES['task']!.width) / 2 : xs[col]!;
+    shapes[id] = { x: center - size.width / 2, y: ys[row.get(id)! - top]! - size.height / 2, width: size.width, height: size.height };
   }
-  const edges: Record<string, Diagram['edges'][string]> = {};
-  for (const [id, flow] of Object.entries(process.flows)) {
-    const from = shapes[flow.from];
-    const to = shapes[flow.to];
-    if (from && to) edges[id] = { points: routeFlow(from, to, process.elements[flow.from]?.type === 'boundaryEvent') };
-  }
-  return { shapes, edges };
+  return shapes;
 }
 
 type Box = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
@@ -178,6 +236,8 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
   parallelGateway: 'bpmn:parallelGateway',
   inclusiveGateway: 'bpmn:inclusiveGateway',
   intermediateCatchEvent: 'bpmn:intermediateCatchEvent',
+  subProcess: 'bpmn:subProcess',
+  callActivity: 'bpmn:callActivity',
   boundaryEvent: 'bpmn:boundaryEvent',
 };
 
@@ -199,7 +259,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     children: ['duration' in definitionOf ? formal('bpmn:timeDuration', LANGUAGES.duration, definitionOf.duration) : formal('bpmn:timeDate', LANGUAGES.field, definitionOf.date)],
   });
 
-  const elements: XmlOut[] = Object.entries(process.elements).map(([id, element]) => {
+  const elementXml = (id: string, element: ProcessElement): XmlOut => {
     const children: XmlOut[] = [];
     if ('description' in element && element.description) children.push({ name: 'bpmn:documentation', text: element.description });
     const attributes: Record<string, string | undefined> = { id, name: element.name };
@@ -243,11 +303,17 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         attributes['attachedToRef'] = element.attachedTo;
         attributes['cancelActivity'] = element.interrupting ? 'true' : 'false';
         break;
+      case 'callActivity':
+        attributes['calledElement'] = element.process;
+        attributes['ambit:record'] = element.record;
+        break;
       default:
         break;
     }
     for (const flow of graph.incoming.get(id) ?? []) children.push({ name: 'bpmn:incoming', text: flow });
     for (const flow of graph.outgoing.get(id) ?? []) children.push({ name: 'bpmn:outgoing', text: flow });
+    // A sub-process holds its own elements and flows.
+    if (element.type === 'subProcess') children.push(...contentOf(id));
     if (element.type === 'userTask' && element.several) {
       const { people, sequential, decide } = element.several;
       children.push({
@@ -266,18 +332,30 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
       if (element.type === 'boundaryEvent' && element.error) children.push({ name: 'bpmn:errorEventDefinition', attributes: { id: `${id}_error` } });
     }
     return { name: TAGS[element.type], attributes, children };
-  });
-  const flows: XmlOut[] = Object.entries(process.flows).map(([id, flow]) => {
+  };
+  const flowXml = (id: string, flow: Flow): XmlOut => {
     const children: XmlOut[] = [];
     if (flow.when) children.push(formal('bpmn:conditionExpression', LANGUAGES.condition, conditionText(flow.when)));
     if (flow.outcome !== undefined) children.push(formal('bpmn:conditionExpression', LANGUAGES.outcome, flow.outcome));
     return { name: 'bpmn:sequenceFlow', attributes: { id, name: flow.name, sourceRef: flow.from, targetRef: flow.to }, children };
-  });
+  };
+  /** The elements and flows of the process itself, or of one of its sub-processes. */
+  function contentOf(scope: string | undefined): XmlOut[] {
+    return [
+      ...Object.entries(process!.elements).flatMap(([id, element]) => (scopeOf(process!, id) === scope ? [elementXml(id, element)] : [])),
+      ...Object.entries(process!.flows).flatMap(([id, flow]) => (scopeOf(process!, flow.from) === scope ? [flowXml(id, flow)] : [])),
+    ];
+  }
 
   const bounds = (b: { x: number; y: number; width: number; height: number }): XmlOut => ({ name: 'dc:Bounds', attributes: { x: b.x, y: b.y, width: b.width, height: b.height } });
   const shapes: XmlOut[] = Object.entries(diagram.shapes).map(([id, shape]) => ({
     name: 'bpmndi:BPMNShape',
-    attributes: { id: `${id}_di`, bpmnElement: id, ...(process.elements[id]?.type === 'exclusiveGateway' ? { isMarkerVisible: 'true' } : {}) },
+    attributes: {
+      id: `${id}_di`,
+      bpmnElement: id,
+      ...(process.elements[id]?.type === 'exclusiveGateway' ? { isMarkerVisible: 'true' } : {}),
+      ...(process.elements[id]?.type === 'subProcess' ? { isExpanded: 'true' } : {}),
+    },
     children: [bounds(shape), ...(shape.label ? [{ name: 'bpmndi:BPMNLabel', children: [bounds(shape.label)] }] : [])],
   }));
   const edges: XmlOut[] = Object.entries(diagram.edges).map(([id, edge]) => ({
@@ -306,7 +384,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
       {
         name: 'bpmn:process',
         attributes: { id: name, name: process.label, isExecutable: 'true', 'ambit:entity': process.entity },
-        children: [...(process.description ? [{ name: 'bpmn:documentation', text: process.description }] : []), ...elements, ...flows],
+        children: [...(process.description ? [{ name: 'bpmn:documentation', text: process.description }] : []), ...contentOf(undefined)],
       },
       {
         name: 'bpmndi:BPMNDiagram',
@@ -329,14 +407,14 @@ export type BpmnImport =
 
 /** Elements that only document a model: an import leaves them out, and says so. */
 const DOCUMENTING = new Set(['textAnnotation', 'association', 'group', 'dataObject', 'dataObjectReference', 'dataStoreReference', 'dataStore', 'category', 'laneSet', 'documentation', 'extensionElements', 'ioSpecification', 'property', 'dataInputAssociation', 'dataOutputAssociation']);
+/** What a sub-process has as a node of its own, not as something it holds. */
+const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteristics', 'standardLoopCharacteristics']);
 /** The elements Ambit doesn't run yet, as a sentence names them. */
 const KINDS: Readonly<Record<string, string>> = {
   scriptTask: 'a script task',
   businessRuleTask: 'a business rule task',
   sendTask: 'a send task',
   receiveTask: 'a receive task',
-  callActivity: 'a call activity',
-  subProcess: 'a sub-process',
   adHocSubProcess: 'an ad hoc sub-process',
   transaction: 'a transaction',
   eventBasedGateway: 'an event-based gateway',
@@ -432,6 +510,13 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
   );
   const found = bpmn(root, 'process').filter((process) => childElements(process).some((child) => child.ns === BPMN_MODEL && !DOCUMENTING.has(child.local)));
   if (!found.length) return { ok: false, issues: [{ element: null, message: 'The file has no process with anything in it' }] };
+  // Each process's name in the app, before any is read: a call activity names the process it calls by its ID in the file.
+  const processNames = new Map<string, string>();
+  for (const source of found) {
+    const processName = nameFrom(attribute(source, 'id') ?? 'process', taken);
+    taken.add(processName);
+    processNames.set(attribute(source, 'id') ?? 'process', processName);
+  }
 
   for (const source of found) {
     const processId = attribute(source, 'id') ?? 'process';
@@ -476,168 +561,198 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
     const elements: Record<string, ProcessElement> = {};
     const flows: Record<string, Flow> = {};
     const defaults = new Set<string>();
-    for (const node of childElements(source)) {
-      if (node.ns !== BPMN_MODEL) continue;
-      if (DOCUMENTING.has(node.local)) {
-        if (!['documentation', 'extensionElements', 'laneSet'].includes(node.local)) notes.add(`Left out what only documents the model, such as ${node.local}`);
-        continue;
-      }
-      if (node.local === 'sequenceFlow') continue;
-      const id = idOf(attribute(node, 'id'), node);
-      if (!id) continue;
-      const name = label(node);
-      const documentation = bpmn(node, 'documentation').map(textOf).join('\n').trim() || undefined;
-      const definitions = childElements(node).filter((child) => child.ns === BPMN_MODEL && child.local.endsWith('EventDefinition'));
-      const kinds = definitions.map((child) => EVENT_KINDS[child.local] ?? child.local);
-      const refuse = (message: string) => issues.push({ element: attribute(node, 'id') ?? id, message: `${message}: ${describe(node)}` });
-      if (KINDS[node.local]) {
-        refuse(`Ambit doesn't run ${KINDS[node.local]!} yet`);
-        continue;
-      }
-      const loop = bpmn(node, 'multiInstanceLoopCharacteristics')[0];
-      if (bpmn(node, 'standardLoopCharacteristics').length || (loop && (node.local !== 'userTask' || !several(loop)))) {
-        refuse(loop && node.local === 'userTask' ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide' : "Ambit doesn't run a task that repeats yet");
-        continue;
-      }
-      const timerOf = (): Timer | undefined => {
-        const timer = bpmn(node, 'timerEventDefinition')[0]!;
-        const duration = bpmn(timer, 'timeDuration')[0];
-        const date = bpmn(timer, 'timeDate')[0];
-        if (duration && DURATION_PATTERN.test(textOf(duration).trim())) return { duration: textOf(duration).trim() };
-        if (date) {
-          const field = textOf(date).trim().replace(/^record\./, '');
-          if (fields.has(field)) return { date: field };
+    const collapsed: string[] = [];
+    /** Read what stands in the process itself, or in one of its sub-processes. */
+    const read = (container: XmlElement, scope: string | undefined): void => {
+      for (const node of childElements(container)) {
+        if (node.ns !== BPMN_MODEL) continue;
+        if (DOCUMENTING.has(node.local)) {
+          if (!['documentation', 'extensionElements', 'laneSet'].includes(node.local)) notes.add(`Left out what only documents the model, such as ${node.local}`);
+          continue;
         }
-        refuse('A timer runs after an ISO 8601 duration, such as P3D, or on a date field of the record');
-        return undefined;
-      };
-      /** The action a message event waits for: the message's own setting, or a message named after one of the app's actions. */
-      const messageOf = (): string | undefined => {
-        const ref = attribute(bpmn(node, 'messageEventDefinition')[0]!, 'messageRef');
-        const message = ref ? messages.get(ref) : undefined;
-        const action = message?.action ?? (message?.name && definition.actions[message.name] ? message.name : undefined);
-        if (!action || !definition.actions[action]) {
-          refuse(`A message is one of the app's actions committing on the record: name the action, with ambit:action on the message${ref ? ` ${ref}` : ''}`);
+        if (node.local === 'sequenceFlow' || NODE_PARTS.has(node.local)) continue;
+        const id = idOf(attribute(node, 'id'), node);
+        if (!id) continue;
+        const name = label(node);
+        const documentation = bpmn(node, 'documentation').map(textOf).join('\n').trim() || undefined;
+        const definitions = childElements(node).filter((child) => child.ns === BPMN_MODEL && child.local.endsWith('EventDefinition'));
+        const kinds = definitions.map((child) => EVENT_KINDS[child.local] ?? child.local);
+        const refuse = (message: string) => issues.push({ element: attribute(node, 'id') ?? id, message: `${message}: ${describe(node)}` });
+        if (KINDS[node.local]) {
+          refuse(`Ambit doesn't run ${KINDS[node.local]!} yet`);
+          continue;
+        }
+        const loop = bpmn(node, 'multiInstanceLoopCharacteristics')[0];
+        if (bpmn(node, 'standardLoopCharacteristics').length || (loop && (node.local !== 'userTask' || !several(loop)))) {
+          refuse(loop && node.local === 'userTask' ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide' : "Ambit doesn't run a task that repeats yet");
+          continue;
+        }
+        const timerOf = (): Timer | undefined => {
+          const timer = bpmn(node, 'timerEventDefinition')[0]!;
+          const duration = bpmn(timer, 'timeDuration')[0];
+          const date = bpmn(timer, 'timeDate')[0];
+          if (duration && DURATION_PATTERN.test(textOf(duration).trim())) return { duration: textOf(duration).trim() };
+          if (date) {
+            const field = textOf(date).trim().replace(/^record\./, '');
+            if (fields.has(field)) return { date: field };
+          }
+          refuse('A timer runs after an ISO 8601 duration, such as P3D, or on a date field of the record');
           return undefined;
-        }
-        return action;
-      };
-      switch (node.local) {
-        case 'startEvent':
-          if (kinds.length) refuse(`Ambit doesn't start a process on a ${kinds.join(' or ')} event yet`);
-          else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: (ambit(node, 'actions') ?? '').split(/\s+/).filter(Boolean) };
-          break;
-        case 'endEvent':
-          if (kinds.some((kind) => kind !== 'terminate')) refuse(`Ambit doesn't end a process with a ${kinds.join(' or ')} event yet`);
-          else elements[id] = { type: 'endEvent', ...(name ? { name } : {}), terminate: kinds.includes('terminate') };
-          break;
-        case 'userTask': {
-          const role = ambit(node, 'role') ?? roleByLane.get(attribute(node, 'id') ?? '');
-          if (!role) {
-            refuse('Say which role does the task: ambit:role, or a lane named after the role');
-            break;
+        };
+        /** The action a message event waits for: the message's own setting, or a message named after one of the app's actions. */
+        const messageOf = (): string | undefined => {
+          const ref = attribute(bpmn(node, 'messageEventDefinition')[0]!, 'messageRef');
+          const message = ref ? messages.get(ref) : undefined;
+          const action = message?.action ?? (message?.name && definition.actions[message.name] ? message.name : undefined);
+          if (!action || !definition.actions[action]) {
+            refuse(`A message is one of the app's actions committing on the record: name the action, with ambit:action on the message${ref ? ` ${ref}` : ''}`);
+            return undefined;
           }
-          const outcomes = bpmn(node, 'extensionElements')
-            .flatMap((extension) => childElements(extension, AMBIT_BPMN, 'outcome'))
-            .map((outcome) => ({ name: attribute(outcome, 'name') ?? '', label: attribute(outcome, 'label') ?? attribute(outcome, 'name') ?? '', ...(attribute(outcome, 'action') ? { action: attribute(outcome, 'action')! } : {}) }));
-          const votes = loop ? several(loop) : undefined;
-          const assignee = ambit(node, 'assignee');
-          const managerOf = ambit(node, 'managerOf');
-          const levels = Number(ambit(node, 'levels') ?? '1');
-          const department = ambit(node, 'department');
-          const due = ambit(node, 'due');
-          const card = ambit(node, 'card');
-          elements[id] = {
-            type: 'userTask',
-            name: name ?? id,
-            ...(documentation ? { description: documentation } : {}),
-            role,
-            ...(assignee ? { assignee: { field: assignee } } : managerOf ? { assignee: { managerOf, levels: Number.isInteger(levels) ? levels : 1 } } : {}),
-            ...(department ? { department: { of: department } } : {}),
-            ...(votes ? { several: votes } : {}),
-            outcomes: outcomes.length ? outcomes : [{ name: 'done', label: 'Done' }],
-            ...(due ? { due } : {}),
-            ...(card ? { card } : {}),
-          };
-          if (!outcomes.length) notes.add(`${name ?? id} gets one outcome, Done: give a task its outcomes in Ambit`);
-          break;
-        }
-        case 'serviceTask': {
-          const action = ambit(node, 'action');
-          const skill = ambit(node, 'skill');
-          if (!action && !skill) {
-            refuse('Say what the service task runs: one of the app\'s actions (ambit:action), or an a7c skill (ambit:skill)');
+          return action;
+        };
+        switch (node.local) {
+          case 'startEvent':
+            if (kinds.length) refuse(`Ambit doesn't start a process on a ${kinds.join(' or ')} event yet`);
+            else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions: (ambit(node, 'actions') ?? '').split(/\s+/).filter(Boolean) };
             break;
-          }
-          const input: Record<string, Expression> = {};
-          for (const item of bpmn(node, 'extensionElements').flatMap((extension) => childElements(extension, AMBIT_BPMN, 'input'))) {
-            let expression: unknown;
-            try {
-              expression = JSON.parse(textOf(item));
-            } catch {
-              expression = undefined;
+          case 'endEvent':
+            if (kinds.some((kind) => kind !== 'terminate')) refuse(`Ambit doesn't end a process with a ${kinds.join(' or ')} event yet`);
+            else elements[id] = { type: 'endEvent', ...(name ? { name } : {}), terminate: kinds.includes('terminate') };
+            break;
+          case 'userTask': {
+            const role = ambit(node, 'role') ?? roleByLane.get(attribute(node, 'id') ?? '');
+            if (!role) {
+              refuse('Say which role does the task: ambit:role, or a lane named after the role');
+              break;
             }
-            if (isExpression(expression)) input[attribute(item, 'name') ?? ''] = expression;
-            else refuse(`The input ${attribute(item, 'name') ?? ''} is not an Ambit expression`);
-          }
-          elements[id] = {
-            type: 'serviceTask',
-            name: name ?? id,
-            ...(documentation ? { description: documentation } : {}),
-            ...(action ? { action } : {}),
-            ...(skill ? { skill, ...(Object.keys(input).length ? { input } : {}) } : {}),
-          };
-          break;
-        }
-        case 'task':
-        case 'manualTask':
-          elements[id] = { type: node.local === 'task' ? 'task' : 'manualTask', name: name ?? id, ...(documentation ? { description: documentation } : {}) };
-          break;
-        case 'exclusiveGateway':
-        case 'parallelGateway':
-        case 'inclusiveGateway':
-          elements[id] = { type: node.local === 'exclusiveGateway' ? 'exclusiveGateway' : node.local === 'inclusiveGateway' ? 'inclusiveGateway' : 'parallelGateway', ...(name ? { name } : {}) };
-          if (node.local !== 'parallelGateway' && attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
-          break;
-        case 'intermediateCatchEvent': {
-          if (kinds.length !== 1 || (kinds[0] !== 'timer' && kinds[0] !== 'message')) {
-            refuse(`Ambit doesn't wait for a ${kinds.join(' or ') || 'plain'} event yet`);
+            const outcomes = bpmn(node, 'extensionElements')
+              .flatMap((extension) => childElements(extension, AMBIT_BPMN, 'outcome'))
+              .map((outcome) => ({ name: attribute(outcome, 'name') ?? '', label: attribute(outcome, 'label') ?? attribute(outcome, 'name') ?? '', ...(attribute(outcome, 'action') ? { action: attribute(outcome, 'action')! } : {}) }));
+            const votes = loop ? several(loop) : undefined;
+            const assignee = ambit(node, 'assignee');
+            const managerOf = ambit(node, 'managerOf');
+            const levels = Number(ambit(node, 'levels') ?? '1');
+            const department = ambit(node, 'department');
+            const due = ambit(node, 'due');
+            const card = ambit(node, 'card');
+            elements[id] = {
+              type: 'userTask',
+              name: name ?? id,
+              ...(documentation ? { description: documentation } : {}),
+              role,
+              ...(assignee ? { assignee: { field: assignee } } : managerOf ? { assignee: { managerOf, levels: Number.isInteger(levels) ? levels : 1 } } : {}),
+              ...(department ? { department: { of: department } } : {}),
+              ...(votes ? { several: votes } : {}),
+              outcomes: outcomes.length ? outcomes : [{ name: 'done', label: 'Done' }],
+              ...(due ? { due } : {}),
+              ...(card ? { card } : {}),
+            };
+            if (!outcomes.length) notes.add(`${name ?? id} gets one outcome, Done: give a task its outcomes in Ambit`);
             break;
           }
-          if (kinds[0] === 'timer') {
-            const timer = timerOf();
-            if (timer) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), timer };
-          } else {
-            const action = messageOf();
-            if (action) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), message: { action } };
-          }
-          break;
-        }
-        case 'boundaryEvent': {
-          if (kinds.length !== 1 || !['timer', 'message', 'error'].includes(kinds[0]!)) {
-            refuse(`Ambit doesn't catch a ${kinds.join(' or ') || 'plain'} event on a task yet`);
+          case 'serviceTask': {
+            const action = ambit(node, 'action');
+            const skill = ambit(node, 'skill');
+            if (!action && !skill) {
+              refuse('Say what the service task runs: one of the app\'s actions (ambit:action), or an a7c skill (ambit:skill)');
+              break;
+            }
+            const input: Record<string, Expression> = {};
+            for (const item of bpmn(node, 'extensionElements').flatMap((extension) => childElements(extension, AMBIT_BPMN, 'input'))) {
+              let expression: unknown;
+              try {
+                expression = JSON.parse(textOf(item));
+              } catch {
+                expression = undefined;
+              }
+              if (isExpression(expression)) input[attribute(item, 'name') ?? ''] = expression;
+              else refuse(`The input ${attribute(item, 'name') ?? ''} is not an Ambit expression`);
+            }
+            elements[id] = {
+              type: 'serviceTask',
+              name: name ?? id,
+              ...(documentation ? { description: documentation } : {}),
+              ...(action ? { action } : {}),
+              ...(skill ? { skill, ...(Object.keys(input).length ? { input } : {}) } : {}),
+            };
             break;
           }
-          const attachedTo = idOf(attribute(node, 'attachedToRef'), node);
-          const interrupting = attribute(node, 'cancelActivity') !== 'false';
-          const base = { type: 'boundaryEvent' as const, ...(name ? { name } : {}), attachedTo: attachedTo ?? '', interrupting };
-          if (!attachedTo) break;
-          if (kinds[0] === 'timer') {
-            const timer = timerOf();
-            if (timer) elements[id] = { ...base, timer };
-          } else if (kinds[0] === 'message') {
-            const action = messageOf();
-            if (action) elements[id] = { ...base, message: { action } };
-          } else {
-            elements[id] = { ...base, interrupting: true, error: true };
+          case 'task':
+          case 'manualTask':
+            elements[id] = { type: node.local === 'task' ? 'task' : 'manualTask', name: name ?? id, ...(documentation ? { description: documentation } : {}) };
+            break;
+          case 'exclusiveGateway':
+          case 'parallelGateway':
+          case 'inclusiveGateway':
+            elements[id] = { type: node.local === 'exclusiveGateway' ? 'exclusiveGateway' : node.local === 'inclusiveGateway' ? 'inclusiveGateway' : 'parallelGateway', ...(name ? { name } : {}) };
+            if (node.local !== 'parallelGateway' && attribute(node, 'default')) defaults.add(attribute(node, 'default')!);
+            break;
+          case 'intermediateCatchEvent': {
+            if (kinds.length !== 1 || (kinds[0] !== 'timer' && kinds[0] !== 'message')) {
+              refuse(`Ambit doesn't wait for a ${kinds.join(' or ') || 'plain'} event yet`);
+              break;
+            }
+            if (kinds[0] === 'timer') {
+              const timer = timerOf();
+              if (timer) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), timer };
+            } else {
+              const action = messageOf();
+              if (action) elements[id] = { type: 'intermediateCatchEvent', ...(name ? { name } : {}), message: { action } };
+            }
+            break;
           }
-          break;
+          case 'subProcess': {
+            if (attribute(node, 'triggeredByEvent') === 'true') {
+              refuse("Ambit doesn't run an event sub-process yet");
+              break;
+            }
+            elements[id] = { type: 'subProcess', name: name ?? id, ...(documentation ? { description: documentation } : {}) };
+            if (attribute(shapesOf.get(attribute(node, 'id') ?? '') ?? node, 'isExpanded') !== 'true') collapsed.push(id);
+            read(node, id);
+            break;
+          }
+          case 'callActivity': {
+            const called = attribute(node, 'calledElement');
+            const process = called ? (processNames.get(called) ?? (definition.processes?.[called] ? called : undefined)) : undefined;
+            if (!process) {
+              refuse(called ? `It calls ${called}, which neither the file nor the app has` : 'Say which process the call activity runs: calledElement');
+              break;
+            }
+            const record = ambit(node, 'record');
+            elements[id] = { type: 'callActivity', name: name ?? id, ...(documentation ? { description: documentation } : {}), process, ...(record ? { record } : {}) };
+            break;
+          }
+          case 'boundaryEvent': {
+            if (kinds.length !== 1 || !['timer', 'message', 'error'].includes(kinds[0]!)) {
+              refuse(`Ambit doesn't catch a ${kinds.join(' or ') || 'plain'} event on a task yet`);
+              break;
+            }
+            const attachedTo = idOf(attribute(node, 'attachedToRef'), node);
+            const interrupting = attribute(node, 'cancelActivity') !== 'false';
+            const base = { type: 'boundaryEvent' as const, ...(name ? { name } : {}), attachedTo: attachedTo ?? '', interrupting };
+            if (!attachedTo) break;
+            if (kinds[0] === 'timer') {
+              const timer = timerOf();
+              if (timer) elements[id] = { ...base, timer };
+            } else if (kinds[0] === 'message') {
+              const action = messageOf();
+              if (action) elements[id] = { ...base, message: { action } };
+            } else {
+              elements[id] = { ...base, interrupting: true, error: true };
+            }
+            break;
+          }
+          default:
+            refuse(`Ambit doesn't know the element ${node.local}`);
         }
-        default:
-          refuse(`Ambit doesn't know the element ${node.local}`);
+        // What a sub-process holds names it.
+        const made = elements[id];
+        if (made && scope !== undefined && made.type !== 'boundaryEvent') elements[id] = { ...made, in: scope };
       }
-    }
-    for (const node of bpmn(source, 'sequenceFlow')) {
+    };
+    read(source, undefined);
+    const sequenceFlows = (container: XmlElement): XmlElement[] => [...bpmn(container, 'sequenceFlow'), ...bpmn(container, 'subProcess').flatMap(sequenceFlows)];
+    for (const node of sequenceFlows(source)) {
       const id = idOf(attribute(node, 'id'), node);
       const from = idOf(attribute(node, 'sourceRef'), node);
       const to = idOf(attribute(node, 'targetRef'), node);
@@ -708,17 +823,21 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
       }
     }
 
-    const processName = nameFrom(processId, taken);
-    taken.add(processName);
+    const processName = processNames.get(processId)!;
     const description = bpmn(source, 'documentation').map(textOf).join('\n').trim();
-    processes[processName] = {
+    const imported: Process = {
       label: label(source) ?? processName,
       ...(description ? { description } : {}),
       entity,
       elements,
       flows,
-      ...(Object.keys(diagram.shapes).length ? { diagram } : {}),
     };
+    if (Object.keys(diagram.shapes).length) {
+      // Ambit draws a sub-process open, with what it holds: one drawn closed is laid out again.
+      if (collapsed.length) notes.add(`Laid out ${imported.label} again: Ambit draws a sub-process open, with what it holds`);
+      imported.diagram = collapsed.length ? layoutProcess(imported) : diagram;
+    }
+    processes[processName] = imported;
   }
   return issues.length ? { ok: false, issues } : { ok: true, processes, notes: [...notes] };
 }

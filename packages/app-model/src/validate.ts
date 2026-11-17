@@ -14,7 +14,7 @@ import {
   type StoredField,
 } from './fields.js';
 import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { elementName, processGraph } from './processes.js';
+import { elementName, insideOf, plainStartOf, processGraph, processWork, scopeOf, scopesOf, startEventsOf } from './processes.js';
 import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Action, type Entity, type ProcessElement, type SimpleStep, type Step, type Timer } from './schema.js';
 import { alwaysGiven, readsPrincipal } from './steps.js';
 import { canonicalValue } from './values.js';
@@ -326,6 +326,8 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
               case 'intermediateCatchEvent':
               case 'boundaryEvent':
                 return element.timer && 'date' in element.timer ? { ...element, timer: { date: field(element.timer.date) } } : element;
+              case 'callActivity':
+                return element.record ? { ...element, record: field(element.record) } : element;
               default:
                 return element;
             }
@@ -1073,6 +1075,11 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
       if (from.type === 'endEvent') issues.push({ path: `${path}.from`, message: `${label(flow.from)} is an end event: no flow leaves it` });
       if (to.type === 'startEvent') issues.push({ path: `${path}.to`, message: `${label(flow.to)} is a start event: no flow leads into it` });
       if (to.type === 'boundaryEvent') issues.push({ path: `${path}.to`, message: `${label(flow.to)} sits on a task's boundary: no flow leads into it` });
+      const [fromScope, toScope] = [scopeOf(process, flow.from), scopeOf(process, flow.to)];
+      if (fromScope !== toScope) {
+        const where = (scope: string | undefined) => (scope ? `in ${label(scope)}` : 'in the process itself');
+        issues.push({ path, message: `A flow can't cross the edge of a sub-process: ${label(flow.from)} is ${where(fromScope)}, and ${label(flow.to)} is ${where(toScope)}` });
+      }
       if (flow.outcome !== undefined) {
         if (from.type !== 'userTask') issues.push({ path: `${path}.outcome`, message: 'Only a flow out of a user task follows an outcome' });
         else if (!from.outcomes.some((outcome) => outcome.name === flow.outcome)) issues.push({ path: `${path}.outcome`, message: `${label(flow.from)} has no outcome ${flow.outcome}` });
@@ -1120,9 +1127,18 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         if (out.length !== 1) issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
       };
       if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !into.length) issues.push({ path, message: `No flow leads to ${label(id)}` });
+      if (element.type !== 'boundaryEvent' && element.in !== undefined) {
+        const container = process.elements[element.in];
+        if (!container) issues.push({ path: `${path}.in`, message: `No element ${element.in}` });
+        else if (container.type !== 'subProcess') issues.push({ path: `${path}.in`, message: `${label(element.in)} isn't a sub-process: only a sub-process holds other elements` });
+        else if (scopeOf(process, element.in) !== undefined && scopesOf(process, element.in).includes(id)) {
+          issues.push({ path: `${path}.in`, message: `${label(id)} would be inside itself` });
+        }
+      }
       switch (element.type) {
         case 'startEvent':
-          starts++;
+          if (element.in === undefined) starts++;
+          else if (element.actions.length) issues.push({ path: `${path}.actions`, message: 'A start event inside a sub-process starts when the sub-process does: it names no actions' });
           oneOut();
           element.actions.forEach((action, index) => {
             if (!startAction(action, `${path}.actions[${index}]`)) return;
@@ -1132,8 +1148,38 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           });
           break;
         case 'endEvent':
-          ends++;
+          if (element.in === undefined) ends++;
           break;
+        case 'subProcess': {
+          const inner = startEventsOf(process, id);
+          if (inner.length !== 1) issues.push({ path, message: inner.length ? `${label(id)} starts at one start event inside it` : `${label(id)} needs a start event inside it` });
+          if (!Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id)) issues.push({ path, message: `${label(id)} needs an end event inside it` });
+          oneOut();
+          break;
+        }
+        case 'callActivity': {
+          const called = definition.processes?.[element.process];
+          if (!called) issues.push({ path: `${path}.process`, message: `No process named ${element.process}` });
+          else if (element.process === name) issues.push({ path: `${path}.process`, message: "A process can't call itself" });
+          if (element.record !== undefined) {
+            const info = fields.get(element.record);
+            const field = info?.field;
+            if (!info) issues.push({ path: `${path}.record`, message: `No field ${element.record}` });
+            else if (field?.type !== 'reference') issues.push({ path: `${path}.record`, message: `${element.record} doesn't refer to a record` });
+            else if (called && called.entity !== field.entity) {
+              issues.push({ path: `${path}.record`, message: `${element.record} refers to ${field.entity}, but ${called.label} is about ${called.entity}` });
+            }
+          } else if (called && called.entity !== process.entity) {
+            issues.push({ path: `${path}.record`, message: `${called.label} is about ${called.entity}: name the reference field whose record it runs on` });
+          }
+          if (called) {
+            const start = plainStartOf(called);
+            const at = start ? called.elements[start] : undefined;
+            if (at?.type === 'startEvent' && at.actions.length) issues.push({ path: `${path}.process`, message: `${called.label} has no start event without actions, where a call starts it` });
+          }
+          oneOut();
+          break;
+        }
         case 'userTask': {
           const role = definition.roles[element.role];
           if (!role) issues.push({ path: `${path}.role`, message: `No role named ${element.role}` });
@@ -1258,22 +1304,33 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message or an error: one of the three` });
           if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
           else if (element.error) {
-            if (host.type !== 'serviceTask') issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a service task: an error sits on a service task, whose action can fail` });
-            else if (host.skill) issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} starts an a7c skill, which runs later in a7c: an error event catches the failure of an action` });
-            if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'An error always ends its task' });
+            if (host.type !== 'serviceTask' && host.type !== 'subProcess') {
+              issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} can't catch an error: an error sits on a service task, whose action can fail, or on a sub-process, for what fails inside it` });
+            } else if (host.type === 'serviceTask' && host.skill) {
+              issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} starts an a7c skill, which runs later in a7c: an error event catches the failure of an action` });
+            }
+            if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'An error always ends what it sits on' });
             const errors = (graph.boundaries.get(element.attachedTo) ?? []).filter((other) => {
               const candidate = process.elements[other];
               return candidate?.type === 'boundaryEvent' && candidate.error;
             });
             if (errors[0] !== id && errors.includes(id)) issues.push({ path, message: `${label(element.attachedTo)} has one error event at most` });
-          } else if (host.type !== 'userTask') {
-            issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a user task: a timer or a message sits on a user task` });
+          } else if (host.type !== 'userTask' && host.type !== 'subProcess' && host.type !== 'callActivity') {
+            issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} can't have a timer or a message on its boundary: they sit on a user task, a sub-process or a call activity` });
           }
           if (element.timer) checkTimer(element.timer, path);
           if (element.message) {
-            messageAction(element.message.action, `${path}.message.action`);
-            if (host?.type === 'userTask' && host.outcomes.some((outcome) => outcome.action === element.message!.action)) {
-              issues.push({ path: `${path}.message.action`, message: `${element.message.action} decides ${label(element.attachedTo)}, so it can't also interrupt it` });
+            const action = element.message.action;
+            messageAction(action, `${path}.message.action`);
+            if (host?.type === 'userTask' && host.outcomes.some((outcome) => outcome.action === action)) {
+              issues.push({ path: `${path}.message.action`, message: `${action} decides ${label(element.attachedTo)}, so it can't also interrupt it` });
+            }
+            if (host?.type === 'subProcess') {
+              const decides = [...insideOf(process, element.attachedTo)].find((inner) => {
+                const task = process.elements[inner];
+                return task?.type === 'userTask' && task.outcomes.some((outcome) => outcome.action === action);
+              });
+              if (decides) issues.push({ path: `${path}.message.action`, message: `${action} decides ${label(decides)} inside ${label(element.attachedTo)}, so it can't also interrupt it` });
             }
           }
           oneOut();
@@ -1284,15 +1341,16 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
     if (!starts) issues.push({ path: `${base}.elements`, message: 'A process needs a start event' });
     if (!ends) issues.push({ path: `${base}.elements`, message: 'A process needs an end event' });
 
-    // Every element can be reached from a start event: a boundary event, once its task can.
+    // Every element can be reached from a start event: a boundary event, once its task can; what is in a sub-process, once the sub-process can.
     const reached = new Set<string>();
-    const queue = Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'startEvent' ? [id] : []));
+    const queue = startEventsOf(process);
     while (queue.length) {
       const id = queue.pop()!;
       if (reached.has(id)) continue;
       reached.add(id);
       for (const flowId of graph.outgoing.get(id) ?? []) queue.push(process.flows[flowId]!.to);
       for (const boundary of graph.boundaries.get(id) ?? []) queue.push(boundary);
+      if (process.elements[id]?.type === 'subProcess') queue.push(...startEventsOf(process, id));
     }
     for (const [id, element] of Object.entries(process.elements)) {
       const flagged = element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !(graph.incoming.get(id) ?? []).length;
@@ -1311,5 +1369,32 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
     (role.processes ?? []).forEach((process, index) => {
       if (!definition.processes?.[process]) issues.push({ path: `roles.${roleName}.processes[${index}]`, message: `No process named ${process}` });
     });
+  }
+  checkCalls(definition, issues);
+}
+
+/** Processes that call each other in a ring would call without end: each call is refused where the ring closes. */
+function checkCalls(definition: StoredDefinition, issues: Issue[]): void {
+  const processes = definition.processes ?? {};
+  const calls = new Map(Object.entries(processes).map(([name, process]) => [name, processWork(process).calls.filter((called) => called !== name && processes[called])]));
+  const reaches = (from: string, target: string): boolean => {
+    const seen = new Set<string>();
+    const queue = [from];
+    while (queue.length) {
+      const at = queue.pop()!;
+      if (at === target) return true;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      queue.push(...(calls.get(at) ?? []));
+    }
+    return false;
+  };
+  for (const [name, process] of Object.entries(processes)) {
+    for (const [id, element] of Object.entries(process.elements)) {
+      if (element.type !== 'callActivity' || element.process === name || !processes[element.process]) continue;
+      if (reaches(element.process, name)) {
+        issues.push({ path: `processes.${name}.elements.${id}.process`, message: `${processes[element.process]!.label} calls ${process.label} in turn, so they would call each other without end` });
+      }
+    }
   }
 }

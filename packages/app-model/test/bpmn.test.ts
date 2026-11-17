@@ -185,6 +185,89 @@ describe('BPMN 2.0 files', () => {
     expect(process).toEqual(definition.processes!['leave_approval']);
   });
 
+  /** The leave app with a review in a sub-process, which calls the cover plan of the team the request refers to. */
+  const nested = () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    definition['entities'].team = { label: 'Team', pluralLabel: 'Teams', titleField: 'name', fields: [{ name: 'name', label: 'Name', type: 'text', required: true }] };
+    definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
+    definition['processes'].cover_plan = {
+      label: 'Cover plan',
+      entity: 'team',
+      elements: { start: { type: 'startEvent' }, end: { type: 'endEvent' } },
+      flows: { through: { from: 'start', to: 'end' } },
+    };
+    const process = definition['processes'].leave_approval;
+    delete process.diagram;
+    Object.assign(process.elements, {
+      review: { type: 'subProcess', name: 'Review', description: 'HR looks at approved leave.' },
+      review_start: { type: 'startEvent', in: 'review' },
+      check: { type: 'userTask', name: 'Check the balance', in: 'review', role: 'manager', outcomes: [{ name: 'done', label: 'Done' }] },
+      late: { type: 'boundaryEvent', attachedTo: 'check', timer: { duration: 'P2D' } },
+      cover: { type: 'callActivity', name: 'Plan the cover', in: 'review', process: 'cover_plan', record: 'team' },
+      review_end: { type: 'endEvent', in: 'review' },
+      too_long: { type: 'boundaryEvent', name: 'Too long', attachedTo: 'review', timer: { duration: 'P5D' } },
+    });
+    process.flows.on_approve.to = 'review';
+    Object.assign(process.flows, {
+      r1: { from: 'review_start', to: 'check' },
+      r2: { from: 'check', to: 'cover' },
+      r3: { from: 'cover', to: 'review_end' },
+      r4: { from: 'late', to: 'review_end' },
+      reviewed: { from: 'review', to: 'approved' },
+      gave_up: { from: 'too_long', to: 'approved' },
+    });
+    return valid(definition);
+  };
+
+  it('carry a sub-process and a call activity out and back, with what the sub-process holds inside it', () => {
+    const definition = nested();
+    const xml = processToBpmn(definition, 'leave_approval');
+    expect(xml).toMatch(/<bpmn:subProcess id="review" name="Review">\s*<bpmn:documentation>HR looks at approved leave.<\/bpmn:documentation>\s*<bpmn:incoming>on_approve<\/bpmn:incoming>\s*<bpmn:outgoing>reviewed<\/bpmn:outgoing>\s*<bpmn:startEvent id="review_start">/);
+    expect(xml).toContain('<bpmn:callActivity id="cover" name="Plan the cover" calledElement="cover_plan" ambit:record="team">');
+    expect(xml).toContain('<bpmndi:BPMNShape id="review_di" bpmnElement="review" isExpanded="true">');
+    // The flows inside the sub-process are in it, and the event on its boundary is where the sub-process is.
+    const inside = xml.slice(xml.indexOf('<bpmn:subProcess'), xml.indexOf('</bpmn:subProcess>'));
+    expect(inside).toContain('<bpmn:sequenceFlow id="r1" sourceRef="review_start" targetRef="check" />');
+    expect(inside).toContain('<bpmn:boundaryEvent id="late"');
+    expect(inside).not.toContain('<bpmn:boundaryEvent id="too_long"');
+    const { leave_approval: _gone, ...others } = definition.processes!;
+    const back = bpmnToProcesses(xml, { ...definition, processes: others });
+    expect(back.ok).toBe(true);
+    const { diagram, ...process } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    const { diagram: laid, ...original } = definition.processes!['leave_approval']!;
+    expect(process).toEqual(original);
+    expect(diagram).toEqual(layoutProcess(definition.processes!['leave_approval']!));
+    expect(laid).toBeUndefined();
+  });
+
+  it('lay out a sub-process around what it holds, as one large shape among the others', () => {
+    const { shapes } = layoutProcess(nested().processes!['leave_approval']!);
+    const review = shapes['review']!;
+    for (const id of ['review_start', 'check', 'cover', 'review_end', 'late']) {
+      const shape = shapes[id]!;
+      expect(shape.x).toBeGreaterThan(review.x);
+      expect(shape.x + shape.width).toBeLessThan(review.x + review.width);
+      expect(shape.y).toBeGreaterThan(review.y);
+      expect(shape.y + shape.height).toBeLessThan(review.y + review.height);
+    }
+    // What comes after the sub-process stands after all of it.
+    expect(shapes['approved']!.x).toBeGreaterThan(review.x + review.width);
+    expect(shapes['decide']!.x + shapes['decide']!.width).toBeLessThan(review.x);
+    expect(shapes['too_long']!.y).toBe(review.y + review.height - 18);
+  });
+
+  it("refuse a call to a process that neither the file nor the app has, and lay a closed sub-process out again", () => {
+    const definition = nested();
+    const xml = processToBpmn(definition, 'leave_approval');
+    const refused = bpmnToProcesses(xml, { ...definition, processes: {} });
+    expect(refused.ok ? [] : refused.issues).toEqual([{ element: 'cover', message: 'It calls cover_plan, which neither the file nor the app has: "Plan the cover" (cover)' }]);
+    const closed = xml.replace('isExpanded="true"', 'isExpanded="false"');
+    const { leave_approval: _gone, ...others } = definition.processes!;
+    const back = bpmnToProcesses(closed, { ...definition, processes: others });
+    expect(back.ok && back.notes).toContain('Laid out Leave approval again: Ambit draws a sub-process open, with what it holds');
+    expect(back.ok && back.processes['leave_approval']!.diagram).toEqual(layoutProcess(definition.processes!['leave_approval']!));
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

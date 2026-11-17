@@ -483,15 +483,22 @@ export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in I
 export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name })]);
 export type Timer = z.infer<typeof Timer>;
 
-/** Where an instance starts. An action that a start event names starts it when the action commits on a record. */
+/** The sub-process an element is in. Without it, the element is in the process itself. An event on a boundary is where its host is. */
+const In = ElementId.optional();
+
+/**
+ * Where an instance starts. An action that a start event names starts it when the action commits
+ * on a record. A start event inside a sub-process starts when the sub-process does.
+ */
 const StartEvent = z.strictObject({
   type: z.literal('startEvent'),
   name: Label.optional(),
-  /** Without actions, a person whose role may start the process starts it on a record. */
+  in: In,
+  /** Without actions, a person whose role may start the process starts it on a record, or another process calls it. */
   actions: z.array(Name).max(10).default([]),
 });
-/** Where a path ends. A terminate end event ends the whole instance, other paths included. */
-const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optional(), terminate: z.boolean().default(false) });
+/** Where a path ends. A terminate end event ends the whole instance, other paths included; inside a sub-process, the sub-process. */
+const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optional(), in: In, terminate: z.boolean().default(false) });
 
 /** A choice that completes a user task, such as approve. It can run one of the app's actions on the record, as the person who decides. */
 const Outcome = z.strictObject({ name: Name, label: Label, action: Name.optional() });
@@ -540,6 +547,7 @@ const UserTask = z.strictObject({
   /** What the inbox calls the task. */
   name: Label,
   description: Description.optional(),
+  in: In,
   /** The app role whose holders may do the task. A role grants; routing only narrows. */
   role: Name,
   /** One person, by the record or the directory. Without one, anyone with the role can take it. */
@@ -562,31 +570,53 @@ const ServiceTask = z.strictObject({
   type: z.literal('serviceTask'),
   name: Label,
   description: Description.optional(),
+  in: In,
   action: Name.optional(),
   skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim').optional(),
   /** The skill's input, worked out from the record. */
   input: z.record(SkillInputName, ExpressionSchema).optional(),
 });
 /** A task with nothing to run, which passes straight on: work that is only drawn. */
-const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional() });
+const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional(), in: In });
 /** Work done away from any system, such as posting a letter: the process passes straight on. */
-const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, description: Description.optional() });
+const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, description: Description.optional(), in: In });
 /** Takes the first flow whose condition holds, in order, or its default flow. With several flows in, it lets each token through. */
-const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), name: Label.optional() });
+const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), name: Label.optional(), in: In });
 /** Takes every flow out at once; with several flows in, waits for a token from each. */
-const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), name: Label.optional() });
+const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), name: Label.optional(), in: In });
 /** A message, as Ambit's processes hear one: one of the app's actions committing on the record, such as the requester withdrawing. */
 export const Message = z.strictObject({ action: Name });
 export type Message = z.infer<typeof Message>;
 
 /** Takes every flow out whose condition holds, or else its default; with several flows in, waits for every path that can still arrive. */
-const InclusiveGateway = z.strictObject({ type: z.literal('inclusiveGateway'), name: Label.optional() });
+const InclusiveGateway = z.strictObject({ type: z.literal('inclusiveGateway'), name: Label.optional(), in: In });
 /** Waits until a timer fires, or a message comes: one of the two. */
-const CatchEvent = z.strictObject({ type: z.literal('intermediateCatchEvent'), name: Label.optional(), timer: Timer.optional(), message: Message.optional() });
+const CatchEvent = z.strictObject({ type: z.literal('intermediateCatchEvent'), name: Label.optional(), in: In, timer: Timer.optional(), message: Message.optional() });
 /**
- * An event on a task's boundary: a timer or a message on a user task, for a deadline, an escalation
- * or a withdrawal; or an error on a service task, which its action failing raises. An interrupting
- * one ends the task; one that doesn't interrupt starts another path beside it.
+ * A part of the process with its own start and end, drawn open on the canvas: the elements in it
+ * name it with `in`. It ends when no path is left inside it, and an event on its boundary acts on
+ * it as a whole: a deadline for all of it, or an error that anything inside it raises.
+ */
+const SubProcess = z.strictObject({ type: z.literal('subProcess'), name: Label, description: Description.optional(), in: In });
+/**
+ * Runs another process of the app and waits until it ends: on the same record, or, for a process
+ * about another entity, on the record that a reference field of this one names.
+ */
+const CallActivity = z.strictObject({
+  type: z.literal('callActivity'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  /** The process it runs, which starts at its start event without actions. */
+  process: Name,
+  /** A reference field of the record, for a process about the entity it refers to. */
+  record: Name.optional(),
+});
+/**
+ * An event on a task's boundary: a timer or a message on a user task, a sub-process or a call
+ * activity, for a deadline, an escalation or a withdrawal; or an error on a service task or a
+ * sub-process, which an action failing raises. An interrupting one ends what it sits on; one that
+ * doesn't interrupt starts another path beside it.
  */
 const BoundaryEvent = z.strictObject({
   type: z.literal('boundaryEvent'),
@@ -609,6 +639,8 @@ export const ProcessElement = z.discriminatedUnion('type', [
   ParallelGateway,
   InclusiveGateway,
   CatchEvent,
+  SubProcess,
+  CallActivity,
   BoundaryEvent,
 ]);
 export type ProcessElement = z.infer<typeof ProcessElement>;
@@ -617,6 +649,8 @@ export type UserTaskElement = Extract<ProcessElement, { type: 'userTask' }>;
 export type ServiceTaskElement = Extract<ProcessElement, { type: 'serviceTask' }>;
 export type BoundaryEventElement = Extract<ProcessElement, { type: 'boundaryEvent' }>;
 export type CatchEventElement = Extract<ProcessElement, { type: 'intermediateCatchEvent' }>;
+export type SubProcessElement = Extract<ProcessElement, { type: 'subProcess' }>;
+export type CallActivityElement = Extract<ProcessElement, { type: 'callActivity' }>;
 
 /** A sequence flow: the arrow from one element to the next. */
 export const Flow = z.strictObject({

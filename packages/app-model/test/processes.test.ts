@@ -7,12 +7,16 @@ import {
   decisionsBy,
   diffDefinitions,
   flowsOut,
+  insideOf,
   LEAVE_APP,
   lintDefinition,
   messageActions,
   mergeDefinitions,
+  plainStartOf,
   processGraph,
+  processWork,
   reachable,
+  scopeOf,
   skillStepIssues,
   startsOf,
   timerFiresAt,
@@ -154,8 +158,8 @@ describe('inclusive gateways, messages and errors', () => {
         }),
       ),
     ).toEqual([
-      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll isn't a user task: a timer or a message sits on a user task",
-      'processes.leave_approval.elements.failed.interrupting: An error always ends its task',
+      "processes.leave_approval.elements.withdrawn.attachedTo: Tell payroll can't have a timer or a message on its boundary: they sit on a user task, a sub-process or a call activity",
+      'processes.leave_approval.elements.failed.interrupting: An error always ends what it sits on',
       'processes.leave_approval.elements.wait: Until withdrawn waits for a timer or a message: one of the two',
       "processes.leave_approval.elements.also.message.action: approve_leave decides Decide on the leave, so it can't also interrupt it",
     ]);
@@ -169,6 +173,137 @@ describe('inclusive gateways, messages and errors', () => {
         }),
       ),
     ).toEqual(['processes.leave_approval.elements.failed.attachedTo: Tell payroll starts an a7c skill, which runs later in a7c: an error event catches the failure of an action']);
+  });
+});
+
+/**
+ * The leave app, where a review of approved leave runs in a sub-process. Inside it, the review
+ * calls the team's cover plan, a process about the team the request refers to, and a second look
+ * at the request itself.
+ */
+function nested(edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined): Record<string, any> {
+  return leave((process, definition) => {
+    definition['entities'].team = {
+      label: 'Team',
+      pluralLabel: 'Teams',
+      titleField: 'name',
+      fields: [
+        { name: 'name', label: 'Name', type: 'text', required: true },
+        { name: 'lead', label: 'Lead', type: 'user' },
+      ],
+    };
+    definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
+    const simple = (label: string, entity: string, task: string) => ({
+      label,
+      entity,
+      elements: {
+        start: { type: 'startEvent' },
+        task: { type: 'userTask', name: task, role: 'manager', outcomes: [{ name: 'done', label: 'Done' }] },
+        end: { type: 'endEvent' },
+      },
+      flows: { into: { from: 'start', to: 'task' }, out: { from: 'task', to: 'end' } },
+    });
+    definition['processes'].cover_plan = simple('Cover plan', 'team', 'Plan the cover');
+    definition['processes'].second_look = simple('Second look', 'leave_request', 'Look again');
+    process.elements.review = { type: 'subProcess', name: 'Review' };
+    process.elements.review_start = { type: 'startEvent', in: 'review' };
+    process.elements.cover = { type: 'callActivity', name: 'Plan the cover', in: 'review', process: 'cover_plan', record: 'team' };
+    process.elements.look = { type: 'callActivity', name: 'Look again', in: 'review', process: 'second_look' };
+    process.elements.review_end = { type: 'endEvent', in: 'review' };
+    process.elements.too_long = { type: 'boundaryEvent', name: 'Too long', attachedTo: 'review', timer: { duration: 'P5D' } };
+    process.elements.review_failed = { type: 'boundaryEvent', attachedTo: 'review', error: true };
+    process.flows.on_approve.to = 'review';
+    process.flows.r1 = { from: 'review_start', to: 'cover' };
+    process.flows.r2 = { from: 'cover', to: 'look' };
+    process.flows.r3 = { from: 'look', to: 'review_end' };
+    process.flows.reviewed = { from: 'review', to: 'approved' };
+    process.flows.late = { from: 'too_long', to: 'approved' };
+    process.flows.failed = { from: 'review_failed', to: 'approved' };
+    delete process.diagram;
+    edit(process, definition);
+  });
+}
+
+describe('sub-processes and call activities', () => {
+  it('pass the checks: a sub-process holds its own start and end, and a call runs on this record or on one it refers to', () => {
+    const definition = valid(nested());
+    const process = definition.processes!['leave_approval']!;
+    expect(scopeOf(process, 'cover')).toBe('review');
+    expect(scopeOf(process, 'too_long')).toBeUndefined();
+    expect([...insideOf(process, 'review')].sort()).toEqual(['cover', 'look', 'review_end', 'review_start']);
+    expect(processWork(process).calls).toEqual(['cover_plan', 'second_look']);
+    // The start event inside the review starts nothing on its own.
+    expect(startsOf(definition, 'request_leave')).toEqual([{ process: 'leave_approval', element: 'requested' }]);
+    expect(plainStartOf(process)).toBe('requested');
+    expect(plainStartOf(definition.processes!['cover_plan']!)).toBe('start');
+  });
+
+  it('are checked: what holds what, flows that cross the edge, and what a call runs on', () => {
+    const issues = issuesOf(
+      nested((process, definition) => {
+        process.elements.review_start.actions = ['approve_leave'];
+        process.elements.stray = { type: 'endEvent', in: 'decide' };
+        process.flows.out_of_it = { from: 'review_start', to: 'rejected' };
+        process.elements.look.record = 'manager';
+        process.elements.wrong = { type: 'callActivity', name: 'Wrong record', in: 'review', process: 'cover_plan' };
+        process.flows.r2.to = 'wrong';
+        process.flows.r2b = { from: 'wrong', to: 'look' };
+        process.elements.too_long.message = { action: 'approve_leave' };
+        delete process.elements.too_long.timer;
+        definition['processes'].second_look.elements.start.actions = ['request_leave'];
+      }),
+    );
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        "processes.leave_approval.flows.out_of_it: A flow can't cross the edge of a sub-process: Start event review_start is in Review, and Leave rejected is in the process itself",
+        "processes.leave_approval.elements.review_start.actions: A start event inside a sub-process starts when the sub-process does: it names no actions",
+        "processes.leave_approval.elements.stray.in: Decide on the leave isn't a sub-process: only a sub-process holds other elements",
+        "processes.leave_approval.elements.look.record: manager doesn't refer to a record",
+        'processes.leave_approval.elements.look.process: Second look has no start event without actions, where a call starts it',
+        'processes.leave_approval.elements.wrong.record: Cover plan is about team: name the reference field whose record it runs on',
+      ]),
+    );
+    expect(issuesOf(nested((process) => void (process.elements.too_long = { type: 'boundaryEvent', attachedTo: 'review', message: { action: 'withdraw' } })))).toEqual(
+      expect.arrayContaining(['processes.leave_approval.elements.too_long.message.action: No action named withdraw']),
+    );
+  });
+
+  it('are checked: a sub-process starts once and ends, and processes call no one in a ring', () => {
+    expect(
+      issuesOf(
+        nested((process, definition) => {
+          delete process.elements.review_end;
+          delete process.flows.r3;
+          process.flows.r3 = { from: 'look', to: 'review_start_2' };
+          process.elements.review_start_2 = { type: 'startEvent', in: 'review' };
+          definition['processes'].second_look.elements.again = { type: 'callActivity', name: 'Approve again', process: 'leave_approval' };
+          definition['processes'].second_look.flows.out.to = 'again';
+          definition['processes'].second_look.flows.on = { from: 'again', to: 'end' };
+        }),
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        'processes.leave_approval.elements.review: Review starts at one start event inside it',
+        'processes.leave_approval.elements.review: Review needs an end event inside it',
+        'processes.leave_approval.elements.look.process: Second look calls Leave approval in turn, so they would call each other without end',
+        'processes.second_look.elements.again.process: Leave approval calls Second look in turn, so they would call each other without end',
+      ]),
+    );
+    expect(issuesOf(nested((process) => void (process.elements.look.process = 'leave_approval')))).toEqual(
+      expect.arrayContaining(["processes.leave_approval.elements.look.process: A process can't call itself"]),
+    );
+  });
+
+  it('are named in a change request: what a process calls', () => {
+    const before = valid(leave());
+    const after = valid(nested());
+    expect(capabilityChanges(before, after).map((change) => change.text)).toEqual([
+      'Leave approval now calls cover_plan',
+      'Leave approval now calls second_look',
+      'New process Cover plan, on Team: another process calls it',
+      'New process Second look, on Leave request: another process calls it',
+    ]);
+    expect(lintDefinition(after).filter((finding) => finding.startsWith('Nothing starts'))).toEqual([]);
   });
 });
 
@@ -301,7 +436,7 @@ describe('the checks of a process', () => {
       'processes.leave_approval.flows.self.from: End event island_end is an end event: no flow leaves it',
       'processes.leave_approval.flows.bare: A flow out of Exclusive gateway which needs a condition, or must be its default',
       "processes.leave_approval.elements.wait.timer.date: reason isn't a date or a time",
-      "processes.leave_approval.elements.late.attachedTo: Event wait isn't a user task: a timer or a message sits on a user task",
+      "processes.leave_approval.elements.late.attachedTo: Event wait can't have a timer or a message on its boundary: they sit on a user task, a sub-process or a call activity",
       "processes.leave_approval.elements.island: Island can't be reached from a start event",
       "processes.leave_approval.elements.island_end: End event island_end can't be reached from a start event",
       'processes.leave_approval.diagram.shapes.gone: No element gone',
@@ -346,6 +481,15 @@ describe('the checks of a process', () => {
     const process = result.definition.processes!['leave_approval']!;
     expect(process.entity).toBe('absence');
     expect(process.elements['decide']).toMatchObject({ assignee: { field: 'line_manager' } });
+  });
+
+  it('carry a rename of the reference field that a call runs on', () => {
+    const before = valid(nested());
+    const renamed = structuredClone(before) as unknown as Record<string, any>;
+    renamed['entities'].leave_request.fields.find((field: { name: string }) => field.name === 'team').name = 'squad';
+    const result = validateDefinition(renamed, before, ids());
+    if (!result.ok) throw new Error(JSON.stringify(result.issues));
+    expect(result.definition.processes!['leave_approval']!.elements['cover']).toMatchObject({ process: 'cover_plan', record: 'squad' });
   });
 });
 

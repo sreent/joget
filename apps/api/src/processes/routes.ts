@@ -52,6 +52,8 @@ const InstanceOut = z.object({
   waiting: z.array(z.object({ element: z.string(), name: z.string() })),
   startedBy: z.uuid().nullable(),
   startedByAction: z.string().nullable(),
+  /** The instance whose call activity started it. */
+  calledBy: z.uuid().nullable(),
   startedAt: z.string(),
   endedAt: z.string().nullable(),
 });

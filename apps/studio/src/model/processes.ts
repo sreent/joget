@@ -1,4 +1,17 @@
-import { layoutProcess, processGraph, routeFlow, type BoundaryEventElement, type Diagram, type Flow, type Process, type ProcessElement } from '@platform/app-model';
+import {
+  insideOf,
+  layoutProcess,
+  processGraph,
+  routeFlow,
+  scopeOf,
+  scopesOf,
+  type BoundaryEventElement,
+  type Diagram,
+  type Flow,
+  type Process,
+  type ProcessElement,
+  type UserTaskElement,
+} from '@platform/app-model';
 import type { Definition } from '../types.js';
 import { toName } from './edit.js';
 
@@ -24,6 +37,8 @@ export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label
   { kind: 'endEvent', label: 'End', hint: 'The path ends here' },
   { kind: 'inclusiveGateway', label: 'Inclusive', hint: 'Each path whose condition holds, then wait for them', more: true },
   { kind: 'messageEvent', label: 'Message', hint: 'Wait until an action is saved on the record', more: true },
+  { kind: 'subProcess', label: 'Sub-process', hint: 'A part with its own start and end, and deadlines for all of it', more: true },
+  { kind: 'callActivity', label: 'Call process', hint: 'Run another process of the app, and wait until it ends', more: true },
   { kind: 'task', label: 'Task', hint: 'Work that is only drawn', more: true },
   { kind: 'manualTask', label: 'Manual task', hint: 'Work away from any system', more: true },
 ];
@@ -39,22 +54,63 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   inclusiveGateway: 'inclusive',
   intermediateCatchEvent: 'wait',
   messageEvent: 'wait',
+  subProcess: 'sub',
+  callActivity: 'call',
 };
 
-const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 } } as const;
-export const sizeOf = (type: ProcessElementType | ElementKind) => (type.endsWith('Event') ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task);
+const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 }, sub: { width: 340, height: 180 } } as const;
+export const sizeOf = (type: ProcessElementType | ElementKind) =>
+  type === 'subProcess' ? SIZE.sub : type.endsWith('Event') ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
 
 const clone = <T>(value: T): T => structuredClone(value);
 
 /** Two shapes overlap, or come closer than a margin that keeps room for the label under an event. */
 const overlaps = (a: Shape, b: Shape, margin = 20) => a.x < b.x + b.width + margin && b.x < a.x + a.width + margin && a.y < b.y + b.height + margin && b.y < a.y + a.height + margin;
 
-/** Where a new shape can stand: where it is meant to, or lower down until it overlaps no other shape. */
-function clear(diagram: Diagram, id: string, shape: Shape): Shape {
-  const others = Object.entries(diagram.shapes).flatMap(([other, each]) => (other === id ? [] : [each]));
+/** Where a new shape can stand: where it is meant to, or lower down until it overlaps no other shape but the sub-processes it is in. */
+function clear(process: Process, diagram: Diagram, id: string, shape: Shape): Shape {
+  const around = new Set([id, ...scopesOf(process, id)]);
+  const others = Object.entries(diagram.shapes).flatMap(([other, each]) => (around.has(other) ? [] : [each]));
   let at = shape;
   for (let tries = 0; tries < 30 && others.some((other) => overlaps(at, other)); tries++) at = { ...at, y: at.y + 60 };
   return at;
+}
+
+/**
+ * Grow the sub-processes an element is in, the nearest first, so each holds all that is inside it.
+ * The events on a sub-process's boundary keep their place on its bottom edge.
+ */
+function fit(process: Process, id: string): void {
+  const shapes = process.diagram!.shapes;
+  for (const scope of scopesOf(process, id)) {
+    const box = shapes[scope];
+    const inner = [...insideOf(process, scope)].flatMap((other) => (shapes[other] ? [shapes[other]] : []));
+    if (!box || !inner.length) continue;
+    const left = Math.min(box.x, ...inner.map((shape) => shape.x - 30));
+    const top = Math.min(box.y, ...inner.map((shape) => shape.y - 40));
+    const right = Math.max(box.x + box.width, ...inner.map((shape) => shape.x + shape.width + 30));
+    const bottom = Math.max(box.y + box.height, ...inner.map((shape) => shape.y + shape.height + 40));
+    for (const [other, element] of Object.entries(process.elements)) {
+      const event = shapes[other];
+      if (element.type !== 'boundaryEvent' || element.attachedTo !== scope || !event) continue;
+      shapes[other] = { ...event, x: right - (box.x + box.width - event.x), y: bottom - 18 };
+    }
+    shapes[scope] = { ...box, x: left, y: top, width: right - left, height: bottom - top };
+  }
+}
+
+/** The processes a call activity can run: another about the same entity, on the same record, or one about an entity that a reference field refers to, on that record. */
+export function callChoices(definition: Definition, name: string): Array<{ readonly process: string; readonly record?: string; readonly label: string }> {
+  const self = definition.processes?.[name];
+  if (!self) return [];
+  const fields = definition.entities[self.entity]?.fields ?? [];
+  return Object.entries(definition.processes ?? {}).flatMap(([other, process]) => {
+    if (other === name) return [];
+    if (process.entity === self.entity) return [{ process: other, label: process.label }];
+    return fields.flatMap((field) =>
+      field.type === 'reference' && field.entity === process.entity ? [{ process: other, record: field.name, label: `${process.label}, on the record's ${field.label.toLowerCase()}` }] : [],
+    );
+  });
 }
 
 /** An ID that no element or flow of the process has yet: `task_2`, `flow_7`. */
@@ -134,9 +190,20 @@ export function updateProcess(definition: Definition, name: string, patch: Parti
   });
 }
 
-/** A new element of a kind, with values that pass the checks where the app allows it. */
-export function newElement(definition: Definition, process: Process, type: ElementKind): ProcessElement {
+/** A new element of a kind, with values that pass the checks where the app allows it. `self` is the process's name. */
+export function newElement(definition: Definition, process: Process, type: ElementKind, self = ''): ProcessElement {
   switch (type) {
+    case 'subProcess':
+      return { type, name: 'New sub-process' };
+    case 'callActivity': {
+      const choice = callChoices(definition, self)[0];
+      return {
+        type,
+        name: choice ? definition.processes![choice.process]!.label : 'Call a process',
+        process: choice?.process ?? 'process',
+        ...(choice?.record ? { record: choice.record } : {}),
+      };
+    }
     case 'userTask':
       return { type, name: 'New task', role: Object.keys(definition.roles)[0] ?? 'role', outcomes: [{ name: 'done', label: 'Done' }] };
     case 'serviceTask': {
@@ -176,7 +243,10 @@ export function addElement(
   let id = '';
   const next = withProcess(definition, name, (process) => {
     id = freeId(process, PREFIX[type]);
-    process.elements[id] = newElement(definition, process, type);
+    // The element stands where the flow it goes on, or the element it follows, is: in a sub-process, it goes in there.
+    const scope = options.on && process.flows[options.on] ? scopeOf(process, process.flows[options.on]!.from) : options.after ? scopeOf(process, options.after) : undefined;
+    const made = newElement(definition, process, type, name);
+    process.elements[id] = made.type !== 'boundaryEvent' && scope !== undefined ? { ...made, in: scope } : made;
     const diagram = process.diagram!;
     const size = sizeOf(type);
     const on = options.on ? process.flows[options.on] : undefined;
@@ -195,10 +265,10 @@ export function addElement(
       }
       // Halfway along the gap between the shapes, and halfway between their middles.
       const center = from && to ? { x: (from.x + from.width + to.x) / 2, y: (from.y + from.height / 2 + to.y + to.height / 2) / 2 } : { x: 100, y: 100 };
-      diagram.shapes[id] = clear(diagram, id, { x: center.x - size.width / 2, y: center.y - size.height / 2, ...size });
+      diagram.shapes[id] = clear(process, diagram, id, { x: center.x - size.width / 2, y: center.y - size.height / 2, ...size });
       if (type !== 'endEvent') process.flows[freeId(process, 'flow')] = { from: id, to: on.to };
       on.to = id;
-      reroute(process, new Set(Object.keys(process.elements)));
+      finish(process, id);
       return;
     }
     const after = options.after ? diagram.shapes[options.after] : undefined;
@@ -225,10 +295,28 @@ export function addElement(
         process.flows[freeId(process, 'flow')] = withOutcome(process, options.after, { from: options.after, to: id });
       }
     }
-    diagram.shapes[id] = clear(diagram, id, { ...at, ...size });
-    reroute(process, new Set(Object.keys(process.elements)));
+    diagram.shapes[id] = clear(process, diagram, id, { ...at, ...size });
+    finish(process, id);
   });
   return { definition: next, id };
+}
+
+/** What adding an element ends with: a sub-process gets its own start and end, the sub-processes it is in grow to hold it, and the flows follow. */
+function finish(process: Process, id: string): void {
+  const shapes = process.diagram!.shapes;
+  const box = shapes[id];
+  if (process.elements[id]?.type === 'subProcess' && box) {
+    const start = freeId(process, 'start');
+    process.elements[start] = { type: 'startEvent', in: id, actions: [] };
+    const end = freeId(process, 'end');
+    process.elements[end] = { type: 'endEvent', in: id, terminate: false };
+    process.flows[freeId(process, 'flow')] = { from: start, to: end };
+    const middle = box.y + box.height / 2 - 18;
+    shapes[start] = { x: box.x + 40, y: middle, width: 36, height: 36 };
+    shapes[end] = { x: box.x + box.width - 76, y: middle, width: 36, height: 36 };
+  }
+  fit(process, id);
+  reroute(process, new Set(Object.keys(process.elements)));
 }
 
 /** A flow out of a user task follows an outcome: the first one without a flow yet. Out of a decision or an inclusive gateway, a second flow is the default. */
@@ -251,6 +339,8 @@ export function connect(definition: Definition, name: string, from: string, to: 
   const target = process?.elements[to];
   if (!process || !source || !target || from === to) return null;
   if (source.type === 'endEvent' || target.type === 'startEvent' || target.type === 'boundaryEvent') return null;
+  // A flow stays inside one sub-process, or outside all of them.
+  if (scopeOf(process, from) !== scopeOf(process, to)) return null;
   if (Object.values(process.flows).some((flow) => flow.from === from && flow.to === to)) return null;
   let id = '';
   const next = withProcess(definition, name, (draft) => {
@@ -262,12 +352,13 @@ export function connect(definition: Definition, name: string, from: string, to: 
 }
 
 /**
- * Remove an element, with its flows and the events on its boundary. Where one path ran through
- * it, the path joins up again around it.
+ * Remove an element, with its flows and the events on its boundary; a sub-process, with all it
+ * holds. Where one path ran through it, the path joins up again around it.
  */
 export function removeElement(definition: Definition, name: string, id: string): Definition {
   return withProcess(definition, name, (process) => {
-    const gone = new Set([id, ...Object.entries(process.elements).flatMap(([other, element]) => (element.type === 'boundaryEvent' && element.attachedTo === id ? [other] : []))]);
+    const gone = new Set([id, ...(process.elements[id]?.type === 'subProcess' ? insideOf(process, id) : [])]);
+    for (const [other, element] of Object.entries(process.elements)) if (element.type === 'boundaryEvent' && gone.has(element.attachedTo)) gone.add(other);
     const into = Object.entries(process.flows).filter(([, flow]) => flow.to === id);
     const out = Object.entries(process.flows).filter(([, flow]) => flow.from === id);
     const heal = into.length === 1 && out.length === 1 && process.elements[into[0]![1].from]?.type !== 'boundaryEvent';
@@ -324,7 +415,10 @@ export function updateFlow(definition: Definition, name: string, id: string, cha
   });
 }
 
-/** Move an element on the canvas. The events on its boundary move with it, and its flows follow. */
+/**
+ * Move an element on the canvas. The events on its boundary move with it, and so does all that a
+ * sub-process holds; its flows follow, and the sub-processes it is in grow to hold it.
+ */
 export function moveElement(definition: Definition, name: string, id: string, at: { x: number; y: number }): Definition {
   return withProcess(definition, name, (process) => {
     const shapes = process.diagram!.shapes;
@@ -333,12 +427,15 @@ export function moveElement(definition: Definition, name: string, id: string, at
     const dy = at.y - shape.y;
     shapes[id] = { ...shape, x: at.x, y: at.y };
     const moved = new Set([id]);
-    for (const [other, element] of Object.entries(process.elements)) {
-      if (element.type !== 'boundaryEvent' || element.attachedTo !== id || !shapes[other]) continue;
+    const along = new Set(process.elements[id]?.type === 'subProcess' ? insideOf(process, id) : []);
+    for (const [other, element] of Object.entries(process.elements)) if (element.type === 'boundaryEvent' && element.attachedTo === id) along.add(other);
+    for (const other of along) {
+      if (!shapes[other]) continue;
       shapes[other] = { ...shapes[other]!, x: shapes[other]!.x + dx, y: shapes[other]!.y + dy };
       moved.add(other);
     }
-    reroute(process, moved);
+    fit(process, id);
+    reroute(process, new Set([...moved, ...scopesOf(process, id)]));
   });
 }
 
@@ -349,8 +446,18 @@ export function arrange(definition: Definition, name: string): Definition {
   });
 }
 
-/** What a task's boundary can wait for: a deadline or an action saved on the record on a user task, the failure of its action on a system task. */
+/**
+ * What a boundary can wait for: a deadline or an action saved on the record, on a user task, a
+ * sub-process or a call; the failure of an action, on a system task or a sub-process.
+ */
 export type BoundaryKind = 'timer' | 'message' | 'error';
+
+/** The elements whose boundary takes an event of a kind. */
+export const BOUNDARY_HOSTS: Readonly<Record<BoundaryKind, readonly ProcessElementType[]>> = {
+  timer: ['userTask', 'subProcess', 'callActivity'],
+  message: ['userTask', 'subProcess', 'callActivity'],
+  error: ['serviceTask', 'subProcess'],
+};
 
 const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonly end: string; readonly endPrefix: string }>> = {
   timer: { prefix: 'deadline', end: 'Too late', endPrefix: 'too_late' },
@@ -359,29 +466,31 @@ const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonl
 };
 
 /**
- * The update actions that can interrupt a user task as a message: not one of its outcomes, which
- * decide it, and not one that another event on the task waits for already.
+ * The update actions that can interrupt a user task, a sub-process or a call as a message: not an
+ * outcome of a task it is or holds, which decides that task, and not one that another event on it
+ * waits for already.
  */
 export function messageChoices(definition: Definition, process: Process, task: string): string[] {
   const host = process.elements[task];
-  if (host?.type !== 'userTask') return [];
+  if (!host || !BOUNDARY_HOSTS.message.includes(host.type)) return [];
+  const deciding = host.type === 'userTask' ? [host] : host.type === 'subProcess' ? [...insideOf(process, task)].map((id) => process.elements[id]).filter((element): element is UserTaskElement => element?.type === 'userTask') : [];
   const taken = new Set([
-    ...host.outcomes.flatMap((outcome) => (outcome.action ? [outcome.action] : [])),
+    ...deciding.flatMap((each) => each.outcomes.flatMap((outcome) => (outcome.action ? [outcome.action] : []))),
     ...Object.values(process.elements).flatMap((element) => (element.type === 'boundaryEvent' && element.attachedTo === task && element.message ? [element.message.action] : [])),
   ]);
   return updateActions(definition, process.entity).filter((action) => !taken.has(action));
 }
 
 /**
- * Put an event on a task's boundary, and a path for when it happens, to an end that says so. The
- * builder can lead the path elsewhere. A deadline or a message waits on a user task; an error
- * catches the failure of a system task's action.
+ * Put an event on a boundary, and a path for when it happens, to an end that says so. The builder
+ * can lead the path elsewhere. A deadline or a message waits on a user task, a sub-process or a
+ * call; an error catches the failure of an action in a system task or a sub-process.
  */
 export function addBoundary(definition: Definition, name: string, task: string, kind: BoundaryKind): { definition: Definition; id: string } {
   let id = '';
   const next = withProcess(definition, name, (process) => {
     const host = process.elements[task];
-    if (host?.type !== (kind === 'error' ? 'serviceTask' : 'userTask')) return;
+    if (!host || !BOUNDARY_HOSTS[kind].includes(host.type)) return;
     let event: BoundaryEventElement;
     if (kind === 'timer') event = { type: 'boundaryEvent', name: 'Deadline', attachedTo: task, interrupting: true, timer: { duration: 'P3D' } };
     else if (kind === 'error') event = { type: 'boundaryEvent', name: 'Error', attachedTo: task, interrupting: true, error: true };
@@ -393,15 +502,18 @@ export function addBoundary(definition: Definition, name: string, task: string, 
     id = freeId(process, BOUNDARY[kind].prefix);
     const end = freeId(process, BOUNDARY[kind].endPrefix);
     process.elements[id] = event;
-    process.elements[end] = { type: 'endEvent', name: BOUNDARY[kind].end, terminate: false };
+    // The path leads on where the host stands: inside its sub-process, if it is in one.
+    const scope = scopeOf(process, task);
+    process.elements[end] = { type: 'endEvent', name: BOUNDARY[kind].end, terminate: false, ...(scope !== undefined ? { in: scope } : {}) };
     process.flows[freeId(process, 'flow')] = { from: id, to: end };
     const shape = process.diagram!.shapes[task];
     if (shape) {
       const taken = Object.values(process.elements).filter((element) => element.type === 'boundaryEvent' && element.attachedTo === task).length - 1;
       process.diagram!.shapes[id] = { x: shape.x + shape.width - 30 - taken * 40, y: shape.y + shape.height - 18, width: 36, height: 36 };
-      process.diagram!.shapes[end] = clear(process.diagram!, end, { x: shape.x + shape.width + 60, y: shape.y + shape.height + 60, width: 36, height: 36 });
+      process.diagram!.shapes[end] = clear(process, process.diagram!, end, { x: shape.x + shape.width + 60, y: shape.y + shape.height + 60, width: 36, height: 36 });
+      fit(process, end);
     }
-    reroute(process, new Set([id, end]));
+    reroute(process, new Set([id, end, ...scopesOf(process, end)]));
   });
   return { definition: next, id };
 }
@@ -467,6 +579,7 @@ export function forgetInProcesses(definition: Definition, gone: { readonly actio
         }
       }
       if (element.type === 'serviceTask' && gone.action && element.action === gone.action) delete element.action;
+      if (element.type === 'callActivity' && gone.field && gone.entity === process.entity && element.record === gone.field) delete element.record;
       if ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && gone.field && gone.entity === process.entity && element.timer && 'date' in element.timer && element.timer.date === gone.field) {
         element.timer = { duration: 'P1D' };
       }

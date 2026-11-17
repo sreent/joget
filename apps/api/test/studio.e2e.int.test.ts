@@ -485,4 +485,54 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.elements['error_1']).toEqual({ type: 'boundaryEvent', name: 'Error', attachedTo: 'system_1', interrupting: true, error: true });
     expect(saved.flows['on_reject']).toMatchObject({ from: 'decide', to: 'rejected' });
   });
+
+  it('designs a sub-process with a task inside it, and a call to another process of the app', async () => {
+    // The leave template, with a second process on the same requests, for the first to call.
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a review', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
+    current.definition.processes.second_look = {
+      label: 'Second look',
+      entity: 'leave_request',
+      elements: { start: { type: 'startEvent', name: 'Start' }, end: { type: 'endEvent', name: 'Seen' } },
+      flows: { through: { from: 'start', to: 'end' } },
+    };
+    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    expect(put.statusCode, put.body).toBe(200);
+
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await page.getByLabel('Process', { exact: true }).selectOption('leave_approval');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    // A rejection calls the second look.
+    await page.getByTestId('rf__edge-on_reject').locator('.react-flow__edge-textbg').click();
+    await page.getByRole('button', { name: 'Call process', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Call process', exact: true }));
+    await visible(page.getByRole('button', { name: 'Open Second look', exact: true }));
+    // Once approved, a review runs as a sub-process, with its own start and end.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByRole('button', { name: 'Sub-process', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Sub-process', exact: true }));
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Review');
+    // After the start event inside it, a task goes inside it too.
+    await page.getByTestId('rf__node-start_1').click();
+    await page.getByRole('button', { name: 'Manual task', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Manual task', exact: true }));
+    await shot(page, '15e-process-sub-and-call');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 3' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['sub_1']).toEqual({ type: 'subProcess', name: 'Review' });
+    expect(saved.elements['manual_1']).toMatchObject({ type: 'manualTask', in: 'sub_1' });
+    expect(saved.elements['call_1']).toEqual({ type: 'callActivity', name: 'Second look', process: 'second_look' });
+
+    // The called process opens from the call.
+    await page.getByTestId('process-canvas').getByText('Second look', { exact: true }).click();
+    await page.getByRole('button', { name: 'Open Second look', exact: true }).click();
+    await visible(page.getByTestId('process-canvas').getByText('Seen', { exact: true }));
+  });
 });

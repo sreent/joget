@@ -487,6 +487,181 @@ describe('inclusive gateways, messages and errors', () => {
   });
 });
 
+describe('sub-processes and call activities', () => {
+  it('runs a sub-process to its end, and ends all of it on a message or on a failure inside it', async () => {
+    const app = await leaveApp('Leave, with a review', (definition) => {
+      definition['actions'].withdraw_leave = {
+        label: 'Withdraw the leave',
+        description: 'Withdraw a leave request that waits for a decision.',
+        entity: 'leave_request',
+        operation: 'update',
+        input: [],
+        set: { status: 'rejected' },
+        where: { eq: [{ ref: 'record.status' }, 'submitted'] },
+      };
+      // Payroll takes short leave only: for long leave, the action doesn't apply, and fails.
+      definition['actions'].note_review = {
+        label: 'Note the review',
+        description: 'Note that the leave is under review.',
+        entity: 'leave_request',
+        operation: 'update',
+        input: [],
+        set: { reason: 'Under review' },
+        where: { lte: [{ ref: 'record.days' }, 10] },
+      };
+      definition['roles'].employee.actions.push('withdraw_leave');
+      definition['processes'].leave_approval = {
+        label: 'Leave, with a review',
+        entity: 'leave_request',
+        elements: {
+          requested: { type: 'startEvent', actions: ['request_leave'] },
+          review: { type: 'subProcess', name: 'Review' },
+          review_start: { type: 'startEvent', in: 'review' },
+          split: { type: 'parallelGateway', in: 'review' },
+          check: { type: 'userTask', name: 'Check the dates', in: 'review', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          note: { type: 'serviceTask', name: 'Note the review', in: 'review', action: 'note_review' },
+          join: { type: 'parallelGateway', in: 'review' },
+          review_end: { type: 'endEvent', in: 'review' },
+          withdrawn: { type: 'boundaryEvent', name: 'Withdrawn', attachedTo: 'review', message: { action: 'withdraw_leave' } },
+          failed: { type: 'boundaryEvent', name: 'Review failed', attachedTo: 'review', error: true },
+          by_hand: { type: 'userTask', name: 'Sort it out by hand', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          reviewed: { type: 'endEvent', name: 'Reviewed' },
+          gone: { type: 'endEvent', name: 'Leave withdrawn' },
+        },
+        flows: {
+          f1: { from: 'requested', to: 'review' },
+          r1: { from: 'review_start', to: 'split' },
+          r2: { from: 'split', to: 'check' },
+          r3: { from: 'split', to: 'note' },
+          r4: { from: 'check', to: 'join' },
+          r5: { from: 'note', to: 'join' },
+          r6: { from: 'join', to: 'review_end' },
+          f2: { from: 'review', to: 'reviewed' },
+          f3: { from: 'withdrawn', to: 'gone' },
+          f4: { from: 'failed', to: 'by_hand' },
+          f5: { from: 'by_hand', to: 'reviewed' },
+        },
+      };
+    });
+    const tasksFor = async (recordId: string) => (await inbox(bob)).filter((task: { recordId: string }) => task.recordId === recordId);
+    const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
+
+    // Short leave: the sub-process runs both paths in it, and ends when nothing runs in it any more.
+    const short = await ask(app, { days: 2 });
+    let [instance] = await processesOf(app, short.record.id);
+    expect(instance).toMatchObject({ status: 'running', waiting: expect.arrayContaining([{ element: 'review', name: 'Review' }, { element: 'check', name: 'Check the dates' }]) });
+    await complete(bob, (await tasksFor(short.record.id))[0].id, 'done');
+    [instance] = await processesOf(app, short.record.id);
+    expect(instance.status).toBe('completed');
+    expect(kinds(instance)).toEqual([
+      ['started', 'requested'],
+      ['entered', 'review'],
+      ['task_opened', 'check'],
+      ['ran', 'note'],
+      ['task_completed', 'check'],
+      ['exited', 'review'],
+      ['ended', 'reviewed'],
+    ]);
+
+    // Withdrawn while the review runs: the message on its boundary ends all of it, the open task too.
+    const withdrawn = await ask(app, { days: 3, starts: '2027-09-06', ends: '2027-09-08' });
+    expect(await tasksFor(withdrawn.record.id)).toHaveLength(1);
+    await inject({ method: 'POST', url: `/v1/apps/${app}/actions/withdraw_leave/run`, ...as(alice), payload: { recordId: withdrawn.record.id } }, 200);
+    expect(await tasksFor(withdrawn.record.id)).toEqual([]);
+    [instance] = await processesOf(app, withdrawn.record.id);
+    expect(instance).toMatchObject({ status: 'completed', tasks: [{ element: 'check', status: 'cancelled' }] });
+    expect(instance.events.at(-1)).toMatchObject({ kind: 'ended', element: 'gone' });
+
+    // Long leave: the action inside fails, and the error event on the sub-process takes the path by hand.
+    const long = await ask(app, { days: 12, starts: '2027-10-04', ends: '2027-10-19' });
+    [instance] = await processesOf(app, long.record.id);
+    expect(instance).toMatchObject({ status: 'running', stuck: [], waiting: [{ element: 'by_hand', name: 'Sort it out by hand' }] });
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught')).toMatchObject({ element: 'failed', detail: { task: 'note' } });
+    expect(instance.tasks.map((task: { element: string; status: string }) => [task.element, task.status])).toEqual([
+      ['check', 'cancelled'],
+      ['by_hand', 'open'],
+    ]);
+    await complete(bob, (await tasksFor(long.record.id))[0].id, 'done');
+    expect((await processesOf(app, long.record.id))[0].status).toBe('completed');
+  });
+
+  it('calls a process on the team the request refers to, and goes on when it ends; a cancel goes both ways', async () => {
+    const app = await leaveApp('Leave, with cover', (definition) => {
+      definition['entities'].team = {
+        label: 'Team',
+        pluralLabel: 'Teams',
+        titleField: 'name',
+        fields: [
+          { name: 'name', label: 'Name', type: 'text', required: true },
+          { name: 'lead', label: 'Lead', type: 'user' },
+        ],
+      };
+      definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
+      definition['actions'].request_leave.input.push('team');
+      definition['actions'].add_team = { label: 'Add a team', description: 'Add a team.', entity: 'team', operation: 'create', input: ['name', 'lead'], set: {}, confirm: 'none' };
+      definition['roles'].employee.entities.team = { read: true, create: true };
+      definition['roles'].employee.actions.push('add_team');
+      definition['roles'].manager.entities.team = { read: true };
+      definition['processes'].cover_plan = {
+        label: 'Cover plan',
+        entity: 'team',
+        elements: {
+          start: { type: 'startEvent' },
+          plan: { type: 'userTask', name: 'Plan the cover', role: 'manager', assignee: { field: 'lead' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          end: { type: 'endEvent', name: 'Covered' },
+        },
+        flows: { f1: { from: 'start', to: 'plan' }, f2: { from: 'plan', to: 'end' } },
+      };
+      const process = definition['processes'].leave_approval;
+      process.elements.cover = { type: 'callActivity', name: 'Plan the cover', process: 'cover_plan', record: 'team' };
+      process.flows.on_approve.to = 'cover';
+      process.flows.covered = { from: 'cover', to: 'approved' };
+      delete process.diagram;
+    });
+    const team = await json({ method: 'POST', url: `/v1/apps/${app}/actions/add_team/run`, ...as(alice), payload: { values: { name: 'Payments', lead: bob.userId } } }, 201);
+    const teamProcesses = async () => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/team/records/${team.record.id}/processes`, ...as(alice) }, 200)).instances;
+    const decide = async (recordId: string) => {
+      const [task] = (await inbox(bob)).filter((open: { recordId: string; element: string }) => open.recordId === recordId && open.element === 'decide');
+      await complete(bob, task.id, 'approve');
+    };
+    const planTask = async () => (await inbox(bob)).filter((open: { recordId: string }) => open.recordId === team.record.id);
+
+    // Approved: the leave waits while the team's lead plans the cover, on the team's record.
+    const asked = await ask(app, { team: team.record.id, starts: '2027-11-01', ends: '2027-11-02', days: 2 });
+    await decide(asked.record.id);
+    let [leave] = await processesOf(app, asked.record.id);
+    expect(leave).toMatchObject({ status: 'running', waiting: [{ element: 'cover', name: 'Plan the cover' }] });
+    const [cover] = await teamProcesses();
+    expect(cover).toMatchObject({ process: 'cover_plan', status: 'running', calledBy: leave.id, entity: 'team', recordId: team.record.id });
+    expect(leave.events.find((event: { kind: string }) => event.kind === 'called')).toMatchObject({ element: 'cover', detail: { process: 'cover_plan', instance: cover.id } });
+    const [plan] = await planTask();
+    expect(plan).toMatchObject({ name: 'Plan the cover', entity: 'team', assignee: { id: bob.userId } });
+    await complete(bob, plan.id, 'done');
+    [leave] = await processesOf(app, asked.record.id);
+    expect(leave.status).toBe('completed');
+    expect(leave.events.slice(-2)).toMatchObject([
+      { kind: 'returned', element: 'cover', detail: { instance: cover.id } },
+      { kind: 'ended', element: 'approved' },
+    ]);
+
+    // An operator cancels the called instance: the call waits for them, and trying again calls it anew.
+    const second = await ask(app, { team: team.record.id, starts: '2027-11-08', ends: '2027-11-09', days: 2 });
+    await decide(second.record.id);
+    let running = (await teamProcesses()).find((instance: { status: string }) => instance.status === 'running');
+    await json({ method: 'POST', url: `/v1/apps/${app}/process-instances/${running.id}/cancel`, ...as(alice) }, 200);
+    [leave] = await processesOf(app, second.record.id);
+    expect(leave).toMatchObject({ status: 'running', stuck: [{ element: 'cover', error: 'Cover plan was cancelled: try again to start it anew' }] });
+    await json({ method: 'POST', url: `/v1/apps/${app}/process-instances/${leave.id}/retry`, ...as(alice) }, 200);
+    expect(await planTask()).toHaveLength(1);
+
+    // Cancelling the leave's instance cancels the cover plan it waits for.
+    await json({ method: 'POST', url: `/v1/apps/${app}/process-instances/${leave.id}/cancel`, ...as(alice) }, 200);
+    expect(await planTask()).toEqual([]);
+    running = (await teamProcesses()).filter((instance: { status: string }) => instance.status === 'running');
+    expect(running).toEqual([]);
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {
@@ -532,5 +707,45 @@ describe('a deadline', () => {
       ['task_completed', 'hr_decides'],
       ['ended', 'rejected'],
     ]);
+  });
+
+  it('ends a call that takes too long, with the process it called', async () => {
+    const app = await leaveApp('Leave, with a second look', (definition) => {
+      definition['processes'].second_look = {
+        label: 'Second look',
+        entity: 'leave_request',
+        elements: {
+          start: { type: 'startEvent' },
+          look: { type: 'userTask', name: 'Look again', role: 'hr', outcomes: [{ name: 'done', label: 'Done' }] },
+          end: { type: 'endEvent' },
+        },
+        flows: { f1: { from: 'start', to: 'look' }, f2: { from: 'look', to: 'end' } },
+      };
+      const process = definition['processes'].leave_approval;
+      process.elements.again = { type: 'callActivity', name: 'Second look', process: 'second_look' };
+      process.elements.slow = { type: 'boundaryEvent', name: 'A day late', attachedTo: 'again', timer: { duration: 'P1D' } };
+      process.flows.on_approve.to = 'again';
+      process.flows.looked = { from: 'again', to: 'approved' };
+      process.flows.too_slow = { from: 'slow', to: 'approved' };
+      delete process.diagram;
+    });
+    const asked = await ask(app, { starts: '2027-12-06', ends: '2027-12-07', days: 2 });
+    const mine = async (session: Session) => (await inbox(session)).filter((task: { recordId: string }) => task.recordId === asked.record.id);
+    await complete(bob, (await mine(bob))[0].id, 'approve');
+    expect((await mine(carol)).map((task: { name: string }) => task.name)).toEqual(['Look again']);
+
+    t.clock.offsetMs += 86_400_000 + 60_000;
+    [bob, carol, alice] = [await t.login('bob'), await t.login('carol'), await t.login('alice')];
+    expect(await t.server.processes.fireDue()).toBeGreaterThanOrEqual(1);
+    expect(await mine(carol)).toEqual([]);
+    const instances = await processesOf(app, asked.record.id);
+    const leave = instances.find((instance: { process: string }) => instance.process === 'leave_approval');
+    const look = instances.find((instance: { process: string }) => instance.process === 'second_look');
+    expect(leave.status).toBe('completed');
+    expect(leave.events.slice(-2)).toMatchObject([
+      { kind: 'timer_fired', element: 'slow' },
+      { kind: 'ended', element: 'approved' },
+    ]);
+    expect(look).toMatchObject({ status: 'cancelled', calledBy: leave.id, tasks: [{ status: 'cancelled' }] });
   });
 });

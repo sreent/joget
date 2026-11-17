@@ -1,6 +1,8 @@
 import {
   conditionText,
   eventKind,
+  scopeOf,
+  scopesOf,
   validateDefinition,
   type BoundaryEventElement,
   type Flow,
@@ -19,6 +21,8 @@ import {
   addBoundary,
   addElement,
   arrange,
+  BOUNDARY_HOSTS,
+  callChoices,
   connect,
   durationOf,
   durationParts,
@@ -36,6 +40,7 @@ import {
   updateElement,
   updateFlow,
   updateProcess,
+  type BoundaryKind,
   type ElementKind,
 } from '../model/processes.js';
 import type { Definition } from '../types.js';
@@ -46,6 +51,8 @@ interface ShapeData extends Record<string, unknown> {
   readonly element: ProcessElement;
   readonly boundaries: ReadonlyArray<{ readonly id: string; readonly element: BoundaryEventElement; readonly left: number; readonly title: string }>;
   readonly problems: number;
+  /** A sub-process's size, which what it holds sets. */
+  readonly size?: { readonly width: number; readonly height: number };
 }
 type ShapeNode = Node<ShapeData, 'bpmn'>;
 
@@ -112,6 +119,25 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
       </div>
     );
   }
+  const markers = boundaries.map((boundary) => (
+    <div key={boundary.id} className="absolute -bottom-[18px]" style={{ left: boundary.left }} title={boundary.title}>
+      <div className={cx('grid size-9 place-items-center rounded-full bg-surface', boundary.element.interrupting ? 'border-[1.5px] border-text' : 'border-[1.5px] border-dashed border-text')}>
+        <EventIcon kind={eventKind(boundary.element)} size={14} />
+      </div>
+      <Handle id={boundary.id} type="source" position={Position.Bottom} className="!size-2 !border-line-strong !bg-surface" />
+    </div>
+  ));
+  if (element.type === 'subProcess') {
+    // Drawn open, with what it holds inside it: its name at the top.
+    return (
+      <div className={cx('relative rounded-xl border-[1.5px] border-text bg-surface/50', ring)} style={{ width: data.size?.width ?? 340, height: data.size?.height ?? 180 }}>
+        <span className="absolute top-2 left-3 text-xs font-semibold text-text">{label}</span>
+        {markers}
+        {handles}
+        {problem}
+      </div>
+    );
+  }
   if (element.type.endsWith('Gateway')) {
     return (
       <div className="relative grid size-[50px] place-items-center">
@@ -129,7 +155,7 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
   }
   const icon = ICON_PATH[element.type];
   return (
-    <div className={cx('relative h-20 w-[100px] rounded-lg border-[1.5px] border-text bg-surface', ring)}>
+    <div className={cx('relative h-20 w-[100px] rounded-lg border-text bg-surface', element.type === 'callActivity' ? 'border-[3px]' : 'border-[1.5px]', ring)}>
       {icon ? (
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden className="absolute top-1.5 left-1.5 text-muted">
           <path d={icon} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -143,14 +169,13 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
             : [2, 6, 10].map((x) => <line key={x} y1="1" y2="11" x1={x} x2={x} stroke="currentColor" strokeWidth="1.5" />)}
         </svg>
       ) : null}
-      {boundaries.map((boundary) => (
-        <div key={boundary.id} className="absolute -bottom-[18px]" style={{ left: boundary.left }} title={boundary.title}>
-          <div className={cx('grid size-9 place-items-center rounded-full bg-surface', boundary.element.interrupting ? 'border-[1.5px] border-text' : 'border-[1.5px] border-dashed border-text')}>
-            <EventIcon kind={eventKind(boundary.element)} size={14} />
-          </div>
-          <Handle id={boundary.id} type="source" position={Position.Bottom} className="!size-2 !border-line-strong !bg-surface" />
-        </div>
-      ))}
+      {element.type === 'callActivity' ? (
+        // BPMN's marker for a call: a small square with a plus.
+        <span className="absolute bottom-1 left-1/2 grid size-3.5 -translate-x-1/2 place-items-center border border-text text-[10px] leading-none text-text" aria-hidden>
+          +
+        </span>
+      ) : null}
+      {markers}
       {handles}
       {problem}
     </div>
@@ -183,17 +208,22 @@ function boundaryTitle(definition: Definition, event: BoundaryEventElement): str
 
 function toNodes(definition: Definition, process: Process, selection: Selection, problems: ReadonlyMap<string, string[]>): ShapeNode[] {
   const shapes = process.diagram?.shapes ?? {};
+  // A parent comes before what it holds, as React Flow needs.
+  const depth = (id: string) => scopesOf(process, id).length;
   return Object.entries(process.elements)
     .filter(([, element]) => element.type !== 'boundaryEvent')
+    .sort(([a], [b]) => depth(a) - depth(b))
     .map(([id, element], index) => {
       const shape = shapes[id] ?? { x: 80 + index * 160, y: 100, width: 100, height: 80 };
+      const container = scopeOf(process, id);
+      const parent = container !== undefined ? shapes[container] : undefined;
       const boundaries = Object.entries(process.elements).flatMap(([other, candidate]) =>
         candidate.type === 'boundaryEvent' && candidate.attachedTo === id
           ? [
               {
                 id: other,
                 element: candidate,
-                left: Math.max(0, Math.min(82, (shapes[other]?.x ?? shape.x + shape.width - 30) - shape.x)),
+                left: Math.max(0, Math.min(shape.width - 18, (shapes[other]?.x ?? shape.x + shape.width - 30) - shape.x)),
                 title: boundaryTitle(definition, candidate),
                 problems: problems.get(other)?.length ?? 0,
               },
@@ -204,8 +234,9 @@ function toNodes(definition: Definition, process: Process, selection: Selection,
       return {
         id,
         type: 'bpmn' as const,
-        position: { x: shape.x, y: shape.y },
-        data: { element, boundaries, problems: count },
+        position: parent ? { x: shape.x - parent.x, y: shape.y - parent.y } : { x: shape.x, y: shape.y },
+        ...(parent ? { parentId: container } : {}),
+        data: { element, boundaries, problems: count, ...(element.type === 'subProcess' ? { size: { width: shape.width, height: shape.height } } : {}) },
         selected: selection?.kind === 'element' && selection.id === id,
       };
     });
@@ -299,11 +330,14 @@ export function ProcessDesigner({
     const added = addElement(definition, name, kind, options);
     onChange(added.definition);
     setSelection({ kind: 'element', id: added.id });
+    // A sub-process is large: fit the canvas to the shapes again, so all of it shows.
+    if (kind === 'subProcess') setView((n) => n + 1);
   };
   // What a palette entry needs first: a role does each task, and a message is an update action saved on the record.
   const missing = (kind: ElementKind): string | null => {
     if (kind === 'userTask' && !Object.keys(definition.roles).length) return 'Add a role first: a role does each task';
     if (kind === 'messageEvent' && !updateActions(definition, process.entity).length) return 'Add an action that changes the record first: the process waits until it is saved';
+    if (kind === 'callActivity' && !callChoices(definition, name).length) return "Add another process first: a call runs one of the app's processes";
     return null;
   };
 
@@ -369,6 +403,7 @@ export function ProcessDesigner({
               problems={problems}
               onChange={onChange}
               onSelect={setSelection}
+              onOpen={setCurrent}
               readOnly={readOnly}
             />
           ) : selection?.kind === 'flow' && process.flows[selection.id] ? (
@@ -413,7 +448,11 @@ function Canvas(props: {
         edges={edges}
         nodeTypes={NODE_TYPES}
         onNodesChange={(changes: NodeChange<ShapeNode>[]) => setNodes((current) => applyNodeChanges(changes.filter((change) => change.type !== 'remove'), current))}
-        onNodeDragStop={(_event, node) => onChange(moveElement(definition, name, node.id, { x: Math.round(node.position.x), y: Math.round(node.position.y) }))}
+        onNodeDragStop={(_event, node) => {
+          // What a sub-process holds is placed from its corner on the canvas, and from the diagram's corner in the definition.
+          const parent = node.parentId ? process.diagram?.shapes[node.parentId] : undefined;
+          onChange(moveElement(definition, name, node.id, { x: Math.round(node.position.x + (parent?.x ?? 0)), y: Math.round(node.position.y + (parent?.y ?? 0)) }));
+        }}
         onConnect={readOnly ? undefined : onConnect}
         onNodeClick={(_event, node) => onSelect({ kind: 'element', id: node.id })}
         onEdgeClick={(_event, edge) => onSelect({ kind: 'flow', id: edge.id })}
@@ -655,6 +694,8 @@ const TYPE_LABELS: Readonly<Record<ProcessElement['type'], string>> = {
   parallelGateway: 'Parallel',
   inclusiveGateway: 'Inclusive',
   intermediateCatchEvent: 'Timer',
+  subProcess: 'Sub-process',
+  callActivity: 'Call process',
   boundaryEvent: 'Deadline',
 };
 
@@ -668,6 +709,142 @@ function typeLabel(element: ProcessElement): string {
   return TYPE_LABELS[element.type];
 }
 
+/** What the panel says of an event on a host's boundary, by the host. */
+const ENDS: Readonly<Record<string, { readonly interrupts: string; readonly open: string }>> = {
+  userTask: { interrupts: 'It takes the task away', open: 'while the task is open' },
+  subProcess: { interrupts: 'It ends all of the sub-process', open: 'while the sub-process runs' },
+  callActivity: { interrupts: 'It cancels the process it called', open: 'while the called process runs' },
+};
+
+/** The events on an element's boundary: deadlines, actions saved on the record, and the failure of an action. */
+function BoundaryEvents(props: {
+  definition: Definition;
+  name: string;
+  id: string;
+  problems: ReadonlyMap<string, string[]>;
+  onChange: (definition: Definition) => void;
+}) {
+  const { definition, name, id, problems, onChange } = props;
+  const process = definition.processes![name]!;
+  const host = process.elements[id];
+  if (!host || (host.type === 'serviceTask' && host.skill)) return null;
+  const kinds = (Object.keys(BOUNDARY_HOSTS) as BoundaryKind[]).filter((kind) => BOUNDARY_HOSTS[kind].includes(host.type));
+  const words = ENDS[host.type] ?? ENDS['userTask']!;
+  const actions = updateActions(definition, process.entity);
+  const events = Object.entries(process.elements).flatMap(([other, candidate]) => (candidate.type === 'boundaryEvent' && candidate.attachedTo === id ? [{ id: other, event: candidate }] : []));
+  const deadlines = events.flatMap(({ id: other, event }) => (event.timer ? [{ id: other, event, timer: event.timer }] : []));
+  const messages = events.flatMap(({ id: other, event }) => (event.message ? [{ id: other, event, action: event.message.action }] : []));
+  const error = events.find(({ event }) => event.error);
+  const free = messageChoices(definition, process, id);
+  return (
+    <>
+      {kinds.includes('timer') ? (
+        <>
+          <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+            <legend className="px-1 text-sm text-muted">Deadlines</legend>
+            {deadlines.map(({ id: deadline, event, timer }) => (
+              <div key={deadline} className="grid gap-1.5 rounded-md bg-sunken p-2">
+                <Problems messages={problems.get(deadline)} />
+                {'duration' in timer ? (
+                  <DurationInput label="After" value={timer.duration} onChange={(duration) => onChange(updateElement(definition, name, deadline, (current) => ({ ...current, timer: { duration } }) as ProcessElement))} />
+                ) : (
+                  <p className="m-0 text-sm">On the record's {timer.date}</p>
+                )}
+                <Checkbox
+                  label={words.interrupts}
+                  checked={event.interrupting}
+                  onChange={(interrupting) => onChange(updateElement(definition, name, deadline, (current) => ({ ...current, interrupting }) as ProcessElement))}
+                />
+                <Remove onClick={() => onChange(removeElement(definition, name, deadline))}>Remove the deadline</Remove>
+              </div>
+            ))}
+            <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'timer').definition)}>
+              Add a deadline
+            </Button>
+          </fieldset>
+        </>
+      ) : null}
+      {kinds.includes('message') ? (
+        <>
+          <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+            <legend className="px-1 text-sm text-muted">When an action is saved</legend>
+            {messages.map(({ id: message, event, action }) => (
+              <div key={message} className="grid gap-1.5 rounded-md bg-sunken p-2">
+                <Problems messages={problems.get(message)} />
+                <Select
+                  aria-label="The action that is saved"
+                  value={action}
+                  onChange={(change) =>
+                    onChange(
+                      updateElement(definition, name, message, (current) => {
+                        if (current.type !== 'boundaryEvent') return current;
+                        const chosen = change.target.value;
+                        // A name that only repeated the action's label follows the action.
+                        const named = current.name !== undefined && current.name !== (definition.actions[action]?.label ?? action);
+                        return { ...current, ...(named ? {} : { name: definition.actions[chosen]?.label ?? chosen }), message: { action: chosen } };
+                      }),
+                    )
+                  }
+                >
+                  {actions.includes(action) ? null : (
+                    <option value={action} disabled>
+                      Choose an action
+                    </option>
+                  )}
+                  {actions
+                    .filter((each) => each === action || free.includes(each))
+                    .map((each) => (
+                      <option key={each} value={each}>
+                        {definition.actions[each]!.label}
+                      </option>
+                    ))}
+                </Select>
+                <Checkbox
+                  label={words.interrupts}
+                  checked={event.interrupting}
+                  onChange={(interrupting) => onChange(updateElement(definition, name, message, (current) => ({ ...current, interrupting }) as ProcessElement))}
+                />
+                <Remove onClick={() => onChange(removeElement(definition, name, message))}>Remove the message</Remove>
+              </div>
+            ))}
+            <Button
+              size="sm"
+              disabled={!free.length}
+              title={free.length ? undefined : "No action is free: an outcome that decides a task here can't also interrupt it"}
+              onClick={() => onChange(addBoundary(definition, name, id, 'message').definition)}
+            >
+              Add an action
+            </Button>
+            <p className="m-0 text-xs text-muted">Someone saves the action on the record {words.open}: to withdraw a request, for example.</p>
+          </fieldset>
+        </>
+      ) : null}
+      {kinds.includes('error') ? (
+        <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+          <legend className="px-1 text-sm text-muted">{host.type === 'subProcess' ? 'If an action inside it fails' : 'If the action fails'}</legend>
+          {error ? (
+            <>
+              <Problems messages={problems.get(error.id)} />
+              <p className="m-0 text-sm">
+                The process leads on by the error's path{host.type === 'subProcess' ? ', and what still runs inside ends' : ''}. Drag from the lightning bolt to lead it elsewhere.
+              </p>
+              <Remove onClick={() => onChange(removeElement(definition, name, error.id))}>Remove the error event</Remove>
+            </>
+          ) : (
+            <>
+              <p className="m-0 text-sm text-muted">The process stops at the action until an admin retries it.</p>
+              <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'error').definition)}>
+                Catch the failure
+              </Button>
+            </>
+          )}
+        </fieldset>
+      ) : null}
+      {kinds.includes('timer') ? <p className="m-0 text-xs text-muted">Drag from a marker on the edge to lead its path elsewhere, such as to a task for someone else.</p> : null}
+    </>
+  );
+}
+
 function ElementPanel(props: {
   definition: Definition;
   name: string;
@@ -676,9 +853,11 @@ function ElementPanel(props: {
   problems: ReadonlyMap<string, string[]>;
   onChange: (definition: Definition) => void;
   onSelect: (selection: Selection) => void;
+  /** Open another process in the designer, such as the one a call runs. */
+  onOpen: (process: string) => void;
   readOnly: boolean;
 }) {
-  const { definition, name, id, element, problems, onChange, onSelect, readOnly } = props;
+  const { definition, name, id, element, problems, onChange, onSelect, onOpen, readOnly } = props;
   const process = definition.processes![name]!;
   const entity = definition.entities[process.entity];
   const set = (change: (element: ProcessElement) => ProcessElement) => onChange(updateElement(definition, name, id, change));
@@ -690,11 +869,7 @@ function ElementPanel(props: {
   ];
   const actions = updateActions(definition, process.entity);
   const dates = (entity?.fields ?? []).filter((field) => field.type === 'date' || field.type === 'datetime');
-  const events = Object.entries(process.elements).flatMap(([other, candidate]) => (candidate.type === 'boundaryEvent' && candidate.attachedTo === id ? [{ id: other, event: candidate }] : []));
-  const deadlines = events.flatMap(({ id: other, event }) => (event.timer ? [{ id: other, event, timer: event.timer }] : []));
-  const messages = events.flatMap(({ id: other, event }) => (event.message ? [{ id: other, event, action: event.message.action }] : []));
-  const error = events.find(({ event }) => event.error);
-  const free = messageChoices(definition, process, id);
+  const calls = callChoices(definition, name);
   // The action a catch event waits for, kept apart: the narrowing of the element doesn't reach a field's render function.
   const awaited = element.type === 'intermediateCatchEvent' ? element.message?.action : undefined;
 
@@ -882,80 +1057,7 @@ function ElementPanel(props: {
               Add an outcome
             </Button>
           </fieldset>
-          <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
-            <legend className="px-1 text-sm text-muted">Deadlines</legend>
-            {deadlines.map(({ id: deadline, event, timer }) => (
-              <div key={deadline} className="grid gap-1.5 rounded-md bg-sunken p-2">
-                <Problems messages={problems.get(deadline)} />
-                {'duration' in timer ? (
-                  <DurationInput label="After" value={timer.duration} onChange={(duration) => onChange(updateElement(definition, name, deadline, (current) => ({ ...current, timer: { duration } }) as ProcessElement))} />
-                ) : (
-                  <p className="m-0 text-sm">On the record's {timer.date}</p>
-                )}
-                <Checkbox
-                  label="It takes the task away"
-                  checked={event.interrupting}
-                  onChange={(interrupting) => onChange(updateElement(definition, name, deadline, (current) => ({ ...current, interrupting }) as ProcessElement))}
-                />
-                <Remove onClick={() => onChange(removeElement(definition, name, deadline))}>Remove the deadline</Remove>
-              </div>
-            ))}
-            <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'timer').definition)}>
-              Add a deadline
-            </Button>
-          </fieldset>
-          <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
-            <legend className="px-1 text-sm text-muted">When an action is saved</legend>
-            {messages.map(({ id: message, event, action }) => (
-              <div key={message} className="grid gap-1.5 rounded-md bg-sunken p-2">
-                <Problems messages={problems.get(message)} />
-                <Select
-                  aria-label="The action that is saved"
-                  value={action}
-                  onChange={(change) =>
-                    onChange(
-                      updateElement(definition, name, message, (current) => {
-                        if (current.type !== 'boundaryEvent') return current;
-                        const chosen = change.target.value;
-                        // A name that only repeated the action's label follows the action.
-                        const named = current.name !== undefined && current.name !== (definition.actions[action]?.label ?? action);
-                        return { ...current, ...(named ? {} : { name: definition.actions[chosen]?.label ?? chosen }), message: { action: chosen } };
-                      }),
-                    )
-                  }
-                >
-                  {actions.includes(action) ? null : (
-                    <option value={action} disabled>
-                      Choose an action
-                    </option>
-                  )}
-                  {actions
-                    .filter((each) => each === action || free.includes(each))
-                    .map((each) => (
-                      <option key={each} value={each}>
-                        {definition.actions[each]!.label}
-                      </option>
-                    ))}
-                </Select>
-                <Checkbox
-                  label="It takes the task away"
-                  checked={event.interrupting}
-                  onChange={(interrupting) => onChange(updateElement(definition, name, message, (current) => ({ ...current, interrupting }) as ProcessElement))}
-                />
-                <Remove onClick={() => onChange(removeElement(definition, name, message))}>Remove the message</Remove>
-              </div>
-            ))}
-            <Button
-              size="sm"
-              disabled={!free.length}
-              title={free.length ? undefined : "No action is free: the task's outcomes decide it, so they can't also interrupt it"}
-              onClick={() => onChange(addBoundary(definition, name, id, 'message').definition)}
-            >
-              Add an action
-            </Button>
-            <p className="m-0 text-xs text-muted">Someone saves the action on the record while the task is open: to withdraw a request, for example.</p>
-          </fieldset>
-          <p className="m-0 text-xs text-muted">Drag from a marker on the task's edge to lead its path elsewhere, such as to a task for someone else.</p>
+          <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} />
           <Field label="Review card">
             {(inputId) => (
               <Select
@@ -1004,24 +1106,53 @@ function ElementPanel(props: {
           </Field>
         )
       ) : null}
-      {element.type === 'serviceTask' && !element.skill ? (
-        <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
-          <legend className="px-1 text-sm text-muted">If the action fails</legend>
-          {error ? (
-            <>
-              <Problems messages={problems.get(error.id)} />
-              <p className="m-0 text-sm">The process leads on by the error's path. Drag from the lightning bolt to lead it elsewhere.</p>
-              <Remove onClick={() => onChange(removeElement(definition, name, error.id))}>Remove the error event</Remove>
-            </>
-          ) : (
-            <>
-              <p className="m-0 text-sm text-muted">The process stops here until an admin retries it.</p>
-              <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'error').definition)}>
-                Catch the failure
-              </Button>
-            </>
-          )}
-        </fieldset>
+      {element.type === 'serviceTask' ? <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} /> : null}
+      {element.type === 'subProcess' ? (
+        <>
+          <p className="m-0 text-sm text-muted">
+            It ends when no path is left inside it. Select a flow inside it to add there. An event on its edge acts on all of it: a deadline for the whole part, or an action inside it that fails.
+          </p>
+          <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} />
+        </>
+      ) : null}
+      {element.type === 'callActivity' ? (
+        <>
+          <Field label="Runs the process" hint="It starts at its start event without actions, and this process waits until it ends.">
+            {(inputId) => (
+              <Select
+                id={inputId}
+                value={`${element.process}|${element.record ?? ''}`}
+                onChange={(event) =>
+                  set((current) => {
+                    if (current.type !== 'callActivity') return current;
+                    const [called = '', record] = event.target.value.split('|');
+                    const { record: _record, ...rest } = current;
+                    // A name that only repeated the called process's label follows it.
+                    const named = current.name !== (definition.processes?.[current.process]?.label ?? current.process);
+                    return { ...rest, ...(named ? {} : { name: definition.processes?.[called]?.label ?? called }), process: called, ...(record ? { record } : {}) };
+                  })
+                }
+              >
+                {calls.some((call) => call.process === element.process && (call.record ?? '') === (element.record ?? '')) ? null : (
+                  <option value={`${element.process}|${element.record ?? ''}`} disabled>
+                    Choose a process
+                  </option>
+                )}
+                {calls.map((call) => (
+                  <option key={`${call.process}|${call.record ?? ''}`} value={`${call.process}|${call.record ?? ''}`}>
+                    {call.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          {definition.processes?.[element.process] ? (
+            <Button size="sm" onClick={() => onOpen(element.process)}>
+              Open {definition.processes[element.process]!.label}
+            </Button>
+          ) : null}
+          <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} />
+        </>
       ) : null}
       {element.type === 'intermediateCatchEvent' ? (
         <>
@@ -1095,7 +1226,7 @@ function ElementPanel(props: {
           Select a flow out of it to set when it is taken. Every flow whose condition holds is taken, or else the one marked Otherwise. With several flows in, it waits for each path that can still arrive.
         </p>
       ) : null}
-      {'description' in element || element.type.endsWith('Task') || element.type === 'task' ? (
+      {'description' in element || element.type.endsWith('Task') || element.type === 'task' || element.type === 'subProcess' || element.type === 'callActivity' ? (
         <Field label="Description">
           {(inputId) => (
             <textarea
@@ -1105,7 +1236,7 @@ function ElementPanel(props: {
               value={'description' in element ? (element.description ?? '') : ''}
               onChange={(event) =>
                 set((current) => {
-                  if (!('description' in current) && !current.type.endsWith('Task') && current.type !== 'task') return current;
+                  if (!('description' in current) && !current.type.endsWith('Task') && current.type !== 'task' && current.type !== 'subProcess' && current.type !== 'callActivity') return current;
                   const { description: _description, ...rest } = current as ProcessElement & { description?: string };
                   return (event.target.value ? { ...rest, description: event.target.value } : rest) as ProcessElement;
                 })

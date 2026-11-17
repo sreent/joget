@@ -723,11 +723,16 @@ export const processInstances = pgTable(
     startedBy: uuid('started_by').references(() => users.id),
     /** The action whose commit started it, if one did. */
     startedByAction: text('started_by_action'),
+    /** The instance whose call activity started it, if one did; it goes on when this one ends. */
+    calledByInstance: uuid('called_by_instance'),
+    /** The token that waits at that call activity. */
+    calledByToken: uuid('called_by_token'),
     startedAt: timestamp('started_at', tz).notNull(),
     endedAt: timestamp('ended_at', tz),
   },
   (t) => [
     uniqueIndex('process_instances_one_running_uq').on(t.environmentId, t.process, t.recordId).where(sql`${t.status} = 'running'`),
+    index('process_instances_called_by_idx').on(t.calledByToken).where(sql`${t.calledByToken} is not null`),
     index('process_instances_app_idx').on(t.appId, t.environmentId, t.status),
     index('process_instances_record_idx').on(t.environmentId, t.recordId),
     check('process_instances_ended_when', sql`(${t.status} = 'running') = (${t.endedAt} is null)`),
@@ -857,7 +862,27 @@ export const processEvents = pgTable(
       .references(() => processInstances.id, { onDelete: 'cascade' }),
     at: timestamp('at', tz).notNull(),
     kind: text('kind', {
-      enum: ['started', 'task_opened', 'voted', 'task_completed', 'task_cancelled', 'reassigned', 'timer_fired', 'message', 'ran', 'error_caught', 'skill_queued', 'stuck', 'retried', 'ended', 'cancelled'],
+      enum: [
+        'started',
+        'task_opened',
+        'voted',
+        'task_completed',
+        'task_cancelled',
+        'reassigned',
+        'timer_fired',
+        'message',
+        'ran',
+        'error_caught',
+        'skill_queued',
+        'entered',
+        'exited',
+        'called',
+        'returned',
+        'stuck',
+        'retried',
+        'ended',
+        'cancelled',
+      ],
     }).notNull(),
     element: text('element'),
     /** The person behind it, if there is one. */

@@ -48,6 +48,8 @@ const TYPE_WORDS: Readonly<Record<ProcessElementType, string>> = {
   parallelGateway: 'Parallel gateway',
   inclusiveGateway: 'Inclusive gateway',
   intermediateCatchEvent: 'Event',
+  subProcess: 'Sub-process',
+  callActivity: 'Call activity',
   boundaryEvent: 'Boundary event',
 };
 
@@ -56,6 +58,43 @@ export function elementName(process: Process, id: string): string {
   const element = process.elements[id];
   if (!element) return id;
   return element.name ?? `${TYPE_WORDS[element.type]} ${id}`;
+}
+
+/** The sub-process an element is in, or undefined in the process itself. An event on a boundary is where its host is. */
+export function scopeOf(process: Process, id: string): string | undefined {
+  const element = process.elements[id];
+  if (element?.type !== 'boundaryEvent') return element?.in;
+  const host = process.elements[element.attachedTo];
+  return host && host.type !== 'boundaryEvent' ? host.in : undefined;
+}
+
+/** The sub-processes an element is inside, the nearest first. Where `in` goes round in a loop, the list stops before it repeats. */
+export function scopesOf(process: Process, id: string): string[] {
+  const chain: string[] = [];
+  for (let scope = scopeOf(process, id); scope !== undefined && !chain.includes(scope); scope = scopeOf(process, scope)) chain.push(scope);
+  return chain;
+}
+
+/** The elements inside a sub-process at any depth, with the events on their boundaries. */
+export function insideOf(process: Process, scope: string): Set<string> {
+  return new Set(Object.keys(process.elements).filter((id) => id !== scope && scopesOf(process, id).includes(scope)));
+}
+
+/** The start events of the process itself, or of one of its sub-processes. */
+export function startEventsOf(process: Process, scope?: string): string[] {
+  return Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'startEvent' && element.in === scope ? [id] : []));
+}
+
+/**
+ * Where an instance starts that no action starts: by hand, or from a call activity of another
+ * process. That is the process's first start event without actions, or else its first.
+ */
+export function plainStartOf(process: Process): string | undefined {
+  const starts = startEventsOf(process);
+  return starts.find((id) => {
+    const element = process.elements[id];
+    return element?.type === 'startEvent' && !element.actions.length;
+  }) ?? starts[0];
 }
 
 /**
@@ -191,7 +230,7 @@ export function messageActions(process: Process): string[] {
 /** The start events of the app's processes that an action starts. */
 export function startsOf(definition: Pick<StoredDefinition, 'processes'>, action: string): ProcessStart[] {
   return Object.entries(definition.processes ?? {}).flatMap(([process, model]) =>
-    Object.entries(model.elements).flatMap(([element, el]) => (el.type === 'startEvent' && el.actions.includes(action) ? [{ process, element }] : [])),
+    Object.entries(model.elements).flatMap(([element, el]) => (el.type === 'startEvent' && !el.in && el.actions.includes(action) ? [{ process, element }] : [])),
   );
 }
 
@@ -211,12 +250,13 @@ export function decisionsBy(definition: Pick<StoredDefinition, 'processes'>, act
   );
 }
 
-/** The actions a process's service tasks run by themselves, and the a7c skills they start. */
-export function processWork(process: Process): { readonly actions: readonly string[]; readonly skills: readonly string[] } {
+/** The actions a process's service tasks run by themselves, the a7c skills they start, and the processes it calls. */
+export function processWork(process: Process): { readonly actions: readonly string[]; readonly skills: readonly string[]; readonly calls: readonly string[] } {
   const tasks = Object.values(process.elements).filter((element): element is Extract<ProcessElement, { type: 'serviceTask' }> => element.type === 'serviceTask');
   return {
     actions: [...new Set(tasks.flatMap((task) => (task.action ? [task.action] : [])))],
     skills: [...new Set(tasks.flatMap((task) => (task.skill ? [task.skill] : [])))],
+    calls: [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'callActivity' ? [element.process] : [])))],
   };
 }
 
