@@ -32,42 +32,109 @@ const sizeOf = (element: ProcessElement) =>
   element.type.endsWith('Event') ? SIZES['event']! : element.type.endsWith('Gateway') ? SIZES['gateway']! : SIZES['task']!;
 
 /**
- * Lay a process out from left to right: each element one column after what leads to it, from the
- * start events; flows as lines with right angles. For a process drawn without a diagram.
+ * Lay a process out from left to right, for a process drawn without a diagram: each element one
+ * column after everything that leads to it; the longest way to an end on one straight row; the
+ * other ways out of an element, and the paths from a task's boundary, in the rows below; flows as
+ * lines with right angles.
  */
 export function layoutProcess(process: Process): Diagram {
   const graph = processGraph(process);
+  const ids = Object.keys(process.elements);
+  const placed = ids.filter((id) => process.elements[id]!.type !== 'boundaryEvent');
+  // Where a token goes next from an element: its own flows, then those of the timers on its boundary, which lead below it.
+  const next = (id: string): Array<{ to: string; boundary: boolean }> => [
+    ...(graph.outgoing.get(id) ?? []).map((flow) => ({ to: process.flows[flow]!.to, boundary: false })),
+    ...(graph.boundaries.get(id) ?? []).flatMap((boundary) => (graph.outgoing.get(boundary) ?? []).map((flow) => ({ to: process.flows[flow]!.to, boundary: true }))),
+  ];
+
+  // Flows that loop back to an element already on the way are left out of the columns.
+  const back = new Set<string>();
+  const state = new Map<string, 'open' | 'done'>();
+  const visit = (id: string) => {
+    state.set(id, 'open');
+    for (const { to } of next(id)) {
+      if (state.get(to) === 'open') back.add(`${id}>${to}`);
+      else if (!state.has(to)) visit(to);
+    }
+    state.set(id, 'done');
+  };
+  const starts = placed.filter((id) => process.elements[id]!.type === 'startEvent');
+  for (const id of [...starts, ...placed]) if (!state.has(id)) visit(id);
+  const forward = (id: string) => next(id).filter(({ to }) => !back.has(`${id}>${to}`) && process.elements[to]?.type !== 'boundaryEvent');
+
+  // Columns: the longest way from a start. Depth: the longest way on to an end, which picks the main row.
   const column = new Map<string, number>();
-  const order: string[] = [];
-  const queue = Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'startEvent' ? [id] : []));
-  for (const id of queue) column.set(id, 0);
-  while (queue.length) {
-    const id = queue.shift()!;
-    order.push(id);
-    const next = [...(graph.outgoing.get(id) ?? []).map((flow) => process.flows[flow]!.to), ...(graph.boundaries.get(id) ?? []).flatMap((boundary) => (graph.outgoing.get(boundary) ?? []).map((flow) => process.flows[flow]!.to))];
-    for (const target of next) {
-      if (column.has(target)) continue;
-      column.set(target, column.get(id)! + 1);
-      queue.push(target);
+  const columnOf = (id: string, seen = new Set<string>()): number => {
+    const known = column.get(id);
+    if (known !== undefined) return known;
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    const before = placed.flatMap((other) => (forward(other).some(({ to }) => to === id) ? [other] : []));
+    const value = before.length ? Math.max(...before.map((other) => columnOf(other, seen) + 1)) : 0;
+    column.set(id, value);
+    return value;
+  };
+  const depth = new Map<string, number>();
+  const depthOf = (id: string, seen = new Set<string>()): number => {
+    const known = depth.get(id);
+    if (known !== undefined) return known;
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    const after = forward(id);
+    const value = after.length ? Math.max(...after.map(({ to }) => depthOf(to, seen) + 1)) : 0;
+    depth.set(id, value);
+    return value;
+  };
+  for (const id of placed) {
+    columnOf(id);
+    depthOf(id);
+  }
+
+  // Rows: an element sits where the flows into it point. The way out with the longest way on keeps its row;
+  // the others, and the paths from a boundary, go below.
+  // Where the flows into an element point: the main ways in, which keep the main row, count first.
+  const wanted = new Map<string, Array<{ row: number; main: boolean }>>();
+  const row = new Map<string, number>();
+  const columns = [...new Set(placed.map((id) => column.get(id)!))].sort((a, b) => a - b);
+  let nextStart = 0;
+  for (const col of columns) {
+    const here = placed.filter((id) => column.get(id) === col);
+    const desire = (id: string) => {
+      const list = wanted.get(id) ?? [];
+      const main = list.filter((each) => each.main);
+      const rows = (main.length ? main : list).map((each) => each.row);
+      return rows.length ? Math.min(...rows) : Number.POSITIVE_INFINITY;
+    };
+    here.sort((a, b) => desire(a) - desire(b) || depthOf(b) - depthOf(a));
+    const taken = new Set<number>();
+    for (const id of here) {
+      let target = desire(id);
+      if (!Number.isFinite(target)) target = nextStart++;
+      const base = Math.round(target);
+      let chosen = base;
+      for (let step = 0; taken.has(chosen); step++) chosen = step % 2 === 0 ? base + 1 + step / 2 : base - 1 - (step - 1) / 2;
+      taken.add(chosen);
+      row.set(id, chosen);
+    }
+    for (const id of here) {
+      const out = forward(id);
+      const main = out.filter(({ boundary }) => !boundary).sort((a, b) => depthOf(b.to) - depthOf(a.to))[0];
+      let below = 1;
+      for (const flow of out) {
+        const offset = flow === main ? 0 : below++;
+        const list = wanted.get(flow.to) ?? [];
+        list.push({ row: row.get(id)! + offset, main: offset === 0 });
+        wanted.set(flow.to, list);
+      }
     }
   }
-  for (const id of Object.keys(process.elements)) {
-    if (!column.has(id) && process.elements[id]!.type !== 'boundaryEvent') {
-      column.set(id, 0);
-      order.push(id);
-    }
-  }
-  const rows = new Map<number, number>();
+  const top = Math.min(0, ...row.values());
+
   const shapes: Record<string, Diagram['shapes'][string]> = {};
-  for (const id of order) {
-    const element = process.elements[id]!;
-    if (element.type === 'boundaryEvent') continue;
-    const col = column.get(id)!;
-    const row = rows.get(col) ?? 0;
-    rows.set(col, row + 1);
-    const size = sizeOf(element);
-    const centerX = 120 + col * 170;
-    const centerY = 120 + row * 140;
+  for (const id of placed) {
+    const size = sizeOf(process.elements[id]!);
+    const centerX = 120 + column.get(id)! * 180;
+    const centerY = 120 + (row.get(id)! - top) * 130;
     shapes[id] = { x: centerX - size.width / 2, y: centerY - size.height / 2, ...size };
   }
   const onTask = new Map<string, number>();

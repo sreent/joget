@@ -219,6 +219,8 @@ export function ProcessDesigner({
   const [current, setCurrent] = useState<string | null>(names[0] ?? null);
   const [selection, setSelection] = useState<Selection>(null);
   const [creating, setCreating] = useState(false);
+  // A new view of the canvas, fitted to the shapes: after arranging them, for example.
+  const [view, setView] = useState(0);
   const name = current && definition.processes?.[current] ? current : (names[0] ?? null);
   const process = name ? definition.processes![name]! : null;
   useEffect(() => setSelection(null), [name]);
@@ -298,6 +300,7 @@ export function ProcessDesigner({
           </Card>
         )}
         <Canvas
+          key={`${name}:${view}`}
           definition={definition}
           name={name}
           process={process}
@@ -323,7 +326,7 @@ export function ProcessDesigner({
           ) : selection?.kind === 'flow' && process.flows[selection.id] ? (
             <FlowPanel key={selection.id} definition={definition} name={name} id={selection.id} flow={process.flows[selection.id]!} problems={problems} onChange={onChange} onSelect={setSelection} readOnly={readOnly} />
           ) : (
-            <ProcessPanel definition={definition} name={name} problems={problems} onChange={onChange} onRemoved={() => setCurrent(null)} readOnly={readOnly} />
+            <ProcessPanel definition={definition} name={name} problems={problems} onChange={onChange} onRemoved={() => setCurrent(null)} onArranged={() => setView((n) => n + 1)} readOnly={readOnly} />
           )}
         </Card>
       </div>
@@ -383,7 +386,8 @@ function Canvas(props: {
         nodesConnectable={!readOnly}
         deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
         fitView
-        fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
+        minZoom={0.25}
+        fitViewOptions={{ padding: 0.15, maxZoom: 1, minZoom: 0.25 }}
         colorMode="system"
         proOptions={{ hideAttribution: false }}
       >
@@ -905,8 +909,16 @@ function FlowPanel(props: {
   );
 }
 
-function ProcessPanel(props: { definition: Definition; name: string; problems: ReadonlyMap<string, string[]>; onChange: (definition: Definition) => void; onRemoved: () => void; readOnly: boolean }) {
-  const { definition, name, problems, onChange, onRemoved, readOnly } = props;
+function ProcessPanel(props: {
+  definition: Definition;
+  name: string;
+  problems: ReadonlyMap<string, string[]>;
+  onChange: (definition: Definition) => void;
+  onRemoved: () => void;
+  onArranged: () => void;
+  readOnly: boolean;
+}) {
+  const { definition, name, problems, onChange, onRemoved, onArranged, readOnly } = props;
   const process = definition.processes![name]!;
   const entity = definition.entities[process.entity];
   const general = problems.get('');
@@ -948,7 +960,13 @@ function ProcessPanel(props: { definition: Definition; name: string; problems: R
       </fieldset>
       {readOnly ? null : (
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => onChange(arrange(definition, name))}>
+          <Button
+            size="sm"
+            onClick={() => {
+              onChange(arrange(definition, name));
+              onArranged();
+            }}
+          >
             Arrange the shapes
           </Button>
           <Remove
