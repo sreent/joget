@@ -144,6 +144,25 @@ export const CardOut = z.object({
     )
     .optional(),
   responses: z.array(z.string()),
+  /** The a7c skills the change starts once it is saved. */
+  then: z.array(z.object({ label: z.string(), skill: z.string() })).optional(),
+});
+
+/** A call an action made to an a7c skill. Its input is never shown: it may hold values the reader can't see. */
+export const SkillCallOut = z.object({
+  id: z.uuid(),
+  action: z.string(),
+  recordId: z.uuid(),
+  step: z.string(),
+  skill: z.string(),
+  label: z.string(),
+  tier: z.enum(['personal', 'team', 'production']),
+  status: z.enum(['pending', 'started', 'failed']),
+  attempts: z.number().int(),
+  lastError: z.string().nullable(),
+  runId: z.string().nullable(),
+  createdAt: z.string(),
+  startedAt: z.string().nullable(),
 });
 
 export const ProposalOut = z.object({

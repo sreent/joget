@@ -2,6 +2,7 @@ import type { PermissionGrant } from '@platform/authz';
 import type { StoredDefinition, StoredEntity } from './fields.js';
 import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles.js';
 import type { Action, ConfirmationLevel, Query } from './schema.js';
+import { skillSteps } from './steps.js';
 
 /*
  * What a change request shows its reviewers (design §6.7): what changed, who gains or loses
@@ -272,6 +273,15 @@ function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: s
   for (const [field, value] of Object.entries(h.set)) if (!same(b.set[field], value)) texts.push(`${name} now sets ${field} to ${JSON.stringify(value)}`);
   for (const field of Object.keys(b.set)) if (!(field in h.set)) texts.push(`${name} no longer sets ${field}`);
   if (!same(b.where, h.where)) texts.push(`${name} now applies to a different set of records`);
+  if (!same(b.steps ?? [], h.steps ?? [])) {
+    // Work in other systems matters most to a reviewer, so each skill gained or lost is named.
+    const skillsOf = (action: Action) => new Map(skillSteps(action.steps ?? []).map(({ step }) => [step.skill, step.label]));
+    const [before, after] = [skillsOf(b), skillsOf(h)];
+    const named = texts.length;
+    for (const [skill, label] of after) if (!before.has(skill)) texts.push(`${name} now starts the a7c skill ${skill}: ${label}`);
+    for (const skill of before.keys()) if (!after.has(skill)) texts.push(`${name} no longer starts the a7c skill ${skill}`);
+    if (texts.length === named) texts.push(`${name} runs different steps`);
+  }
   if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);
   if (b.card !== h.card) texts.push(`${name} shows a different review card`);
   if (b.label !== h.label && !texts.length) texts.push(`${name} has a new label`);

@@ -7,6 +7,7 @@ import type {
   EnvironmentInfo,
   FileInfo,
   HistoryEntry,
+  SkillCall,
   Me,
   Person,
   Plan,
@@ -142,6 +143,8 @@ export const api = {
     ),
   history: (target: string | AppAt, entity: string, recordId: string) =>
     call<{ history: HistoryEntry[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/history${envParams(target)}`),
+  skillCalls: (target: string | AppAt, entity: string, recordId: string) =>
+    call<{ calls: SkillCall[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/skill-calls${envParams(target)}`),
   runAction: (target: string | AppAt, action: string, body: { values: Record<string, unknown>; recordId?: string; version?: number }) =>
     call<{ status: 'done'; record: RecordOut } | { status: 'needs_confirmation'; proposal: { reviewUrl: string } }>(
       'POST',

@@ -619,6 +619,57 @@ export const proposals = pgTable(
   (t) => [index('proposals_person_idx').on(t.onBehalfOf, t.status), index('proposals_app_idx').on(t.appId)],
 );
 
+/**
+ * Calls to a7c skills that actions make (design §6.2). Each is queued in the transaction of the
+ * change that makes it, so a call exists exactly when its change commits. A dispatcher then asks
+ * a7c to start it, with the call's ID as the idempotency key, so a retry never starts it twice.
+ */
+export const skillCalls = pgTable(
+  'skill_calls',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    action: text('action').notNull(),
+    /** The record the action wrote. */
+    recordId: uuid('record_id').notNull(),
+    /** Where the step is in the action, such as `steps[2]`. */
+    step: text('step').notNull(),
+    skill: text('skill').notNull(),
+    label: text('label').notNull(),
+    /** The a7c tier that runs it: production for Prod, team for Staging and previews, personal for a sandbox. */
+    tier: text('tier', { enum: ['personal', 'team', 'production'] }).notNull(),
+    input: jsonb('input').$type<Json>().notNull(),
+    /** The person the action ran for. A service account that runs an action for nobody leaves it empty. */
+    onBehalfOf: uuid('on_behalf_of').references(() => users.id),
+    /** The proposal it came from, when a person approved an agent's proposal. */
+    proposalId: uuid('proposal_id').references(() => proposals.id),
+    status: text('status', { enum: ['pending', 'started', 'failed'] })
+      .notNull()
+      .default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    /** When the dispatcher may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    lastError: text('last_error'),
+    /** The run that a7c started. */
+    runId: text('run_id'),
+    createdAt: createdAt(),
+    startedAt: timestamp('started_at', tz),
+  },
+  (t) => [
+    index('skill_calls_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'pending'`),
+    index('skill_calls_record_idx').on(t.appId, t.recordId),
+    check('skill_calls_started_when', sql`(${t.status} = 'started') = (${t.startedAt} is not null)`),
+  ],
+);
+
 /** Org-level rules that deny, or demand fresh MFA, regardless of grants. */
 export const guardrails = pgTable('guardrails', {
   id: text('id').primaryKey(),

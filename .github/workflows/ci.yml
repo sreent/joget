@@ -58,14 +58,17 @@ jobs:
           helm template platform deploy/helm/platform > default.yaml
           helm template platform deploy/helm/platform \
             --set ingress.enabled=true --set autoscaling.enabled=false \
-            --set telemetry.otlpEndpoint=http://otel-collector:4318 > variant.yaml
+            --set telemetry.otlpEndpoint=http://otel-collector:4318 \
+            --set a7c.url=https://a7c.example.com --set a7c.tokenSecret=a7c-token > variant.yaml
           ./kubeconform -strict -summary -kubernetes-version 1.31.0 default.yaml variant.yaml
       - name: Refuse unsafe values
         run: |
           for args in "--set config.PUBLIC_BASE_URL=http://insecure.example.com" \
                       "--set config.DATABASE_URL=postgres://user:pass@db/platform" \
                       "--set existingSecret=" \
-                      "--set config.MFA_EVIDENCE=assume"; do
+                      "--set config.MFA_EVIDENCE=assume" \
+                      "--set a7c.url=http://a7c.example.com --set a7c.tokenSecret=a7c-token" \
+                      "--set a7c.url=https://a7c.example.com"; do
             if helm template platform deploy/helm/platform $args > /dev/null 2>&1; then
               echo "::error::The chart accepted unsafe values: $args"; exit 1
             fi

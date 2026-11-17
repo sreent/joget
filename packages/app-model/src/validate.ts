@@ -13,7 +13,9 @@ import {
   type StoredEntity,
   type StoredField,
 } from './fields.js';
-import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Entity } from './schema.js';
+import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
+import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Action, type Entity, type SimpleStep, type Step } from './schema.js';
+import { alwaysGiven } from './steps.js';
 import { canonicalValue } from './values.js';
 
 export interface Issue {
@@ -154,6 +156,26 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       ...(rule.fields ? { fields: rule.fields.map(fieldName(entity)) } : {}),
     };
   });
+  const simpleStep = (entity: string, step: SimpleStep): SimpleStep => {
+    const value = (expression: Expression) => mapExpressionRefs(expression, refs(entity));
+    switch (step.type) {
+      case 'set':
+        return { ...step, field: fieldName(entity)(step.field), value: value(step.value) };
+      case 'add_line': {
+        const lines = fieldName(entity)(step.field);
+        const lineEntity = lineEntityOf(entity, lines);
+        return { ...step, field: lines, values: Object.fromEntries(Object.entries(step.values).map(([name, v]) => [lineEntity ? fieldName(lineEntity)(name) : name, value(v)])) };
+      }
+      case 'check':
+        return { ...step, assert: condition(entity, step.assert), ...(step.fields ? { fields: step.fields.map(fieldName(entity)) } : {}) };
+      case 'skill':
+        return { ...step, input: Object.fromEntries(Object.entries(step.input).map(([name, v]) => [name, value(v)])) };
+    }
+  };
+  const step = (entity: string, s: Step): Step =>
+    s.type === 'if'
+      ? { ...s, when: condition(entity, s.when), then: s.then.map((inner) => simpleStep(entity, inner)), else: s.else.map((inner) => simpleStep(entity, inner)) }
+      : simpleStep(entity, s);
   const actions = mapRecord(definition.actions, (action) => {
     const entity = entityName(action.entity);
     return {
@@ -162,6 +184,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       input: action.input.map(fieldName(entity)),
       set: Object.fromEntries(Object.entries(action.set).map(([field, value]) => [fieldName(entity)(field), value])),
       ...(action.where ? { where: condition(entity, action.where) } : {}),
+      ...(action.steps ? { steps: action.steps.map((s) => step(entity, s)) } : {}),
     };
   });
   const queries = mapRecord(definition.queries, (query) => {
@@ -391,6 +414,138 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
   visit(condition);
 }
 
+type ExpressionKind = FieldInfo['kind'] | 'null' | 'any';
+
+const KIND_WORDS: Readonly<Record<ExpressionKind, string>> = {
+  text: 'text',
+  uuid: 'an ID of a person or a record',
+  number: 'a number',
+  boolean: 'yes or no',
+  date: 'a date',
+  datetime: 'a time',
+  'text[]': 'a list of options',
+  null: 'nothing',
+  any: 'any value',
+};
+
+/**
+ * Check an action's steps: what each sets or adds exists and can be set by a step; each value
+ * fits its field; conditions and references are sound. A step's values refer to the record and to
+ * the person, never to lines one by one.
+ */
+function checkSteps(
+  definition: StoredDefinition,
+  action: Action,
+  path: string,
+  fields: ReadonlyMap<string, FieldInfo>,
+  lines: ReadonlySet<string>,
+  issues: Issue[],
+): void {
+  const entity = definition.entities[action.entity]!;
+  const kindOf = (expression: Expression, at: string): ExpressionKind => {
+    if (expression === null) return 'null';
+    if (typeof expression === 'string') return 'text';
+    if (typeof expression === 'number') return 'number';
+    if (typeof expression === 'boolean') return 'boolean';
+    if (Array.isArray(expression)) return 'text[]';
+    if (typeof expression !== 'object') return 'any';
+    if ('ref' in expression) {
+      const [root, name] = expression.ref.split('.') as [string, string];
+      if (root === 'principal') return name === 'id' ? 'uuid' : 'any';
+      if (root !== 'record') {
+        issues.push({ path: at, message: `${expression.ref}: a step can refer to record and principal` });
+        return 'any';
+      }
+      const info = fields.get(name);
+      if (info) return info.kind;
+      issues.push({
+        path: at,
+        message: lines.has(name) ? `${expression.ref}: a step can't use lines one by one. Add a rollup, such as a total, and use that` : `${expression.ref}: no such field`,
+      });
+      return 'any';
+    }
+    if ('today' in expression) return 'date';
+    if ('now' in expression) return 'datetime';
+    const op = operatorOf(expression);
+    if (!op) return 'any';
+    const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : (expression as Record<string, readonly Expression[]>)[op]!;
+    const kinds = operands.map((operand) => kindOf(operand, at));
+    if (op === 'concat') return 'text';
+    for (const kind of kinds) {
+      if (kind !== 'number' && kind !== 'null' && kind !== 'any') issues.push({ path: at, message: `${op} works on numbers, not on ${KIND_WORDS[kind]}` });
+    }
+    return 'number';
+  };
+  /** Check that a value fits the field it goes into. Literals are checked as the field would check them. */
+  const fits = (info: FieldInfo, expression: Expression, at: string, label: string): void => {
+    const kind = kindOf(expression, at);
+    const literal = expression === null || typeof expression !== 'object' || Array.isArray(expression);
+    if (literal) {
+      if (expression === null) {
+        if (info.field?.required) issues.push({ path: at, message: `${label} is required, so a step can't empty it` });
+        return;
+      }
+      const value = info.field?.type === 'number' && typeof expression === 'number' ? roundTo(expression, info.field.decimals) : expression;
+      const result = canonicalValue(info, value);
+      if (!result.ok) issues.push({ path: at, message: `${label}: ${result.issue.message}` });
+      return;
+    }
+    const fitsKind = kind === 'any' || kind === 'null' || kind === info.kind || (info.kind === 'date' && kind === 'datetime');
+    if (!fitsKind) issues.push({ path: at, message: `${label} holds ${KIND_WORDS[info.kind]}, and this gives ${KIND_WORDS[kind]}` });
+  };
+  const condition = (c: Condition, at: string) => checkCondition(c, { record: fields, lines }, at, issues);
+
+  const visit = (list: readonly (Step | SimpleStep)[], base: string): void =>
+    list.forEach((step, index) => {
+      const at = `${base}[${index}]`;
+      switch (step.type) {
+        case 'set': {
+          const info = fields.get(step.field);
+          if (lines.has(step.field)) issues.push({ path: `${at}.field`, message: `${step.field} holds lines: add one with an "add a line" step` });
+          else if (!info) issues.push({ path: `${at}.field`, message: `No field named ${step.field}` });
+          else if (!isWritable(info)) issues.push({ path: `${at}.field`, message: info.system ? `${step.field} is set by the platform` : `${step.field} is worked out from lines` });
+          else if (info.field?.type === 'file') issues.push({ path: `${at}.field`, message: 'A step can\'t set a file: take it as input' });
+          else fits(info, step.value, `${at}.value`, info.field?.label ?? step.field);
+          return;
+        }
+        case 'add_line': {
+          const linesField = entity.fields.find((f) => f.name === step.field);
+          const lineEntity = linesField?.type === 'lines' ? definition.entities[linesField.entity] : undefined;
+          if (!lineEntity) {
+            issues.push({ path: `${at}.field`, message: `${step.field} isn't a lines field of ${action.entity}` });
+            return;
+          }
+          const lineFields = entityFields(lineEntity, { line: true });
+          for (const [name, expression] of Object.entries(step.values)) {
+            const info = lineFields.get(name);
+            if (!info || info.system) issues.push({ path: `${at}.values.${name}`, message: `${lineEntity.label} has no field ${name}` });
+            else if (info.field?.type === 'file') issues.push({ path: `${at}.values.${name}`, message: 'A step can\'t set a file: take it as input' });
+            else fits(info, expression, `${at}.values.${name}`, info.field?.label ?? name);
+          }
+          for (const declared of lineEntity.fields) {
+            const defaulted = 'default' in declared && declared.default !== undefined;
+            if (declared.required && !(declared.name in step.values) && !defaulted) issues.push({ path: `${at}.values`, message: `Each line needs ${declared.label}: give it a value` });
+          }
+          return;
+        }
+        case 'check':
+          condition(step.assert, `${at}.assert`);
+          for (const field of step.fields ?? []) if (!fields.has(field)) issues.push({ path: `${at}.fields`, message: `No field named ${field}` });
+          return;
+        case 'skill':
+          for (const [name, expression] of Object.entries(step.input)) kindOf(expression, `${at}.input.${name}`);
+          return;
+        case 'if':
+          condition(step.when, `${at}.when`);
+          if (!step.then.length && !step.else.length) issues.push({ path: at, message: 'A branch needs at least one step' });
+          visit(step.then, `${at}.then`);
+          visit(step.else, `${at}.else`);
+          return;
+      }
+    });
+  visit(action.steps ?? [], `${path}.steps`);
+}
+
 function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   const owners = lineOwners(definition);
   const fieldsOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, entityFields(entity, { line: owners.has(name) })]));
@@ -522,10 +677,12 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       const result = canonicalValue(info, value);
       if (!result.ok) issues.push({ path: `${path}.set.${field}`, message: result.issue.message });
     }
+    checkSteps(definition, action, path, fields, lines, issues);
     if (action.operation === 'create') {
       if (action.where) issues.push({ path: `${path}.where`, message: 'Only updates apply to existing records' });
+      const stepsGive = alwaysGiven(action.steps ?? []);
       for (const field of entity.fields) {
-        const provided = input.has(field.name) || field.name in action.set || ('default' in field && field.default !== undefined);
+        const provided = input.has(field.name) || field.name in action.set || stepsGive.has(field.name) || ('default' in field && field.default !== undefined);
         if (field.required && !provided) {
           issues.push({
             path: `${path}.input`,

@@ -22,6 +22,7 @@ interface Locator {
   waitFor(options?: { state?: 'visible' | 'hidden'; timeout?: number }): Promise<void>;
   getByLabel(text: string, options?: { exact?: boolean }): Locator;
   getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
+  getByText(text: string, options?: { exact?: boolean }): Locator;
   first(): Locator;
   setInputFiles(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
 }
@@ -335,5 +336,35 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.goto(`${BASE}/studio/apps/${appId}/pages/spending`);
     await visible(page.getByRole('heading', { name: 'Claims by status' }));
     await visible(page.locator('ul[aria-label="Claims by status"] li').first());
+  });
+
+  it('designs the steps of an action, and shows the work in other systems that they start', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
+    await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
+    const steps = page.getByRole('region', { name: 'Steps' });
+    await visible(steps.getByRole('button', { name: 'Step 4: Pay the claim (a7c: finance/pay-expense-claim)' }));
+    await steps.getByRole('button', { name: 'Start an a7c skill', exact: true }).click();
+    await steps.getByLabel('What it does', { exact: true }).fill('Tell the requester');
+    await steps.getByLabel('a7c skill', { exact: true }).fill('people/notify-requester');
+    await steps.getByLabel('Step 5: new input').fill('claim');
+    await steps.getByRole('button', { name: 'Add an input' }).click();
+    await steps.getByRole('button', { name: /^Step 2: Set Approver/ }).click();
+    await shot(page, '21-steps-designer');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.actions.approve_claim.steps.at(-1)).toEqual({ type: 'skill', label: 'Tell the requester', skill: 'people/notify-requester', input: { claim: { ref: 'record.id' } } });
+
+    // The claim Carol approved shows the payment its approval started, through a7c.
+    const listed = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records`, cookies: alice.cookies })).json();
+    const approved = listed.records.find((record: { values: { status: string } }) => record.values.status === 'approved');
+    const approver = await open(carol);
+    await approver.goto(`${BASE}/studio/apps/${appId}/expense_claim/${approved.id}`);
+    const elsewhere = approver.getByRole('list', { name: 'In other systems' });
+    await visible(elsewhere.getByText('Pay the claim'));
+    await visible(elsewhere.getByText('Waiting'));
+    await shot(approver, '22-record-in-other-systems');
   });
 });

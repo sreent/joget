@@ -6,7 +6,7 @@ const status = { ref: 'record.status' } as const;
 
 /**
  * A small expense-claim app: a claim with one line per receipt, each with its file, and a total worked out from them,
- * rules on each line, two actions, a query, a review card with the lines as a table, a form,
+ * rules on each line, two actions (one with steps, which pay the claim through a7c), a query, a review card with the lines as a table, a form,
  * two roles, three pages (one a dashboard) and a menu. It's the running example in the design doc (§6.2) and in the tests.
  */
 export const EXPENSE_APP = {
@@ -82,6 +82,21 @@ export const EXPENSE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
+      steps: [
+        { type: 'check', assert: { ne: [owner, me] }, message: "You can't approve your own claim" },
+        { type: 'set', field: 'approver', value: me },
+        {
+          type: 'if',
+          when: { gt: [{ ref: 'record.total' }, 1000] },
+          then: [{ type: 'skill', label: 'Ask finance to check a large claim', skill: 'finance/check-large-claim', input: { claim: { ref: 'record.id' }, amount: { ref: 'record.total' } } }],
+        },
+        {
+          type: 'skill',
+          label: 'Pay the claim',
+          skill: 'finance/pay-expense-claim',
+          input: { claim: { ref: 'record.id' }, title: { ref: 'record.title' }, amount: { ref: 'record.total' }, account: { ref: 'record.iban' } },
+        },
+      ],
     },
   },
   queries: {
@@ -133,7 +148,7 @@ export const EXPENSE_APP = {
       entities: {
         expense_claim: {
           read: { where: { in: [status, ['submitted', 'approved']] } },
-          update: { where: { eq: [status, 'submitted'] }, fields: { include: ['status'] } },
+          update: { where: { eq: [status, 'submitted'] }, fields: { include: ['status', 'approver'] } },
         },
       },
       actions: ['approve_claim'],

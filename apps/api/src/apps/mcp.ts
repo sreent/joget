@@ -1,4 +1,4 @@
-import { EXPENSE_APP, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { EXPENSE_APP, skillSteps, type StoredDefinition, type StoredField } from '@platform/app-model';
 import { spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -196,10 +196,13 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
     action.confirm === 'none'
       ? 'It runs straight away.'
       : `The person must confirm it before it commits (${action.confirm}): the call returns a proposal with a review link to give them.`;
+  // Work in other systems is part of what the tool does, so an agent knows of it before it calls.
+  const skills = [...new Set(skillSteps(action.steps ?? []).map(({ step }) => step.label))];
+  const then = skills.length ? ` Once saved, it starts work in other systems: ${skills.join('; ')}.` : '';
   return {
     name: tool,
     title: action.label,
-    description: `${action.description} (App: ${loaded.app.name}. ${confirm} Use dry_run to see the review card and any rule findings first.)`,
+    description: `${action.description} (App: ${loaded.app.name}. ${confirm}${then} Use dry_run to see the review card and any rule findings first.)`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -266,6 +269,8 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
           'Entities and fields get stable IDs when first saved. Keep them when you edit a definition: a field that keeps its ID under a new name is a rename, and renames carry through to every reference.',
           'Actions need a description written for agents, and a confirmation level: none, preview or review.',
           'Pages lay out lists of records, text and buttons for people in screens, and navigation is the menu. Neither protects data: roles do, and each person sees only what their role can use.',
+          'An action can have steps, which run after its input and its set values, in order: {"type": "set", "field", "value"}, {"type": "add_line", "field": "<lines field>", "values": {...}}, {"type": "check", "assert": <condition>, "message", "severity": "error" | "warning"}, {"type": "if", "when": <condition>, "then": [...], "else": [...]} (one level deep), and {"type": "skill", "label", "skill": "<project>/<skill>", "input": {...}} to start an a7c skill once the change is saved.',
+          'Step values are expressions: a literal, {"ref": "record.<field>" | "principal.id"}, {"today": true}, {"now": true}, {"add": [a, b, ...]}, {"sub": [a, b]}, {"mul": [a, b, ...]}, {"div": [a, b]}, {"round": [a, digits]} or {"concat": [a, b, ...]}. A number is rounded to its field\'s decimal places. Steps set only fields the person running the action may write.',
         ],
       }),
     },

@@ -1,5 +1,6 @@
 import { isCondition, type Condition } from '@platform/authz';
 import { z } from 'zod';
+import { isExpression, type Expression } from './expressions.js';
 
 /**
  * The app definition format (design §6): entities hold data; rules check every write; actions
@@ -184,6 +185,51 @@ const Literal = z.union([z.string().max(MAX_TEXT_LENGTH), z.number(), z.boolean(
 export const CONFIRMATION_LEVELS = ['none', 'preview', 'review'] as const;
 export type ConfirmationLevel = (typeof CONFIRMATION_LEVELS)[number];
 
+export const ExpressionSchema = z.custom<Expression>((value) => isExpression(value), { message: 'Not a valid expression' });
+
+/** An a7c skill, as `<project>/<skill>`, for example `finance/pay-expense-claim`. */
+export const SKILL_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}\/[a-z0-9][a-z0-9-]{0,62}$/;
+const SkillInputName = z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,62}$/, 'Name an input with letters, digits and underscores, starting with a letter');
+
+/** Set a field of the record to a value that the step works out. */
+const SetStep = z.strictObject({ type: z.literal('set'), field: Name, value: ExpressionSchema });
+/** Add a line to a lines field of the record, such as a receipt to a claim. */
+const AddLineStep = z.strictObject({ type: z.literal('add_line'), field: Name, values: z.record(Name, ExpressionSchema) });
+/** Stop the action with a message unless a condition holds; or, as a warning, let it through with the message. */
+const CheckStep = z.strictObject({
+  type: z.literal('check'),
+  assert: ConditionSchema,
+  message: z.string().trim().min(1).max(500),
+  severity: z.enum(['error', 'warning']).default('error'),
+  /** The fields the message points at, so screens can highlight them. */
+  fields: z.array(Name).max(20).optional(),
+});
+/**
+ * Start an a7c skill once the change is saved (design §6.2): automation across other systems
+ * belongs to a7c. The call waits in an outbox, so it starts once, and only if the change commits.
+ */
+const SkillStep = z.strictObject({
+  type: z.literal('skill'),
+  /** What the skill does, in the words a person reads on the review card. */
+  label: Label,
+  skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim'),
+  /** The skill's input, worked out from the record. */
+  input: z.record(SkillInputName, ExpressionSchema).default({}),
+});
+/** A step that a branch can hold. Branches go one level deep, so that an action's logic stays a short list. */
+export const SimpleStep = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, SkillStep]);
+export type SimpleStep = z.infer<typeof SimpleStep>;
+/** Take one of two short lists of steps, depending on a condition. */
+const IfStep = z.strictObject({
+  type: z.literal('if'),
+  when: ConditionSchema,
+  then: z.array(SimpleStep).max(10),
+  else: z.array(SimpleStep).max(10).default([]),
+});
+export const Step = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, SkillStep, IfStep]);
+export type Step = z.infer<typeof Step>;
+export const MAX_STEPS = 20;
+
 export const Action = z.strictObject({
   label: Label,
   /** Written for agents: what the action does and when to use it. Becomes the tool description. */
@@ -200,6 +246,12 @@ export const Action = z.strictObject({
   confirm: z.enum(CONFIRMATION_LEVELS).default('preview'),
   /** The review card a person checks before confirming. */
   card: Name.optional(),
+  /**
+   * What the action does after it takes its input and sets its values, step by step: set values,
+   * add lines, check, branch, and start a7c skills. The steps run when the change is worked out,
+   * so a preview and a proposal show their result, and a person approves exactly that.
+   */
+  steps: z.array(Step).max(MAX_STEPS).optional(),
 });
 export type Action = z.infer<typeof Action>;
 

@@ -1,5 +1,6 @@
 import type { Definition, Entity, Field, FieldType, Form, FormField } from '../types.js';
 import { forgetEntity, forgetField, forgetForm } from './pages.js';
+import { forgetStepField } from './steps.js';
 
 /**
  * Pure edits of a draft definition, for the designers. Each returns a new definition and leaves
@@ -294,6 +295,7 @@ export function removeField(definition: Definition, entity: string, index: numbe
     for (const section of form.sections) section.fields = section.fields.filter((item) => item.field !== removed!.name);
   }
   forgetField(next, entity, removed!.name);
+  forgetStepField(next, entity, removed!.name);
   return next;
 }
 

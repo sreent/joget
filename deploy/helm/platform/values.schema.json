@@ -19,6 +19,14 @@
       }
     },
     "replicaCount": { "type": "integer", "minimum": 1 },
+    "a7c": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "pattern": "^(https://.+)?$", "description": "a7c's control plane. Empty: skill calls wait in the outbox." },
+        "tokenSecret": { "type": "string", "description": "A Secret with Ambit's a7c token under the key token." }
+      }
+    },
     "config": {
       "type": "object",
       "required": ["PUBLIC_BASE_URL", "OIDC_ISSUER", "OIDC_CLIENT_ID"],
@@ -31,7 +39,9 @@
         "FILE_SCANNER": { "enum": ["clamav"], "description": "Production refuses uploads without a malware scanner." },
         "S3_ENDPOINT": { "type": "string", "pattern": "^https://" },
         "CHANGE_APPROVALS": { "type": "string", "pattern": "^[1-5]$" },
-        "DEPLOY_PROD_APPROVALS": { "type": "string", "pattern": "^[1-5]$" }
+        "DEPLOY_PROD_APPROVALS": { "type": "string", "pattern": "^[1-5]$" },
+        "SKILL_DISPATCH_INTERVAL_SECONDS": { "type": "string", "pattern": "^[0-9]+$" },
+        "SKILL_CALL_MAX_ATTEMPTS": { "type": "string", "pattern": "^([1-9]|[1-4][0-9]|50)$" }
       },
       "not": {
         "anyOf": [
@@ -40,7 +50,9 @@
           { "required": ["AUDIT_SIGNING_KEY_PEM"] },
           { "required": ["OIDC_CLIENT_SECRET"] },
           { "required": ["S3_ACCESS_KEY_ID"] },
-          { "required": ["S3_SECRET_ACCESS_KEY"] }
+          { "required": ["S3_SECRET_ACCESS_KEY"] },
+          { "required": ["A7C_URL"], "description": "Set a7c.url instead, so the token Secret is mounted with it." },
+          { "required": ["A7C_TOKEN_FILE"] }
         ]
       },
       "additionalProperties": { "type": ["string", "number", "boolean"] }

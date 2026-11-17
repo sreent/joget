@@ -56,6 +56,8 @@ export interface CardData {
   /** Lines, as tables. Cards made before line items have none. */
   readonly tables?: CardTable[];
   readonly responses: Array<'approve' | 'edit' | 'reject'>;
+  /** The a7c skills the change starts once it is saved, in order. Their input is not shown: it may hold values the person can't read. */
+  readonly then?: Array<{ readonly label: string; readonly skill: string }>;
 }
 
 /** A file as cards and screens name it. */
@@ -96,6 +98,8 @@ export function buildCard(input: {
   readonly provenance?: Readonly<Record<string, Provenance>>;
   /** The files the values name, so the card can show their names. */
   readonly files?: Readonly<Record<string, FileInfo>>;
+  /** The a7c skills the change starts once it is saved. */
+  readonly skills?: ReadonlyArray<{ readonly label: string; readonly skill: string }>;
 }): CardData {
   const { definition, entity, values } = input;
   const card = input.card ? definition.cards[input.card] : undefined;
@@ -148,5 +152,6 @@ export function buildCard(input: {
       }];
     }),
     responses: ['approve', 'edit', 'reject'],
+    ...(input.skills?.length ? { then: input.skills.map(({ label, skill }) => ({ label, skill })) } : {}),
   };
 }

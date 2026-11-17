@@ -107,6 +107,8 @@ describe('building an app in a personal space', () => {
     expect(saved2.definition.actions.submit_claim.input).toContain('journey');
     const dropping = structuredClone(saved2.definition);
     dropping.entities.expense_claim.fields = dropping.entities.expense_claim.fields.filter((f: { name: string }) => f.name !== 'approver');
+    dropping.actions.approve_claim.steps = dropping.actions.approve_claim.steps.filter((step: { field?: string }) => step.field !== 'approver');
+    dropping.roles.approver.entities.expense_claim.update.fields = { include: ['status'] };
     const held = await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), payload: { definition: dropping } }, 409);
     expect(held.json()).toMatchObject({ error: 'destructive_change', details: { plan: { destructive: true, steps: [{ kind: 'drop_field', records: 0 }] } } });
     // The rename kept its ID, so the next revision still knows the field.
@@ -280,7 +282,11 @@ describe('sharing with colleagues', () => {
       ['create', bob.userId],
       ['update', carol.userId],
     ]);
-    expect(history[1].changes).toEqual([{ field: 'status', before: 'submitted', after: 'approved' }]);
+    // Its steps recorded the approver, and the history says the platform set it.
+    expect(history[1].changes).toEqual([
+      { field: 'status', before: 'submitted', after: 'approved' },
+      { field: 'approver', before: null, after: carol.userId, source: { source: 'platform' } },
+    ]);
     expect(history[1].actor).toEqual({ type: 'user', id: carol.userId, onBehalfOf: null });
     // Changes come in the entity's field order, the owner last.
     const { definition } = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json();

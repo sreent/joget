@@ -62,13 +62,13 @@ describe('who gains or loses access', () => {
   it('says what a role can now do, and what it can no longer do', () => {
     const head = changed(base, (d) => {
       d.roles.approver.entities.expense_claim.export = true;
-      d.roles.approver.entities.expense_claim.update = { where: d.roles.approver.entities.expense_claim.update.where, fields: { include: ['status', 'approver'] } };
+      d.roles.approver.entities.expense_claim.update = { where: d.roles.approver.entities.expense_claim.update.where, fields: { include: ['status', 'approver', 'trip'] } };
       d.roles.approver.actions = [];
       d.roles.requester.entities.expense_claim.read = { unmask: ['iban'] };
     });
     const texts = accessChanges(base, head).map((c) => `${c.kind}: ${c.text}`);
     expect(texts).toContain('gains: Approver can now export Expense claim');
-    expect(texts).toContain('gains: Approver can now set Expense claim.approver when it updates');
+    expect(texts).toContain('gains: Approver can now set Expense claim.trip when it updates');
     expect(texts).toContain('loses: Approver can no longer run Approve an expense claim');
     expect(texts).toContain('gains: Requester can now read every Expense claim record');
   });

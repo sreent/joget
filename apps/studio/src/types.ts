@@ -332,6 +332,22 @@ export interface LinesChange {
   reordered: boolean;
 }
 
+/** A call to an a7c skill that an action on a record made, and how it went. */
+export interface SkillCall {
+  id: string;
+  action: string;
+  step: string;
+  skill: string;
+  label: string;
+  tier: 'personal' | 'team' | 'production';
+  status: 'pending' | 'started' | 'failed';
+  attempts: number;
+  lastError: string | null;
+  runId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+}
+
 export interface HistoryEntry {
   version: number;
   operation: 'create' | 'update' | 'delete';

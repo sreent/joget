@@ -5,6 +5,7 @@ import { recordChoices, type RefChoice } from '../model/conditions.js';
 import { isName, lineOwner } from '../model/edit.js';
 import { addItem, recordEntities, removeItem, renameItem, updateItem, writableFields, type Section } from '../model/logic.js';
 import type { Definition, Field as FieldDef } from '../types.js';
+import { StepsEditor } from './StepsEditor.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
@@ -257,7 +258,7 @@ function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
         <Field label="Label">{(id) => <TextInput id={id} value={action.label} onChange={(e) => set({ label: e.target.value })} />}</Field>
         <Field label="Works on">
           {(id) => (
-            <Select id={id} value={action.entity} onChange={(e) => set({ entity: e.target.value, input: writableFields(definition, e.target.value), set: {}, where: undefined, card: undefined })}>
+            <Select id={id} value={action.entity} onChange={(e) => set({ entity: e.target.value, input: writableFields(definition, e.target.value), set: {}, where: undefined, card: undefined, steps: undefined })}>
               {entityOptions(definition, false).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -332,6 +333,7 @@ function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
           empty="Every record the person may change."
         />
       ) : null}
+      <StepsEditor definition={definition} onChange={onChange} action={name} />
       <Choice label="Before it commits, when an agent runs it" value={action.confirm ?? 'preview'} onChange={(confirm) => set({ confirm })} options={CONFIRM_OPTIONS} />
       <Field label="Review card" hint="What the person checks before they confirm.">
         {(id) => (
