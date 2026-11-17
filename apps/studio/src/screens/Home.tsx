@@ -11,20 +11,30 @@ export function Home({ me }: { me: Me }) {
   const apps = useQuery({ queryKey: ['apps'], queryFn: api.apps });
   const spaces = useQuery({ queryKey: ['spaces'], queryFn: api.spaces });
   const teamSpaces = spaces.data?.spaces.filter((space) => space.kind === 'team' && space.status === 'active') ?? [];
+  const templates = useQuery({ queryKey: ['templates'], queryFn: api.templates });
   const [name, setName] = useState('');
-  const [start, setStart] = useState<'blank' | 'example'>('blank');
+  // Blank, a template's ID, or a file someone exported.
+  const [start, setStart] = useState('blank');
+  const [file, setFile] = useState<{ name: string; bundle: Record<string, unknown> } | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [where, setWhere] = useState('mine');
   const inTeam = where !== 'mine';
+  const template = templates.data?.templates.find((t) => t.id === start);
   const create = useMutation({
     mutationFn: async () => {
-      const definition = start === 'example' && !inTeam ? (await api.example()).example : undefined;
-      return api.createApp(inTeam ? where : me.personalSpaceId!, { name, ...(definition ? { definition } : {}) });
+      const space = inTeam ? where : me.personalSpaceId!;
+      if (start === 'blank') return { ...(await api.createApp(space, { name })), changeRequest: null };
+      const named = name.trim() ? { name: name.trim() } : {};
+      return api.importApp(space, start === 'file' ? { bundle: file!.bundle, ...named } : { template: start, ...named });
     },
-    onSuccess: async ({ app }) => {
+    onSuccess: async ({ app, changeRequest }) => {
       await client.invalidateQueries({ queryKey: ['apps'] });
-      navigate({ name: 'build', appId: app.id, tab: app.kind === 'team' ? 'changes' : 'data' });
+      // In a team space, a template or a file arrives as a change request, for the space to review.
+      if (changeRequest) navigate({ name: 'change', changeRequestId: changeRequest.id });
+      else navigate({ name: 'build', appId: app.id, tab: app.kind === 'team' ? 'changes' : 'data' });
     },
   });
+  const ready = start === 'blank' ? Boolean(name.trim()) : start === 'file' ? Boolean(file) : Boolean(template);
   const all = apps.data?.apps ?? [];
   const mine = all.filter((app) => app.kind === 'personal' && app.access.build && !app.workingCopyOf);
   const copies = all.filter((app) => app.workingCopyOf);
@@ -153,10 +163,12 @@ export function Home({ me }: { me: Me }) {
           className="grid gap-3"
           onSubmit={(event) => {
             event.preventDefault();
-            if (name.trim()) create.mutate();
+            if (ready) create.mutate();
           }}
         >
-          <Field label="Name">{(id) => <TextInput id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="Expense claims" required maxLength={100} />}</Field>
+          <Field label="Name" hint={start === 'blank' ? undefined : 'Leave it empty to keep the name it comes with.'}>
+            {(id) => <TextInput id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder={template?.name ?? 'Expense claims'} required={start === 'blank'} maxLength={100} />}
+          </Field>
           {teamSpaces.length ? (
             <Field label="Where" hint={inTeam ? 'A team app starts empty. Build it in your working copy, then submit it for review.' : 'Your personal space: you edit it live.'}>
               {(id) => (
@@ -171,18 +183,48 @@ export function Home({ me }: { me: Me }) {
               )}
             </Field>
           ) : null}
-          {!inTeam ? (
-            <Field label="Start from">
+          <Field label="Start from" hint={template?.description ?? (start === 'file' ? 'A definition someone downloaded from Ambit. No data comes with it.' : undefined)}>
+            {(id) => (
+              <Select id={id} value={start} onChange={(e) => setStart(e.target.value)}>
+                <option value="blank">A blank app</option>
+                {templates.data?.templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+                <option value="file">A file…</option>
+              </Select>
+            )}
+          </Field>
+          {start === 'file' ? (
+            <Field label="The file" hint={file ? `${file.name}: ready` : undefined}>
               {(id) => (
-                <Select id={id} value={start} onChange={(e) => setStart(e.target.value as 'blank' | 'example')}>
-                  <option value="blank">A blank app</option>
-                  <option value="example">The expense-claim example</option>
-                </Select>
+                <input
+                  id={id}
+                  type="file"
+                  accept=".json,application/json"
+                  className="text-sm"
+                  onChange={async (e) => {
+                    const chosen = e.target.files?.[0];
+                    setFile(null);
+                    setFileError(null);
+                    if (!chosen) return;
+                    try {
+                      const parsed: unknown = JSON.parse(await chosen.text());
+                      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not an object');
+                      setFile({ name: chosen.name, bundle: parsed as Record<string, unknown> });
+                    } catch {
+                      setFileError("That file isn't an app definition in JSON.");
+                    }
+                  }}
+                />
               )}
             </Field>
           ) : null}
+          {inTeam && start !== 'blank' ? <p className="m-0 text-xs text-muted">In a team space, it arrives as a change request, for the space to review.</p> : null}
+          {fileError ? <Notice tone="bad">{fileError}</Notice> : null}
           {create.error ? <Notice tone="bad">{create.error instanceof ApiError ? create.error.message : 'Something went wrong'}</Notice> : null}
-          <Button type="submit" variant="primary" disabled={!name.trim() || create.isPending || !me.personalSpaceId}>
+          <Button type="submit" variant="primary" disabled={!ready || create.isPending || !me.personalSpaceId}>
             {create.isPending ? 'Creating…' : 'Create app'}
           </Button>
         </form>

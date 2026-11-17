@@ -13,3 +13,4 @@ export * from './values.js';
 export * from './examples.js';
 export * from './statements.js';
 export * from './steps.js';
+export * from './templates.js';

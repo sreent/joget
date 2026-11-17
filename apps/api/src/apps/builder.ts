@@ -216,11 +216,11 @@ export class AppBuilder {
     return { appId, plan };
   }
 
-  /** An empty team app that a personal app is promoted into: its content arrives through a change request (design §3). */
-  async createPromoted(request: FastifyRequest, auth: AuthContext, space: SpaceRow, source: AppRef, name: string): Promise<string> {
-    const handle = handleFrom(name);
+  /** An empty team app, whose content arrives through a change request: for promotion and import (design §3). */
+  async createEmptyTeamApp(request: FastifyRequest, auth: AuthContext, space: SpaceRow, input: { readonly name: string; readonly description?: string; readonly promotedFrom?: string }): Promise<string> {
+    const handle = handleFrom(input.name);
     if (!NAME_PATTERN.test(handle)) throw unprocessable('invalid_handle', 'Give the app a name that starts with a letter');
-    return this.#createTeamApp(request, auth, space, { name, handle, ...(source.app.description ? { description: source.app.description } : {}), promotedFrom: source.app.id });
+    return this.#createTeamApp(request, auth, space, { ...input, handle });
   }
 
   async #createTeamApp(

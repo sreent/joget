@@ -72,7 +72,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'connection.manage',
   ]),
   permissionSet('ps.space.view', 'Space view', 'space', ['space.read', 'app.read', 'deploy.read', 'ops.monitor.read']),
-  permissionSet('ps.space.build', 'Build apps', 'space', ['app.create', 'app.read', 'app.edit', 'change.open', 'connection.use']),
+  permissionSet('ps.space.build', 'Build apps', 'space', ['app.create', 'app.read', 'app.edit', 'app.export', 'change.open', 'connection.use']),
   permissionSet('ps.space.review', 'Review changes', 'space', ['change.review', 'change.approve', 'deploy.approve']),
   permissionSet('ps.space.release', 'Release management', 'space', [
     'change.merge',

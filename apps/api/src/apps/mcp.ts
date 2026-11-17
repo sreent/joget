@@ -1,4 +1,4 @@
-import { EXPENSE_APP, skillSteps, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { EXPENSE_APP, skillSteps, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
 import { spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -306,10 +306,16 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
     {
       name: 'create_app',
       title: 'Create an app',
-      description: "Create an app in the person's personal space, optionally with a first definition. Its sandbox is ready at once.",
+      description: `Create an app in the person's personal space, from a definition, from a template, or blank. Its sandbox is ready at once. Templates: ${TEMPLATES.map((t) => `${t.id} (${t.name})`).join(', ')}.`,
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string' }, handle: { type: 'string', description: 'A short identifier; agent tool names start with it' }, description: { type: 'string' }, ...definition },
+        properties: {
+          name: { type: 'string' },
+          handle: { type: 'string', description: 'A short identifier; agent tool names start with it' },
+          description: { type: 'string' },
+          ...definition,
+          template: { type: 'string', enum: TEMPLATES.map((t) => t.id), description: 'Start from this template instead of a definition' },
+        },
         required: ['name'],
         additionalProperties: false,
       },
@@ -318,11 +324,14 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
         const [space] = await ctx.db.select().from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
         if (!space) throw notFound('Personal space');
         await checkPermission(ctx, request, auth, 'app.create', spaceResource(ctx.org.id, space));
+        const template = typeof args['template'] === 'string' ? TEMPLATES.find((t) => t.id === args['template']) : undefined;
+        if (args['template'] !== undefined && !template) throw notFound('Template');
+        const start = template ? template.definition : args['definition'];
         const { appId, plan } = await builder.create(request, auth, space, {
           name: String(args['name'] ?? ''),
           ...(typeof args['handle'] === 'string' ? { handle: args['handle'] } : {}),
           ...(typeof args['description'] === 'string' ? { description: args['description'] } : {}),
-          ...(args['definition'] !== undefined ? { definition: args['definition'] } : {}),
+          ...(start !== undefined ? { definition: start } : {}),
         });
         return { app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(appId)), plan };
       },

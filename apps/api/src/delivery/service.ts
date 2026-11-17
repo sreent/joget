@@ -42,7 +42,7 @@ import type pg from 'pg';
 import { checkPermission } from '../access/check.js';
 import { spaceResource } from '../access/resources.js';
 import { digestOf, insertRevision, type AppBuilder, type PlannedStep } from '../apps/builder.js';
-import { isTeamApp, type AppRef, type EnvironmentRow, type LoadedApp } from '../apps/catalog.js';
+import { isTeamApp, type AppRef, type EnvironmentRow, type LoadedApp, type SpaceRow } from '../apps/catalog.js';
 import type { AppRuntime } from '../apps/runtime.js';
 import { pgError } from '../apps/pg-errors.js';
 import { lockEnvironment, withTransaction } from '../apps/transaction.js';
@@ -180,27 +180,56 @@ export class Delivery {
     if (open) throw conflict('promotion_open', 'This app is moving to a team space already', { appId: open.id });
     const [space] = await ctx.db.select().from(spaces).where(and(eq(spaces.id, input.spaceId), eq(spaces.orgId, ctx.org.id)));
     if (!space || space.kind !== 'team') throw notFound('Team space');
-    const target = spaceResource(ctx.org.id, space);
-    await checkPermission(ctx, request, auth, 'app.create', target);
-    await checkPermission(ctx, request, auth, 'change.open', target);
-
     const name = input.name?.trim() || source.app.name;
-    const appId = await this.#builder.createPromoted(request, auth, space, source, name);
-    const team = await ctx.apps.ref(appId);
-    // The copy starts from the personal app's definition, with its stable IDs, so the change adds the whole app.
-    const copyId = await this.#builder.createWorkingCopy(request, auth, team, source.space, source.definition);
-    await addSampleRecords(this.#runtime, request, auth, await ctx.apps.load(copyId), ctx.now());
-    const changeRequest = await this.submit(request, auth, await ctx.apps.load(copyId), {
+    const result = await this.bringIn(request, auth, space, {
+      name,
+      description: source.app.description,
+      definition: source.definition,
+      promotedFrom: source,
       title: `Bring in ${source.app.name} from a personal space`,
-      description: `${name} starts as a copy of a personal app's definition. Its data stays in the personal app.`,
+      body: `${name} starts as a copy of a personal app's definition. Its data stays in the personal app.`,
     });
     await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
       action: 'app.promote',
       target: { type: 'app', id: source.app.id, name: source.app.name },
       spaceId: source.space.id,
       appId: source.app.id,
-      changes: { after: { teamAppId: appId, teamSpaceId: space.id, changeRequestId: changeRequest.id, revision: source.revision } },
+      changes: { after: { teamAppId: result.appId, teamSpaceId: space.id, changeRequestId: result.changeRequest.id, revision: source.revision } },
     });
+    return result;
+  }
+
+  /**
+   * Bring a definition into a team space (design §3): a new, empty team app there, the caller's
+   * working copy of it, which starts from the definition, and the change request from that copy.
+   * The space's reviewers check it like any change. Promotion and import both come this way.
+   */
+  async bringIn(
+    request: FastifyRequest,
+    auth: AuthContext,
+    space: SpaceRow,
+    input: { readonly name: string; readonly description: string | null; readonly definition: unknown; readonly promotedFrom?: AppRef; readonly title: string; readonly body: string },
+  ): Promise<{ appId: string; copyId: string; changeRequest: ChangeRequestRow }> {
+    const ctx = this.#ctx;
+    if (space.kind !== 'team') throw unprocessable('not_a_team_space', 'Choose a team space');
+    const target = spaceResource(ctx.org.id, space);
+    await checkPermission(ctx, request, auth, 'app.create', target);
+    await checkPermission(ctx, request, auth, 'change.open', target);
+    const validated = validateDefinition(input.definition);
+    if (!validated.ok) throw unprocessable('invalid_definition', 'The definition has problems', { issues: validated.issues });
+    const [personal] = await ctx.db.select().from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
+    if (!personal) throw notFound('Personal space');
+
+    const appId = await this.#builder.createEmptyTeamApp(request, auth, space, {
+      name: input.name,
+      ...(input.description ? { description: input.description } : {}),
+      ...(input.promotedFrom ? { promotedFrom: input.promotedFrom.app.id } : {}),
+    });
+    const team = await ctx.apps.ref(appId);
+    // The copy starts from the definition, with its stable IDs, so the change adds the whole app.
+    const copyId = await this.#builder.createWorkingCopy(request, auth, team, personal, validated.definition);
+    await addSampleRecords(this.#runtime, request, auth, await ctx.apps.load(copyId), ctx.now());
+    const changeRequest = await this.submit(request, auth, await ctx.apps.load(copyId), { title: input.title, description: input.body });
     return { appId, copyId, changeRequest };
   }
 

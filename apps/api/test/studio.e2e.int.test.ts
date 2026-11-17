@@ -90,7 +90,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.goto(`${BASE}/studio/`);
     await visible(page.getByRole('heading', { name: 'Your apps' }));
     await page.getByLabel('Name').fill('Expenses');
-    await page.getByLabel('Start from').selectOption('example');
+    await page.getByLabel('Start from').selectOption('expenses');
     await shot(page, '1-home');
     await page.getByRole('button', { name: 'Create app' }).click();
     await page.waitForURL(/\/build\/data$/);

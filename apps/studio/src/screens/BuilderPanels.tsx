@@ -212,9 +212,27 @@ export function AdvancedPanel({ definition, onChange }: { definition: Definition
 /** Every saved revision, with what each save did. */
 export function HistoryPanel({ appId }: { appId: string }) {
   const revisions = useQuery({ queryKey: ['revisions', appId], queryFn: () => api.revisions(appId) });
+  // The definition as a file, to import again here or elsewhere: it never carries data.
+  const download = useMutation({
+    mutationFn: () => api.exportApp(appId),
+    onSuccess: (bundle) => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${bundle.app.handle}.ambit.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    },
+  });
   return (
     <Card className="grid gap-3">
-      <h2 className="m-0 text-lg font-semibold">Revisions</h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="m-0 text-lg font-semibold">Revisions</h2>
+        <Button size="sm" onClick={() => download.mutate()} disabled={download.isPending}>
+          Download the definition
+        </Button>
+      </div>
+      {download.error ? <Notice tone="bad">{download.error instanceof ApiError ? download.error.message : 'Something went wrong'}</Notice> : null}
       <ol className="m-0 grid list-none gap-3 p-0">
         {revisions.data?.revisions.map((r) => (
           <li key={r.revision} className="grid gap-1 rounded-md border border-line px-3 py-2">

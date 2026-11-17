@@ -116,6 +116,15 @@ export const api = {
   createApp: (spaceId: string, body: { name: string; description?: string; definition?: unknown }) =>
     call<{ app: AppSummary; plan: Plan }>('POST', `/v1/spaces/${encodeURIComponent(spaceId)}/apps`, body),
   example: () => call<{ schema: unknown; example: Definition }>('GET', '/v1/app-model/schema'),
+  /** An app's definition, as the file Ambit exports: the main line, never data. */
+  exportApp: (appId: string) => call<Record<string, unknown> & { app: { handle: string } }>('GET', `${app(appId)}/export`),
+  templates: () => call<{ templates: Array<{ id: string; name: string; description: string; entities: string[] }> }>('GET', '/v1/templates'),
+  importApp: (spaceId: string, body: { name?: string; template?: string; bundle?: Record<string, unknown> }) =>
+    call<{ app: AppSummary; plan: Plan | null; changeRequest: { id: string; number: number } | null; asExported: boolean | null }>(
+      'POST',
+      `/v1/spaces/${encodeURIComponent(spaceId)}/apps/import`,
+      body,
+    ),
   definition: (id: string) => call<{ revision: number; definition: Definition }>('GET', `${app(id)}/definition`),
   plan: (id: string, definition: Definition) => call<{ plan: Plan; definition: Definition }>('POST', `${app(id)}/definition/plan`, { definition }),
   save: (id: string, definition: Definition, baseRevision: number, confirmDestructive: boolean) =>

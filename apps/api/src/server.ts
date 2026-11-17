@@ -21,6 +21,7 @@ import { appRoutes } from './apps/routes.js';
 import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
 import { skillRoutes } from './skills/routes.js';
+import { bundleRoutes } from './apps/bundles.js';
 import { authRoutes } from './auth/routes.js';
 import { designRoutes } from './design/routes.js';
 import { studioRoutes } from './studio/routes.js';
@@ -132,6 +133,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(proposalRoutes(ctx, runtime));
   const delivery = new Delivery(ctx, builder, runtime);
   await app.register(deliveryRoutes(ctx, delivery, runtime));
+  await app.register(bundleRoutes(ctx, builder, delivery, runtime));
   await app.register(mcpRoutes(ctx, builder, runtime, delivery));
   await app.register(designRoutes());
   await app.register(agentRoutes(ctx));
