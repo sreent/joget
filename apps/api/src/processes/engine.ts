@@ -44,10 +44,11 @@ import { and, asc, desc, eq, inArray, isNull, lte, or, sql, type SQL } from 'dri
 import type { FastifyRequest } from 'fastify';
 import { auditScopeFor, recordAudit, SYSTEM_ACTOR, type AuditScope } from '../audit/writer.js';
 import type { LoadedApp } from '../apps/catalog.js';
-import { type AppRuntime, type ProcessHooks, type ProcessOrigin, type Writer } from '../apps/runtime.js';
+import { processWriter, type AppRuntime, type ProcessHooks, type ProcessOrigin, type Writer } from '../apps/runtime.js';
 import { withAppTransaction, type AppTransaction } from '../apps/transaction.js';
 import type { AppContext, AuthContext } from '../context.js';
-import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
+import { conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
+import type { FlowEngine } from '../flows/engine.js';
 import { coverFor, departmentOf, managerUp } from '../people/directory.js';
 
 /** Wait before the next try: 10 seconds, doubling, at most an hour. */
@@ -201,10 +202,12 @@ const undoOf = (undo: string | undefined, recordId: string): { readonly undo?: s
 export class ProcessEngine implements ProcessHooks {
   readonly #ctx: AppContext;
   readonly #runtime: AppRuntime;
+  readonly #flows: FlowEngine;
 
-  constructor(ctx: AppContext, runtime: AppRuntime) {
+  constructor(ctx: AppContext, runtime: AppRuntime, flows: FlowEngine) {
     this.#ctx = ctx;
     this.#runtime = runtime;
+    this.#flows = flows;
     runtime.attachProcesses(this);
   }
 
@@ -2231,16 +2234,35 @@ export class ProcessEngine implements ProcessHooks {
     await this.#event(turn, live, 'task_cancelled', task.element, { task: task.id, reason });
   }
 
-  /** A service task: run the app's action on the record with the app's authority. */
+  /** A service task: run the app's action, or a flow, on the record with the app's authority. */
   async #serve(turn: Turn, live: Live, id: string, element: Extract<Process['elements'][string], { type: 'serviceTask' }>, scope: string | null): Promise<void> {
     const origin: ProcessOrigin = { kind: 'process', instanceId: live.row.id, process: live.row.process, element: id, onBehalfOf: turn.by ?? live.row.startedBy };
     if (turn.loaded.app.movedTo) return this.#stuck(turn, live, id, null, `${element.name}: the app moved to a team space, so it changes no records here`, scope);
     const before = await this.#record(turn, live);
-    const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, element.action, live.row.recordId, origin);
+    if (element.flow) {
+      // A flow that fails leaves nothing behind: what it wrote before it failed is undone.
+      await turn.tx.platformQuery('savepoint process_flow');
+      try {
+        const input = this.#flows.inputFrom(turn.loaded, element.flow, live.entity, before ?? {}, {});
+        await this.#flows.run(turn.tx, turn.loaded, element.flow.flow, input, { writer: processWriter(this.#ctx.org.id, origin), principal: {}, auth: null, trigger: { kind: 'process', name: `${live.row.process}.${id}` } });
+        await turn.tx.platformQuery('release savepoint process_flow');
+      } catch (error) {
+        if (!(error instanceof HttpError) || ![404, 409, 422].includes(error.statusCode)) throw error;
+        await turn.tx.platformQuery('rollback to savepoint process_flow');
+        await turn.tx.platformQuery('release savepoint process_flow');
+        return this.#failed(turn, live, id, null, error.message, scope);
+      }
+      turn.records.delete(live.row.recordId);
+      await this.#event(turn, live, 'ran', id, { flow: element.flow.flow, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
+      await this.#recordChanged(turn, live.entity, live.row.recordId, before);
+      return this.#leave(turn, live, id, scope);
+    }
+    const action = element.action!;
+    const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, action, live.row.recordId, origin);
     if (!ran.ok) return this.#failed(turn, live, id, null, ran.message, scope);
     turn.records.delete(live.row.recordId);
-    await this.#event(turn, live, 'ran', id, { action: element.action, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
-    await this.#actionCommitted(turn, element.action, live.row.recordId, null);
+    await this.#event(turn, live, 'ran', id, { action, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
+    await this.#actionCommitted(turn, action, live.row.recordId, null);
     await this.#recordChanged(turn, live.entity, live.row.recordId, before);
     return this.#leave(turn, live, id, scope);
   }

@@ -14,6 +14,8 @@ import {
   type StoredField,
 } from './fields.js';
 import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
+import { mapRefs } from './condition-refs.js';
+import { checkFlowRun, checkFlows, renameInFlows } from './flows.js';
 import { adHocStarts, canRepeat, catcherOn, elementName, eventSubCatcher, eventSubsIn, isAdHoc, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
 import {
   AppDefinition,
@@ -50,6 +52,8 @@ export type ValidationResult =
 const ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 /** A new random ID for an entity or field: 10 lowercase letters and digits. */
+export { mapRefs } from './condition-refs.js';
+
 export function newId(): string {
   return [...randomBytes(10)].map((byte) => ID_ALPHABET[byte % ID_ALPHABET.length]).join('');
 }
@@ -76,23 +80,9 @@ export function validateDefinition(input: unknown, previous?: StoredDefinition, 
   if (issues.length === 0) {
     checkReferences(definition, issues);
     checkProcesses(definition, issues);
+    checkFlows(definition, issues);
   }
   return issues.length ? { ok: false, issues } : { ok: true, definition, notes };
-}
-
-/** A condition with its references renamed. */
-export function mapRefs(condition: Condition, rename: (ref: string) => string): Condition {
-  const operand = (o: Operand): Operand => (isRef(o) ? { ref: rename(o.ref) } : o);
-  if ('all' in condition) return { all: condition.all.map((c) => mapRefs(c, rename)) };
-  if ('any' in condition) return { any: condition.any.map((c) => mapRefs(c, rename)) };
-  if ('not' in condition) return { not: mapRefs(condition.not, rename) };
-  if ('exists' in condition) return { exists: rename(condition.exists) };
-  if ('in' in condition) {
-    const [needle, haystack] = condition.in;
-    return { in: [operand(needle), Array.isArray(haystack) ? (haystack as readonly Operand[]).map(operand) : operand(haystack as Operand)] };
-  }
-  const [op, args] = Object.entries(condition)[0] as [string, readonly [Operand, Operand]];
-  return { [op]: [operand(args[0]), operand(args[1])] } as unknown as Condition;
 }
 
 /**
@@ -201,6 +191,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       set: Object.fromEntries(Object.entries(action.set).map(([field, value]) => [fieldName(entity)(field), value])),
       ...(action.where ? { where: condition(entity, action.where) } : {}),
       ...(action.steps ? { steps: action.steps.map((s) => step(entity, s)) } : {}),
+      ...(action.flow ? { flow: { ...action.flow, input: mapRecord(action.flow.input, (e) => mapExpressionRefs(e, refs(entity))) } } : {}),
     };
   });
   const queries = mapRecord(definition.queries, (query) => {
@@ -354,6 +345,8 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
               }
               case 'scriptTask':
                 return { ...element, steps: element.steps.map((each) => step(entity, each)) };
+              case 'serviceTask':
+                return element.flow ? { ...element, flow: { ...element.flow, input: mapRecord(element.flow.input, (e) => mapExpressionRefs(e, refs(entity))) } } : element;
               default:
                 return element;
             }
@@ -362,6 +355,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
         };
       })
     : undefined;
+  const flows = definition.flows ? renameInFlows({ ...definition, entities }, definition.flows, entityName, fieldName) : undefined;
   for (const change of touched) notes.push(`Updated references for the rename ${change}`);
   return {
     ...definition,
@@ -375,6 +369,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
     pages,
     ...(navigation ? { navigation } : {}),
     ...(processes ? { processes } : {}),
+    ...(flows ? { flows } : {}),
   } as StoredDefinition;
 }
 
@@ -1451,10 +1446,12 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           break;
         }
         case 'serviceTask':
+          if (Boolean(element.action) === Boolean(element.flow)) issues.push({ path, message: `${label(id)} runs an action or a flow: one of the two` });
           if (element.undo) undoAction(element.undo, process.entity, `${path}.undo`);
-          if (updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
+          if (element.action && updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
             issues.push({ path: `${path}.action`, message: `${element.action} reads the person who runs it, but a service task runs it with no person` });
           }
+          if (element.flow) checkFlowRun(definition, element.flow, { entity: process.entity, person: false }, `${path}.flow`, issues);
           oneOut();
           break;
         case 'task':

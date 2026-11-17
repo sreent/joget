@@ -17,8 +17,8 @@ export function appRoleName(appId: string, id: string): string | null {
  * becomes one permission set and one role with the same ID:
  *
  * - `app.run` for every role, so its holders can use the app;
- * - `action.run` and `query.run` for the role's actions and queries, and `process.start` for the
- *   processes it may start by hand;
+ * - `action.run` and `query.run` for the role's actions and queries, `process.start` for the
+ *   processes it may start by hand, and `flow.run` for the flows it may run through the API;
  * - `record.*` grants per entity, with record conditions, field selections and masks. Fields
  *   classified as PII are masked unless the role unmasks them, the fields of lines too.
  *
@@ -34,6 +34,7 @@ export function compileAppPolicy(appId: string, definition: StoredDefinition): {
     for (const action of role.actions) grants.push({ permission: 'action.run', resource: action });
     for (const query of role.queries) grants.push({ permission: 'query.run', resource: query });
     for (const process of role.processes ?? []) grants.push({ permission: 'process.start', resource: process });
+    for (const flow of role.flows ?? []) grants.push({ permission: 'flow.run', resource: flow });
     for (const [entityName, permissions] of Object.entries(role.entities)) {
       const entity = definition.entities[entityName];
       if (!entity) continue;

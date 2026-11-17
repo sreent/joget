@@ -1,0 +1,737 @@
+import { COMPARISON_OPERATORS, conditionRefs, isRef, type Condition, type Operand } from '@platform/authz';
+import { mapRefs } from './condition-refs.js';
+import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
+import { entityFields, isConditionKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
+import { MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type FlowRun, type FlowStep, type FlowType } from './schema.js';
+import { canonicalValue } from './values.js';
+
+/*
+ * Flows (design §6.2): checking them before they are saved, carrying renames into them, and saying
+ * what each does, for change requests. A flow's variables have kinds, which the checks work out
+ * step by step, so a mistake shows when the flow is saved, not when it runs.
+ */
+
+interface Issue {
+  readonly path: string;
+  readonly message: string;
+}
+
+/** What a value is: a field's kind, or any, for what can't be known before the flow runs. */
+type ValueKind = FieldInfo['kind'] | 'null' | 'any';
+
+/** What a variable holds: a value, a record, a list of records, or a line of a record. */
+export type VarKind =
+  | { readonly kind: 'value'; readonly value: ValueKind }
+  | { readonly kind: 'record'; readonly entity: string }
+  | { readonly kind: 'list'; readonly entity: string }
+  | { readonly kind: 'line'; readonly entity: string };
+
+/** Names that a flow's variables can't take: the record of a find, and the person, keep theirs. */
+export const RESERVED_VARIABLES: readonly string[] = ['record', 'principal'];
+
+const KIND_WORDS: Readonly<Record<ValueKind, string>> = {
+  text: 'text',
+  uuid: 'an ID of a person or a record',
+  number: 'a number',
+  boolean: 'yes or no',
+  date: 'a date',
+  datetime: 'a time',
+  'text[]': 'a list of options',
+  null: 'nothing',
+  any: 'any value',
+};
+
+const value = (kind: ValueKind): VarKind => ({ kind: 'value', value: kind });
+
+/** A flow type as a variable's kind. */
+export function kindOfType(type: FlowType): VarKind {
+  return type.type === 'record' || type.type === 'list' ? { kind: type.type, entity: type.entity } : value(type.type);
+}
+
+function describeKind(kind: VarKind): string {
+  switch (kind.kind) {
+    case 'value':
+      return KIND_WORDS[kind.value];
+    case 'record':
+      return `a record of ${kind.entity}`;
+    case 'list':
+      return `a list of ${kind.entity}`;
+    case 'line':
+      return `a line of ${kind.entity}`;
+  }
+}
+
+const sameKind = (a: VarKind, b: VarKind): boolean =>
+  a.kind === b.kind && (a.kind === 'value' ? (a.value === 'any' || (b as typeof a).value === 'any' || (b as typeof a).value === 'null' || a.value === (b as typeof a).value) : a.entity === (b as typeof a).entity);
+
+/** The steps of a list, and of every list inside it, with where each is. */
+export function flowSteps(steps: readonly FlowStep[], base = 'steps'): Array<{ readonly step: FlowStep; readonly path: string }> {
+  return steps.flatMap((step, index) => {
+    const at = `${base}[${index}]`;
+    const inner =
+      step.type === 'each'
+        ? flowSteps(step.steps, `${at}.steps`)
+        : step.type === 'if'
+          ? [...flowSteps(step.then, `${at}.then`), ...flowSteps(step.else, `${at}.else`)]
+          : step.type === 'try'
+            ? [...flowSteps(step.steps, `${at}.steps`), ...flowSteps(step.catch, `${at}.catch`)]
+            : [];
+    return [{ step, path: at }, ...inner];
+  });
+}
+
+type Scope = Map<string, VarKind>;
+
+/**
+ * Walk a flow's steps with the kinds of its variables, as each step sees them. Each list of steps
+ * is a block: a variable it gives a value first lives until the block ends.
+ */
+function walk(
+  definition: StoredDefinition,
+  flow: AppFlow,
+  visit: (step: FlowStep, scope: Scope, path: string, depth: number) => void,
+  declare: (scope: Scope, name: string, kind: VarKind, path: string) => void = (scope, name, kind) => void scope.set(name, kind),
+  /** For renames: the name a lines field has now, given the name a step uses. */
+  linesName: (entity: string, name: string) => string = (_, name) => name,
+): void {
+  const flows = definition.flows ?? {};
+  const listItem = (of: string, scope: Scope): VarKind | undefined => {
+    const [root, lines] = of.split('.') as [string, string | undefined];
+    const holder = scope.get(root);
+    if (!lines) return holder?.kind === 'list' ? { kind: 'record', entity: holder.entity } : undefined;
+    if (holder?.kind !== 'record') return undefined;
+    const field = definition.entities[holder.entity]?.fields.find((f) => f.name === linesName(holder.entity, lines));
+    return field?.type === 'lines' ? { kind: 'line', entity: field.entity } : undefined;
+  };
+  const block = (steps: readonly FlowStep[], outer: Scope, base: string, depth: number): void => {
+    const scope = new Map(outer);
+    steps.forEach((step, index) => {
+      const at = `${base}[${index}]`;
+      visit(step, scope, at, depth);
+      switch (step.type) {
+        case 'set': {
+          const known = scope.get(step.var);
+          if (!known) declare(scope, step.var, value(step.value === null ? 'any' : expressionKind(definition, step.value, scope)), at);
+          return;
+        }
+        case 'find':
+          declare(scope, step.var, { kind: step.first ? 'record' : 'list', entity: step.entity }, at);
+          return;
+        case 'create':
+          if (step.var) declare(scope, step.var, { kind: 'record', entity: step.entity }, at);
+          return;
+        case 'call': {
+          const output = flows[step.flow]?.output;
+          if (step.var && output) declare(scope, step.var, kindOfType(output), at);
+          return;
+        }
+        case 'total':
+          declare(scope, step.var, value('number'), at);
+          return;
+        case 'each': {
+          const inner = new Map(scope);
+          const item = listItem(step.in, scope);
+          if (item) declare(inner, step.as, item, at);
+          block(step.steps, inner, `${at}.steps`, depth + 1);
+          return;
+        }
+        case 'if':
+          block(step.then, scope, `${at}.then`, depth + 1);
+          block(step.else, scope, `${at}.else`, depth + 1);
+          return;
+        case 'try': {
+          block(step.steps, scope, `${at}.steps`, depth + 1);
+          const handler = new Map(scope);
+          if (step.error) declare(handler, step.error, value('text'), at);
+          block(step.catch, handler, `${at}.catch`, depth + 1);
+          return;
+        }
+        default:
+          return;
+      }
+    });
+  };
+  const inputs: Scope = new Map(Object.entries(flow.input).map(([name, type]) => [name, kindOfType(type)]));
+  block(flow.steps, inputs, 'steps', 1);
+}
+
+/** The kind of value an expression gives, with the variables in scope. Unknown references give any. */
+function expressionKind(definition: StoredDefinition, expression: Expression, scope: Scope): ValueKind {
+  if (expression === null) return 'null';
+  if (typeof expression === 'string') return 'text';
+  if (typeof expression === 'number') return 'number';
+  if (typeof expression === 'boolean') return 'boolean';
+  if (Array.isArray(expression)) return 'text[]';
+  if (typeof expression !== 'object') return 'any';
+  if ('ref' in expression) {
+    const resolved = refKind(definition, expression.ref, scope);
+    if (!resolved.ok) return 'any';
+    return resolved.kind.kind === 'value' ? resolved.kind.value : resolved.kind.kind === 'record' ? 'uuid' : 'any';
+  }
+  if ('today' in expression) return 'date';
+  if ('now' in expression) return 'datetime';
+  return operatorOf(expression) === 'concat' ? 'text' : 'number';
+}
+
+type Resolved = { readonly ok: true; readonly kind: VarKind } | { readonly ok: false; readonly message: string };
+
+/**
+ * What a reference names, with the variables in scope: `principal.id`, a variable, or a field of a
+ * record or line variable. `record.<field>` is a find's own and is checked there.
+ */
+function refKind(definition: StoredDefinition, ref: string, scope: Scope): Resolved {
+  const [root, ...path] = ref.split('.') as [string, ...string[]];
+  if (root === 'principal') return path.length === 1 ? { ok: true, kind: value(path[0] === 'id' ? 'uuid' : 'any') } : { ok: false, message: `${ref}: name a property, for example principal.id` };
+  if (root === 'record') return { ok: false, message: `${ref}: a flow names records by its variables. record.<field> is for a find's condition` };
+  const held = scope.get(root);
+  if (!held) return { ok: false, message: `${ref}: no variable ${root} here` };
+  if (!path.length) return { ok: true, kind: held };
+  if (held.kind === 'value') return { ok: false, message: `${ref}: ${root} holds ${KIND_WORDS[held.value]}, which has no fields` };
+  if (held.kind === 'list') return { ok: false, message: `${ref}: ${root} is a list. Loop over it with an each step, or count it with a total step` };
+  if (path.length > 1) return { ok: false, message: `${ref}: refer to a field as ${root}.<field>` };
+  const entity = definition.entities[held.entity];
+  if (!entity) return { ok: false, message: `${ref}: no entity ${held.entity}` };
+  const info = entityFields(entity, { line: held.kind === 'line' }).get(path[0]!);
+  if (info) return { ok: true, kind: value(info.kind) };
+  const lines = entity.fields.some((f) => f.name === path[0] && f.type === 'lines');
+  return { ok: false, message: lines ? `${ref}: a lines field. Loop over it with an each step, or total it` : `${ref}: ${entity.label} has no field ${path[0]}` };
+}
+
+/** Check a flow before it is saved: its variables, what each step names, and that values fit. */
+function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, issues: Issue[]): void {
+  const base = `flows.${name}`;
+  const owners = lineOwners(definition);
+  const flows = definition.flows ?? {};
+  const issue = (path: string, message: string) => issues.push({ path: `${base}.${path}`, message });
+
+  /** An entity a flow can work with: one of the app's, and not lines, which belong to their record. */
+  const entityIssue = (entity: string): string | null => {
+    if (!definition.entities[entity]) return `No entity named ${entity}`;
+    const owner = owners.get(entity);
+    return owner ? `${entity} holds the lines of ${owner.parent}: work with them through ${owner.parent}` : null;
+  };
+  const typeIssue = (type: FlowType, at: string) => {
+    if (type.type !== 'record' && type.type !== 'list') return;
+    const problem = entityIssue(type.entity);
+    if (problem) issue(`${at}.entity`, problem);
+  };
+  for (const [input, type] of Object.entries(flow.input)) {
+    if (RESERVED_VARIABLES.includes(input)) issue(`input.${input}`, `${input} is a name the platform keeps: choose another`);
+    typeIssue(type, `input.${input}`);
+  }
+  if (flow.output) typeIssue(flow.output, 'output');
+
+  const kindAt = (expression: Expression, scope: Scope, at: string): ValueKind => {
+    if (expression === null || typeof expression !== 'object' || Array.isArray(expression)) return expressionKind(definition, expression, scope);
+    if ('ref' in expression) {
+      const resolved = refKind(definition, expression.ref, scope);
+      if (!resolved.ok) {
+        issue(at, resolved.message);
+        return 'any';
+      }
+      if (resolved.kind.kind === 'list') issue(at, `${expression.ref} is a list, not a value. Count it with a total step`);
+      if (resolved.kind.kind === 'line') issue(at, `${expression.ref} is a line, not a value: use one of its fields`);
+      return resolved.kind.kind === 'value' ? resolved.kind.value : resolved.kind.kind === 'record' ? 'uuid' : 'any';
+    }
+    if ('today' in expression) return 'date';
+    if ('now' in expression) return 'datetime';
+    const op = operatorOf(expression);
+    if (!op) return 'any';
+    const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : (expression as Record<string, readonly Expression[]>)[op]!;
+    const kinds = operands.map((operand) => kindAt(operand, scope, at));
+    if (op === 'concat') return 'text';
+    for (const kind of kinds) if (kind !== 'number' && kind !== 'null' && kind !== 'any') issue(at, `${op} works on numbers, not on ${KIND_WORDS[kind]}`);
+    return 'number';
+  };
+
+  /** A value fits the field it goes into. Literals are checked as the field would check them. */
+  const fits = (info: FieldInfo, expression: Expression, scope: Scope, at: string) => {
+    const label = info.field?.label ?? info.name;
+    const kind = kindAt(expression, scope, at);
+    if (expression === null) {
+      if (info.field?.required) issue(at, `${label} is required, so a flow can't empty it`);
+      return;
+    }
+    if (typeof expression !== 'object' || Array.isArray(expression)) {
+      const literal = info.field?.type === 'number' && typeof expression === 'number' ? roundTo(expression, info.field.decimals) : expression;
+      const result = canonicalValue(info, literal);
+      if (!result.ok) issue(at, `${label}: ${result.issue.message}`);
+      return;
+    }
+    if (!(kind === 'any' || kind === 'null' || kind === info.kind || (info.kind === 'date' && kind === 'datetime'))) {
+      issue(at, `${label} holds ${KIND_WORDS[info.kind]}, and this gives ${KIND_WORDS[kind]}`);
+    }
+  };
+
+  /** Values for a record's fields: each field can be written by a flow, and each value fits it. */
+  const values = (entity: string, given: Readonly<Record<string, Expression>>, scope: Scope, at: string, line = false) => {
+    const known = definition.entities[entity];
+    if (!known) return;
+    const fields = entityFields(known, { line });
+    for (const [field, expression] of Object.entries(given)) {
+      const info = fields.get(field);
+      const where = `${at}.${field}`;
+      if (!info) issue(where, known.fields.some((f) => f.name === field && f.type === 'lines') ? `${field} holds lines: add one with an add_line step` : `${known.label} has no field ${field}`);
+      else if (line && info.system) issue(where, `${field} is set by the platform`);
+      else if (!isWritable(info)) issue(where, info.system ? `${field} is set by the platform` : `${field} is worked out from lines`);
+      else if (info.field?.type === 'file') issue(where, "A flow can't set a file");
+      else fits(info, expression, scope, where);
+    }
+  };
+  const required = (entity: string, given: Readonly<Record<string, Expression>>, at: string, what: string) => {
+    for (const field of definition.entities[entity]?.fields ?? []) {
+      if (field.type === 'lines' || !field.required) continue;
+      const defaulted = 'default' in field && field.default !== undefined;
+      const rollup = field.type === 'number' && field.rollup;
+      if (!(field.name in given) && !defaulted && !rollup) issue(at, `${what} needs ${field.label}: give it a value`);
+    }
+  };
+
+  /** A condition: its references are variables, `principal.id`, and in a find, `record.<field>` of what it looks at. */
+  const condition = (c: Condition, scope: Scope, at: string, find?: ReadonlyMap<string, FieldInfo>) => {
+    const kindOfOperand = (operand: Operand): ValueKind | undefined => {
+      if (!isRef(operand)) return undefined;
+      const [root, field, ...rest] = operand.ref.split('.');
+      if (root === 'record' && find) {
+        const info = field && !rest.length ? find.get(field) : undefined;
+        return info?.kind;
+      }
+      const resolved = refKind(definition, operand.ref, scope);
+      return resolved.ok && resolved.kind.kind === 'value' ? resolved.kind.value : undefined;
+    };
+    for (const ref of conditionRefs(c)) {
+      const [root, field, ...rest] = ref.split('.');
+      if (root === 'record' && find) {
+        if (!field || rest.length) issue(at, `${ref}: refer to a field as record.<field>`);
+        else if (!find.has(field)) issue(at, `${ref}: no such field`);
+        continue;
+      }
+      const resolved = refKind(definition, ref, scope);
+      if (!resolved.ok) issue(at, resolved.message);
+      else if (resolved.kind.kind === 'record') issue(at, `${ref} is a record: compare its ID, as ${ref}.id`);
+      else if (resolved.kind.kind !== 'value') issue(at, `${ref} is ${describeKind(resolved.kind)}, not a value`);
+    }
+    const visit = (inner: Condition): void => {
+      if ('all' in inner) return inner.all.forEach(visit);
+      if ('any' in inner) return inner.any.forEach(visit);
+      if ('not' in inner) return visit(inner.not);
+      if ('exists' in inner || 'in' in inner) return;
+      const op = (['eq', 'ne', ...COMPARISON_OPERATORS] as const).find((key) => key in inner)!;
+      if (op === 'eq' || op === 'ne') return;
+      const [left, right] = (inner as Record<string, readonly [Operand, Operand]>)[op]!;
+      for (const operand of [left, right]) {
+        const kind = isRef(operand) ? kindOfOperand(operand) : typeof operand === 'number' ? 'number' : 'any';
+        if (kind && kind !== 'number' && kind !== 'any') {
+          issue(at, `${op} compares numbers, and ${isRef(operand) ? operand.ref : JSON.stringify(operand)} isn't one${kind !== 'null' && !isConditionKind(kind) ? ': dates and times can only be tested with "exists" yet' : ''}`);
+        }
+      }
+    };
+    visit(c);
+  };
+
+  /** A list to loop over or total: a list variable, or a lines field of a record variable. */
+  const listOf = (of: string, scope: Scope, at: string): { readonly kind: 'record' | 'line'; readonly entity: string } | undefined => {
+    const [root, lines] = of.split('.') as [string, string | undefined];
+    const holder = scope.get(root);
+    if (!holder) {
+      issue(at, `No variable ${root} here`);
+      return undefined;
+    }
+    if (!lines) {
+      if (holder.kind === 'list') return { kind: 'record', entity: holder.entity };
+      issue(at, `${root} holds ${describeKind(holder)}, not a list`);
+      return undefined;
+    }
+    if (holder.kind !== 'record') {
+      issue(at, `${root} holds ${describeKind(holder)}: only a record has lines`);
+      return undefined;
+    }
+    const field = definition.entities[holder.entity]?.fields.find((f) => f.name === lines);
+    if (field?.type === 'lines') return { kind: 'line', entity: field.entity };
+    issue(at, `${lines} isn't a lines field of ${holder.entity}`);
+    return undefined;
+  };
+
+  /** A variable that holds a record, for a step that changes it. */
+  const recordVar = (name: string, scope: Scope, at: string): string | undefined => {
+    const held = scope.get(name);
+    if (held?.kind === 'record') return held.entity;
+    issue(at, held ? `${name} holds ${describeKind(held)}, not a record` : `No variable ${name} here`);
+    return undefined;
+  };
+
+  /** A value for an input or the result: a value fits its type; a record or a list is a variable that holds one. */
+  const typed = (type: FlowType, expression: Expression | undefined, scope: Scope, at: string) => {
+    if (expression === undefined) return;
+    const wanted = kindOfType(type);
+    if (wanted.kind !== 'value') {
+      const named = expression !== null && typeof expression === 'object' && !Array.isArray(expression) && 'ref' in expression && !expression.ref.includes('.') ? scope.get(expression.ref) : undefined;
+      if (!named || !sameKind(wanted, named)) issue(at, `Give ${describeKind(wanted)}: a variable that holds one`);
+      return;
+    }
+    const kind = kindAt(expression, scope, at);
+    if (!(kind === 'any' || kind === 'null' || kind === wanted.value || (wanted.value === 'date' && kind === 'datetime'))) issue(at, `This gives ${KIND_WORDS[kind]}, not ${KIND_WORDS[wanted.value]}`);
+  };
+
+  let count = 0;
+  walk(
+    definition,
+    flow,
+    (step, scope, at, depth) => {
+      count++;
+      if (depth > MAX_FLOW_DEPTH) issue(at, `Steps go ${MAX_FLOW_DEPTH} levels deep at most: move some into a flow of their own, and call it`);
+      switch (step.type) {
+        case 'set':
+          kindAt(step.value, scope, `${at}.value`);
+          return;
+        case 'find': {
+          const problem = entityIssue(step.entity);
+          if (problem) return issue(`${at}.entity`, problem);
+          const fields = entityFields(definition.entities[step.entity]!);
+          if (step.where) condition(step.where, scope, `${at}.where`, fields);
+          for (const [i, sort] of (step.sort ?? []).entries()) {
+            const info = fields.get(sort.field);
+            if (!info) issue(`${at}.sort[${i}].field`, `No field named ${sort.field}`);
+            else if (!isSortableKind(info.kind)) issue(`${at}.sort[${i}].field`, `${sort.field} can't be sorted on`);
+          }
+          return;
+        }
+        case 'create': {
+          const problem = entityIssue(step.entity);
+          if (problem) return issue(`${at}.entity`, problem);
+          values(step.entity, step.values, scope, `${at}.values`);
+          required(step.entity, step.values, `${at}.values`, `A new ${definition.entities[step.entity]!.label}`);
+          return;
+        }
+        case 'change': {
+          const entity = recordVar(step.record, scope, `${at}.record`);
+          if (entity) values(entity, step.values, scope, `${at}.values`);
+          if (!Object.keys(step.values).length) issue(`${at}.values`, 'Say what changes');
+          return;
+        }
+        case 'delete':
+          recordVar(step.record, scope, `${at}.record`);
+          return;
+        case 'add_line': {
+          const entity = recordVar(step.record, scope, `${at}.record`);
+          if (!entity) return;
+          const field = definition.entities[entity]!.fields.find((f) => f.name === step.field);
+          if (field?.type !== 'lines') return issue(`${at}.field`, `${step.field} isn't a lines field of ${entity}`);
+          values(field.entity, step.values, scope, `${at}.values`, true);
+          required(field.entity, step.values, `${at}.values`, 'Each line');
+          return;
+        }
+        case 'each':
+          listOf(step.in, scope, `${at}.in`);
+          if (scope.has(step.as) || RESERVED_VARIABLES.includes(step.as)) issue(`${at}.as`, `${step.as} is taken here: choose another name`);
+          if (!step.steps.length) issue(`${at}.steps`, 'A loop needs a step');
+          return;
+        case 'if':
+          condition(step.when, scope, `${at}.when`);
+          if (!step.then.length && !step.else.length) issue(at, 'A branch needs at least one step');
+          return;
+        case 'check':
+          condition(step.assert, scope, `${at}.assert`);
+          return;
+        case 'call': {
+          const callee = flows[step.flow];
+          if (!callee) return issue(`${at}.flow`, `No flow named ${step.flow}`);
+          for (const [input, type] of Object.entries(callee.input)) {
+            if (!(input in step.input)) issue(`${at}.input`, `${callee.label} needs ${input}`);
+            else typed(type, step.input[input], scope, `${at}.input.${input}`);
+          }
+          for (const input of Object.keys(step.input)) if (!(input in callee.input)) issue(`${at}.input.${input}`, `${callee.label} takes no ${input}`);
+          if (step.var && !callee.output) issue(`${at}.var`, `${callee.label} gives no result to keep`);
+          return;
+        }
+        case 'try':
+          return;
+        case 'total': {
+          const item = listOf(step.of, scope, `${at}.of`);
+          if (step.op === 'count') {
+            if (step.field) issue(`${at}.field`, 'A count needs no field');
+            return;
+          }
+          if (!step.field) return issue(`${at}.field`, `Say which number field to ${step.op === 'sum' ? 'total' : step.op === 'avg' ? 'average' : step.op}`);
+          if (!item) return;
+          const entity = definition.entities[item.entity];
+          const info = entity ? entityFields(entity, { line: item.kind === 'line' }).get(step.field) : undefined;
+          if (info?.kind !== 'number') issue(`${at}.field`, `${step.field} isn't a number field of ${item.entity}`);
+          return;
+        }
+        case 'return':
+          if (!flow.output) {
+            if (step.value !== undefined) issue(`${at}.value`, `${flow.label} gives no result: leave the value out, or give the flow a result`);
+          } else if (step.value === undefined) issue(`${at}.value`, `${flow.label} gives ${describeKind(kindOfType(flow.output))}: say which`);
+          else typed(flow.output, step.value, scope, `${at}.value`);
+          return;
+      }
+    },
+    (scope, variable, kind, at) => {
+      if (RESERVED_VARIABLES.includes(variable)) issue(at, `${variable} is a name the platform keeps: choose another`);
+      const held = scope.get(variable);
+      if (held && !sameKind(held, kind)) issue(at, `${variable} holds ${describeKind(held)} here, not ${describeKind(kind)}`);
+      scope.set(variable, held ?? kind);
+    },
+  );
+  if (count > MAX_FLOW_STEPS) issue('steps', `A flow has ${MAX_FLOW_STEPS} steps at most: move some into a flow of their own`);
+  if (!flow.steps.length) issue('steps', 'A flow needs a step');
+}
+
+/** Check every flow, the flows that call each other, and the roles and actions that name flows. */
+export function checkFlows(definition: StoredDefinition, issues: Issue[]): void {
+  const flows = definition.flows ?? {};
+  for (const [name, flow] of Object.entries(flows)) checkFlow(definition, name, flow, issues);
+
+  // A flow never calls itself, however far round: a loop of calls would never end.
+  const calls = new Map(Object.entries(flows).map(([name, flow]) => [name, [...new Set(flowSteps(flow.steps).flatMap(({ step }) => (step.type === 'call' ? [step.flow] : [])))]]));
+  const reported = new Set<string>();
+  const visit = (name: string, trail: readonly string[]): void => {
+    if (trail.includes(name)) {
+      const cycle = [...trail.slice(trail.indexOf(name)), name];
+      // The same loop, whichever flow it is seen from, is reported once.
+      const key = [...new Set(cycle)].sort().join(' ');
+      if (!reported.has(key)) {
+        reported.add(key);
+        issues.push({ path: `flows.${name}`, message: `Flows call each other in a loop: ${cycle.join(' → ')}` });
+      }
+      return;
+    }
+    for (const next of calls.get(name) ?? []) if (flows[next]) visit(next, [...trail, name]);
+  };
+  for (const name of Object.keys(flows)) visit(name, []);
+
+  for (const [role, spec] of Object.entries(definition.roles)) {
+    (spec.flows ?? []).forEach((flow, index) => {
+      if (!flows[flow]) issues.push({ path: `roles.${role}.flows[${index}]`, message: `No flow named ${flow}` });
+    });
+  }
+  for (const [name, action] of Object.entries(definition.actions)) {
+    if (action.flow) checkFlowRun(definition, action.flow, { entity: action.entity, person: true }, `actions.${name}.flow`, issues);
+  }
+}
+
+/**
+ * Check what an action or a service task gives the flow it runs: each of its inputs, worked out
+ * from the record (`record.<field>`, or `record` itself for a record input) and, where a person
+ * runs it, `principal.id`.
+ */
+export function checkFlowRun(definition: StoredDefinition, run: FlowRun, from: { readonly entity: string; readonly person: boolean }, path: string, issues: Issue[]): void {
+  const flow = definition.flows?.[run.flow];
+  if (!flow) {
+    issues.push({ path: `${path}.flow`, message: `No flow named ${run.flow}` });
+    return;
+  }
+  const entity = definition.entities[from.entity];
+  const fields = entity ? entityFields(entity) : new Map<string, FieldInfo>();
+  for (const [input, type] of Object.entries(flow.input)) {
+    const at = `${path}.input.${input}`;
+    const given = run.input[input];
+    if (given === undefined) {
+      issues.push({ path: `${path}.input`, message: `${flow.label} needs ${input}` });
+      continue;
+    }
+    if (type.type === 'list') {
+      issues.push({ path: at, message: `${input} is a list, which a record can't give` });
+      continue;
+    }
+    if (type.type === 'record') {
+      const isRecord = given !== null && typeof given === 'object' && !Array.isArray(given) && 'ref' in given && given.ref === 'record';
+      if (!isRecord || type.entity !== from.entity) issues.push({ path: at, message: `${input} is a record of ${type.entity}: give record, the ${from.entity} itself` });
+      continue;
+    }
+    for (const ref of given !== null && typeof given === 'object' && !Array.isArray(given) ? refsOf(given) : []) {
+      const [root, field, ...rest] = ref.split('.');
+      if (root === 'principal') {
+        if (!from.person) issues.push({ path: at, message: `${ref}: a process runs the flow with no person` });
+      } else if (root !== 'record' || !field || rest.length) issues.push({ path: at, message: `${ref}: give values from record.<field>${from.person ? ' or principal.id' : ''}` });
+      else if (!fields.has(field)) issues.push({ path: at, message: `${ref}: no such field` });
+    }
+  }
+  for (const input of Object.keys(run.input)) if (!(input in flow.input)) issues.push({ path: `${path}.input.${input}`, message: `${flow.label} takes no ${input}` });
+}
+
+function refsOf(expression: Expression): string[] {
+  if (expression === null || typeof expression !== 'object' || Array.isArray(expression)) return [];
+  if ('ref' in expression) return [expression.ref];
+  if ('today' in expression || 'now' in expression) return [];
+  const op = operatorOf(expression);
+  if (!op) return [];
+  const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : (expression as Record<string, readonly Expression[]>)[op]!;
+  return operands.flatMap(refsOf);
+}
+
+/** What a flow does to records, by entity, and the flows it calls: what a change request names. */
+export function flowWork(definition: StoredDefinition, flow: AppFlow): {
+  readonly finds: readonly string[];
+  readonly creates: readonly string[];
+  readonly changes: readonly string[];
+  readonly deletes: readonly string[];
+  readonly calls: readonly string[];
+} {
+  const work = { finds: new Set<string>(), creates: new Set<string>(), changes: new Set<string>(), deletes: new Set<string>(), calls: new Set<string>() };
+  walk(definition, flow, (step, scope) => {
+    const held = (name: string) => {
+      const kind = scope.get(name);
+      return kind?.kind === 'record' ? kind.entity : undefined;
+    };
+    switch (step.type) {
+      case 'find':
+        work.finds.add(step.entity);
+        return;
+      case 'create':
+        work.creates.add(step.entity);
+        return;
+      case 'change':
+      case 'add_line': {
+        const entity = held(step.record);
+        if (entity) work.changes.add(entity);
+        return;
+      }
+      case 'delete': {
+        const entity = held(step.record);
+        if (entity) work.deletes.add(entity);
+        return;
+      }
+      case 'call':
+        work.calls.add(step.flow);
+        return;
+      default:
+        return;
+    }
+  });
+  return { finds: [...work.finds], creates: [...work.creates], changes: [...work.changes], deletes: [...work.deletes], calls: [...work.calls] };
+}
+
+/**
+ * Carry renames of entities and fields into flows. Field names follow the kind of each variable,
+ * so `claim.total` follows a rename of the field total of the claim's entity.
+ */
+export function renameInFlows(
+  definition: StoredDefinition,
+  flows: Readonly<Record<string, AppFlow>>,
+  entityName: (old: string) => string,
+  fieldName: (entity: string) => (field: string) => string,
+): Record<string, AppFlow> {
+  const typeOf = (type: FlowType): FlowType => (type.type === 'record' || type.type === 'list' ? { ...type, entity: entityName(type.entity) } : type);
+  // The entities of the flows' inputs and results, renamed, so that variables are typed by the new names.
+  const renamedFlows = Object.fromEntries(
+    Object.entries(flows).map(([name, flow]) => [name, { ...flow, input: Object.fromEntries(Object.entries(flow.input).map(([input, type]) => [input, typeOf(type)])), ...(flow.output ? { output: typeOf(flow.output) } : {}) }]),
+  ) as Record<string, AppFlow>;
+  const lookup: StoredDefinition = { ...definition, flows: renamedFlows };
+
+  const ref = (scope: Scope) => (path: string) => {
+    const [root, field, ...rest] = path.split('.');
+    const held = root ? scope.get(root) : undefined;
+    if (!field || rest.length || !held || (held.kind !== 'record' && held.kind !== 'line')) return path;
+    return `${root}.${fieldName(held.entity)(field)}`;
+  };
+  const expression = (scope: Scope) => (e: Expression) => mapExpressionRefs(e, ref(scope));
+  const condition = (scope: Scope, entity?: string) => (c: Condition) =>
+    mapRefs(c, (path) => (entity && path.startsWith('record.') ? `record.${fieldName(entity)(path.slice('record.'.length))}` : ref(scope)(path)));
+  const valuesOf = (entity: string | undefined, given: Readonly<Record<string, Expression>>, scope: Scope) =>
+    Object.fromEntries(Object.entries(given).map(([field, e]) => [entity ? fieldName(entity)(field) : field, expression(scope)(e)]));
+  const listPath = (of: string, scope: Scope) => {
+    const [root, lines] = of.split('.');
+    const held = root ? scope.get(root) : undefined;
+    return lines && held?.kind === 'record' ? `${root}.${fieldName(held.entity)(lines)}` : of;
+  };
+
+  return Object.fromEntries(
+    Object.entries(renamedFlows).map(([name, flow]) => {
+      // Rename step by step: each step sees the kinds its variables have where it stands.
+      const renamed = new Map<string, FlowStep>();
+      walk(lookup, { ...flow, steps: flow.steps.map((step) => renameEntities(step, entityName)) }, (step, scope, path) => {
+        const held = (variable: string) => {
+          const kind = scope.get(variable);
+          return kind?.kind === 'record' || kind?.kind === 'line' ? kind.entity : undefined;
+        };
+        const item = (of: string) => {
+          const [root, lines] = of.split('.');
+          const kind = root ? scope.get(root) : undefined;
+          if (!lines) return kind?.kind === 'list' ? kind.entity : undefined;
+          const field = kind?.kind === 'record' ? lookup.entities[kind.entity]?.fields.find((f) => f.name === fieldName(kind.entity)(lines)) : undefined;
+          return field?.type === 'lines' ? entityName(field.entity) : undefined;
+        };
+        let next: FlowStep;
+        switch (step.type) {
+          case 'set':
+            next = { ...step, value: expression(scope)(step.value) };
+            break;
+          case 'find':
+            next = {
+              ...step,
+              ...(step.where ? { where: condition(scope, step.entity)(step.where) } : {}),
+              ...(step.sort ? { sort: step.sort.map((sort) => ({ ...sort, field: fieldName(step.entity)(sort.field) })) } : {}),
+            };
+            break;
+          case 'create':
+            next = { ...step, values: valuesOf(step.entity, step.values, scope) };
+            break;
+          case 'change':
+            next = { ...step, values: valuesOf(held(step.record), step.values, scope) };
+            break;
+          case 'add_line': {
+            const entity = held(step.record);
+            const lines = entity ? fieldName(entity)(step.field) : step.field;
+            const field = entity ? lookup.entities[entity]?.fields.find((f) => f.name === lines) : undefined;
+            next = { ...step, field: lines, values: valuesOf(field?.type === 'lines' ? entityName(field.entity) : undefined, step.values, scope) };
+            break;
+          }
+          case 'each':
+            next = { ...step, in: listPath(step.in, scope) };
+            break;
+          case 'if':
+            next = { ...step, when: condition(scope)(step.when) };
+            break;
+          case 'check':
+            next = { ...step, assert: condition(scope)(step.assert) };
+            break;
+          case 'call':
+            next = { ...step, input: valuesOf(undefined, step.input, scope) };
+            break;
+          case 'total': {
+            const entity = item(step.of);
+            next = { ...step, of: listPath(step.of, scope), ...(step.field && entity ? { field: fieldName(entity)(step.field) } : {}) };
+            break;
+          }
+          case 'return':
+            next = step.value === undefined ? step : { ...step, value: expression(scope)(step.value) };
+            break;
+          default:
+            next = step;
+        }
+        renamed.set(path, next);
+      }, undefined, (entity, lines) => fieldName(entity)(lines));
+      // Put the renamed steps back together, list by list.
+      const rebuild = (steps: readonly FlowStep[], base: string): FlowStep[] =>
+        steps.map((original, index) => {
+          const at = `${base}[${index}]`;
+          const step = renamed.get(at) ?? original;
+          if (step.type === 'each') return { ...step, steps: rebuild(original.type === 'each' ? original.steps : [], `${at}.steps`) };
+          if (step.type === 'if') return { ...step, then: rebuild(original.type === 'if' ? original.then : [], `${at}.then`), else: rebuild(original.type === 'if' ? original.else : [], `${at}.else`) };
+          if (step.type === 'try') return { ...step, steps: rebuild(original.type === 'try' ? original.steps : [], `${at}.steps`), catch: rebuild(original.type === 'try' ? original.catch : [], `${at}.catch`) };
+          return step;
+        });
+      const steps = flow.steps.map((step) => renameEntities(step, entityName));
+      return [name, { ...flow, steps: rebuild(steps, 'steps') }];
+    }),
+  );
+}
+
+/** A step with the entities it names renamed, inside lists too. */
+function renameEntities(step: FlowStep, entityName: (old: string) => string): FlowStep {
+  switch (step.type) {
+    case 'find':
+    case 'create':
+      return { ...step, entity: entityName(step.entity) };
+    case 'each':
+      return { ...step, steps: step.steps.map((inner) => renameEntities(inner, entityName)) };
+    case 'if':
+      return { ...step, then: step.then.map((inner) => renameEntities(inner, entityName)), else: step.else.map((inner) => renameEntities(inner, entityName)) };
+    case 'try':
+      return { ...step, steps: step.steps.map((inner) => renameEntities(inner, entityName)), catch: step.catch.map((inner) => renameEntities(inner, entityName)) };
+    default:
+      return step;
+  }
+}

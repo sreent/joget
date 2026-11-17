@@ -30,7 +30,11 @@ export type ExpressionOperator = (typeof EXPRESSION_OPERATORS)[number];
 const MAX_DEPTH = 8;
 const MAX_OPERANDS = 10;
 const MAX_LITERAL_LENGTH = 10_000;
-const REF = /^[a-z]+\.[A-Za-z_][A-Za-z0-9_]*$/;
+/**
+ * A reference: `record.<field>` or `principal.id` in an action's steps; in a flow also a variable,
+ * as `claim`, `claim.total` or, for a value from a REST service, a longer path.
+ */
+const REF = /^[a-z][a-z0-9_]{0,62}(\.[A-Za-z_][A-Za-z0-9_]{0,62}){0,8}$/;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -110,6 +114,8 @@ export interface ExpressionScope {
   readonly record: Readonly<Record<string, unknown>>;
   readonly principal: Readonly<Record<string, unknown>>;
   readonly now: Date;
+  /** A flow's variables: values, records (with their `id`) and lists of records. */
+  readonly vars?: Readonly<Record<string, unknown>>;
 }
 
 export type Evaluated = { readonly ok: true; readonly value: ExpressionValue } | { readonly ok: false; readonly message: string };
@@ -122,7 +128,19 @@ function scalar(raw: unknown): ExpressionValue {
   if (typeof raw === 'string' || typeof raw === 'boolean') return raw;
   if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
   if (Array.isArray(raw) && raw.every((item) => typeof item === 'string')) return raw as string[];
+  // A record stands for its ID, so a step can put it in a reference field.
+  if (isObject(raw) && typeof raw['id'] === 'string') return raw['id'];
   return null;
+}
+
+/** The value at a path inside a variable, or undefined if the path leads nowhere. */
+export function valueAtPath(root: unknown, path: readonly string[]): unknown {
+  let at = root;
+  for (const key of path) {
+    if (!isObject(at) || !Object.hasOwn(at, key)) return undefined;
+    at = at[key];
+  }
+  return at;
 }
 
 /**
@@ -141,10 +159,11 @@ export function roundTo(n: number, digits: number): number {
 export function evaluateExpression(expression: Expression, scope: ExpressionScope): Evaluated {
   if (!isObject(expression)) return value(expression as ExpressionValue);
   if ('ref' in expression) {
-    const [root, name] = expression.ref.split('.') as [string, string];
-    if (root === 'record') return value(scalar(Object.hasOwn(scope.record, name) ? scope.record[name] : null));
-    if (root === 'principal') return value(scalar(Object.hasOwn(scope.principal, name) ? scope.principal[name] : null));
-    return failure(`${expression.ref}: steps can refer to record and principal`);
+    const [root, ...path] = expression.ref.split('.') as [string, ...string[]];
+    if (root === 'record') return value(scalar(path.length ? valueAtPath(scope.record, path) : scope.record));
+    if (root === 'principal') return value(scalar(valueAtPath(scope.principal, path)));
+    if (scope.vars && Object.hasOwn(scope.vars, root)) return value(scalar(valueAtPath(scope.vars[root], path)));
+    return failure(`${expression.ref}: ${scope.vars ? 'no such variable' : 'steps can refer to record and principal'}`);
   }
   if ('today' in expression) return value(scope.now.toISOString().slice(0, 10));
   if ('now' in expression) return value(scope.now.toISOString());

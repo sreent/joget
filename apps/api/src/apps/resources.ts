@@ -57,3 +57,11 @@ export const processResource = (orgId: string, loaded: LoadedApp, name: string):
   scopes: appScopes(orgId, loaded, loaded.env),
   attributes: attributes(loaded, loaded.env.kind),
 });
+
+/** A flow of the app, for running it through the API: roles name the flows their holders may run. */
+export const flowResource = (orgId: string, loaded: LoadedApp, name: string): Resource => ({
+  type: 'flow',
+  selector: name,
+  scopes: appScopes(orgId, loaded, loaded.env),
+  attributes: attributes(loaded, loaded.env.kind),
+});

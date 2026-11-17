@@ -228,6 +228,15 @@ function processAuthority(action: string, entity: string, instanceId: string): A
   return { allowed: true, action, grants: [grant], exclude: [], reasons: [] };
 }
 
+/** What runs an action's flow once the action writes its record (design §6.2). */
+export interface FlowHooks {
+  afterAction(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    event: { readonly action: string; readonly entity: string; readonly record: RecordValues; readonly writer: Writer; readonly principal: Record<string, unknown>; readonly auth: AuthContext | null },
+  ): Promise<void>;
+}
+
 /** What the process engine does around an action (design §6.10). */
 export interface ProcessHooks {
   /** Refuse an action that decides a task assigned to someone else. */
@@ -313,6 +322,7 @@ const encodeCursor = (values: readonly FieldValue[]) => Buffer.from(JSON.stringi
 export class AppRuntime {
   readonly #ctx: AppContext;
   #processes: ProcessHooks | undefined;
+  #flows: FlowHooks | undefined;
 
   constructor(ctx: AppContext) {
     this.#ctx = ctx;
@@ -321,6 +331,16 @@ export class AppRuntime {
   /** Let the process engine follow the actions that move processes. */
   attachProcesses(hooks: ProcessHooks): void {
     this.#processes = hooks;
+  }
+
+  /** Let the flow engine run the flows that actions name. */
+  attachFlows(hooks: FlowHooks): void {
+    this.#flows = hooks;
+  }
+
+  /** The writer of a person's or a token's request, for work they start, such as a flow. */
+  writerFor(request: FastifyRequest, auth: AuthContext): Writer {
+    return this.#writer(request, auth);
   }
 
   #writer(request: FastifyRequest, auth: AuthContext): Writer {
@@ -1389,6 +1409,17 @@ export class AppRuntime {
       lines: Object.fromEntries(delta.changed.map((field) => [field, { next: lines[field]!, current: current[field] ?? [] }])),
       files,
     }))!;
+    // Its flow runs on the record as written, in the same transaction (design §6.2).
+    if (action.flow) {
+      await this.#flows?.afterAction(tx, loaded, {
+        action: name,
+        entity: action.entity,
+        record: recordValues(record),
+        writer: run.writer,
+        principal: run.principal,
+        auth: run.origin.kind === 'request' ? run.origin.auth : null,
+      });
+    }
     // The processes it moves: tasks it decides complete, and processes it starts begin (design §6.10).
     if (run.origin.kind === 'request') {
       await this.#processes?.afterAction(tx, loaded, { action: name, recordId: record.id, by: run.origin.auth.actor, writer: run.writer, before: before ? beforeValues : null });
@@ -1419,6 +1450,93 @@ export class AppRuntime {
     const query = selectRecords({ names: this.#names(loaded), entity, fields: entity.fields.map((f) => f.name), grants: [true], id });
     const row = (await tx.query(query.text, query.values)).rows[0];
     return row ? recordValues(parseRecord(entity, row).record) : null;
+  }
+
+  /*
+   * Flows (design §6.2) read and write records with the app's authority, in the transaction of
+   * what runs them. A write still goes through the entity's value checks and rules, and leaves its
+   * history and its audit event, as a person's write does.
+   */
+
+  /** Records of an entity that meet a condition on `record.<field>`, for a flow's find. */
+  async flowFind(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    entityName: string,
+    where: Condition | undefined,
+    sort: ReadonlyArray<{ readonly field: string; readonly direction: 'asc' | 'desc' }>,
+    limit: number,
+  ): Promise<RecordValues[]> {
+    const entity = this.entity(loaded, entityName);
+    const query = selectRecords({ names: this.#names(loaded), entity, fields: entity.fields.map((f) => f.name), grants: [true], ...(where ? { where: [where] } : {}), sort: [...sort], limit });
+    return (await tx.query(query.text, query.values)).rows.map((row) => recordValues(parseRecord(entity, row).record));
+  }
+
+  /** The lines of a record's lines field, for a flow that loops over them or totals them. */
+  async flowLines(tx: AppTransaction, loaded: LoadedApp, entityName: string, id: string, field: string): Promise<RecordValues[]> {
+    const entity = this.entity(loaded, entityName);
+    const current = await this.#currentLines(tx, loaded, entity, id, [field]);
+    return (current[field] ?? []).map((line) => ({ ...line.values, id: line.id }));
+  }
+
+  /** Create a record for a flow. */
+  async flowCreate(tx: AppTransaction, loaded: LoadedApp, writer: Writer, principal: Record<string, unknown>, entityName: string, input: Readonly<Record<string, unknown>>): Promise<RecordValues> {
+    const entity = this.entity(loaded, entityName);
+    this.#sameRevision(tx, loaded);
+    const check = checkInput(loaded.definition, entityName, input, { mode: 'create' });
+    if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
+    const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true);
+    const owner = (check.values['owner'] as string | undefined) ?? writer.actorId;
+    const values = { ...check.values, ...prepared.rollups };
+    this.#rules(loaded, entityName, principal, { ...values, owner }, prepared.lines);
+    await this.#checkPeople(loaded, entity, { ...values, owner }, 'owner' in input, prepared.lines);
+    const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
+    const record = await this.#writeRecord(writer, loaded, tx, { entityName, operation: 'create', before: null, values, owner, lines });
+    return recordValues(record!);
+  }
+
+  /** Change a record for a flow, and add a line to it if the flow says so. */
+  async flowChange(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    writer: Writer,
+    principal: Record<string, unknown>,
+    entityName: string,
+    id: string,
+    input: Readonly<Record<string, unknown>>,
+    addLine?: { readonly field: string; readonly values: Readonly<Record<string, unknown>> },
+  ): Promise<RecordValues> {
+    const entity = this.entity(loaded, entityName);
+    this.#sameRevision(tx, loaded);
+    const before = await this.#lock(tx, loaded, entity, id);
+    if (!before) throw notFound('Record');
+    const current = addLine ? await this.#currentLines(tx, loaded, entity, before.id, [addLine.field]) : {};
+    const given = addLine ? { ...input, [addLine.field]: [...toWire((current[addLine.field] ?? []).map((line) => ({ id: line.id, values: line.values }))), addLine.values] } : input;
+    const check = checkInput(loaded.definition, entityName, given, { mode: 'update' });
+    if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
+    const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false);
+    const beforeValues = recordValues(before);
+    const changed = Object.fromEntries(
+      Object.entries({ ...check.values, ...prepared.rollups }).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)),
+    );
+    const after = { ...beforeValues, ...changed };
+    this.#rules(loaded, entityName, principal, after, prepared.lines);
+    if (!Object.keys(changed).length && !prepared.changed.length) return beforeValues;
+    await this.#checkPeople(loaded, entity, changed, 'owner' in changed, Object.fromEntries(prepared.changed.map((name) => [name, prepared.lines[name]!])));
+    const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: current[name] ?? [] }]));
+    const record = await this.#writeRecord(writer, loaded, tx, { entityName, operation: 'update', before, values: changed, lines });
+    return recordValues(record!);
+  }
+
+  /** Delete a record for a flow, with its lines. Its history keeps what it was. */
+  async flowDelete(tx: AppTransaction, loaded: LoadedApp, writer: Writer, entityName: string, id: string): Promise<void> {
+    const entity = this.entity(loaded, entityName);
+    this.#sameRevision(tx, loaded);
+    const before = await this.#lock(tx, loaded, entity, id);
+    if (!before) throw notFound('Record');
+    const current = await this.#currentLines(tx, loaded, entity, before.id, linesFieldsOf(entity).map((f) => f.name));
+    const lines = Object.fromEntries(Object.entries(current).filter(([, list]) => list.length).map(([name, list]) => [name, { next: [], current: list }]));
+    await this.#writeRecord(writer, loaded, tx, { entityName, operation: 'delete', before, values: {}, lines });
   }
 
   /**
@@ -1642,6 +1760,9 @@ export class AppRuntime {
         lines: Object.fromEntries(Object.entries(sealedLines).map(([field, lines]) => [field, { next: lines, current: current[field] ?? [] }])),
         files,
       });
+      if (action.flow) {
+        await this.#flows?.afterAction(tx, loaded, { action: proposal.action, entity: action.entity, record: recordValues(record!), writer, principal: principalEnv(auth), auth });
+      }
       await this.#processes?.afterAction(tx, loaded, { action: proposal.action, recordId: record!.id, by: auth.actor, writer, before: before ? recordValues(before) : null });
       await tx.db.update(proposals).set({ status: 'approved', decidedAt: now, resultRecordId: record!.id }).where(eq(proposals.id, id));
       await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {

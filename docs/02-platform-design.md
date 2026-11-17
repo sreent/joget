@@ -597,7 +597,7 @@ steps:
 - **An action does no more than the person may.** Fields that steps set count as written by the person, so the role's field permissions apply to them. The rules run on the result.
 - **Steps see the record's real values,** not masked ones: they are the app's own logic, and a change request shows each change to them.
 
-**Flows (next, decided 2026-11-17).** Steps were kept small while a7c was to do the heavy work. Ambit now does that work itself, so steps grow into flows: Ambit's equivalent of Mendix microflows.
+**Flows (decided 2026-11-17; the engine is built).** Steps were kept small while a7c was to do the heavy work. Ambit now does that work itself, so steps grow into flows: Ambit's equivalent of Mendix microflows.
 
 - **Data.** Find records, loop over records or lines, create, change and delete related records, and use variables and totals.
 - **Control.** Decisions, loops, sub-flows with inputs and a result, and error handlers that roll back or go on.
@@ -607,6 +607,35 @@ steps:
 - **The flow designer reuses the process canvas,** as Mendix microflows look much like BPMN.
 - **The same governance applies.** A flow runs with the permissions of whoever starts it, or with the app's authority from a process. A change request shows each change to a flow and each connection it calls. Steps that stay with a person (§5.7) stay with a person in a flow too.
 - **After flows** come the app-level gaps: conditional fields and validation in forms, multi-page forms, and later safe custom code (§10).
+
+*As built (first slice).* A flow is part of the app's definition, under `flows`, with its input, its result and its steps:
+
+```yaml
+# flows/record_spend.yaml: add each line of an approved claim to its category's budget
+input: { claim: { type: record, entity: expense_claim } }
+output: { type: number }
+steps:
+  - type: each
+    in: claim.lines
+    as: line
+    steps:
+      - { type: find, var: budget, entity: budget, first: true, where: "record.category == line.category" }
+      - type: if
+        when: "exists budget.id"
+        then: [{ type: change, record: budget, values: { spent: "budget.spent + line.amount" } }]
+        else: [{ type: create, entity: budget, var: budget, values: { category: line.category, spent: line.amount } }]
+  - { type: total, var: spent, of: claim.lines, op: sum, field: amount }
+  - { type: return, value: spent }
+```
+
+- **Steps.** `set` gives a variable a value. `find` finds records of an entity, with a condition, an order and a limit, as a list or as the first one. `create`, `change` and `delete` write records, and `add_line` adds a line to one. `each` loops over a list, or over a record's lines. `if` branches, and `check` stops the flow or notes a warning. `call` runs another flow and keeps its result. `try` runs steps and, if one fails, runs others instead: it undoes what the failed steps changed, unless `rollback` is false. `total` counts a list, or totals, averages or finds the lowest or highest of a number field. `return` ends the flow with its result.
+- **Variables have kinds,** worked out when the flow is saved: a value, a record of an entity, a list of records, or a line. Each list of steps is a block: a variable first given a value inside it lives until the block ends. So the checks find a wrong field, a list used as a value or a missing input when the builder saves, not when the flow runs. Renaming an entity or a field carries through every flow, by the kinds of its variables.
+- **What starts a flow.** An action runs its flow once it writes its record, in the same transaction. A process's service task runs a flow instead of an action. A role lists the flows its holders may run through the API (`flow.run`), and the owner of a personal app runs any of them. A dry run does everything and then undoes it, so a builder can try a flow on real records.
+- **The app's authority.** A flow reads and writes every record of the app, as a process does. Each write still goes through the entity's value checks and rules, and leaves its history and its audit event. They are made in the name of whoever started the flow, and the audit context names the flow. Each run writes a `flow.run` audit event with how many records it created, changed and deleted.
+- **One transaction.** A failure undoes the whole run and what started it, unless a `try` step catches it. A `try` sets a savepoint, so a caught failure undoes only its own steps. A failure that the database reports, such as a duplicate value, always undoes them. In a process, a failed flow leaves nothing behind, and the path waits for an operator, or takes an error event on the task.
+- **Limits.** A flow has 200 steps at most, 6 levels deep. A run takes 10,000 steps at most, flows call one another 8 deep at most, and flows never call each other in a loop. A find returns 1,000 records at most.
+- **Governance.** A change request names what each flow does, for example "New flow Record the spend: it finds Budget; creates Budget; changes Budget", and which actions and process tasks run it. The lint names a flow that nothing runs. Deleting data stays with a person: a token can try a flow that deletes in a dry run, but can't run it.
+- **Next:** the flow designer, on the process canvas; REST calls through named connections; flows that run on a schedule, from a webhook or when records change.
 
 ### 6.3 Proposals: agents propose, people approve
 

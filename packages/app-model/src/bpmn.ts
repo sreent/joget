@@ -1,5 +1,6 @@
 import { isRef, type Condition } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
+import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
 import { canRepeat, caughtSignals, isAdHoc, isEventSub, messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages, thrownSignals } from './processes.js';
 import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Raised, type Repeat, type Several, type Step, type Timer } from './schema.js';
@@ -304,8 +305,15 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         });
         break;
       case 'serviceTask':
-        attributes['implementation'] = 'urn:ambit:action';
+        attributes['implementation'] = element.flow ? 'urn:ambit:flow' : 'urn:ambit:action';
         attributes['ambit:action'] = element.action;
+        attributes['ambit:flow'] = element.flow?.flow;
+        if (element.flow && Object.keys(element.flow.input).length) {
+          children.push({
+            name: 'bpmn:extensionElements',
+            children: Object.entries(element.flow.input).map(([input, expression]) => ({ name: 'ambit:input', attributes: { name: input }, text: JSON.stringify(expression) })),
+          });
+        }
         break;
       case 'exclusiveGateway':
       case 'inclusiveGateway':
@@ -901,11 +909,29 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           }
           case 'serviceTask': {
             const action = ambit(node, 'action');
-            if (!action) {
-              refuse('Say which of the app\'s actions the service task runs (ambit:action)');
+            const flow = ambit(node, 'flow');
+            if (!action && !flow) {
+              refuse("Say what the service task runs: one of the app's actions (ambit:action), or one of its flows (ambit:flow)");
               break;
             }
-            elements[id] = { type: 'serviceTask', name: name ?? id, ...(documentation ? { description: documentation } : {}), action };
+            const input: Record<string, Expression> = {};
+            for (const item of bpmn(node, 'extensionElements').flatMap((extension) => childElements(extension, AMBIT_BPMN, 'input'))) {
+              let expression: unknown;
+              try {
+                expression = JSON.parse(textOf(item));
+              } catch {
+                expression = undefined;
+              }
+              if (isExpression(expression)) input[attribute(item, 'name') ?? ''] = expression;
+              else refuse(`The input ${attribute(item, 'name') ?? ''} is not an Ambit expression`);
+            }
+            elements[id] = {
+              type: 'serviceTask',
+              name: name ?? id,
+              ...(documentation ? { description: documentation } : {}),
+              ...(action ? { action } : {}),
+              ...(flow ? { flow: { flow, input } } : {}),
+            };
             break;
           }
           case 'task':

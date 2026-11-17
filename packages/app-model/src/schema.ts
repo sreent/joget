@@ -214,6 +214,126 @@ export const Step = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckSte
 export type Step = z.infer<typeof Step>;
 export const MAX_STEPS = 20;
 
+/*
+ * Flows (design §6.2): an app's logic, as a Mendix microflow is. A flow finds, creates, changes and
+ * deletes records, loops, decides, calls other flows and handles errors, in one transaction. It
+ * never waits for a person: work that waits for people is a process.
+ */
+
+/** The kind of value that a flow's input, variable or result holds. */
+export const FlowType = z.union([
+  z.strictObject({ type: z.enum(['text', 'number', 'boolean', 'date', 'datetime']) }),
+  z.strictObject({ type: z.literal('record'), entity: Name }),
+  z.strictObject({ type: z.literal('list'), entity: Name }),
+]);
+export type FlowType = z.infer<typeof FlowType>;
+
+/** Values for a record's fields, or for a flow's input, by name. */
+const FlowValues = z.record(Name, ExpressionSchema);
+/** A list variable, or a lines field of a record variable, as `claim.lines`. */
+const FlowList = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a list variable, or a record variable\'s lines field, as claim.lines');
+/** The most steps in one list of steps, and in a whole flow. */
+export const MAX_FLOW_BLOCK = 50;
+export const MAX_FLOW_STEPS = 200;
+/** How deep steps go: loops, branches and error handlers inside one another. */
+export const MAX_FLOW_DEPTH = 6;
+
+/** Give a variable a value. */
+const FlowSet = z.strictObject({ type: z.literal('set'), var: Name, value: ExpressionSchema });
+/** Find records of an entity: in its condition, `record.<field>` is a record it looks at. */
+const FlowFind = z.strictObject({
+  type: z.literal('find'),
+  var: Name,
+  entity: Name,
+  where: ConditionSchema.optional(),
+  sort: z
+    .array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') }))
+    .max(3)
+    .optional(),
+  limit: z.int().min(1).max(1000).default(100),
+  /** One record, or none, instead of a list. */
+  first: z.boolean().optional(),
+});
+/** Create a record, and keep it in a variable. */
+const FlowCreate = z.strictObject({ type: z.literal('create'), entity: Name, values: FlowValues.default({}), var: Name.optional() });
+/** Change a record that a variable holds. */
+const FlowChange = z.strictObject({ type: z.literal('change'), record: Name, values: FlowValues });
+/** Delete a record that a variable holds. */
+const FlowDelete = z.strictObject({ type: z.literal('delete'), record: Name });
+/** Add a line to a lines field of a record that a variable holds. */
+const FlowAddLine = z.strictObject({ type: z.literal('add_line'), record: Name, field: Name, values: FlowValues });
+/** Stop the flow with a message unless a condition holds; or, as a warning, note the message and go on. */
+const FlowCheck = z.strictObject({
+  type: z.literal('check'),
+  assert: ConditionSchema,
+  message: z.string().trim().min(1).max(500),
+  severity: z.enum(['error', 'warning']).default('error'),
+});
+/** Run another flow of the app, and keep its result. */
+const FlowCall = z.strictObject({ type: z.literal('call'), flow: Name, input: FlowValues.default({}), var: Name.optional() });
+/** Count the items of a list, or total, average or find the lowest or highest of a number field. */
+const FlowTotal = z.strictObject({
+  type: z.literal('total'),
+  var: Name,
+  of: FlowList,
+  op: z.enum(['count', 'sum', 'avg', 'min', 'max']),
+  field: Name.optional(),
+});
+/** End the flow, with its result. */
+const FlowReturn = z.strictObject({ type: z.literal('return'), value: ExpressionSchema.optional() });
+/** Run steps for each item of a list. */
+const FlowEach = z.strictObject({
+  type: z.literal('each'),
+  in: FlowList,
+  /** The variable that holds the item. */
+  as: Name,
+  get steps() {
+    return z.array(FlowStep).max(MAX_FLOW_BLOCK);
+  },
+});
+/** Take one of two lists of steps, depending on a condition. */
+const FlowIf = z.strictObject({
+  type: z.literal('if'),
+  when: ConditionSchema,
+  get then() {
+    return z.array(FlowStep).max(MAX_FLOW_BLOCK);
+  },
+  get else() {
+    return z.array(FlowStep).max(MAX_FLOW_BLOCK).default([]);
+  },
+});
+/**
+ * Run steps, and if one fails, run others instead. By default what the steps changed is undone
+ * first; `rollback: false` keeps it. `error` names the variable that holds the failure's message.
+ */
+const FlowTry = z.strictObject({
+  type: z.literal('try'),
+  get steps() {
+    return z.array(FlowStep).min(1).max(MAX_FLOW_BLOCK);
+  },
+  get catch() {
+    return z.array(FlowStep).max(MAX_FLOW_BLOCK).default([]);
+  },
+  rollback: z.boolean().default(true),
+  error: Name.optional(),
+});
+export const FlowStep = z.discriminatedUnion('type', [FlowSet, FlowFind, FlowCreate, FlowChange, FlowDelete, FlowAddLine, FlowEach, FlowIf, FlowCheck, FlowCall, FlowTry, FlowTotal, FlowReturn]);
+export type FlowStep = z.infer<typeof FlowStep>;
+
+export const AppFlow = z.strictObject({
+  label: Label,
+  /** What the flow does, for builders and reviewers. */
+  description: Description.optional(),
+  input: z.record(Name, FlowType).default({}),
+  output: FlowType.optional(),
+  steps: z.array(FlowStep).max(MAX_FLOW_BLOCK),
+});
+export type AppFlow = z.infer<typeof AppFlow>;
+
+/** A flow that an action or a service task runs, with its input worked out from the record. */
+export const FlowRun = z.strictObject({ flow: Name, input: FlowValues.default({}) });
+export type FlowRun = z.infer<typeof FlowRun>;
+
 export const Action = z.strictObject({
   label: Label,
   /** Written for agents: what the action does and when to use it. Becomes the tool description. */
@@ -230,6 +350,8 @@ export const Action = z.strictObject({
   confirm: z.enum(CONFIRMATION_LEVELS).default('preview'),
   /** The review card a person checks before confirming. */
   card: Name.optional(),
+  /** A flow that runs once the action writes its record, in the same transaction. */
+  flow: FlowRun.optional(),
   /**
    * What the action does after it takes its input and sets its values, step by step: set values,
    * add lines, check and branch. The steps run when the change is worked out,
@@ -609,14 +731,15 @@ const UserTask = z.strictObject({
 });
 /** An update action that undoes what a task did, which a compensation runs on the same record. */
 const Undo = Name.optional();
-/** Work the process does by itself: run one of the app's actions on the record, with the app's authority. */
+/** Work the process does by itself, with the app's authority: run one of the app's actions on the record, or a flow. */
 const ServiceTask = z.strictObject({
   type: z.literal('serviceTask'),
   name: Label,
   description: Description.optional(),
   in: In,
   undo: Undo,
-  action: Name,
+  action: Name.optional(),
+  flow: FlowRun.optional(),
   repeat: Repeat.optional(),
 });
 /**
@@ -884,10 +1007,12 @@ export const AppRole = z.strictObject({
   queries: z.array(Name).max(100).default([]),
   /** The processes this role may start on a record by hand. */
   processes: z.array(Name).max(50).optional(),
+  /** The flows this role may run through the API. */
+  flows: z.array(Name).max(100).optional(),
 });
 export type AppRole = z.infer<typeof AppRole>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50 } as const;
+export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50, flows: 100 } as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
   z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
@@ -910,6 +1035,11 @@ export const AppDefinition = z.strictObject({
   processes: z
     .record(Name, Process)
     .refine((map) => Object.keys(map).length <= LIMITS.processes, `At most ${LIMITS.processes} processes`)
+    .optional(),
+  /** Flows: the app's logic (design §6.2). Optional, as processes are, so earlier definitions keep their digests. */
+  flows: z
+    .record(Name, AppFlow)
+    .refine((map) => Object.keys(map).length <= LIMITS.flows, `At most ${LIMITS.flows} flows`)
     .optional(),
 });
 export type AppDefinition = z.infer<typeof AppDefinition>;

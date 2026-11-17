@@ -88,7 +88,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'ps.space.preview',
     'Try changes in previews',
     'space',
-    ['app.run', 'action.run', 'query.run', 'record.read', 'record.create', 'record.update', 'record.delete', 'process.start'],
+    ['app.run', 'action.run', 'query.run', 'record.read', 'record.create', 'record.update', 'record.delete', 'process.start', 'flow.run'],
     inPreview,
   ),
   permissionSet('ps.space.personal', 'Personal space owner', 'space', [
@@ -110,6 +110,7 @@ export const MANAGED_PERMISSION_SETS: readonly PermissionSet[] = [
     'record.delete',
     'record.export',
     'process.start',
+    'flow.run',
     'process.admin',
     'connection.use',
     'connection.manage',

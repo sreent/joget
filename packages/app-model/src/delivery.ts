@@ -2,6 +2,7 @@ import type { PermissionGrant } from '@platform/authz';
 import type { StoredDefinition, StoredEntity } from './fields.js';
 import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles.js';
 import { conditionText } from './condition-text.js';
+import { flowWork } from './flows.js';
 import { processWork } from './processes.js';
 import type { Action, ConfirmationLevel, Process, Query } from './schema.js';
 
@@ -24,7 +25,7 @@ function stable(value: unknown): string {
 const same = (a: unknown, b: unknown): boolean => stable(a) === stable(b);
 
 /** The parts of a definition, each a map of named artifacts. The menu is one artifact on its own. */
-export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages', 'processes'] as const;
+export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages', 'processes', 'flows'] as const;
 export type DefinitionSection = (typeof DEFINITION_SECTIONS)[number] | 'navigation';
 
 export interface DefinitionChange {
@@ -165,6 +166,7 @@ export function accessChanges(base: StoredDefinition, head: StoredDefinition): A
     if (permission === 'action.run') return head.actions[target]?.label ?? base.actions[target]?.label ?? target;
     if (permission === 'query.run') return head.queries[target]?.label ?? base.queries[target]?.label ?? target;
     if (permission === 'process.start') return head.processes?.[target]?.label ?? base.processes?.[target]?.label ?? target;
+    if (permission === 'flow.run') return head.flows?.[target]?.label ?? base.flows?.[target]?.label ?? target;
     return (entityById(head, target) ?? entityById(base, target))?.label ?? target;
   };
 
@@ -266,12 +268,13 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
     const [b, h] = [baseProcesses[name], headProcesses[name]];
     if (!b && h) {
       const starts = startingActions(h);
-      const { actions, calls, scripts } = processWork(h);
+      const { actions, flows, calls, scripts } = processWork(h);
       const called = Object.values(headProcesses).some((other) => processWork(other).calls.includes(name));
       const how = [...(starts.length ? [`${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it`] : []), ...automaticStarts(h).map((words) => `it starts by itself ${words}`)];
       const texts = [
         `New process ${h.label}, on ${entityLabel(h.entity)}: ${how.length ? how.join('; ') : called ? 'another process calls it' : 'people start it by hand'}`,
         ...(actions.length ? [`It runs ${actions.join(', ')} by itself`] : []),
+        ...(flows.length ? [`It runs the flow${flows.length > 1 ? 's' : ''} ${flows.join(', ')} by itself`] : []),
         ...(calls.length ? [`It calls ${calls.join(', ')}`] : []),
         ...(scripts.length ? [`It changes the record by itself in ${scripts.join(', ')}`] : []),
       ];
@@ -280,6 +283,36 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       changes.push({ tool: name, change: 'removed', text: `${b.label} no longer starts. Running instances finish on the release they started on` });
     } else if (b && h && !same(b, h)) {
       for (const text of processChanges(b, h)) changes.push({ tool: name, change: 'changed', text });
+    }
+  }
+  // What each flow does to records, for reviewers: flows run with the app's authority.
+  const [baseFlows, headFlows] = [base.flows ?? {}, head.flows ?? {}];
+  for (const name of new Set([...Object.keys(baseFlows), ...Object.keys(headFlows)])) {
+    const [b, h] = [baseFlows[name], headFlows[name]];
+    if (!b && h) {
+      const work = flowWork(head, h);
+      const does = [
+        ...(work.finds.length ? [`finds ${work.finds.map(entityLabel).join(', ')}`] : []),
+        ...(work.creates.length ? [`creates ${work.creates.map(entityLabel).join(', ')}`] : []),
+        ...(work.changes.length ? [`changes ${work.changes.map(entityLabel).join(', ')}`] : []),
+        ...(work.deletes.length ? [`deletes ${work.deletes.map(entityLabel).join(', ')}`] : []),
+        ...(work.calls.length ? [`calls ${work.calls.join(', ')}`] : []),
+      ];
+      changes.push({ tool: name, change: 'added', text: `New flow ${h.label}${does.length ? `: it ${does.join('; ')}` : ''}` });
+    } else if (b && !h) {
+      changes.push({ tool: name, change: 'removed', text: `${b.label} is removed: nothing runs it any more` });
+    } else if (b && h && !same(b, h)) {
+      const [before, after] = [flowWork(base, b), flowWork(head, h)];
+      const texts: string[] = [];
+      const verbs = [['creates', 'creates'], ['changes', 'changes'], ['deletes', 'deletes']] as const;
+      for (const [key, verb] of verbs) {
+        for (const entity of after[key]) if (!before[key].includes(entity)) texts.push(`${h.label} now ${verb} ${entityLabel(entity)}`);
+        for (const entity of before[key]) if (!after[key].includes(entity)) texts.push(`${h.label} no longer ${verb} ${entityLabel(entity)}`);
+      }
+      for (const flow of after.calls) if (!before.calls.includes(flow)) texts.push(`${h.label} now calls ${flow}`);
+      for (const flow of before.calls) if (!after.calls.includes(flow)) texts.push(`${h.label} no longer calls ${flow}`);
+      if (!texts.length) texts.push(`${h.label} runs different steps`);
+      for (const text of texts) changes.push({ tool: name, change: 'changed', text });
     }
   }
   return changes;
@@ -312,6 +345,8 @@ function processChanges(b: Process, h: Process): string[] {
   for (const words of autoBefore) if (!autoAfter.includes(words)) texts.push(`${h.label} no longer starts by itself ${words}`);
   const [before, after] = [processWork(b), processWork(h)];
   for (const action of after.actions) if (!before.actions.includes(action)) texts.push(`${h.label} now runs ${action} by itself`);
+  for (const flow of after.flows) if (!before.flows.includes(flow)) texts.push(`${h.label} now runs the flow ${flow} by itself`);
+  for (const flow of before.flows) if (!after.flows.includes(flow)) texts.push(`${h.label} no longer runs the flow ${flow}`);
   for (const action of before.actions) if (!after.actions.includes(action)) texts.push(`${h.label} no longer runs ${action} by itself`);
   for (const call of after.calls) if (!before.calls.includes(call)) texts.push(`${h.label} now calls ${call}`);
   for (const call of before.calls) if (!after.calls.includes(call)) texts.push(`${h.label} no longer calls ${call}`);
@@ -334,6 +369,8 @@ function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: s
   for (const field of Object.keys(b.set)) if (!(field in h.set)) texts.push(`${name} no longer sets ${field}`);
   if (!same(b.where, h.where)) texts.push(`${name} now applies to a different set of records`);
   if (!same(b.steps ?? [], h.steps ?? [])) texts.push(`${name} runs different steps`);
+  if (b.flow?.flow !== h.flow?.flow) texts.push(h.flow ? `${name} now runs the flow ${h.flow.flow} once it saves` : `${name} no longer runs the flow ${b.flow!.flow}`);
+  else if (!same(b.flow, h.flow)) texts.push(`${name} gives its flow ${h.flow!.flow} different input`);
   if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);
   if (b.card !== h.card) texts.push(`${name} shows a different review card`);
   if (b.label !== h.label && !texts.length) texts.push(`${name} has a new label`);
@@ -377,6 +414,15 @@ export function lintDefinition(definition: StoredDefinition): string[] {
       findings.push(`Nothing starts the process ${process.label}: no start event names an action, a timer, a condition or a signal, no role may start it, and no process calls it`);
     }
   }
+  const runFlows = new Set([
+    ...Object.values(definition.actions).flatMap((action) => (action.flow ? [action.flow.flow] : [])),
+    ...Object.values(definition.processes ?? {}).flatMap((process) => processWork(process).flows),
+    ...Object.values(definition.flows ?? {}).flatMap((flow) => flowWork(definition, flow).calls),
+    ...roles.flatMap((role) => role.flows ?? []),
+  ]);
+  for (const [name, flow] of Object.entries(definition.flows ?? {})) {
+    if (!runFlows.has(name)) findings.push(`Nothing runs the flow ${flow.label}: no action, process task, other flow or role names it`);
+  }
   for (const [name, role] of Object.entries(definition.roles)) {
     const grants = Object.values(role.entities).some((p) => p.read || p.create || p.update || p.delete || p.export);
     if (!grants && !role.actions.length && !role.queries.length) findings.push(`The role ${role.label} (${name}) grants nothing`);
@@ -419,8 +465,8 @@ export function mergeDefinitions(base: StoredDefinition, ours: StoredDefinition,
       }
       if (pick !== undefined) out[name] = pick;
     }
-    // A definition without processes leaves them out, so its digest stays as it was.
-    if (section !== 'processes' || Object.keys(out).length) merged[section] = out;
+    // A definition without processes or flows leaves them out, so its digest stays as it was.
+    if ((section !== 'processes' && section !== 'flows') || Object.keys(out).length) merged[section] = out;
   }
   const [bn, on, tn] = [base.navigation, ours.navigation, theirs.navigation];
   const menu = same(on, tn) || same(bn, on) ? tn : same(bn, tn) ? on : null;

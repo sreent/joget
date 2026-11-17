@@ -416,18 +416,20 @@ export function decisionsBy(definition: Pick<StoredDefinition, 'processes'>, act
 
 /**
  * What a process does by itself, which a change request names: the actions its service tasks run
- * and its messages send, the processes it calls, and its script tasks, which change the record
- * with steps.
+ * and its messages send, the flows its service tasks run, the processes it calls, and its script
+ * tasks, which change the record with steps.
  */
 export function processWork(process: Process): {
   readonly actions: readonly string[];
+  readonly flows: readonly string[];
   readonly calls: readonly string[];
   readonly scripts: readonly string[];
 } {
   const tasks = Object.values(process.elements).filter((element): element is Extract<ProcessElement, { type: 'serviceTask' }> => element.type === 'serviceTask');
   const undoes = Object.values(process.elements).flatMap((element) => ('undo' in element && element.undo ? [element.undo] : []));
   return {
-    actions: [...new Set([...tasks.map((task) => task.action), ...sentMessages(process).map((message) => message.action), ...undoes])],
+    actions: [...new Set([...tasks.flatMap((task) => (task.action ? [task.action] : [])), ...sentMessages(process).map((message) => message.action), ...undoes])],
+    flows: [...new Set(tasks.flatMap((task) => (task.flow ? [task.flow.flow] : [])))],
     calls: [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'callActivity' ? [element.process] : [])))],
     scripts: Object.values(process.elements).flatMap((element) => (element.type === 'scriptTask' ? [element.name] : [])),
   };

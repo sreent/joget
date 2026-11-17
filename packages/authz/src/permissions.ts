@@ -80,6 +80,7 @@ export const PLATFORM_PERMISSIONS = {
   'record.export': 'Export records of an entity',
 
   'process.start': 'Start a process',
+  'flow.run': "Run one of an app's flows through the API",
   'process.admin': 'Administer running process instances',
   'task.claim': 'Claim a workflow task',
   'task.complete': 'Complete a workflow task',
