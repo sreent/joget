@@ -220,6 +220,30 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
     );
 
     app.get(
+      '/v1/apps/:appId/flows/:flow/live',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary: 'Where the cases of a flow that waits are now: how many wait at each step, how many are stuck there, and since when the first of them has waited',
+          params: AppParams.extend({ flow: z.string().regex(NAME_PATTERN) }),
+          querystring: EnvQuery,
+          response: {
+            200: z.object({
+              running: z.int(),
+              steps: z.array(z.object({ path: z.string(), waiting: z.int(), stuck: z.int(), since: z.string() })),
+            }),
+          },
+        },
+      },
+      async (request) => {
+        const loaded = await theApp(request);
+        await operate(request, loaded, 'ops.monitor.read');
+        return engine.live(loaded, request.params.flow);
+      },
+    );
+
+    app.get(
       '/v1/apps/:appId/process-instances/:instanceId',
       {
         config: { access: { kind: 'authenticated' } },

@@ -36,6 +36,7 @@ import {
   type UserTaskElement,
   messageActions,
   reachable,
+  compileFlows,
   runnable,
   votesNeeded,
 } from '@platform/app-model';
@@ -182,6 +183,12 @@ export interface InstanceView {
   readonly calledBy: string | null;
   readonly startedAt: string;
   readonly endedAt: string | null;
+}
+
+/** Where the cases of a flow that waits are now, by the path of the step each waits at. */
+export interface FlowLive {
+  readonly running: number;
+  readonly steps: Array<{ readonly path: string; readonly waiting: number; readonly stuck: number; readonly since: string }>;
 }
 
 export interface InstanceDetail extends InstanceView {
@@ -390,6 +397,44 @@ export class ProcessEngine implements ProcessHooks {
     if (filter.stuck) conditions.push(sql`exists (select 1 from ${processTokens} where ${processTokens.instanceId} = ${processInstances.id} and ${processTokens.state} = 'stuck')`);
     const rows = await this.#ctx.db.select().from(processInstances).where(and(...conditions)).orderBy(desc(processInstances.startedAt)).limit(filter.limit);
     return Promise.all(rows.map((row) => this.#view(row)));
+  }
+
+  /**
+   * Where the cases of a flow that waits are now, for the live view of its canvas: how many wait at
+   * each step, how many are stuck there, and since when the first of them has waited. Each case is
+   * named by the steps of the revision it runs on.
+   */
+  async live(loaded: LoadedApp, flow: string): Promise<FlowLive> {
+    const running = and(eq(processInstances.environmentId, loaded.env.id), eq(processInstances.process, flow), eq(processInstances.status, 'running'))!;
+    const rows = await this.#ctx.db
+      .select({
+        revision: processInstances.revision,
+        element: processTokens.element,
+        state: processTokens.state,
+        count: sql<number>`count(*)::int`,
+        since: sql<string>`min(${processTokens.createdAt})`,
+      })
+      .from(processTokens)
+      .innerJoin(processInstances, eq(processInstances.id, processTokens.instanceId))
+      .where(and(running, sql`${processTokens.state} <> 'fired'`))
+      .groupBy(processInstances.revision, processTokens.element, processTokens.state);
+    const [cases] = await this.#ctx.db.select({ count: sql<number>`count(*)::int` }).from(processInstances).where(running);
+    const at = new Map<number, ReadonlyMap<string, string>>();
+    for (const revision of new Set(rows.map((row) => row.revision))) {
+      at.set(revision, compileFlows(await this.#ctx.apps.definition(loaded.app.id, revision)).at.get(flow) ?? new Map());
+    }
+    const steps = new Map<string, { waiting: number; stuck: number; since: number }>();
+    for (const row of rows) {
+      const path = at.get(row.revision)?.get(row.element);
+      // A case between two steps, at a start or where ways meet, waits at no step of its own.
+      if (!path) continue;
+      const step = steps.get(path) ?? { waiting: 0, stuck: 0, since: Number.POSITIVE_INFINITY };
+      if (row.state === 'stuck') step.stuck += row.count;
+      else step.waiting += row.count;
+      step.since = Math.min(step.since, Date.parse(row.since));
+      steps.set(path, step);
+    }
+    return { running: cases?.count ?? 0, steps: [...steps].map(([path, step]) => ({ path, waiting: step.waiting, stuck: step.stuck, since: new Date(step.since).toISOString() })) };
   }
 
   /** One instance, with its tasks and its history. */

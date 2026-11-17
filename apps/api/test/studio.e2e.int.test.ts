@@ -432,6 +432,15 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
       payload: { values: { kind: 'annual', starts: '2026-12-28', ends: '2026-12-30', days: 3, manager: bob.userId } },
     });
     expect(asked.statusCode, asked.body).toBe(201);
+    // Live, the canvas counts the cases at each step, and so does its list.
+    const builder = await open(alice);
+    await builder.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    await builder.getByRole('button', { name: 'Live', exact: true }).click();
+    await visible(builder.getByTestId('flow-step-steps[0]').getByText('1 waiting', { exact: false }));
+    await shot(builder, '16a-flow-live');
+    await builder.getByRole('button', { name: 'List', exact: true }).click();
+    await visible(builder.getByTestId('flow-row-steps[0]').getByText('1 waiting', { exact: false }));
+    await shot(builder, '16b-flow-list');
     const inbox = await open(bob);
     await inbox.goto(`${BASE}/studio/tasks`);
     await visible(inbox.getByRole('heading', { name: 'Decide on the leave' }));

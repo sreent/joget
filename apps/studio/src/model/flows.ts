@@ -390,6 +390,48 @@ export function waitWords(definition: Definition, wait: WaitFor, entity?: string
   return { words: `Waits for ${wait.signal}`, about: 'a signal', icon: 'bell' };
 }
 
+/** The lists of steps a step holds, each with what a builder calls it: for the list view of a canvas. */
+export function labelledLists(definition: Definition, step: FlowStep, path: string, entity?: string): Array<{ label: string; steps: readonly FlowStep[]; path: string }> {
+  switch (step.type) {
+    case 'if':
+      return [
+        { label: 'If yes', steps: step.then, path: `${path}.then` },
+        { label: 'If no', steps: step.else, path: `${path}.else` },
+      ];
+    case 'each':
+      return [{ label: `For each ${step.as}`, steps: step.steps, path: `${path}.steps` }];
+    case 'try':
+      return [
+        { label: 'The steps it guards', steps: step.steps, path: `${path}.steps` },
+        { label: 'If they fail', steps: step.catch, path: `${path}.catch` },
+      ];
+    case 'task':
+      return [
+        ...step.outcomes.map((outcome, index) => ({ label: outcome.label, steps: outcome.steps, path: `${path}.outcomes[${index}].steps` })),
+        ...(step.deadline ? [{ label: `After ${durationWords(step.deadline.after)}, the task ends`, steps: step.deadline.steps, path: `${path}.deadline.steps` }] : []),
+      ];
+    case 'first_of':
+      return step.ways.map((way, index) => ({ label: waitWords(definition, way.for, entity).words, steps: way.steps, path: `${path}.ways[${index}].steps` }));
+    case 'all_at_once':
+      return step.ways.map((way, index) => ({ label: `Way ${index + 1}`, steps: way.steps, path: `${path}.ways[${index}].steps` }));
+    default:
+      return [];
+  }
+}
+
+/** How long ago a time was, roughly: "under a minute", "5 minutes", "3 hours", "2 days". */
+export function since(time: string, now = Date.now()): string {
+  const minutes = Math.max(0, Math.round((now - Date.parse(time)) / 60_000));
+  if (minutes < 1) return 'under a minute';
+  const [amount, unit] = minutes < 60 ? [minutes, 'minute'] : minutes < 48 * 60 ? [Math.round(minutes / 60), 'hour'] : [Math.round(minutes / 1440), 'day'];
+  return `${amount} ${unit}${amount === 1 ? '' : 's'}`;
+}
+
+/** What the live view says of a step: how many cases wait there, how many are stuck, and the longest wait. */
+export function liveWords(step: { waiting: number; stuck: number; since: string }, now = Date.now()): string {
+  return [step.waiting ? `${step.waiting} waiting` : '', step.stuck ? `${step.stuck} stuck` : '', since(step.since, now)].filter(Boolean).join(' · ');
+}
+
 /** A flow type in words. */
 export function typeText(definition: Definition, type: FlowType | undefined): string {
   if (!type) return 'nothing';

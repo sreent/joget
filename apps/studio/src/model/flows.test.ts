@@ -6,8 +6,10 @@ import {
   addFlow,
   describeFlowStep,
   insertStep,
+  labelledLists,
   layoutFlow,
   listAt,
+  liveWords,
   moveStep,
   newStep,
   removeFlow,
@@ -320,5 +322,19 @@ describe('the flow canvas', () => {
     const next = insertStep(definition, 'leave_approval', 'steps[0].outcomes[1].steps', 0, { type: 'change', record: 'leave', values: { reason: 'Rejected' } });
     expect(stepAt(next.flows!['leave_approval']!, 'steps[0].outcomes[1].steps[0]')).toMatchObject({ type: 'change' });
     expect(issues(next)).toEqual([]);
+  });
+
+  it('lists a flow by its ways, and says live how many cases wait at a step', () => {
+    const definition = leave();
+    const task = definition.flows!['leave_approval']!.steps[0]!;
+    expect(labelledLists(definition, task, 'steps[0]').map((list) => [list.label, list.path])).toEqual([
+      ['Approve', 'steps[0].outcomes[0].steps'],
+      ['Reject', 'steps[0].outcomes[1].steps'],
+    ]);
+    const now = Date.parse('2026-11-17T12:00:00Z');
+    expect(liveWords({ waiting: 3, stuck: 0, since: '2026-11-15T12:00:00Z' }, now)).toBe('3 waiting · 2 days');
+    expect(liveWords({ waiting: 0, stuck: 1, since: '2026-11-17T09:00:00Z' }, now)).toBe('1 stuck · 3 hours');
+    expect(liveWords({ waiting: 1, stuck: 0, since: '2026-11-17T11:59:00Z' }, now)).toBe('1 waiting · 1 minute');
+    expect(liveWords({ waiting: 1, stuck: 0, since: '2026-11-17T11:59:50Z' }, now)).toBe('1 waiting · under a minute');
   });
 });

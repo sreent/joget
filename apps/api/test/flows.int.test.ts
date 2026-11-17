@@ -218,6 +218,10 @@ describe('flows', () => {
     expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.remark).toBeNull();
     const [stuck] = (await inject({ method: 'GET', url: `/v1/apps/${leaveId}/process-instances?stuck=true`, ...as(alice) }, 200)).instances;
     expect(stuck).toMatchObject({ recordId: long.id, stuck: [{ element: 'steps_0_outcomes_0_steps_0', error: 'Leave approval: change and check: Long leave needs HR' }] });
+    // Live, the canvas shows the case stuck at the stamp.
+    expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/flows/leave_approval/live`, ...as(alice) }, 200)).steps).toEqual([
+      expect.objectContaining({ path: 'steps[0].outcomes[0].steps[0]', waiting: 0, stuck: 1 }),
+    ]);
     // The decision before the stamp stays: a failure after the flow saves can't undo it.
     expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.status).toBe('approved');
   });

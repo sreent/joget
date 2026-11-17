@@ -94,6 +94,12 @@ describe('a flow that waits', () => {
     });
     // The record shows the step its flow waits at, by the step's path.
     expect(await processOf(app, asked.record.id)).toMatchObject({ process: 'leave_approval', status: 'running', waiting: [{ element: 'steps_0', name: 'Decide on the leave' }] });
+    // Live, the flow's canvas counts the cases at each step: for whoever runs the app, not for a manager.
+    await ask(app);
+    const live = await json({ method: 'GET', url: `/v1/apps/${app}/flows/leave_approval/live`, ...as(alice) }, 200);
+    expect(live).toMatchObject({ running: 2, steps: [{ path: 'steps[0]', waiting: 2, stuck: 0 }] });
+    expect(Date.parse(live.steps[0].since)).toBeLessThanOrEqual(Date.now());
+    await inject({ method: 'GET', url: `/v1/apps/${app}/flows/leave_approval/live`, ...as(bob) }, 403);
 
     await complete(bob, task.id, 'approve');
     expect(await recordOf(app, asked.record.id)).toMatchObject({ status: 'approved' });

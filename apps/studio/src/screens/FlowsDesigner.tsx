@@ -1,7 +1,7 @@
 import { flowSubject, flowWaits, type AppFlow, type FlowStep, type FlowType, type Several, type VarKind, type WaitFor } from '@platform/app-model';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { Icon, type IconName } from '../components/icon.js';
@@ -12,8 +12,10 @@ import {
   canWait,
   flowEntities,
   insertStep,
+  labelledLists,
   layoutFlow,
   listChoices,
+  liveWords,
   moveStep,
   newStep,
   recordVariables,
@@ -24,6 +26,7 @@ import {
   STEP_GROUPS,
   STEP_NAMES,
   stepAt,
+  stepWords,
   typeText,
   updateActionsOf,
   updateFlow,
@@ -33,7 +36,7 @@ import {
   type StepType,
 } from '../model/flows.js';
 import { durationOf, durationParts } from '../model/waits.js';
-import type { Definition, Field as FieldDef } from '../types.js';
+import type { Definition, Field as FieldDef, FlowLive } from '../types.js';
 import { ValueEditor, type ValueMode, type ValueSources } from './StepsEditor.js';
 
 /*
@@ -52,8 +55,19 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState<{ list: string; index: number } | null>(null);
   const [label, setLabel] = useState('');
+  // How the flow shows: as its canvas or as a list; and, for a flow that waits, as designed or live.
+  const [show, setShow] = useState<'canvas' | 'list'>('canvas');
+  const [liveOn, setLiveOn] = useState(false);
   const name = chosen && flows[chosen] ? chosen : (names[0] ?? null);
   const flow = name ? flows[name] : undefined;
+  const waits = Boolean(flow && flowWaits(flow, definition.flows));
+  const live = useQuery({
+    queryKey: ['flow-live', appId, name],
+    queryFn: () => api.flowLive(appId, name!),
+    enabled: Boolean(name && waits && liveOn),
+    refetchInterval: 10_000,
+  });
+  const liveNow = waits && liveOn ? live.data : undefined;
   const select = (path: string | null) => {
     setSelected(path);
     setAdding(null);
@@ -77,10 +91,23 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
               {names.map((each) => (
                 <option key={each} value={each}>
                   {flows[each]!.label}
+                  {flowWaits(flows[each]!, definition.flows) ? ' · waits for people' : ''}
                 </option>
               ))}
             </select>
           ) : null}
+          {waits ? (
+            // Live, each step says how many cases wait there now, and the longest wait.
+            <div className="modes" role="group" aria-label="Show">
+              <button type="button" aria-pressed={!liveOn} onClick={() => setLiveOn(false)}>
+                Design
+              </button>
+              <button type="button" aria-pressed={liveOn} onClick={() => setLiveOn(true)}>
+                Live
+              </button>
+            </div>
+          ) : null}
+          {liveNow ? <span className="text-xs text-muted">{liveNow.running} running{dirty ? ' · as saved' : ''}</span> : null}
           {readOnly ? null : (
             <form
               className="flex gap-2"
@@ -101,14 +128,30 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
             </form>
           )}
         </div>
-        {flow && name ? (
+        {flow && name && show === 'list' ? (
+          <FlowListing
+            definition={definition}
+            flow={flow}
+            selected={selected}
+            readOnly={readOnly}
+            live={liveNow}
+            onSelect={select}
+            onShow={setShow}
+            onInsert={(place) => {
+              setSelected(null);
+              setAdding(place);
+            }}
+          />
+        ) : flow && name ? (
           <FlowCanvas
             key={name}
             definition={definition}
             flow={flow}
             selected={selected}
             readOnly={readOnly}
+            live={liveNow}
             onSelect={select}
+            onShow={setShow}
             onInsert={(place) => {
               setSelected(null);
               setAdding(place);
@@ -183,7 +226,8 @@ function insideLoop(flow: AppFlow, list: string): boolean {
 // ---- The canvas: a3t's flows as Ocean's LogicNode draws them (sreent/ocean, components/LogicNode)
 
 type Place = { list: string; index: number };
-type NodeData = { node: CanvasNode; selected: boolean; readOnly: boolean; onInsert: (place: Place) => void; onSelect: (path: string) => void };
+type Live = FlowLive['steps'][number];
+type NodeData = { node: CanvasNode; selected: boolean; readOnly: boolean; live?: Live | undefined; onInsert: (place: Place) => void; onSelect: (path: string) => void };
 type FlowNode = Node<NodeData>;
 type WireData = { edge: CanvasEdge; readOnly: boolean; onInsert: (place: Place) => void };
 
@@ -237,6 +281,7 @@ function StepNode({ data }: NodeProps<FlowNode>) {
           {node.who.words}
         </span>
       ) : null}
+      <LiveChip live={data.live} />
       <Handles />
     </div>
   );
@@ -280,9 +325,15 @@ function WaitNode({ data }: NodeProps<FlowNode>) {
         <strong>{node.label}</strong>
         {node.about ? <span>{node.about}</span> : null}
       </span>
+      <LiveChip live={data.live} />
       <Handles />
     </div>
   );
+}
+
+/** Live: how many cases wait at a step, how many are stuck there, and the longest wait. */
+function LiveChip({ live }: { live: Live | undefined }) {
+  return live ? <span className={cx('logic-live', live.stuck > 0 && 'text-bad')}>{liveWords(live)}</span> : null;
 }
 
 const FRAME_ICONS: Readonly<Partial<Record<StepType, IconName>>> = { each: 'sync', try: 'guard', first_of: 'wait', all_at_once: 'studio' };
@@ -296,6 +347,7 @@ function FrameNode({ data }: NodeProps<FlowNode>) {
         {node.label}
         {node.about ? <span className="note"> · {node.about}</span> : null}
       </button>
+      <LiveChip live={data.live} />
     </div>
   );
 }
@@ -372,15 +424,32 @@ function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
 const NODE_TYPES = { step: StepNode, decision: DecisionNode, merge: DecisionNode, start: RingNode, end: RingNode, frame: FrameNode, slot: SlotNode, port: PortNode, wait: WaitNode };
 const EDGE_TYPES = { wire: WireEdge };
 
+/** Canvas or List: the choice of views, at the right of the canvas's foot and at the top of the list. */
+function ShowAs({ show, onShow }: { show: 'canvas' | 'list'; onShow: (show: 'canvas' | 'list') => void }) {
+  return (
+    <div className="modes" role="group" aria-label="Show it as">
+      <button type="button" aria-pressed={show === 'canvas'} onClick={() => onShow('canvas')}>
+        Canvas
+      </button>
+      <button type="button" aria-pressed={show === 'list'} onClick={() => onShow('list')}>
+        List
+      </button>
+    </div>
+  );
+}
+
 function FlowCanvas(props: {
   definition: Definition;
   flow: AppFlow;
   selected: string | null;
   readOnly: boolean;
+  live: FlowLive | undefined;
   onSelect: (path: string | null) => void;
+  onShow: (show: 'canvas' | 'list') => void;
   onInsert: (place: Place) => void;
 }) {
-  const { definition, flow, selected, readOnly, onSelect, onInsert } = props;
+  const { definition, flow, selected, readOnly, live, onSelect, onInsert } = props;
+  const liveAt = useMemo(() => new Map((live?.steps ?? []).map((step) => [step.path, step])), [live]);
   // The flow wraps at the canvas's own width, so its rows fit at full size.
   const [box, setBox] = useState<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(980);
@@ -401,7 +470,7 @@ function FlowCanvas(props: {
     id: node.id,
     type: node.kind,
     position: { x: node.x, y: node.y },
-    data: { node, selected: node.path !== undefined && node.path === selected, readOnly, onInsert, onSelect },
+    data: { node, selected: node.path !== undefined && node.path === selected, readOnly, live: node.id === node.path ? liveAt.get(node.id) : undefined, onInsert, onSelect },
     draggable: false,
     connectable: false,
     selectable: false,
@@ -442,6 +511,95 @@ function FlowCanvas(props: {
           Show all of it
         </button>
       </div>
+      <div className="flow-views">
+        <ShowAs show="canvas" onShow={props.onShow} />
+      </div>
+    </div>
+  );
+}
+
+/** Each kind of step's icon in the list: the canvas's own. */
+function iconOf(step: FlowStep): IconName {
+  if (step.type === 'wait') return 'clock';
+  if (step.type === 'if') return 'decide';
+  if (step.type === 'return') return 'check';
+  return STEP_ICONS[step.type] ?? FRAME_ICONS[step.type] ?? 'settings';
+}
+
+/**
+ * A flow as its list (Ocean's FlowList): what starts it, then each step in order, with the steps a
+ * step holds under it by the name of their way. For the keyboard, and for a narrow screen.
+ */
+function FlowListing(props: {
+  definition: Definition;
+  flow: AppFlow;
+  selected: string | null;
+  readOnly: boolean;
+  live: FlowLive | undefined;
+  onSelect: (path: string | null) => void;
+  onShow: (show: 'canvas' | 'list') => void;
+  onInsert: (place: Place) => void;
+}) {
+  const { definition, flow, selected, readOnly, live, onSelect, onInsert } = props;
+  const entity = flowSubject(flow)?.entity;
+  const liveAt = new Map((live?.steps ?? []).map((step) => [step.path, step]));
+  const name = Object.entries(definition.flows ?? {}).find(([, each]) => each === flow)?.[0];
+  const starts = Object.values(definition.actions).filter((action) => name && action.flow?.flow === name);
+  const rows = (steps: readonly FlowStep[], list: string): ReactNode => (
+    <ol>
+      {steps.map((step, index) => {
+        const path = `${list}[${index}]`;
+        const words = stepWords(definition, step, entity);
+        const now = liveAt.get(path);
+        return (
+          <li key={path} className="grid gap-1">
+            <button type="button" className={cx('flow-row', words.tone)} aria-expanded={selected === path} onClick={() => onSelect(path)} data-testid={`flow-row-${path}`}>
+              <Icon name={iconOf(step)} />
+              <span className="flow-row-text">
+                <span className="flow-row-name">{words.words}</span>
+                <span className="flow-row-about">
+                  {words.kind}
+                  {words.about ? ` · ${words.about}` : ''}
+                </span>
+              </span>
+              {now ? <span className="flow-row-end">{liveWords(now)}</span> : null}
+            </button>
+            {labelledLists(definition, step, path, entity).map((inner) => (
+              <div key={inner.path} className="ms-6 grid gap-1">
+                <span className="text-xs font-semibold text-muted">{inner.label}</span>
+                {inner.steps.length ? rows(inner.steps, inner.path) : null}
+                {readOnly ? null : (
+                  <Button size="sm" variant="ghost" className="justify-self-start" aria-label={`Add a step at ${inner.path}[${inner.steps.length}]`} onClick={() => onInsert({ list: inner.path, index: inner.steps.length })}>
+                    + Add a step
+                  </Button>
+                )}
+              </div>
+            ))}
+          </li>
+        );
+      })}
+    </ol>
+  );
+  return (
+    <div className="flow-listing h-[40rem] overflow-auto pt-16" aria-label={`${flow.label}, as a list`}>
+      <ShowAs show="list" onShow={props.onShow} />
+      <section>
+        <h2>What starts it</h2>
+        <p className="m-0 text-sm text-muted">
+          {starts.length
+            ? `${starts.map((action) => action.label).join(', ')}, as it saves its record`
+            : `An action, a role or another flow that runs it${Object.keys(flow.input).length ? `, with ${Object.keys(flow.input).join(', ')}` : ''}`}
+        </p>
+      </section>
+      <section>
+        <h2>Its steps, in order</h2>
+        {flow.steps.length ? rows(flow.steps, 'steps') : <p className="m-0 text-sm text-faint">No steps yet.</p>}
+        {readOnly ? null : (
+          <Button size="sm" variant="ghost" className="justify-self-start" aria-label={`Add a step at steps[${flow.steps.length}]`} onClick={() => onInsert({ list: 'steps', index: flow.steps.length })}>
+            + Add a step
+          </Button>
+        )}
+      </section>
     </div>
   );
 }

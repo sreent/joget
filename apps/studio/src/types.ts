@@ -376,6 +376,12 @@ export interface Task {
 }
 
 /** One run of a process on a record: where it waits, and what happened in it. */
+/** Where the cases of a flow that waits are now, by the path of the step each waits at. */
+export interface FlowLive {
+  running: number;
+  steps: Array<{ path: string; waiting: number; stuck: number; since: string }>;
+}
+
 export interface ProcessInstance {
   id: string;
   process: string;

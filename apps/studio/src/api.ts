@@ -15,7 +15,7 @@ import type {
   Revision,
   Share,
   Space,
-  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest, FlowRunResult } from './types.js';
+  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest, FlowLive, FlowRunResult } from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -181,6 +181,8 @@ export const api = {
     call<{ instances: ProcessInstance[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/processes${envParams(target)}`),
   startProcess: (target: string | AppAt, process: string, recordId: string) =>
     call<ProcessInstance>('POST', `${app(at(target).id)}/processes/${encodeURIComponent(process)}/start${envParams(target)}`, { recordId }),
+  /** How many cases of a flow that waits wait at each of its steps now: the live view of its canvas. */
+  flowLive: (target: string | AppAt, flow: string) => call<FlowLive>('GET', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/live${envParams(target)}`),
   processInstances: (target: string | AppAt, stuck = false) =>
     call<{ instances: ProcessInstance[] }>('GET', `${app(at(target).id)}/process-instances${envParams(target, stuck ? { stuck: 'true' } : {})}`),
   retryInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/retry${envParams(target)}`),
