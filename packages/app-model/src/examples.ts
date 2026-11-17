@@ -6,7 +6,7 @@ const status = { ref: 'record.status' } as const;
 
 /**
  * A small expense-claim app: a claim with one line per receipt, each with its file, and a total worked out from them,
- * rules on each line, two actions (one with steps, which pay the claim through a7c), a query, a review card with the lines as a table, a form,
+ * rules on each line, two actions (one with steps, which pay the claim through a7c), two queries (one works out numbers), a review card with the lines as a table, a form,
  * two roles, three pages (one a dashboard) and a menu. It's the running example in the design doc (§6.2) and in the tests.
  */
 export const EXPENSE_APP = {
@@ -108,6 +108,13 @@ export const EXPENSE_APP = {
       filter: { eq: [owner, me] },
       sort: [{ field: 'created_at', direction: 'desc' }],
     },
+    my_spending: {
+      label: 'My spending by category',
+      description: 'How much the person you act for has claimed this year, in SGD, for each category of receipt. Use it for questions such as "how much did I spend on hotels this year?"',
+      entity: 'expense_claim',
+      filter: { eq: [owner, me] },
+      summary: { measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, range: { field: 'lines.date', within: 'this_year' } },
+    },
   },
   cards: {
     claim_review: {
@@ -140,7 +147,7 @@ export const EXPENSE_APP = {
         },
       },
       actions: ['submit_claim'],
-      queries: ['my_claims'],
+      queries: ['my_claims', 'my_spending'],
     },
     approver: {
       label: 'Approver',

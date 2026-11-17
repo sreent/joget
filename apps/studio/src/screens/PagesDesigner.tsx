@@ -3,6 +3,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from '@dnd-kit/utilities';
 import { useEffect, useState, type ReactNode } from 'react';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
+import { GroupFields, MeasureFields, RangeFields } from '../components/summary.js';
 import { Badge, Button, Card, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
 import { recordChoices } from '../model/conditions.js';
 import { isName } from '../model/edit.js';
@@ -26,14 +27,11 @@ import {
   updateBlock,
   updateNavItem,
   updatePage,
-  groupPaths,
   newChart,
-  numberPaths,
   type Block,
   type BlockType,
   type ChartBlock,
   type ListBlock,
-  type Measure,
   type StatBlock,
   type NavItem,
   type PageButton,
@@ -291,31 +289,9 @@ function BlockPanel({ definition, onChange, page, index }: Props & { page: strin
   return <ListPanel definition={definition} onChange={onChange} page={page} index={index} block={block} set={set} />;
 }
 
-const OPS: ReadonlyArray<{ value: Measure['op']; label: string }> = [
-  { value: 'count', label: 'How many' },
-  { value: 'sum', label: 'The total of' },
-  { value: 'avg', label: 'The average of' },
-  { value: 'min', label: 'The smallest' },
-  { value: 'max', label: 'The largest' },
-];
-const WITHIN = [
-  { value: 'this_month', label: 'this month' },
-  { value: 'this_quarter', label: 'this quarter' },
-  { value: 'this_year', label: 'this year' },
-  { value: 'last_30_days', label: 'the last 30 days' },
-  { value: 'last_90_days', label: 'the last 90 days' },
-  { value: 'last_12_months', label: 'the last 12 months' },
-] as const;
-const PERIOD_NAMES = { day: 'Day', week: 'Week', month: 'Month', quarter: 'Quarter', year: 'Year' } as const;
-
 /** A number or a chart: what it works out, over which records, and, for a chart, by what and how it shows. */
 function SummaryPanel({ definition, block, set }: { definition: Definition; block: StatBlock | ChartBlock; set: (patch: Record<string, unknown>) => void }) {
-  const numbers = numberPaths(definition, block.entity);
-  const linesFields = (definition.entities[block.entity]?.fields ?? []).filter((field) => field.type === 'lines');
-  const groups = groupPaths(definition, block.entity);
-  const dated = groups.filter((g) => g.dated);
   const chart = block.type === 'chart' ? block : null;
-  const grouped = chart ? groups.find((g) => g.value === chart.group.field) : undefined;
   const { measure } = block;
   return (
     <>
@@ -341,83 +317,15 @@ function SummaryPanel({ definition, block, set }: { definition: Definition; bloc
           </Select>
         )}
       </Field>
-      <div className="grid gap-2 sm:grid-cols-2">
-        <Field label="Works out">
-          {(id) => (
-            <Select
-              id={id}
-              value={measure.op}
-              onChange={(e) => {
-                const op = e.target.value as Measure['op'];
-                set({ measure: op === 'count' ? { op } : { op, field: measure.field && numbers.some((n) => n.value === measure.field) ? measure.field : numbers[0]!.value } });
-              }}
-            >
-              {OPS.map((op) => (
-                <option key={op.value} value={op.value} disabled={op.value !== 'count' && !numbers.length}>
-                  {op.label}
-                </option>
-              ))}
-            </Select>
-          )}
-        </Field>
-        <Field label={measure.op === 'count' ? 'Counting' : 'Field'}>
-          {(id) => (
-            <Select id={id} value={measure.field ?? ''} onChange={(e) => set({ measure: e.target.value ? { op: measure.op, field: e.target.value } : { op: 'count' } })}>
-              {measure.op === 'count' ? (
-                <>
-                  <option value="">Records</option>
-                  {linesFields.map((field) => (
-                    <option key={field.name} value={field.name}>
-                      {field.label}, one per line
-                    </option>
-                  ))}
-                </>
-              ) : (
-                numbers.map((n) => (
-                  <option key={n.value} value={n.value}>
-                    {n.label}
-                  </option>
-                ))
-              )}
-            </Select>
-          )}
-        </Field>
-      </div>
+      <MeasureFields definition={definition} entity={block.entity} measure={measure} onChange={(next) => set({ measure: next })} />
       {chart ? (
         <>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <Field label="For each">
-              {(id) => (
-                <Select
-                  id={id}
-                  value={chart.group.field}
-                  onChange={(e) => {
-                    const next = groups.find((g) => g.value === e.target.value)!;
-                    set({ group: next.dated ? { field: next.value, period: chart.group.period ?? 'month' } : { field: next.value }, ...(next.dated ? {} : chart.show === 'line' ? { show: 'bar' } : {}) });
-                  }}
-                >
-                  {groups.map((g) => (
-                    <option key={g.value} value={g.value}>
-                      {g.label}
-                    </option>
-                  ))}
-                </Select>
-              )}
-            </Field>
-            {grouped?.dated ? (
-              <Field label="By">
-                {(id) => (
-                  <Select id={id} value={chart.group.period ?? 'month'} onChange={(e) => set({ group: { field: chart.group.field, period: e.target.value } })}>
-                    {Object.entries(PERIOD_NAMES).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </Select>
-                )}
-              </Field>
-            ) : null}
-          </div>
+          <GroupFields
+            definition={definition}
+            entity={block.entity}
+            group={chart.group}
+            onChange={(group) => set({ group, ...(!group.period && chart.show === 'line' ? { show: 'bar' } : {}) })}
+          />
           <Choice
             label="Shown as"
             value={chart.show}
@@ -452,33 +360,7 @@ function SummaryPanel({ definition, block, set }: { definition: Definition; bloc
         compareWith={[THE_PERSON]}
         empty="Every record the person may see."
       />
-      <div className="grid gap-2 sm:grid-cols-2">
-        <Field label="When" hint="Times are in UTC.">
-          {(id) => (
-            <Select id={id} value={block.range?.field ?? ''} onChange={(e) => set({ range: e.target.value ? { field: e.target.value, within: block.range?.within ?? 'this_year' } : undefined })}>
-              <option value="">Any time</option>
-              {dated.map((g) => (
-                <option key={g.value} value={g.value}>
-                  {g.label}
-                </option>
-              ))}
-            </Select>
-          )}
-        </Field>
-        {block.range ? (
-          <Field label="Within">
-            {(id) => (
-              <Select id={id} value={block.range!.within} onChange={(e) => set({ range: { field: block.range!.field, within: e.target.value } })}>
-                {WITHIN.map((w) => (
-                  <option key={w.value} value={w.value}>
-                    {w.label}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-        ) : null}
-      </div>
+      <RangeFields definition={definition} entity={block.entity} range={block.range} onChange={(range) => set({ range })} />
     </>
   );
 }

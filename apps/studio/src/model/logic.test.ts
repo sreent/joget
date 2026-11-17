@@ -23,7 +23,7 @@ describe('editing rules, actions, queries, cards and roles', () => {
     definition = renameItem(definition, 'cards', 'claim_review', 'review');
     expect(definition.actions['file_claim']!.card).toBe('review');
     definition = removeItem(definition, 'queries', 'my_claims');
-    expect(definition.roles['requester']!.queries).toEqual([]);
+    expect(definition.roles['requester']!.queries).toEqual(['my_spending']);
     definition = removeItem(definition, 'actions', 'file_claim');
     expect(definition.forms['claim_form']).not.toHaveProperty('action');
     // People are shared with a role by its name: renaming it is refused.

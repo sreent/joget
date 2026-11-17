@@ -1,8 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
+import { GroupFields, MeasureFields, RangeFields } from '../components/summary.js';
 import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type RefChoice } from '../model/conditions.js';
 import { isName, lineOwner } from '../model/edit.js';
+import { groupPaths } from '../model/pages.js';
 import { addItem, recordEntities, removeItem, renameItem, updateItem, writableFields, type Section } from '../model/logic.js';
 import type { Definition, Field as FieldDef } from '../types.js';
 import { StepsEditor } from './StepsEditor.js';
@@ -404,7 +406,10 @@ export function QueriesDesigner({ definition, onChange }: Props) {
       describe={(name) => (
         <>
           <span className="block font-medium">{definition.queries[name]!.label}</span>
-          <span className="text-xs text-faint">{definition.entities[definition.queries[name]!.entity]?.pluralLabel ?? definition.queries[name]!.entity}</span>
+          <span className="text-xs text-faint">
+            {definition.entities[definition.queries[name]!.entity]?.pluralLabel ?? definition.queries[name]!.entity}
+            {definition.queries[name]!.summary ? ' · numbers' : ''}
+          </span>
         </>
       )}
       panel={(name) => <QueryPanel definition={definition} onChange={onChange} name={name} />}
@@ -420,6 +425,7 @@ const SYSTEM_RESULTS = [
 
 function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
   const query = definition.queries[name]!;
+  const summary = query.summary;
   const set = (patch: Partial<typeof query>) => onChange(updateItem(definition, 'queries', name, patch));
   const fields = fieldsOf(definition, query.entity);
   const parameters = Object.entries(query.parameters ?? {});
@@ -433,7 +439,7 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
         <Field label="Label">{(id) => <TextInput id={id} value={query.label} onChange={(e) => set({ label: e.target.value })} />}</Field>
         <Field label="Asks about">
           {(id) => (
-            <Select id={id} value={query.entity} onChange={(e) => set({ entity: e.target.value, fields: ['created_at'], filter: undefined, sort: [] })}>
+            <Select id={id} value={query.entity} onChange={(e) => set({ entity: e.target.value, fields: ['created_at'], filter: undefined, sort: [], summary: undefined })}>
               {entityOptions(definition, false).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -446,12 +452,44 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
       <Field label="Description" hint="Agents read this to choose the query: say what it answers.">
         {(id) => <textarea id={id} className="min-h-16 w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5" value={query.description} onChange={(e) => set({ description: e.target.value })} />}
       </Field>
-      <Checklist
-        label="Each result shows"
-        options={[...fields.map((f) => ({ value: f.name, label: f.label })), ...SYSTEM_RESULTS]}
-        selected={query.fields}
-        onChange={(next) => (next.length ? set({ fields: next }) : undefined)}
+      <Choice
+        label="It answers with"
+        value={summary ? (summary.group ? 'groups' : 'number') : 'records'}
+        options={[
+          { value: 'records', label: 'Records', hint: 'A list, with the fields you choose.' },
+          { value: 'number', label: 'A number', hint: 'How many, or a total, such as how much was claimed this year.' },
+          { value: 'groups', label: 'A number for each group', hint: 'Such as the total for each category, or for each month.' },
+        ]}
+        onChange={(kind) => set(answerWith(definition, query, kind))}
       />
+      {summary ? (
+        <>
+          <MeasureFields definition={definition} entity={query.entity} measure={summary.measure} onChange={(measure) => set({ summary: { ...summary, measure } })} />
+          {summary.group ? (
+            <>
+              <GroupFields definition={definition} entity={query.entity} group={summary.group} onChange={(group) => set({ summary: { ...summary, group } })} />
+              <Field label={summary.group.period ? 'Latest periods' : 'Largest groups'} hint={summary.group.period ? undefined : 'The rest come back as one number, where they add up.'}>
+                {(id) => (
+                  <TextInput id={id} type="number" className="w-32" min={2} max={24} value={summary.limit ?? 8} onChange={(e) => set({ summary: { ...summary, limit: Math.min(24, Math.max(2, Number(e.target.value) || 2)) } })} />
+                )}
+              </Field>
+            </>
+          ) : null}
+          <RangeFields
+            definition={definition}
+            entity={query.entity}
+            range={summary.range}
+            onChange={(range) => set({ summary: range ? { ...summary, range } : Object.fromEntries(Object.entries(summary).filter(([key]) => key !== 'range')) as typeof summary })}
+          />
+        </>
+      ) : (
+        <Checklist
+          label="Each result shows"
+          options={[...fields.map((f) => ({ value: f.name, label: f.label })), ...SYSTEM_RESULTS]}
+          selected={query.fields}
+          onChange={(next) => (next.length ? set({ fields: next }) : undefined)}
+        />
+      )}
       <div className="grid gap-2">
         <span className="text-sm text-muted">Inputs the person or agent gives</span>
         {parameters.map(([param, spec]) => (
@@ -492,6 +530,8 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
         compareWith={[THE_PERSON, ...params]}
         empty="Every record the person may see."
       />
+      {summary ? null : (
+      <>
       <div className="grid gap-2">
         <span className="text-sm text-muted">Sorted by</span>
         {sort.map((key, index) => (
@@ -523,8 +563,24 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
       <Field label="At most this many results at a time">
         {(id) => <TextInput id={id} type="number" className="w-32" min={1} max={200} value={query.limit ?? 50} onChange={(e) => set({ limit: Math.min(200, Math.max(1, Number(e.target.value) || 1)) })} />}
       </Field>
+      </>
+      )}
     </>
   );
+}
+
+type Query = Definition['queries'][string];
+
+/** Switch what a query answers with: records, a number, or a number for each group. What it worked out so far stays. */
+function answerWith(definition: Definition, query: Query, kind: 'records' | 'number' | 'groups'): Partial<Query> {
+  if (kind === 'records') return { summary: undefined, fields: query.fields.length ? query.fields : ['created_at'] };
+  const measure = query.summary?.measure ?? { op: 'count' as const };
+  const range = query.summary?.range ? { range: query.summary.range } : {};
+  if (kind === 'number') return { summary: { measure, ...range, limit: query.summary?.limit ?? 8 }, fields: [], sort: [] };
+  const groups = groupPaths(definition, query.entity);
+  const first = query.summary?.group ? undefined : (groups.find((g) => !g.dated) ?? groups[0]);
+  const group = query.summary?.group ?? (first ? (first.dated ? { field: first.value, period: 'month' as const } : { field: first.value }) : { field: 'created_at', period: 'month' as const });
+  return { summary: { measure, group, ...range, limit: query.summary?.limit ?? 8 }, fields: [], sort: [] };
 }
 
 // Review cards

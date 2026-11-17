@@ -17,6 +17,16 @@ function parseSort(sort: string | undefined) {
   return keys.map((key) => (key.startsWith('-') ? { field: key.slice(1), direction: 'desc' as const } : { field: key, direction: 'asc' as const }));
 }
 
+/** A number, or one for each group: what a dashboard's block or a query that works out numbers answers. */
+const SummaryOutSchema = z.union([
+  z.object({ value: z.number().nullable() }),
+  z.object({
+    groups: z.array(z.object({ key: z.string().nullable(), label: z.string().nullable(), value: z.number().nullable() })),
+    other: z.number().nullable(),
+    more: z.number().int(),
+  }),
+]);
+
 /** The records API, queries and actions: the runtime of the built-in store (design §6). */
 export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginAsyncZod {
   /** The app in the environment the request names: Prod by default for a team app, or Staging, or a preview. */
@@ -223,16 +233,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           summary: "A number, or a chart's numbers, on one of the app's pages: worked out over the records you may read",
           params: AppParams.extend({ page: z.string().min(1).max(63), block: z.coerce.number().int().min(0).max(29) }),
           querystring: EnvQuery,
-          response: {
-            200: z.union([
-              z.object({ value: z.number().nullable() }),
-              z.object({
-                groups: z.array(z.object({ key: z.string().nullable(), label: z.string().nullable(), value: z.number().nullable() })),
-                other: z.number().nullable(),
-                more: z.number().int(),
-              }),
-            ]),
-          },
+          response: { 200: SummaryOutSchema },
         },
       },
       async (request) =>
@@ -245,7 +246,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         config: { access: { kind: 'permission', action: 'query.run', resource: capability('query'), policy } },
         schema: {
           tags: ['capabilities'],
-          summary: "Run one of the app's queries, under your record permissions",
+          summary: "Run one of the app's queries, under your record permissions: its records, or the numbers it works out",
           params: AppParams.extend({ name: z.string().min(1).max(63) }),
           querystring: EnvQuery,
           body: z.object({
@@ -253,7 +254,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
             limit: z.number().int().min(1).max(200).optional(),
             cursor: z.string().max(4000).optional(),
           }),
-          response: { 200: PageOut },
+          response: { 200: z.union([PageOut, SummaryOutSchema]) },
         },
       },
       async (request) =>

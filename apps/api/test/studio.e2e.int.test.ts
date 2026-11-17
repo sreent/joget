@@ -338,6 +338,21 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.locator('ul[aria-label="Claims by status"] li').first());
   });
 
+  it('designs a query that answers with numbers, for agents to ask', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/queries`);
+    await page.getByRole('button', { name: /^My spending by category/ }).click();
+    await visible(page.getByLabel('A number for each group'));
+    expect(await page.getByLabel('For each', { exact: true }).inputValue()).toBe('lines.category');
+    await page.getByLabel('Largest groups').fill('5');
+    await shot(page, '23-query-numbers');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.queries.my_spending.summary).toMatchObject({ measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, limit: 5 });
+  });
+
   it('designs the steps of an action, and shows the work in other systems that they start', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);

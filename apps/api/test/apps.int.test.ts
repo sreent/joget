@@ -325,9 +325,11 @@ describe('agents propose, people approve', () => {
     // Bob's own side project shows in full; in Alice's app, only what his requester role allows.
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       'expenses__my_claims',
+      'expenses__my_spending',
       'expenses__submit_claim',
       'side_project__approve_claim',
       'side_project__my_claims',
+      'side_project__my_spending',
       'side_project__submit_claim',
     ]);
     const submit = tools.find((tool) => tool.name === 'expenses__submit_claim')!;
@@ -335,6 +337,30 @@ describe('agents propose, people approve', () => {
     expect(lines).toMatchObject({ type: 'array', minItems: 1, maxItems: 50, items: { required: ['date', 'merchant', 'category', 'amount'], additionalProperties: false } });
     expect(lines.items.properties.category).toMatchObject({ type: 'string', enum: ['travel', 'hotel', 'meals'] });
     expect(submit.inputSchema.properties.values.required).toEqual(['title', 'lines']);
+  });
+
+  it('answers questions that total and group, over only the records the person may read', async () => {
+    // Bob's own receipts, worked out here, as the query should.
+    const mine = (await inject({ method: 'GET', url: records(), ...as(bob) }, 200)).json().records as Array<{ owner: string; values: { lines: Array<{ category: string; amount: number; date: string }> } }>;
+    const year = new Date().toISOString().slice(0, 4);
+    const totals = new Map<string, number>();
+    for (const record of mine.filter((r) => r.owner === bob.userId)) {
+      for (const l of record.values.lines.filter((l) => l.date.startsWith(year))) totals.set(l.category, Number(((totals.get(l.category) ?? 0) + l.amount).toFixed(2)));
+    }
+    const expected = [...totals].sort((a, b) => b[1] - a[1]).map(([key, value]) => ({ key, value }));
+    expect(expected.length).toBeGreaterThan(0);
+
+    const answered = (await inject({ method: 'POST', url: `/v1/apps/${appId}/queries/my_spending/run`, ...as(bob), payload: {} }, 200)).json();
+    expect(answered.groups.map(({ key, value }: { key: string; value: number }) => ({ key, value }))).toEqual(expected);
+    expect(answered.groups[0].label).toMatch(/^[A-Z]/);
+    // Carol's role doesn't include the query.
+    await inject({ method: 'POST', url: `/v1/apps/${appId}/queries/my_spending/run`, ...as(carol), payload: {} }, 403);
+
+    // The agent asks the same question as a tool, and gets the same answer.
+    const tools = (await rpc(agentToken, '/mcp', 'tools/list')).result.tools as Array<{ name: string; description: string }>;
+    expect(tools.find((tool) => tool.name === 'expenses__my_spending')!.description).toContain('Returns a number for each group');
+    const call = await rpc(agentToken, '/mcp', 'tools/call', { name: 'expenses__my_spending', arguments: {} });
+    expect(call.result.structuredContent).toEqual(answered);
   });
 
   it('turns an agent\'s action into a proposal, with the rule findings and where each value came from', async () => {

@@ -55,6 +55,9 @@ import {
   type ChartBlock,
   type StatBlock,
   type ListBlock,
+  type Measure,
+  type Period,
+  type TimeRange,
 } from '@platform/app-model';
 import { proposals, skillCalls, users } from '@platform/db';
 import { and, desc, eq, gt, inArray } from 'drizzle-orm';
@@ -882,7 +885,7 @@ export class AppRuntime {
     loaded: LoadedApp,
     name: string,
     input: { readonly parameters: Readonly<Record<string, unknown>>; readonly cursor?: string; readonly limit?: number },
-  ): Promise<Page> {
+  ): Promise<Page | SummaryOut> {
     const query = loaded.definition.queries[name];
     if (!query) throw notFound('Query');
     const parameters: Record<string, unknown> = {};
@@ -902,6 +905,16 @@ export class AppRuntime {
     if (issues.length) throw unprocessable('invalid_parameters', issues.join('; '));
 
     const decision = await this.decide(request, auth, loaded, 'record.read', query.entity, { inside: true });
+    if (query.summary) {
+      const { summary } = query;
+      return this.#summarize(auth, loaded, {
+        entity: query.entity,
+        measure: summary.measure,
+        ...(summary.group ? { group: summary.group, limit: summary.limit } : {}),
+        ...(summary.range ? { range: summary.range } : {}),
+        ...(query.filter ? { filter: query.filter } : {}),
+      }, decision, parameters);
+    }
     const where = query.filter ? partialEvaluate(query.filter, { principal: principalEnv(auth), input: parameters, context: {} }, ['record']) : true;
     if (where === false) return { records: [], nextCursor: null };
     const userFields = query.fields.filter((field) => this.entity(loaded, query.entity).fields.some((f) => f.name === field));
@@ -929,17 +942,41 @@ export class AppRuntime {
    */
   async runSummary(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, page: string, index: number, decision: AllowedQuery): Promise<SummaryOut> {
     const block = this.summaryBlock(loaded, page, index);
-    const entity = this.entity(loaded, block.entity);
-    const group = block.type === 'chart' ? block.group : undefined;
-    const paths = [block.measure.field, group?.field, block.range?.field].filter((path): path is string => path !== undefined);
+    return this.#summarize(auth, loaded, {
+      entity: block.entity,
+      measure: block.measure,
+      ...(block.type === 'chart' ? { group: block.group, limit: block.limit } : {}),
+      ...(block.range ? { range: block.range } : {}),
+      ...(block.filter ? { filter: block.filter } : {}),
+    }, decision, {});
+  }
+
+  /** Work out numbers for a summary, a number or one for each group, as runSummary says. */
+  async #summarize(
+    auth: AuthContext,
+    loaded: LoadedApp,
+    spec: {
+      readonly entity: string;
+      readonly measure: Measure;
+      readonly group?: { readonly field: string; readonly period?: Period };
+      readonly limit?: number;
+      readonly range?: TimeRange;
+      readonly filter?: Condition;
+    },
+    decision: AllowedQuery,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<SummaryOut> {
+    const entity = this.entity(loaded, spec.entity);
+    const { group, measure } = spec;
+    const paths = [measure.field, group?.field, spec.range?.field].filter((path): path is string => path !== undefined);
     this.#requireVisible(decision, paths, 'work out numbers from');
-    if (block.filter) this.#requireVisible(decision, conditionRefs(block.filter).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : [])), 'filter on');
-    const where = block.filter ? partialEvaluate(block.filter, { principal: principalEnv(auth), input: {}, context: {} }, ['record']) : true;
-    if (where === false) return block.type === 'stat' ? { value: block.measure.op === 'count' || block.measure.op === 'sum' ? 0 : null } : { groups: [], other: null, more: 0 };
+    if (spec.filter) this.#requireVisible(decision, conditionRefs(spec.filter).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : [])), 'filter on');
+    const where = spec.filter ? partialEvaluate(spec.filter, { principal: principalEnv(auth), input, context: {} }, ['record']) : true;
+    if (where === false) return group ? { groups: [], other: null, more: 0 } : { value: measure.op === 'count' || measure.op === 'sum' ? 0 : null };
 
     // A summary over lines names them as `lines.amount`, or counts them by their lines field.
     const linesFieldOf = (path: string | undefined) => (path?.includes('.') ? path.split('.')[0] : undefined);
-    const over = linesFieldOf(block.measure.field) ?? (block.measure.op === 'count' ? block.measure.field : undefined) ?? linesFieldOf(group?.field) ?? linesFieldOf(block.range?.field);
+    const over = linesFieldOf(measure.field) ?? (measure.op === 'count' ? measure.field : undefined) ?? linesFieldOf(group?.field) ?? linesFieldOf(spec.range?.field);
     const linesField = over ? entity.fields.find((field) => field.name === over) : undefined;
     const lineEntity = linesField?.type === 'lines' ? loaded.definition.entities[linesField.entity] : undefined;
     const at = (path: string) => {
@@ -947,7 +984,6 @@ export class AppRuntime {
       const info = sub ? entityFields(lineEntity!, { line: true }).get(sub) : entityFields(entity).get(first);
       return { info: info!, onLines: sub !== undefined };
     };
-    const { measure } = block;
     const statement = summarize({
       names: this.#names(loaded),
       entity,
@@ -959,11 +995,11 @@ export class AppRuntime {
         measure.op === 'count'
           ? { op: 'count', onLines: measure.field !== undefined }
           : { op: measure.op, ...at(measure.field!) },
-      ...(group ? { group: { ...at(group.field), ...(group.period ? { period: group.period } : {}), limit: (block as ChartBlock).limit } } : {}),
-      ...(block.range
+      ...(group ? { group: { ...at(group.field), ...(group.period ? { period: group.period } : {}), limit: spec.limit ?? 8 } } : {}),
+      ...(spec.range
         ? (() => {
-            const range = at(block.range.field);
-            const start = rangeStart(block.range.within, this.#ctx.now());
+            const range = at(spec.range.field);
+            const start = rangeStart(spec.range.within, this.#ctx.now());
             return { since: { ...range, from: range.info.kind === 'date' ? start.date : start.time } };
           })()
         : {}),
@@ -973,11 +1009,11 @@ export class AppRuntime {
       return (await tx.query(statement.text, statement.values)).rows;
     });
     const number = (raw: unknown) => (raw === null || raw === undefined ? null : Number(raw));
-    if (block.type === 'stat') {
+    if (!group) {
       const value = number(rows[0]?.['value']);
       return { value: value ?? (measure.op === 'sum' ? 0 : null) };
     }
-    const info = at(group!.field).info;
+    const info = at(group.field).info;
     const options = info.field?.type === 'choice' ? new Map(info.field.options.map((option) => [option.value, option.label])) : undefined;
     const label = (key: string | null): string | null => {
       if (key === null) return null;
@@ -989,13 +1025,13 @@ export class AppRuntime {
       const key = row['key'] === null ? null : String(row['key']);
       return { key, label: label(key), value: number(row['value']) };
     });
-    if (group!.period) groups.reverse();
+    if (group.period) groups.reverse();
     const all = Number(rows[0]?.['groups'] ?? 0);
     const more = Math.max(0, all - groups.length);
     // The rest can be told as one more bar only where the parts add up to the whole.
     const additive = measure.op === 'count' || measure.op === 'sum';
     const shown = groups.reduce((sum, g) => sum + (g.value ?? 0), 0);
-    const other = more && additive && !group!.period ? Number(((number(rows[0]?.['total']) ?? 0) - shown).toFixed(6)) : null;
+    const other = more && additive && !group.period ? Number(((number(rows[0]?.['total']) ?? 0) - shown).toFixed(6)) : null;
     return { groups, other, more };
   }
 

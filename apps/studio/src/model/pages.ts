@@ -310,6 +310,14 @@ export function forgetField(definition: Definition, entity: string, field: strin
     });
     if (!page.blocks.length) page.blocks = [placeholder()];
   }
+  // Queries that work out numbers let go of it the same way: grouped by it, they answer with one number.
+  for (const query of Object.values(definition.queries)) {
+    const summary = query.summary;
+    if (query.entity !== target || !summary) continue;
+    if (summary.group && gone(summary.group.field)) delete summary.group;
+    if (gone(summary.measure.field)) summary.measure = { op: 'count' };
+    if (summary.range && gone(summary.range.field)) delete summary.range;
+  }
 }
 
 /** A form went: so do its buttons and menu item. */

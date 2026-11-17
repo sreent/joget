@@ -113,6 +113,16 @@ describe('numbers and charts', () => {
   });
 });
 
+describe('queries that work out numbers', () => {
+  it('let go of a field that goes, as charts do', () => {
+    const lineFields = app().entities['expense_line']!.fields;
+    let definition = removeField(app(), 'expense_line', lineFields.findIndex((f) => f.name === 'category'));
+    expect(definition.queries['my_spending']!.summary).toEqual({ measure: { op: 'sum', field: 'lines.amount' }, range: { field: 'lines.date', within: 'this_year' } });
+    definition = removeField(definition, 'expense_line', definition.entities['expense_line']!.fields.findIndex((f) => f.name === 'amount'));
+    expect(definition.queries['my_spending']!.summary).toEqual({ measure: { op: 'count' }, range: { field: 'lines.date', within: 'this_year' } });
+  });
+});
+
 describe('editing the menu', () => {
   it('starts a custom menu from every page, form and list, and goes back to the default', () => {
     const plain = normalize({ ...structuredClone(EXPENSE_APP), navigation: undefined } as unknown as Definition);

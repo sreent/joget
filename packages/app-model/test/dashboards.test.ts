@@ -99,3 +99,47 @@ describe('time ranges', () => {
     expect(rangeStart('last_12_months', now).date).toBe('2025-12-01');
   });
 });
+
+describe('queries that work out numbers', () => {
+  const withQuery = (query: Record<string, unknown>) => {
+    const definition = example();
+    definition.queries.my_spending = { ...definition.queries.my_spending, ...query };
+    return definition;
+  };
+
+  it('are checked as numbers and charts are, and return no fields', () => {
+    expect(
+      issuesOf(
+        withQuery({
+          fields: ['title'],
+          sort: [{ field: 'created_at', direction: 'desc' }],
+          summary: { measure: { op: 'sum', field: 'title' }, group: { field: 'lines.date' } },
+        }),
+      ),
+    ).toEqual([
+      'queries.my_spending.fields: A query that answers with numbers returns no fields',
+      'queries.my_spending.sort: A query that answers with numbers is in its own order: largest first, or latest first',
+      "queries.my_spending.summary.measure.field: title isn't a number",
+      'queries.my_spending.summary.group.period: lines.date is a date: group it by periods, such as month',
+      'queries.my_spending.summary.measure.field: This works over lines, so total a field of them, such as lines.amount',
+    ]);
+    const plain = example();
+    plain.queries.my_claims.fields = [];
+    expect(issuesOf(plain)).toEqual(['queries.my_claims.fields: Name at least one field each record carries, or let the query answer with numbers']);
+  });
+
+  it('carry renames into what they work out', () => {
+    const first = validateDefinition(EXPENSE_APP, undefined, ids());
+    if (!first.ok) throw new Error('example');
+    const next = structuredClone(first.definition) as any;
+    next.entities.expense_line.fields.find((f: { name: string }) => f.name === 'category').name = 'kind';
+    next.entities.expense_line.fields.find((f: { name: string }) => f.name === 'date').name = 'spent_on';
+    const result = validateDefinition(next, first.definition, ids());
+    if (!result.ok) throw new Error(JSON.stringify(result.issues));
+    expect(result.definition.queries['my_spending']!.summary).toMatchObject({
+      measure: { field: 'lines.amount' },
+      group: { field: 'lines.kind' },
+      range: { field: 'lines.spent_on' },
+    });
+  });
+});

@@ -257,7 +257,7 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
   }
   for (const name of new Set([...Object.keys(base.queries), ...Object.keys(head.queries)])) {
     const [b, h] = [base.queries[name], head.queries[name]];
-    if (!b && h) changes.push({ tool: name, change: 'added', text: `New tool ${name}: answers from ${entityLabel(h.entity)}` });
+    if (!b && h) changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.summary ? 'works out numbers from' : 'answers from'} ${entityLabel(h.entity)}` });
     else if (b && !h) changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
     else if (b && h && !same(b, h)) for (const text of queryChanges(name, b, h, entityLabel)) changes.push({ tool: name, change: 'changed', text });
   }
@@ -297,6 +297,7 @@ function queryChanges(name: string, b: Query, h: Query, entityLabel: (name: stri
   for (const field of h.fields) if (!b.fields.includes(field)) texts.push(`${name} now returns ${field}`);
   for (const field of b.fields) if (!h.fields.includes(field)) texts.push(`${name} no longer returns ${field}`);
   if (!same(b.filter, h.filter)) texts.push(`${name} now returns a different set of records`);
+  if (!same(b.summary, h.summary)) texts.push(h.summary ? `${name} now works out different numbers` : `${name} now returns records, not numbers`);
   for (const parameter of Object.keys(h.parameters)) if (!(parameter in b.parameters)) texts.push(`${name} now takes ${parameter}`);
   for (const parameter of Object.keys(b.parameters)) if (!(parameter in h.parameters)) texts.push(`${name} no longer takes ${parameter}`);
   if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);

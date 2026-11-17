@@ -155,6 +155,27 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
         Object.entries(query.parameters).map(([param, spec]) => [param, { type: spec.type === 'text' ? 'string' : spec.type, description: spec.description }]),
       );
       const required = Object.entries(query.parameters).filter(([, spec]) => spec.required).map(([param]) => param);
+      if (query.summary) {
+        const grouped = query.summary.group !== undefined;
+        tools.push({
+          name: toolName(loaded.app.handle, name, taken, loaded.app.id),
+          title: query.label,
+          description: `${query.description} (App: ${loaded.app.name}. ${
+            grouped
+              ? `Returns a number for each group, as { groups: [{ key, label, value }], other, more }: at most ${query.summary.limit} groups, the largest first or the latest periods. other totals the rest where they add up, and more counts them.`
+              : 'Returns one number, as { value }.'
+          } It counts only the records the person may read.)`,
+          inputSchema: { type: 'object', properties: params, ...(required.length ? { required } : {}), additionalProperties: false },
+          annotations: { readOnlyHint: true, openWorldHint: false },
+          run: async (parameters) => runtime.runQuery(request, auth, loaded, name, { parameters }),
+          summarize: (result) => {
+            if ('value' in (result as object)) return `The number is ${(result as { value: number | null }).value ?? 'empty'}.`;
+            const { groups, more } = result as { groups: unknown[]; more: number };
+            return `${groups.length} group(s)${more ? `, and ${more} more` : ''}.`;
+          },
+        });
+        continue;
+      }
       tools.push({
         name: toolName(loaded.app.handle, name, taken, loaded.app.id),
         title: query.label,

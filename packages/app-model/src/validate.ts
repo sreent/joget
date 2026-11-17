@@ -195,6 +195,16 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       fields: query.fields.map(fieldName(entity)),
       ...(query.filter ? { filter: condition(entity, query.filter) } : {}),
       sort: query.sort.map((sort) => ({ ...sort, field: fieldName(entity)(sort.field) })),
+      ...(query.summary
+        ? {
+            summary: {
+              ...query.summary,
+              measure: { ...query.summary.measure, ...(query.summary.measure.field ? { field: pathName(entity)(query.summary.measure.field) } : {}) },
+              ...(query.summary.group ? { group: { ...query.summary.group, field: pathName(entity)(query.summary.group.field) } } : {}),
+              ...(query.summary.range ? { range: { ...query.summary.range, field: pathName(entity)(query.summary.range.field) } } : {}),
+            },
+          }
+        : {}),
     };
   });
   const cards = mapRecord(definition.cards, (card) => {
@@ -709,6 +719,12 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     if (!fields) continue;
     const lines = linesOf.get(query.entity)!;
     for (const field of query.fields) if (!fields.has(field) && !lines.has(field)) issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
+    if (query.summary) {
+      if (query.fields.length) issues.push({ path: `${path}.fields`, message: 'A query that answers with numbers returns no fields' });
+      if (query.sort.length) issues.push({ path: `${path}.sort`, message: 'A query that answers with numbers is in its own order: largest first, or latest first' });
+    } else if (!query.fields.length) {
+      issues.push({ path: `${path}.fields`, message: 'Name at least one field each record carries, or let the query answer with numbers' });
+    }
     const input = new Map(Object.entries(query.parameters).map(([param, spec]) => [param, spec.type] as const));
     if (query.filter) checkCondition(query.filter, { record: fields, lines, input }, `${path}.filter`, issues);
     query.sort.forEach((sort, index) => {
@@ -862,6 +878,19 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     }
     if (block.filter) checkCondition(block.filter, { record: fields, lines }, `${path}.filter`, issues);
   };
+
+  // A query that answers with numbers is checked as a number or a chart is. Its filter is checked with its parameters, above.
+  for (const [name, query] of Object.entries(definition.queries)) {
+    const summary = query.summary;
+    if (!summary || !definition.entities[query.entity]) continue;
+    const base = { entity: query.entity, measure: summary.measure, ...(summary.range ? { range: summary.range } : {}) };
+    checkSummary(
+      summary.group
+        ? { type: 'chart', title: query.label, ...base, group: summary.group, show: 'bar', limit: summary.limit, width: 'half' }
+        : { type: 'stat', label: query.label, ...base },
+      `queries.${name}.summary`,
+    );
+  }
 
   for (const [name, page] of Object.entries(definition.pages ?? {})) {
     for (const role of page.roles ?? []) if (!definition.roles[role]) issues.push({ path: `pages.${name}.roles`, message: `No role named ${role}` });

@@ -255,6 +255,44 @@ export const Action = z.strictObject({
 });
 export type Action = z.infer<typeof Action>;
 
+/** A field, or a field of lines as `lines.amount`. */
+const FieldPath = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a field, or a field of lines such as lines.amount');
+
+/**
+ * What a number or a chart works out: how many records, or lines; or the total, average, smallest
+ * or largest of a number field, which may be a field of lines as `lines.amount`.
+ */
+export const Measure = z.strictObject({
+  op: z.enum(['count', 'sum', 'avg', 'min', 'max']),
+  /** The number field. For `count`, leave it out to count records, or name a lines field to count lines. */
+  field: FieldPath.optional(),
+});
+export type Measure = z.infer<typeof Measure>;
+
+export const PERIODS = ['day', 'week', 'month', 'quarter', 'year'] as const;
+export type Period = (typeof PERIODS)[number];
+
+/** Only records, or lines, of a recent time: dates can't be compared in conditions yet. Times are in UTC. */
+export const TimeRange = z.strictObject({
+  /** A date or time field, or one of lines, such as `lines.date`. */
+  field: FieldPath,
+  within: z.enum(['this_month', 'this_quarter', 'this_year', 'last_30_days', 'last_90_days', 'last_12_months']),
+});
+export type TimeRange = z.infer<typeof TimeRange>;
+
+/**
+ * Instead of records, a query can answer with a number, or with a number for each group: the
+ * questions people ask of a dashboard, which agents can ask too.
+ */
+export const QuerySummary = z.strictObject({
+  measure: Measure,
+  group: z.strictObject({ field: FieldPath, period: z.enum(PERIODS).optional() }).optional(),
+  range: TimeRange.optional(),
+  /** For groups: how many come back, the largest first, or the latest periods. */
+  limit: z.int().min(2).max(24).default(8),
+});
+export type QuerySummary = z.infer<typeof QuerySummary>;
+
 const Parameter = z.strictObject({
   type: z.enum(['text', 'number', 'boolean']),
   description: Description,
@@ -266,13 +304,15 @@ export const Query = z.strictObject({
   /** Written for agents: what the query answers. Becomes the tool description. */
   description: Description,
   entity: Name,
-  /** The fields each result carries, user or system fields. */
-  fields: z.array(Name).min(1).max(50),
+  /** The fields each result carries, user or system fields. A query that answers with numbers has none. */
+  fields: z.array(Name).max(50).default([]),
   /** A fixed filter. May use `principal.*` (my claims) and `input.<parameter>`. */
   filter: ConditionSchema.optional(),
   parameters: z.record(Name, Parameter).default({}),
   sort: z.array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') })).max(3).default([]),
   limit: z.int().min(1).max(200).default(50),
+  /** Answer with numbers, worked out over the records the caller may read, instead of the records. */
+  summary: QuerySummary.optional(),
 });
 export type Query = z.infer<typeof Query>;
 
@@ -313,9 +353,6 @@ export const Form = z.strictObject({
 });
 export type Form = z.infer<typeof Form>;
 
-/** A field, or a field of lines as `lines.amount`. */
-const FieldPath = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a field, or a field of lines such as lines.amount');
-
 /** A heading or some text on a page. */
 const TextBlock = z.strictObject({
   type: z.literal('text'),
@@ -353,28 +390,6 @@ const ButtonsBlock = z.strictObject({
     .min(1)
     .max(8),
 });
-
-/**
- * What a number or a chart works out: how many records, or lines; or the total, average, smallest
- * or largest of a number field, which may be a field of lines as `lines.amount`.
- */
-export const Measure = z.strictObject({
-  op: z.enum(['count', 'sum', 'avg', 'min', 'max']),
-  /** The number field. For `count`, leave it out to count records, or name a lines field to count lines. */
-  field: FieldPath.optional(),
-});
-export type Measure = z.infer<typeof Measure>;
-
-export const PERIODS = ['day', 'week', 'month', 'quarter', 'year'] as const;
-export type Period = (typeof PERIODS)[number];
-
-/** Only records, or lines, of a recent time: dates can't be compared in conditions yet. Times are in UTC. */
-export const TimeRange = z.strictObject({
-  /** A date or time field, or one of lines, such as `lines.date`. */
-  field: FieldPath,
-  within: z.enum(['this_month', 'this_quarter', 'this_year', 'last_30_days', 'last_90_days', 'last_12_months']),
-});
-export type TimeRange = z.infer<typeof TimeRange>;
 
 /** One number, such as how many claims wait for approval: a tile on a dashboard. */
 const StatBlock = z.strictObject({
