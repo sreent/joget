@@ -281,6 +281,28 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
   };
 
   return async (app) => {
+    // ---- Promotion ----
+
+    app.post(
+      '/v1/apps/:appId/promote',
+      {
+        config: { access: { kind: 'permission', action: 'app.edit', resource: async (request) => appResource(ctx.org.id, await theRef(request)) } },
+        schema: {
+          tags: ['delivery'],
+          summary: "Move a personal app to a team space: a change request there brings in the app's definition, for review. Its data stays where it is",
+          params: AppParams,
+          body: z.object({ spaceId: z.uuid(), name: z.string().trim().min(1).max(200).optional() }),
+          response: { 201: z.object({ app: AppOut, changeRequest: ChangeRequestOut }) },
+        },
+      },
+      async (request, reply) => {
+        const auth = requireUser(request);
+        const source = await ctx.apps.load((await theRef(request)).app.id);
+        const { appId, changeRequest } = await delivery.promote(request, auth, source, request.body);
+        return reply.status(201).send({ app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(appId)), changeRequest: await describeCr(changeRequest) });
+      },
+    );
+
     // ---- Working copies ----
 
     app.post(

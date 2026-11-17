@@ -263,6 +263,20 @@ describe('steps in review', () => {
     expect(capabilityChanges(base, reordered).map((change) => change.text)).toEqual(['approve_claim runs different steps']);
   });
 
+  it('name the a7c skills a new tool starts', () => {
+    const base = valid(
+      edited((d) => {
+        delete d.actions.approve_claim;
+        d.roles.approver.actions = [];
+        d.pages.to_approve.blocks[1].actions = [];
+      }),
+    );
+    const head = valid(EXPENSE_APP, base);
+    expect(capabilityChanges(base, head).map((change) => change.text)).toEqual([
+      'New tool approve_claim: updates Expense claim, and asks the person to confirm a preview. It starts the a7c skills finance/check-large-claim, finance/pay-expense-claim',
+    ]);
+  });
+
   it('list the skills a change starts on its card, without their input', () => {
     const definition = valid(EXPENSE_APP);
     const card = buildCard({

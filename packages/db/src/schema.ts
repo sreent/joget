@@ -310,6 +310,10 @@ export const apps = pgTable(
     workingCopyOf: uuid('working_copy_of').references((): AnyPgColumn => apps.id),
     /** For a working copy: the team app's main-line revision that the copy last took in. */
     baseRevision: integer('base_revision'),
+    /** Set on a team app made by promotion: the personal app it came from (design §3). */
+    promotedFrom: uuid('promoted_from').references((): AnyPgColumn => apps.id),
+    /** Set on a personal app once its promoted team app runs in Prod: the app is read-only here, and lives on there. */
+    movedTo: uuid('moved_to').references((): AnyPgColumn => apps.id),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
@@ -324,6 +328,8 @@ export const apps = pgTable(
       .on(t.workingCopyOf, t.ownerUserId)
       .where(sql`${t.status} = 'active' and ${t.workingCopyOf} is not null`),
     check('apps_working_copy_has_base', sql`(${t.workingCopyOf} is null) = (${t.baseRevision} is null)`),
+    // One promotion of a personal app at a time.
+    uniqueIndex('apps_one_promotion_uq').on(t.promotedFrom).where(sql`${t.status} = 'active' and ${t.promotedFrom} is not null`),
   ],
 );
 

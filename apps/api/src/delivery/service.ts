@@ -161,6 +161,49 @@ export class Delivery {
     return { plan, revision: plan.revision };
   }
 
+  // ---- Promotion -------------------------------------------------------------------------------
+
+  /**
+   * Promote a personal app to a team space (design §3): a new, empty team app there, which names
+   * the personal app as where it came from, and a change request that brings in the personal app's
+   * definition from the owner's working copy. The target space reviews it like any change. Data
+   * stays where it is. The personal app keeps working until the team app first runs in Prod.
+   */
+  async promote(request: FastifyRequest, auth: AuthContext, source: LoadedApp, input: { readonly spaceId: string; readonly name?: string }): Promise<{ appId: string; copyId: string; changeRequest: ChangeRequestRow }> {
+    const ctx = this.#ctx;
+    if (source.space.kind !== 'personal' || source.app.workingCopyOf) {
+      throw unprocessable('not_promotable', 'Only an app of your own, in your personal space, moves to a team space');
+    }
+    if (source.app.ownerUserId !== auth.actor.id) throw forbidden('not_your_app', 'Only its owner moves an app to a team space');
+    if (source.app.movedTo) throw conflict('already_moved', 'This app moved to a team space already');
+    const [open] = await ctx.db.select({ id: apps.id }).from(apps).where(and(eq(apps.promotedFrom, source.app.id), eq(apps.status, 'active')));
+    if (open) throw conflict('promotion_open', 'This app is moving to a team space already', { appId: open.id });
+    const [space] = await ctx.db.select().from(spaces).where(and(eq(spaces.id, input.spaceId), eq(spaces.orgId, ctx.org.id)));
+    if (!space || space.kind !== 'team') throw notFound('Team space');
+    const target = spaceResource(ctx.org.id, space);
+    await checkPermission(ctx, request, auth, 'app.create', target);
+    await checkPermission(ctx, request, auth, 'change.open', target);
+
+    const name = input.name?.trim() || source.app.name;
+    const appId = await this.#builder.createPromoted(request, auth, space, source, name);
+    const team = await ctx.apps.ref(appId);
+    // The copy starts from the personal app's definition, with its stable IDs, so the change adds the whole app.
+    const copyId = await this.#builder.createWorkingCopy(request, auth, team, source.space, source.definition);
+    await addSampleRecords(this.#runtime, request, auth, await ctx.apps.load(copyId), ctx.now());
+    const changeRequest = await this.submit(request, auth, await ctx.apps.load(copyId), {
+      title: `Bring in ${source.app.name} from a personal space`,
+      description: `${name} starts as a copy of a personal app's definition. Its data stays in the personal app.`,
+    });
+    await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
+      action: 'app.promote',
+      target: { type: 'app', id: source.app.id, name: source.app.name },
+      spaceId: source.space.id,
+      appId: source.app.id,
+      changes: { after: { teamAppId: appId, teamSpaceId: space.id, changeRequestId: changeRequest.id, revision: source.revision } },
+    });
+    return { appId, copyId, changeRequest };
+  }
+
   // ---- Change requests ------------------------------------------------------------------------
 
   /**
@@ -877,6 +920,7 @@ export class Delivery {
         if (plan.revokes.length) {
           await db.update(bindings).set({ revokedAt: started, revokedByType: auth.actor.type, revokedBy: auth.actor.id }).where(inArray(bindings.id, plan.revokes));
         }
+        if (kind === 'prod' && team.app.promotedFrom) await this.#moved(db, audit, team);
         const finished = ctx.now();
         const [row] = (await db
           .update(deployments)
@@ -919,6 +963,26 @@ export class Delivery {
       });
       throw conflict('deployment_failed', `The deployment failed and changed nothing: ${message}`, { deploymentId: deployment.id });
     }
+  }
+
+  /**
+   * A promoted app runs in Prod: the personal app it came from becomes read-only, and points to it.
+   * Its people keep what they did there, and work on in the team space.
+   */
+  async #moved(db: Database, audit: ReturnType<typeof auditScopeFor>, team: AppRef): Promise<void> {
+    const [source] = await db
+      .update(apps)
+      .set({ movedTo: team.app.id, updatedAt: this.#ctx.now() })
+      .where(and(eq(apps.id, team.app.promotedFrom!), isNull(apps.movedTo), eq(apps.status, 'active')))
+      .returning({ id: apps.id, name: apps.name, spaceId: apps.spaceId });
+    if (!source) return;
+    await recordAudit(db, audit, {
+      action: 'app.moved',
+      target: { type: 'app', id: source.id, name: source.name },
+      spaceId: source.spaceId,
+      appId: source.id,
+      changes: { after: { movedTo: team.app.id, teamSpaceId: team.space.id } },
+    });
   }
 
   async cancel(request: FastifyRequest, auth: AuthContext, deployment: DeploymentRow): Promise<DeploymentRow> {

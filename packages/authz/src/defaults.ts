@@ -222,6 +222,15 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
     managed: true,
   },
   {
+    id: 'gr.app.moved-read-only',
+    name: 'An app that moved to a team space is read-only where it was',
+    // Its people keep reading what they did here; they work on in the team space's app (design §3).
+    actions: ['app.edit', 'app.share', 'action.run', 'record.create', 'record.update', 'record.delete', 'change.*'],
+    effect: 'deny',
+    when: { eq: [{ ref: 'resource.moved' }, true] },
+    managed: true,
+  },
+  {
     id: 'gr.personal.no-production-connections',
     name: 'Personal spaces cannot use production connections',
     actions: ['connection.use'],

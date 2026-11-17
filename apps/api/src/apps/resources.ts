@@ -14,8 +14,8 @@ export function appScopes(orgId: string, ref: AppRef, env?: Pick<EnvironmentRow,
 }
 
 function attributes(ref: AppRef, env?: EnvKind): Record<string, unknown> {
-  // `status` is the space's: guardrails make frozen spaces read-only through it.
-  return { spaceKind: ref.space.kind, status: ref.space.status, appId: ref.app.id, ...(env ? { env } : {}) };
+  // `status` is the space's: guardrails make frozen spaces read-only through it. `moved` makes an app that moved to a team space read-only.
+  return { spaceKind: ref.space.kind, status: ref.space.status, appId: ref.app.id, ...(ref.app.movedTo ? { moved: true } : {}), ...(env ? { env } : {}) };
 }
 
 /** An app, in its environment when one is loaded: what building, sharing and using it are checked against. */

@@ -1,5 +1,5 @@
 import { EXPENSE_APP } from '@platform/app-model';
-import { appEnvironments, auditEvents, skillCalls } from '@platform/db';
+import { appEnvironments, auditEvents, changeRequests, skillCalls } from '@platform/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -427,5 +427,57 @@ describe('builders working at the same time', () => {
     expect(closed.status).toBe('closed');
     const environments = await t.ctx.db.select().from(appEnvironments).where(and(eq(appEnvironments.appId, teamId), eq(appEnvironments.kind, 'preview'), eq(appEnvironments.status, 'active')));
     expect(environments).toEqual([]);
+  });
+});
+
+describe('promotion from a personal space', () => {
+  let sourceId: string;
+  let promotedId: string;
+  const sourceRecords = () => `/v1/apps/${sourceId}/entities/expense_claim/records`;
+
+  it('moves a personal app into a team space through a change request, and leaves its data where it is', async () => {
+    sourceId = (await json({ method: 'POST', url: `/v1/spaces/${gina.personalSpaceId}/apps`, ...as(gina), payload: { name: 'Trips', definition: EXPENSE_APP } }, 201)).app.id;
+    await inject({ method: 'POST', url: `/v1/apps/${sourceId}/shares`, ...as(gina), payload: { email: 'frank@example.com', role: 'requester' } }, 201);
+    await inject({ method: 'POST', url: sourceRecords(), ...as(frank), payload: claim('Before the move') }, 201);
+
+    // Frank builds nothing in Finance, so he can't move an app there.
+    const franks = (await json({ method: 'POST', url: `/v1/spaces/${frank.personalSpaceId}/apps`, ...as(frank), payload: { name: 'Mine', definition: EXPENSE_APP } }, 201)).app.id;
+    await inject({ method: 'POST', url: `/v1/apps/${franks}/promote`, ...as(frank), payload: { spaceId } }, 403);
+    // Only the owner moves an app.
+    await inject({ method: 'POST', url: `/v1/apps/${sourceId}/promote`, ...as(frank), payload: { spaceId } }, 403);
+
+    const promoted = await json({ method: 'POST', url: `/v1/apps/${sourceId}/promote`, ...as(gina), payload: { spaceId, name: 'Team trips' } }, 201);
+    promotedId = promoted.app.id;
+    expect(promoted.app).toMatchObject({ kind: 'team', name: 'Team trips', spaceId, promotedFrom: sourceId, environments: [] });
+    expect(promoted.changeRequest).toMatchObject({ number: 1, status: 'open', title: 'Bring in Trips from a personal space', author: { id: gina.userId } });
+    expect(promoted.changeRequest.checks.migration.steps.map((step: Json) => step.kind)).toEqual(['create_entity', 'create_entity']);
+    expect((await inject({ method: 'POST', url: `/v1/apps/${sourceId}/promote`, ...as(gina), payload: { spaceId } }, 409)).json().error).toBe('promotion_open');
+
+    // Until the team app runs in Prod, the personal app works as before, and says where it is going.
+    const source = await json({ method: 'GET', url: `/v1/apps/${sourceId}`, ...as(gina) }, 200);
+    expect(source).toMatchObject({ movedTo: null, promotion: { appId: promotedId, name: 'Team trips', changeRequest: { number: 1, status: 'open' } } });
+    await inject({ method: 'POST', url: sourceRecords(), ...as(frank), payload: claim('Still here') }, 201);
+  });
+
+  it('makes the personal app read-only once the team app runs in Prod, and keeps its data readable', async () => {
+    const [cr] = await t.ctx.db.select().from(changeRequests).where(eq(changeRequests.appId, promotedId));
+    await review(dave, cr!.id, 'approve');
+    await merge(erin, cr!.id);
+    const release = (await inject({ method: 'POST', url: `/v1/apps/${promotedId}/releases`, ...as(erin), payload: {} }, 201)).json();
+    const requested = (await inject({ method: 'POST', url: `/v1/apps/${promotedId}/deployments`, ...as(erin), payload: { releaseId: release.id, env: 'prod' } }, 201)).json();
+    await inject({ method: 'POST', url: `/v1/deployments/${requested.id}/approve`, ...as(dave) }, 200);
+    await inject({ method: 'POST', url: `/v1/deployments/${requested.id}/execute`, ...as(erin) }, 200);
+
+    const source = await json({ method: 'GET', url: `/v1/apps/${sourceId}`, ...as(gina) }, 200);
+    expect(source).toMatchObject({ movedTo: { appId: promotedId, name: 'Team trips' }, access: { edit: false, share: false } });
+    const refused = await inject({ method: 'POST', url: sourceRecords(), ...as(frank), payload: claim('After the move') }, 403);
+    expect(refused.json().details.reasons).toEqual([expect.objectContaining({ kind: 'denied_by_guardrail', guardrailId: 'gr.app.moved-read-only' })]);
+    const kept = await json({ method: 'GET', url: sourceRecords(), ...as(frank) }, 200);
+    expect(kept.records.map((r: Json) => r.values.title).sort()).toEqual(['Before the move', 'Still here']);
+    const current = await json({ method: 'GET', url: `/v1/apps/${sourceId}/definition`, ...as(gina) }, 200);
+    await inject({ method: 'PUT', url: `/v1/apps/${sourceId}/definition`, ...as(gina), payload: { definition: current.definition, baseRevision: current.revision } }, 403);
+    await inject({ method: 'POST', url: `/v1/apps/${sourceId}/promote`, ...as(gina), payload: { spaceId } }, 403);
+    const moved = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'app.moved'), eq(auditEvents.appId, sourceId)));
+    expect(moved).toHaveLength(1);
   });
 });

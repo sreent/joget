@@ -56,6 +56,12 @@ export interface AppSummary {
   environments?: EnvironmentInfo[];
   workingCopyOf: { appId: string; name: string; baseRevision: number; behind: boolean; changeRequest: { id: string; number: number } | null } | null;
   myWorkingCopyId?: string | null;
+  /** On a personal app that moved to a team space: the app it lives on as. It is read-only here. */
+  movedTo?: { appId: string; name: string } | null;
+  /** On a personal app on its way to a team space: the team app, and the change request that brings it in. */
+  promotion?: { appId: string; name: string; changeRequest: { id: string; number: number; status: 'open' | 'merged' | 'closed' } | null } | null;
+  /** On a team app made by promotion: the personal app it came from. */
+  promotedFrom?: string | null;
   access: { build: boolean; run: boolean; share: boolean; edit: boolean; roles: string[]; delivery?: DeliveryAccess };
 }
 

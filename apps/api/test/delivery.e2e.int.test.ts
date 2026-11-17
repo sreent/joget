@@ -223,4 +223,21 @@ describe.skipIf(!enabled)('governed delivery, in a browser', () => {
     await visible(page.getByText('Rolled back', { exact: true }));
     await shot(page, 'd7-rolled-back');
   });
+
+  it('moves a personal app to the team space through a change request', async () => {
+    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${carol.personalSpaceId}/apps`, cookies: carol.cookies, payload: { name: 'Travel', definition: EXPENSE_APP } });
+    const personalId = created.json().app.id as string;
+    const page = await open(carol);
+    await page.goto(`${BASE}/studio/apps/${personalId}/build/share`);
+    await visible(page.getByRole('heading', { name: 'Move to a team space' }));
+    await page.getByLabel('Team space').selectOption(spaceId);
+    await page.getByLabel('Name there').fill('Team travel');
+    await shot(page, 'd8-move-to-team');
+    await page.getByRole('button', { name: 'Ask to move it' }).click();
+    await page.waitForURL(/\/changes\//);
+    await visible(page.getByText('Bring in Travel from a personal space'));
+    await shot(page, 'd9-move-change-request');
+    await page.goto(`${BASE}/studio/apps/${personalId}/build/share`);
+    await visible(page.getByRole('heading', { name: 'On its way to a team space' }));
+  });
 });

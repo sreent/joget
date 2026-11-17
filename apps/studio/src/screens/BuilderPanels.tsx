@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, type AppAt } from '../api.js';
 import { Badge, Button, Card, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
+import { Link, navigate } from '../router.js';
 import type { AppSummary, Definition } from '../types.js';
 
 const roleOf = (appRoleId: string | null) => appRoleId?.split(':').at(-1) ?? '';
@@ -69,6 +70,100 @@ export function SharePanel({ at, definition, team = false }: { at: AppAt; defini
         </form>
       </Card>
     </div>
+  );
+}
+
+/** On an app that moved to a team space: where it lives on. It is read-only here. */
+export function MovedNotice({ movedTo }: { movedTo: { appId: string; name: string } }) {
+  return (
+    <Notice tone="warn">
+      This app moved to a team space, as <Link to={{ name: 'use', appId: movedTo.appId }}>{movedTo.name}</Link>. It is read-only here: what was done here stays, and work goes on there.
+    </Notice>
+  );
+}
+
+/**
+ * Move a personal app to a team space (design §3): a change request there brings in its
+ * definition, for the space's reviewers. The app keeps working here until it runs in Prod there.
+ */
+export function MovePanel({ app }: { app: AppSummary }) {
+  const client = useQueryClient();
+  const spaces = useQuery({ queryKey: ['spaces'], queryFn: () => api.spaces() });
+  const teams = (spaces.data?.spaces ?? []).filter((space) => space.kind === 'team' && space.status === 'active');
+  const [spaceId, setSpaceId] = useState('');
+  const [name, setName] = useState(app.name);
+  const target = spaceId || teams[0]?.id || '';
+  const move = useMutation({
+    mutationFn: () => api.promote(app.id, { spaceId: target, ...(name.trim() && name.trim() !== app.name ? { name: name.trim() } : {}) }),
+    onSuccess: async (result) => {
+      await client.invalidateQueries({ queryKey: ['app', app.id] });
+      navigate({ name: 'change', changeRequestId: result.changeRequest.id });
+    },
+  });
+
+  if (app.movedTo) {
+    return (
+      <Card className="grid content-start gap-2">
+        <h2 className="m-0 text-lg font-semibold">Moved to a team space</h2>
+        <p className="m-0 text-sm text-muted">
+          It lives on as <Link to={{ name: 'use', appId: app.movedTo.appId }}>{app.movedTo.name}</Link>. Here it is read-only.
+        </p>
+      </Card>
+    );
+  }
+  if (app.promotion) {
+    const cr = app.promotion.changeRequest;
+    return (
+      <Card className="grid content-start gap-2">
+        <h2 className="m-0 text-lg font-semibold">On its way to a team space</h2>
+        <p className="m-0 text-sm text-muted">
+          As {app.promotion.name}
+          {cr ? (
+            <>
+              {', in '}
+              <Link to={{ name: 'change', changeRequestId: cr.id }}>change request #{cr.number}</Link> ({cr.status})
+            </>
+          ) : null}
+          . It keeps working here until it runs in Prod there; then it is read-only here.
+        </p>
+      </Card>
+    );
+  }
+  return (
+    <Card className="grid content-start gap-3">
+      <h2 className="m-0 text-lg font-semibold">Move to a team space</h2>
+      <p className="m-0 text-sm text-muted">
+        When an app outgrows you and a few colleagues, a team space gives it owners, reviews, Prod and rollback. The space's reviewers check it like any change. Its records stay here.
+      </p>
+      {teams.length === 0 ? (
+        <p className="m-0 text-sm text-faint">You are in no team space where you build apps yet.</p>
+      ) : (
+        <form
+          className="grid gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            move.mutate();
+          }}
+        >
+          <Field label="Team space">
+            {(id) => (
+              <Select id={id} value={target} onChange={(e) => setSpaceId(e.target.value)}>
+                {teams.map((space) => (
+                  <option key={space.id} value={space.id}>
+                    {space.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <Field label="Name there">{(id) => <TextInput id={id} value={name} onChange={(e) => setName(e.target.value)} />}</Field>
+          {move.error ? <Notice tone="bad">{move.error instanceof ApiError ? move.error.message : 'Something went wrong'}</Notice> : null}
+          <Button type="submit" disabled={move.isPending || !target}>
+            Ask to move it
+          </Button>
+        </form>
+      )}
+    </Card>
   );
 }
 

@@ -216,11 +216,18 @@ export class AppBuilder {
     return { appId, plan };
   }
 
+  /** An empty team app that a personal app is promoted into: its content arrives through a change request (design §3). */
+  async createPromoted(request: FastifyRequest, auth: AuthContext, space: SpaceRow, source: AppRef, name: string): Promise<string> {
+    const handle = handleFrom(name);
+    if (!NAME_PATTERN.test(handle)) throw unprocessable('invalid_handle', 'Give the app a name that starts with a letter');
+    return this.#createTeamApp(request, auth, space, { name, handle, ...(source.app.description ? { description: source.app.description } : {}), promotedFrom: source.app.id });
+  }
+
   async #createTeamApp(
     request: FastifyRequest,
     auth: AuthContext,
     space: SpaceRow,
-    input: { readonly name: string; readonly handle: string; readonly description?: string },
+    input: { readonly name: string; readonly handle: string; readonly description?: string; readonly promotedFrom?: string },
   ): Promise<string> {
     const ctx = this.#ctx;
     const now = ctx.now();
@@ -238,6 +245,7 @@ export class AppBuilder {
           description: input.description ?? null,
           ownerUserId: auth.actor.id,
           currentRevision: 1,
+          promotedFrom: input.promotedFrom ?? null,
           createdBy: auth.actor.id,
           createdAt: now,
           updatedAt: now,
@@ -248,11 +256,15 @@ export class AppBuilder {
           target: { type: 'app', id: appId, name: input.name },
           spaceId: space.id,
           appId,
-          changes: { after: { name: input.name, handle: input.handle, revision: 1, digest: digestOf(definition.definition), team: true } },
+          changes: {
+            after: { name: input.name, handle: input.handle, revision: 1, digest: digestOf(definition.definition), team: true, ...(input.promotedFrom ? { promotedFrom: input.promotedFrom } : {}) },
+          },
         });
       });
     } catch (error) {
-      if (pgCode(error).constraint === 'apps_space_handle_uq') throw conflict('handle_taken', `Another app in this space is already called ${input.handle}`);
+      const { constraint } = pgCode(error);
+      if (constraint === 'apps_space_handle_uq') throw conflict('handle_taken', `Another app in this space is already called ${input.handle}`);
+      if (constraint === 'apps_one_promotion_uq') throw conflict('promotion_open', 'This app is moving to a team space already');
       throw error;
     }
     return appId;

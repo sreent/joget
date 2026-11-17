@@ -149,6 +149,29 @@ export async function describeApp(ctx: AppContext, runtime: AppRuntime, auth: Au
     myWorkingCopyId = copy?.id ?? null;
   }
 
+  // Where a personal app went, or is going: a promotion to a team space (design §3).
+  let movedTo: AppOutput['movedTo'];
+  let promotion: AppOutput['promotion'];
+  if (!team) {
+    movedTo = null;
+    promotion = null;
+    if (ref.app.movedTo) {
+      const [to] = await ctx.db.select({ appId: apps.id, name: apps.name }).from(apps).where(eq(apps.id, ref.app.movedTo));
+      movedTo = to ?? null;
+    } else {
+      const [to] = await ctx.db.select({ appId: apps.id, name: apps.name }).from(apps).where(and(eq(apps.promotedFrom, ref.app.id), eq(apps.status, 'active')));
+      if (to) {
+        const [cr] = await ctx.db
+          .select({ id: changeRequests.id, number: changeRequests.number, status: changeRequests.status })
+          .from(changeRequests)
+          .where(eq(changeRequests.appId, to.appId))
+          .orderBy(desc(changeRequests.number))
+          .limit(1);
+        promotion = { ...to, changeRequest: cr ?? null };
+      }
+    }
+  }
+
   const { app } = ref;
   return {
     id: app.id,
@@ -165,6 +188,8 @@ export async function describeApp(ctx: AppContext, runtime: AppRuntime, auth: Au
     ...(environments ? { environments } : {}),
     workingCopyOf,
     ...(myWorkingCopyId !== undefined ? { myWorkingCopyId } : {}),
+    ...(movedTo !== undefined ? { movedTo, promotion } : {}),
+    ...(team ? { promotedFrom: app.promotedFrom } : {}),
     access: { build, run, share, edit, roles, ...(delivery ? { delivery } : {}) },
   };
 }

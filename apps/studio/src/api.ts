@@ -155,6 +155,7 @@ export const api = {
   // Governed delivery for team apps.
   spaces: () => call<{ spaces: Space[] }>('GET', '/v1/spaces'),
   workingCopy: (teamId: string) => call<{ app: AppSummary; created: boolean; sampleRecords: number }>('POST', `${app(teamId)}/working-copy`),
+  promote: (appId: string, body: { spaceId: string; name?: string }) => call<{ app: AppSummary; changeRequest: ChangeRequest }>('POST', `${app(appId)}/promote`, body),
   sync: (copyId: string, confirmDestructive: boolean) =>
     call<{ plan: Plan | null; app: AppSummary }>('POST', `${app(copyId)}/sync${confirmDestructive ? '?confirmDestructive=true' : ''}`),
   submit: (copyId: string, body: { title?: string; description?: string }) => call<ChangeRequest>('POST', `${app(copyId)}/submit`, body),

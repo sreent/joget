@@ -5,7 +5,7 @@ import { Badge, Button, Checkbox, Dialog, Notice } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
 import { Link, type BuildTab } from '../router.js';
 import type { Definition, Issue, Plan } from '../types.js';
-import { AccessPanel, AdvancedPanel, HistoryPanel, SharePanel } from './BuilderPanels.js';
+import { AccessPanel, AdvancedPanel, HistoryPanel, MovedNotice, MovePanel, SharePanel } from './BuilderPanels.js';
 import { ChangesPanel, DeliveryPanel, TeamAppNotice, WorkingCopyBar } from './Delivery.js';
 import { DataDesigner } from './DataDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
@@ -114,6 +114,7 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
       </div>
 
       {app.workingCopyOf ? <WorkingCopyBar app={app} dirty={dirty} /> : null}
+      {app.movedTo ? <MovedNotice movedTo={app.movedTo} /> : null}
 
       <nav aria-label="Building" className="flex gap-1 overflow-x-auto border-b border-line">
         {tabs.map((item) => (
@@ -142,7 +143,9 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
       </fieldset>
-      {tab === 'share' ? team ? <AccessPanel app={app} definition={saved.data.definition} /> : <SharePanel at={{ id: appId }} definition={saved.data.definition} /> : null}
+      {tab === 'share' && team ? <AccessPanel app={app} definition={saved.data.definition} /> : null}
+      {tab === 'share' && !team && app.access.share ? <SharePanel at={{ id: appId }} definition={saved.data.definition} /> : null}
+      {tab === 'share' && !team && !app.workingCopyOf ? <MovePanel app={app} /> : null}
       {tab === 'history' ? <HistoryPanel appId={appId} /> : null}
       {tab === 'delivery' && team ? <DeliveryPanel app={app} /> : null}
       {tab === 'changes' && team ? <ChangesPanel app={app} /> : null}

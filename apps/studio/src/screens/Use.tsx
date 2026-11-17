@@ -8,6 +8,7 @@ import { PersonName } from '../components/people.js';
 import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
 import { asLines, display, ValueInput, ValueView } from '../components/values.js';
 import { atRoute, Link, navigate, type Route } from '../router.js';
+import { MovedNotice } from './BuilderPanels.js';
 import type { HistoryEntry, Line, RecordOut, RecordValue, SkillCall, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
 /** What the screen shows: one of the app's pages, a form, an entity's records, or one record. */
@@ -68,7 +69,8 @@ export function Use({ appId, env, page, recordId, appPage }: { appId: string; en
           <AppMenu at={at} manifest={manifest} view={view} />
         </nav>
 
-        <div className="min-w-0">
+        <div className="grid min-w-0 content-start gap-4">
+          {manifest.app.movedTo ? <MovedNotice movedTo={manifest.app.movedTo} /> : null}
           {view.kind === 'page' ? (
             manifest.pages[view.name] ? (
               <PageView at={at} manifest={manifest} name={view.name} />

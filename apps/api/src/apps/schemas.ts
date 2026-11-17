@@ -58,6 +58,15 @@ export const AppOut = z.object({
     .nullable(),
   /** On a team app: the caller's own working copy of it, if they have one. */
   myWorkingCopyId: z.uuid().nullable().optional(),
+  /** On a personal app that moved to a team space: the app it lives on as. It is read-only here. */
+  movedTo: z.object({ appId: z.uuid(), name: z.string() }).nullable().optional(),
+  /** On a personal app on its way to a team space: the team app, and the change request that brings it in. */
+  promotion: z
+    .object({ appId: z.uuid(), name: z.string(), changeRequest: z.object({ id: z.uuid(), number: z.number().int(), status: z.enum(['open', 'merged', 'closed']) }).nullable() })
+    .nullable()
+    .optional(),
+  /** On a team app made by promotion: the personal app it came from. */
+  promotedFrom: z.uuid().nullable().optional(),
   /** What the caller may do with the app. */
   access: z.object({
     build: z.boolean(),

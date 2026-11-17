@@ -245,7 +245,10 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
   for (const name of new Set([...Object.keys(base.actions), ...Object.keys(head.actions)])) {
     const [b, h] = [base.actions[name], head.actions[name]];
     if (!b && h) {
-      changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}, and ${CONFIRMATION_TEXT[h.confirm]}` });
+      // Work in other systems matters most to a reviewer, so a new tool names the a7c skills it starts.
+      const skills = [...new Set(skillSteps(h.steps ?? []).map(({ step }) => step.skill))];
+      const starts = skills.length ? `. It starts the a7c skill${skills.length > 1 ? 's' : ''} ${skills.join(', ')}` : '';
+      changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}, and ${CONFIRMATION_TEXT[h.confirm]}${starts}` });
     } else if (b && !h) {
       changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
     } else if (b && h && !same(b, h)) {
