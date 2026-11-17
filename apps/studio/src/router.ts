@@ -4,9 +4,11 @@ import { createElement, useSyncExternalStore, type AnchorHTMLAttributes, type Re
  * The studio's pages. Building needs `app.read`; using an app needs only `app.run`. A team app has
  * delivery tabs too: its change requests, and its releases and environments.
  */
-export type BuildTab = 'delivery' | 'changes' | 'data' | 'forms' | 'pages' | 'menu' | 'rules' | 'actions' | 'queries' | 'cards' | 'roles' | 'share' | 'history' | 'advanced';
+export type BuildTab = 'delivery' | 'changes' | 'data' | 'forms' | 'pages' | 'menu' | 'rules' | 'actions' | 'queries' | 'cards' | 'roles' | 'processes' | 'share' | 'history' | 'advanced';
 export type Route =
   | { readonly name: 'home' }
+  /** The person's tasks across apps. */
+  | { readonly name: 'tasks' }
   | { readonly name: 'build'; readonly appId: string; readonly tab: BuildTab }
   | { readonly name: 'change'; readonly changeRequestId: string }
   /**
@@ -17,12 +19,13 @@ export type Route =
   | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string; readonly appPage?: string; readonly env?: string };
 
 const BASE = '/studio';
-const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'share', 'history', 'advanced'];
+const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'processes', 'share', 'history', 'advanced'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function parse(pathname: string, search = ''): Route {
   const parts = pathname.replace(/^\/studio\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
   if (parts[0] === 'changes' && parts[1]) return { name: 'change', changeRequestId: parts[1] };
+  if (parts[0] === 'tasks') return { name: 'tasks' };
   if (parts[0] !== 'apps' || !parts[1]) return { name: 'home' };
   const appId = parts[1];
   if (parts[2] === 'build') {
@@ -39,6 +42,8 @@ export function href(route: Route): string {
   switch (route.name) {
     case 'home':
       return `${BASE}/`;
+    case 'tasks':
+      return `${BASE}/tasks`;
     case 'build':
       return `${BASE}/apps/${encodeURIComponent(route.appId)}/build/${route.tab}`;
     case 'change':

@@ -9,6 +9,7 @@ import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js
 import { asLines, display, ValueInput, ValueView } from '../components/values.js';
 import { atRoute, Link, navigate, type Route } from '../router.js';
 import { MovedNotice } from './BuilderPanels.js';
+import { ProcessCard } from './Tasks.js';
 import type { HistoryEntry, Line, RecordOut, RecordValue, SkillCall, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
 /** What the screen shows: one of the app's pages, a form, an entity's records, or one record. */
@@ -561,7 +562,8 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
   const history = useQuery({ queryKey: ['history', at.id, at.env, entityName, recordId], queryFn: () => api.history(at, entityName, recordId) });
   const skills = useQuery({ queryKey: ['skillCalls', at.id, at.env, entityName, recordId], queryFn: () => api.skillCalls(at, entityName, recordId) });
   const [edits, setEdits] = useState<Record<string, RecordValue> | null>(null);
-  const refresh = () => Promise.all(['record', 'records', 'history', 'skillCalls'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] })));
+  const refresh = () =>
+    Promise.all([...['record', 'records', 'history', 'skillCalls', 'processes'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] })), client.invalidateQueries({ queryKey: ['tasks'] })]);
   // Lines are sent whole, with their IDs, so the platform knows which changed; empty new rows are dropped.
   const changes = () => Object.fromEntries(Object.entries(edits ?? {}).map(([field, value]) => [field, entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]));
   const save = useMutation({ mutationFn: () => api.updateRecord(at, entityName, recordId, changes(), record.data!.version), onSuccess: async () => (setEdits(null), await refresh()) });
@@ -644,6 +646,7 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
         </div>
       </Card>
       <div className="grid content-start gap-4">
+      <ProcessCard at={at} entity={entityName} recordId={recordId} />
       {skills.data?.calls.length ? <SkillCallsCard calls={skills.data.calls} /> : null}
       <Card className="grid content-start gap-3">
         <h3 className="m-0 text-sm font-semibold text-muted">History</h3>

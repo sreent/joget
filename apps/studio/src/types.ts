@@ -363,3 +363,46 @@ export interface HistoryEntry {
   via: string;
   changes: Array<{ field: string; before?: Value; after?: Value; lines?: LinesChange; masked?: true; removed?: true; source?: Source }>;
 }
+
+/** A person's task in a business process (design §6.10): a decision that waits in their inbox. */
+export interface Task {
+  id: string;
+  name: string;
+  status: 'open' | 'completed' | 'cancelled';
+  app: { id: string; name: string };
+  environment: { id: string };
+  process: string;
+  instanceId: string;
+  element: string;
+  entity: string;
+  recordId: string;
+  role: string;
+  assignee: { id: string; name: string | null } | null;
+  outcomes: Array<{ name: string; label: string; action?: string }>;
+  card: string | null;
+  due: string | null;
+  overdue: boolean;
+  outcome: string | null;
+  completedBy: string | null;
+  createdAt: string;
+  closedAt: string | null;
+}
+
+/** One run of a process on a record: where it waits, and what happened in it. */
+export interface ProcessInstance {
+  id: string;
+  process: string;
+  label: string;
+  revision: number;
+  entity: string;
+  recordId: string;
+  status: 'running' | 'completed' | 'cancelled';
+  stuck: Array<{ element: string; name: string; error: string }>;
+  waiting: Array<{ element: string; name: string }>;
+  startedBy: string | null;
+  startedByAction: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  tasks?: Task[];
+  events?: Array<{ at: string; kind: string; element: string | null; name: string | null; by: string | null; detail: unknown }>;
+}

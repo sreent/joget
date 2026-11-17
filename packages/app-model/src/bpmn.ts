@@ -83,18 +83,21 @@ export function layoutProcess(process: Process): Diagram {
   for (const [id, flow] of Object.entries(process.flows)) {
     const from = shapes[flow.from];
     const to = shapes[flow.to];
-    if (!from || !to) continue;
-    const boundary = process.elements[flow.from]?.type === 'boundaryEvent';
-    const start = boundary ? { x: from.x + from.width / 2, y: from.y + from.height } : { x: from.x + from.width, y: from.y + from.height / 2 };
-    const end = { x: to.x, y: to.y + to.height / 2 };
-    if (boundary) edges[id] = { points: [start, { x: start.x, y: end.y }, end] };
-    else if (start.y === end.y) edges[id] = { points: [start, end] };
-    else {
-      const middle = Math.round((start.x + end.x) / 2);
-      edges[id] = { points: [start, { x: middle, y: start.y }, { x: middle, y: end.y }, end] };
-    }
+    if (from && to) edges[id] = { points: routeFlow(from, to, process.elements[flow.from]?.type === 'boundaryEvent') };
   }
   return { shapes, edges };
+}
+
+type Box = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+
+/** The waypoints of a flow between two shapes, with right angles: out of a boundary event downwards, otherwise to the right. */
+export function routeFlow(from: Box, to: Box, fromBoundary = false): Array<{ x: number; y: number }> {
+  const start = fromBoundary ? { x: from.x + from.width / 2, y: from.y + from.height } : { x: from.x + from.width, y: from.y + from.height / 2 };
+  const end = { x: to.x, y: to.y + to.height / 2 };
+  if (fromBoundary) return [start, { x: start.x, y: end.y }, end];
+  if (start.y === end.y) return [start, end];
+  const middle = Math.round((start.x + end.x) / 2);
+  return [start, { x: middle, y: start.y }, { x: middle, y: end.y }, end];
 }
 
 const TAGS: Readonly<Record<ProcessElement['type'], string>> = {

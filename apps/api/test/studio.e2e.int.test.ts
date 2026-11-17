@@ -23,6 +23,7 @@ interface Locator {
   getByLabel(text: string, options?: { exact?: boolean }): Locator;
   getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
   getByText(text: string, options?: { exact?: boolean }): Locator;
+  getByTestId(testId: string): Locator;
   first(): Locator;
   setInputFiles(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
 }
@@ -371,5 +372,58 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
     expect(saved.actions.approve_claim.steps.at(-1)).toEqual({ type: 'check', assert: { exists: 'record.title' }, message: 'A claim needs a title', severity: 'warning' });
+  });
+
+  it('designs a process on a canvas, and the manager decides in their inbox', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await visible(page.getByRole('heading', { name: 'Your apps' }));
+    await page.getByLabel('Name').fill('Leave');
+    await page.getByLabel('Start from').selectOption('leave');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const leaveId = page.url().split('/apps/')[1]!.split('/')[0]!;
+
+    // The template's process, drawn in BPMN 2.0: it passes the checks as it is.
+    await page.getByRole('link', { name: 'Processes', exact: true }).click();
+    await visible(page.getByTestId('process-canvas'));
+    await visible(page.getByText('The process passes the checks.'));
+    await shot(page, '14-process');
+    // The manager has three days; then HR's way of doing it takes over. Here: a deadline that ends the path.
+    await page.getByTestId('process-canvas').getByText('Decide on the leave', { exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'User task' }));
+    await page.getByRole('button', { name: 'Add a deadline' }).click();
+    await visible(page.getByText('Unsaved changes.'));
+    await shot(page, '15-process-deadline');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 2' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const dark = await open(alice, 'dark');
+    await dark.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    await visible(dark.getByTestId('process-canvas'));
+    await shot(dark, '15b-process-dark');
+
+    // Alice asks for leave, naming Bob; the decision waits in his inbox.
+    await t.app.inject({ method: 'POST', url: `/v1/apps/${leaveId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'manager' } });
+    const asked = await t.app.inject({
+      method: 'POST',
+      url: `/v1/apps/${leaveId}/actions/request_leave/run`,
+      cookies: alice.cookies,
+      payload: { values: { kind: 'annual', starts: '2026-12-28', ends: '2026-12-30', days: 3, manager: bob.userId } },
+    });
+    expect(asked.statusCode, asked.body).toBe(201);
+    const inbox = await open(bob);
+    await inbox.goto(`${BASE}/studio/tasks`);
+    await visible(inbox.getByRole('heading', { name: 'Decide on the leave' }));
+    await shot(inbox, '16-inbox');
+    await inbox.getByRole('button', { name: 'Approve', exact: true }).click();
+    await visible(inbox.getByText('Nothing waits for you'));
+
+    // The record shows that its process is done.
+    const record = await open(alice);
+    await record.goto(`${BASE}/studio/apps/${leaveId}/leave_request/${asked.json().record.id}`);
+    await visible(record.getByText('Leave approval'));
+    await visible(record.getByText('Done', { exact: true }));
+    await shot(record, '17-record-process');
   });
 });

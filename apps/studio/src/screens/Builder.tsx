@@ -11,6 +11,7 @@ import { DataDesigner } from './DataDesigner.js';
 import { FormDesigner } from './FormDesigner.js';
 import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from './LogicDesigners.js';
 import { MenuDesigner, PagesDesigner } from './PagesDesigner.js';
+import { ProcessDesigner } from './ProcessDesigner.js';
 import { RolesDesigner } from './RolesDesigner.js';
 
 const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
@@ -23,6 +24,7 @@ const DESIGNERS: ReadonlyArray<{ tab: BuildTab; label: string }> = [
   { tab: 'queries', label: 'Queries' },
   { tab: 'cards', label: 'Review cards' },
   { tab: 'roles', label: 'Roles' },
+  { tab: 'processes', label: 'Processes' },
 ];
 const TABS: ReadonlyArray<{ tab: BuildTab; label: string }> = [...DESIGNERS, { tab: 'share', label: 'Share' }, { tab: 'history', label: 'History' }, { tab: 'advanced', label: 'Advanced' }];
 /** A team app: delivery first, then its main line, read-only, in the designers. */
@@ -141,6 +143,9 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'processes' ? (
+          <ProcessDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team} dirty={dirty} saved={Object.keys(saved.data.definition.processes ?? {})} />
+        ) : null}
         {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
       </fieldset>
       {tab === 'share' && team ? <AccessPanel app={app} definition={saved.data.definition} /> : null}
