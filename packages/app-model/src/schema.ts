@@ -491,6 +491,13 @@ export type Timer = z.infer<typeof Timer>;
 export const Message = z.strictObject({ action: Name, record: Name.optional() });
 export type Message = z.infer<typeof Message>;
 
+/**
+ * An error or an escalation that an event throws or catches: any, or the one with a code. A catch
+ * with a code catches only the throws of that code; one without catches all of them.
+ */
+export const Raised = z.union([z.literal(true), z.strictObject({ code: Name })]);
+export type Raised = z.infer<typeof Raised>;
+
 /** The sub-process an element is in. Without it, the element is in the process itself. An event on a boundary is where its host is. */
 const In = ElementId.optional();
 
@@ -516,7 +523,21 @@ const StartEvent = z.strictObject({
  * Where a path ends. A terminate end event ends the whole instance, other paths included; inside a
  * sub-process, the sub-process. One with a message sends it as the path ends.
  */
-const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optional(), in: In, terminate: z.boolean().default(false), message: Message.optional() });
+const EndEvent = z.strictObject({
+  type: z.literal('endEvent'),
+  name: Label.optional(),
+  in: In,
+  terminate: z.boolean().default(false),
+  message: Message.optional(),
+  /** Ends the path with an error, which the nearest sub-process or call around it with an error event catches. */
+  error: Raised.optional(),
+  /** Ends the path with an escalation, which the nearest sub-process or call around it with an escalation event hears. */
+  escalation: Raised.optional(),
+  /** Undoes what completed in its run first, newest first, with each task's undo action. */
+  compensate: z.literal(true).optional(),
+  /** In a transaction: undoes what completed in it, and leaves the transaction by its cancel event. */
+  cancel: z.literal(true).optional(),
+});
 
 /** A choice that completes a user task, such as approve. It can run one of the app's actions on the record, as the person who decides. */
 const Outcome = z.strictObject({ name: Name, label: Label, action: Name.optional() });
@@ -584,11 +605,14 @@ const UserTask = z.strictObject({
   card: Name.optional(),
 });
 /** Work the process does by itself: run one of the app's actions on the record, with the app's authority, or start an a7c skill. */
+/** An update action that undoes what a task did, which a compensation runs on the same record. */
+const Undo = Name.optional();
 const ServiceTask = z.strictObject({
   type: z.literal('serviceTask'),
   name: Label,
   description: Description.optional(),
   in: In,
+  undo: Undo,
   action: Name.optional(),
   skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim').optional(),
   /** The skill's input, worked out from the record. */
@@ -603,6 +627,7 @@ const ScriptTask = z.strictObject({
   name: Label,
   description: Description.optional(),
   in: In,
+  undo: Undo,
   steps: z.array(Step).max(MAX_STEPS).default([]),
 });
 /** What a rule check finds: every rule holds, only warnings fail, or an error fails. */
@@ -619,7 +644,7 @@ const BusinessRuleTask = z.strictObject({
   rules: z.array(Name).max(50).optional(),
 });
 /** Sends a message: runs an update action, with the app's authority, on the record or on the one a reference field names. */
-const SendTask = z.strictObject({ type: z.literal('sendTask'), name: Label, description: Description.optional(), in: In, message: Message });
+const SendTask = z.strictObject({ type: z.literal('sendTask'), name: Label, description: Description.optional(), in: In, message: Message, undo: Undo });
 /** Waits for a message, an action committing on the record, as a task: deadlines and other events can sit on its boundary. */
 const ReceiveTask = z.strictObject({ type: z.literal('receiveTask'), name: Label, description: Description.optional(), in: In, message: Message });
 /** A task with nothing to run, which passes straight on: work that is only drawn. */
@@ -653,13 +678,30 @@ const CatchEvent = z.strictObject({
  * A point that a path passes: a milestone that the history marks; a message that it sends on the
  * way; or a link, which goes on at the catch link of the same name, to spare a long flow.
  */
-const ThrowEvent = z.strictObject({ type: z.literal('intermediateThrowEvent'), name: Label.optional(), in: In, message: Message.optional(), link: Name.optional() });
+const ThrowEvent = z.strictObject({
+  type: z.literal('intermediateThrowEvent'),
+  name: Label.optional(),
+  in: In,
+  message: Message.optional(),
+  link: Name.optional(),
+  /** Raises an escalation to the sub-process or call around it, and goes on unless that ends it. */
+  escalation: Raised.optional(),
+  /** Undoes what completed in its run, newest first, and goes on. */
+  compensate: z.literal(true).optional(),
+});
 /**
  * A part of the process with its own start and end, drawn open on the canvas: the elements in it
  * name it with `in`. It ends when no path is left inside it, and an event on its boundary acts on
  * it as a whole: a deadline for all of it, or an error that anything inside it raises.
  */
-const SubProcess = z.strictObject({ type: z.literal('subProcess'), name: Label, description: Description.optional(), in: In });
+const SubProcess = z.strictObject({
+  type: z.literal('subProcess'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  /** A transaction: a cancel end event inside it undoes what completed in it, and leaves by its cancel event. */
+  transaction: z.literal(true).optional(),
+});
 /**
  * Runs another process of the app and waits until it ends: on the same record, or, for a process
  * about another entity, on the record that a reference field of this one names.
@@ -687,7 +729,11 @@ const BoundaryEvent = z.strictObject({
   interrupting: z.boolean().default(true),
   timer: Timer.optional(),
   message: Message.optional(),
-  error: z.literal(true).optional(),
+  error: Raised.optional(),
+  /** On a sub-process or a call: an escalation from inside it, which may end it or not. */
+  escalation: Raised.optional(),
+  /** On a transaction: its cancel end event was reached, and what completed in it was undone. */
+  cancel: z.literal(true).optional(),
   /** Happens when a change to the record makes this condition hold, where it didn't before. */
   condition: ConditionSchema.optional(),
 });

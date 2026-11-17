@@ -4,6 +4,7 @@ import {
   appRoleId,
   automaticStarts,
   appRoleName,
+  catcherOn,
   decideVotes,
   elementName,
   evaluateExpression,
@@ -12,6 +13,7 @@ import {
   plainStartOf,
   processConditionEnv,
   processGraph,
+  raisedCode,
   startEventsOf,
   startsOf,
   timerFiresAt,
@@ -58,7 +60,7 @@ type TimerRow = typeof processTimers.$inferSelect;
 type TokenRow = typeof processTokens.$inferSelect;
 type StartTimerRow = typeof processStartTimers.$inferSelect;
 /** Why a task closed without an outcome. */
-type CloseReason = 'timer' | 'message' | 'condition' | 'error' | 'ended' | 'cancelled';
+type CloseReason = 'timer' | 'message' | 'condition' | 'error' | 'escalation' | 'ended' | 'cancelled';
 type EventKind = (typeof processEvents.$inferInsert)['kind'];
 
 /** The most moves a process makes in one transaction: a path that loops without waiting stops here. */
@@ -77,6 +79,16 @@ interface Live {
   reached: string | null;
   /** What each element can still reach, as inclusive joins ask it. */
   readonly reach: Map<string, Set<string>>;
+}
+
+/** Where an error or an escalation is caught: an event on the boundary of an element, in an instance. */
+interface Catch {
+  readonly live: Live;
+  readonly boundary: string;
+  /** The token that waits at the element: a run of a sub-process, or a call. Null for a task's own event. */
+  readonly host: TokenRow | null;
+  /** The run the path out of the event goes on in. */
+  readonly scope: string | null;
 }
 
 /** One transaction's worth of process work: tokens arrive at elements until each waits or ends. */
@@ -152,6 +164,17 @@ function decidable(task: Pick<TaskRow, 'assignee' | 'department'>, actorId: stri
   if (task.assignee) return task.assignee === actorId;
   return !task.department || task.department === department;
 }
+
+/** An event's detail as an object, whatever was stored. */
+function isDetail(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The run an event happened in, for the history and for undoing it: absent at the level of the process itself. */
+const inRun = (scope: string | null): { readonly scope?: string } => (scope === null ? {} : { scope });
+
+/** What undoes a task's change, and on which record, for the history: absent when nothing does. */
+const undoOf = (undo: string | undefined, recordId: string): { readonly undo?: string; readonly recordId?: string } => (undo ? { undo, recordId } : {});
 
 export class ProcessEngine implements ProcessHooks {
   readonly #ctx: AppContext;
@@ -923,7 +946,7 @@ export class ProcessEngine implements ProcessHooks {
         if (tokens.some((other) => other.scope === token.id)) continue;
         await turn.tx.db.delete(processTokens).where(eq(processTokens.id, token.id));
         await turn.tx.db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
-        await this.#event(turn, live, 'exited', token.element, null);
+        await this.#event(turn, live, 'exited', token.element, { run: token.id, ...inRun(token.scope) });
         await this.#leave(turn, live, token.element, token.scope);
         finished = true;
       }
@@ -1003,20 +1026,29 @@ export class ProcessEngine implements ProcessHooks {
     }
   }
 
-  /** A called instance ended: the call activity that waits for it goes on; if it was cancelled, the call waits for an operator. */
-  async #returnToCaller(turn: Turn, called: Live, status: 'completed' | 'cancelled'): Promise<void> {
+  /** The call that started an instance, and the instance it is in, locked: while both run and the call waits. */
+  async #caller(turn: Turn, called: Live): Promise<{ readonly live: Live; readonly token: TokenRow } | null> {
     const db = turn.tx.db;
     const tokenId = called.row.calledByToken;
-    if (!tokenId) return;
-    const [caller] = called.row.calledByInstance ? await db.select().from(processInstances).where(eq(processInstances.id, called.row.calledByInstance)) : [];
-    if (!caller || caller.status !== 'running') return;
+    if (!tokenId || !called.row.calledByInstance) return null;
+    const [caller] = await db.select().from(processInstances).where(eq(processInstances.id, called.row.calledByInstance));
+    if (!caller || caller.status !== 'running') return null;
     // The caller's record first, then its instance: the order an action takes them in.
     if (caller.recordId !== called.row.recordId) await this.#runtime.lockRecord(turn.tx, turn.loaded, caller.entity, caller.recordId);
     const live = await this.#live(turn, caller.id);
     const [token] = await db.select().from(processTokens).where(eq(processTokens.id, tokenId));
-    if (live.ended || !token || token.state !== 'waiting') return;
-    await db.delete(processTokens).where(eq(processTokens.id, tokenId));
-    await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, tokenId), eq(processTimers.status, 'waiting')));
+    if (live.ended || !token || token.state !== 'waiting') return null;
+    return { live, token };
+  }
+
+  /** A called instance ended: the call activity that waits for it goes on; if it was cancelled, the call waits for an operator. */
+  async #returnToCaller(turn: Turn, called: Live, status: 'completed' | 'cancelled'): Promise<void> {
+    const db = turn.tx.db;
+    const caller = await this.#caller(turn, called);
+    if (!caller) return;
+    const { live, token } = caller;
+    await db.delete(processTokens).where(eq(processTokens.id, token.id));
+    await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
     if (status === 'completed') {
       await this.#event(turn, live, 'returned', token.element, { instance: called.row.id });
       return this.#leave(turn, live, token.element, token.scope);
@@ -1042,6 +1074,12 @@ export class ProcessEngine implements ProcessHooks {
       case 'endEvent': {
         // An end that sends a message sends it first; if that fails, the path waits there.
         if (element.message && !(await this.#send(turn, live, id, element.message, scope))) return;
+        // An error ends the path, and what the event that catches it sits on.
+        if (element.error) return this.#error(turn, live, id, flow, { code: raisedCode(element.error), failure: undefined }, scope);
+        // An escalation that interrupts what it came from ends this path with it; an undo that fails waits for an operator.
+        if (element.escalation && !(await this.#escalate(turn, live, id, raisedCode(element.escalation), scope))) return;
+        if (element.compensate && !(await this.#compensate(turn, live, id, flow, scope, scope))) return;
+        if (element.cancel) return this.#cancelTransaction(turn, live, id, flow, scope);
         // Inside a sub-process, an end ends a path in its run; a terminate end ends all of the run, which then goes on.
         if (scope === null) live.reached = id;
         if (element.terminate) {
@@ -1080,6 +1118,15 @@ export class ProcessEngine implements ProcessHooks {
         }
         if (element.message) {
           if (await this.#send(turn, live, id, element.message, scope)) await this.#leave(turn, live, id, scope);
+          return;
+        }
+        if (element.escalation) {
+          if (await this.#escalate(turn, live, id, raisedCode(element.escalation), scope)) await this.#leave(turn, live, id, scope);
+          return;
+        }
+        // Undo what completed in the run the event is in, or in the process; then the path goes on.
+        if (element.compensate) {
+          if (await this.#compensate(turn, live, id, flow, scope, scope)) await this.#leave(turn, live, id, scope);
           return;
         }
         // A milestone: the history marks it, and the path goes on.
@@ -1177,34 +1224,158 @@ export class ProcessEngine implements ProcessHooks {
     await this.#event(turn, live, 'stuck', element, { error: message });
   }
 
-  /**
-   * An action that a task ran failed: an error event on the task catches it; or else the nearest
-   * run of a sub-process around it with an error event, which then ends with what runs inside it.
-   * Without one, the path waits for an operator where it failed.
-   */
+  /** An action that a task ran failed: an error without a code, which an error event on the task catches first. */
   async #failed(turn: Turn, live: Live, id: string, flow: string | null, message: string, scope: string | null): Promise<void> {
-    const handlerOf = (host: string) =>
-      (live.graph.boundaries.get(host) ?? []).find((boundary) => {
-        const event = live.process.elements[boundary];
-        return event?.type === 'boundaryEvent' && event.error;
-      });
-    const own = handlerOf(id);
+    return this.#error(turn, live, id, flow, { code: undefined, failure: message }, scope);
+  }
+
+  /**
+   * Find the event that catches an error or an escalation of a code, raised at an element: on the
+   * element itself, for a task that failed; on the runs of sub-processes around it, nearest first;
+   * then on the call that started the instance, and around that call, up to an instance that nothing
+   * called.
+   */
+  async #catcher(turn: Turn, live: Live, id: string, kind: 'error' | 'escalation', code: string | undefined, scope: string | null, own: boolean): Promise<Catch | null> {
     if (own) {
-      await this.#event(turn, live, 'error_caught', own, { task: id, error: message });
-      return this.#leave(turn, live, own, scope);
+      const boundary = catcherOn(live.process, live.graph, id, kind, code);
+      if (boundary) return { live, boundary, host: null, scope };
     }
-    for (let current = scope; current !== null; ) {
-      const [run] = await turn.tx.db.select().from(processTokens).where(eq(processTokens.id, current));
-      if (!run) break;
-      const handler = handlerOf(run.element);
-      if (handler) {
-        await this.#interrupt(turn, live, run, 'error');
-        await this.#event(turn, live, 'error_caught', handler, { task: id, error: message });
-        return this.#leave(turn, live, handler, run.scope);
+    let current = live;
+    let at = scope;
+    for (;;) {
+      while (at !== null) {
+        const [run] = await turn.tx.db.select().from(processTokens).where(eq(processTokens.id, at));
+        if (!run) return null;
+        const boundary = catcherOn(current.process, current.graph, run.element, kind, code);
+        if (boundary) return { live: current, boundary, host: run, scope: run.scope };
+        at = run.scope;
       }
-      current = run.scope;
+      const caller = await this.#caller(turn, current);
+      if (!caller) return null;
+      const boundary = catcherOn(caller.live.process, caller.live.graph, caller.token.element, kind, code);
+      if (boundary) return { live: caller.live, boundary, host: caller.token, scope: caller.token.scope };
+      current = caller.live;
+      at = caller.token.scope;
     }
-    return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: ${message}`, scope);
+  }
+
+  /**
+   * A catch that interrupts: what its event sits on ends, with all that runs inside it. When that is
+   * a call in another instance, the instance where it was raised ends first, at the element that
+   * raised it, and the instances between end with the call.
+   */
+  async #interruptFor(turn: Turn, live: Live, id: string, caught: Catch, reason: CloseReason): Promise<void> {
+    if (caught.live !== live && !live.ended) await this.#end(turn, live, 'cancelled', id, false);
+    if (caught.host) await this.#interrupt(turn, caught.live, caught.host, reason);
+  }
+
+  /**
+   * An error: an action that a task ran failed, or an error end event raised one with its code. The
+   * nearest event that catches it ends what it sits on, with all that runs inside, and its path goes
+   * on. Without one, the path waits for an operator where the error was.
+   */
+  async #error(turn: Turn, live: Live, id: string, flow: string | null, raised: { readonly code: string | undefined; readonly failure: string | undefined }, scope: string | null): Promise<void> {
+    const caught = await this.#catcher(turn, live, id, 'error', raised.code, scope, raised.failure !== undefined);
+    if (!caught) {
+      const why = raised.failure ?? (raised.code ? `nothing catches the error ${raised.code}` : 'nothing catches its error');
+      return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: ${why}`, scope);
+    }
+    await this.#interruptFor(turn, live, id, caught, 'error');
+    const detail = raised.failure !== undefined ? { task: id, error: raised.failure } : { from: id, ...(raised.code ? { code: raised.code } : {}) };
+    await this.#event(turn, caught.live, 'error_caught', caught.boundary, { ...detail, ...(caught.live === live ? {} : { instance: live.row.id }) });
+    return this.#leave(turn, caught.live, caught.boundary, caught.scope);
+  }
+
+  /**
+   * An escalation: the nearest event that hears it, on a sub-process or a call around the element,
+   * takes a path out. One that interrupts ends what it sits on, and with it the path that escalated.
+   * Without one, the history says so, and the path goes on. Returns whether the path goes on.
+   */
+  async #escalate(turn: Turn, live: Live, id: string, code: string | undefined, scope: string | null): Promise<boolean> {
+    const raised = { from: id, ...(code ? { code } : {}) };
+    const caught = await this.#catcher(turn, live, id, 'escalation', code, scope, false);
+    if (!caught) {
+      await this.#event(turn, live, 'escalated', id, { ...raised, heard: false });
+      return true;
+    }
+    const event = caught.live.process.elements[caught.boundary];
+    const interrupting = event?.type === 'boundaryEvent' && event.interrupting;
+    if (interrupting) await this.#interruptFor(turn, live, id, caught, 'escalation');
+    await this.#event(turn, caught.live, 'escalated', caught.boundary, { ...raised, ...(caught.live === live ? {} : { instance: live.row.id }) });
+    await this.#leave(turn, caught.live, caught.boundary, caught.scope);
+    return !interrupting;
+  }
+
+  /**
+   * Undo what completed in a run of a sub-process, or in the process itself (null): the undo actions
+   * of its tasks, and of the runs that completed in it, newest first, with the app's authority. Each
+   * undo runs once, so trying again goes on from the one that failed. Returns whether all ran; if one
+   * fails, the path waits for an operator at the element.
+   */
+  async #compensate(turn: Turn, live: Live, id: string, flow: string | null, scope: string | null, target: string | null): Promise<boolean> {
+    const events = await turn.tx.db
+      .select()
+      .from(processEvents)
+      .where(and(eq(processEvents.instanceId, live.row.id), inArray(processEvents.kind, ['ran', 'sent', 'skill_queued', 'exited', 'compensated'])))
+      .orderBy(asc(processEvents.seq));
+    const detailOf = (event: (typeof events)[number]) => (isDetail(event.detail) ? event.detail : {});
+    const done = new Set(events.flatMap((event) => (event.kind === 'compensated' && typeof detailOf(event)['of'] === 'string' ? [String(detailOf(event)['of'])] : [])));
+    const origin: ProcessOrigin = { kind: 'process', instanceId: live.row.id, process: live.row.process, element: id, onBehalfOf: turn.by ?? live.row.startedBy };
+    const name = elementName(live.process, id);
+    const undo = async (run: string | null): Promise<boolean> => {
+      const inside = events.filter((event) => event.kind !== 'compensated' && (detailOf(event)['scope'] ?? null) === run);
+      for (const event of inside.reverse()) {
+        const detail = detailOf(event);
+        if (event.kind === 'exited') {
+          if (typeof detail['run'] === 'string' && !(await undo(detail['run']))) return false;
+          continue;
+        }
+        const action = detail['undo'];
+        const recordId = detail['recordId'];
+        if (typeof action !== 'string' || typeof recordId !== 'string' || done.has(event.id)) continue;
+        const task = event.element ? elementName(live.process, event.element) : action;
+        const fail = async (message: string): Promise<false> => {
+          await this.#stuck(turn, live, id, flow, `${name}: undoing ${task} failed: ${message}`, scope);
+          return false;
+        };
+        if (turn.loaded.app.movedTo) return fail('the app moved to a team space, so it changes no records here');
+        const entity = turn.loaded.definition.actions[action]?.entity ?? live.entity;
+        // Another record: lock it, as an action on it would.
+        if (recordId !== live.row.recordId && !(await this.#runtime.lockRecord(turn.tx, turn.loaded, entity, recordId))) return fail('its record no longer exists');
+        const before = recordId === live.row.recordId ? await this.#record(turn, live) : await this.#runtime.recordIn(turn.tx, turn.loaded, entity, recordId);
+        const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, action, recordId, origin);
+        if (!ran.ok) return fail(ran.message);
+        turn.records.delete(recordId);
+        done.add(event.id);
+        await this.#event(turn, live, 'compensated', event.element, { of: event.id, action, recordId, from: id });
+        await this.#actionCommitted(turn, action, recordId, null);
+        await this.#recordChanged(turn, entity, recordId, before);
+      }
+      return true;
+    };
+    return undo(target);
+  }
+
+  /**
+   * A cancel end event ends the transaction it is in: what still runs in it stops, what completed in
+   * it is undone, newest first, and the path leaves by the cancel event on the transaction's boundary.
+   */
+  async #cancelTransaction(turn: Turn, live: Live, id: string, flow: string | null, scope: string | null): Promise<void> {
+    const [run] = scope === null ? [] : await turn.tx.db.select().from(processTokens).where(eq(processTokens.id, scope));
+    const transaction = run ? live.process.elements[run.element] : undefined;
+    const boundary =
+      run && transaction?.type === 'subProcess' && transaction.transaction
+        ? (live.graph.boundaries.get(run.element) ?? []).find((each) => {
+            const event = live.process.elements[each];
+            return event?.type === 'boundaryEvent' && event.cancel === true;
+          })
+        : undefined;
+    if (!run || !boundary) return this.#stuck(turn, live, id, flow, `${elementName(live.process, id)}: no cancel event on a transaction around it leads out`, scope);
+    await this.#clearScope(turn, live, run.id, 'cancelled');
+    if (!(await this.#compensate(turn, live, id, flow, scope, run.id))) return;
+    await this.#dropTokens(turn, live, [run], 'cancelled');
+    await this.#event(turn, live, 'transaction_cancelled', boundary, { transaction: run.element, from: id });
+    return this.#leave(turn, live, boundary, run.scope);
   }
 
   /** A script task: its steps change the record, with the app's authority, through the action pipeline. */
@@ -1216,7 +1387,7 @@ export class ProcessEngine implements ProcessHooks {
     const ran = await this.#runtime.runScriptForProcess(turn.tx, turn.loaded, script, live.row.recordId, origin);
     if (!ran.ok) return this.#failed(turn, live, id, null, ran.message, scope);
     turn.records.delete(live.row.recordId);
-    await this.#event(turn, live, 'ran', id, { steps: element.steps.length });
+    await this.#event(turn, live, 'ran', id, { steps: element.steps.length, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
     await this.#recordChanged(turn, live.entity, live.row.recordId, before);
     return this.#leave(turn, live, id, scope);
   }
@@ -1267,7 +1438,8 @@ export class ProcessEngine implements ProcessHooks {
       return false;
     }
     turn.records.delete(recordId);
-    await this.#event(turn, live, 'sent', id, { action: message.action, recordId });
+    const sender = live.process.elements[id];
+    await this.#event(turn, live, 'sent', id, { action: message.action, recordId, ...inRun(scope), ...(sender?.type === 'sendTask' && sender.undo ? { undo: sender.undo } : {}) });
     await this.#actionCommitted(turn, message.action, recordId, null);
     await this.#recordChanged(turn, entity, recordId, before);
     return true;
@@ -1496,7 +1668,7 @@ export class ProcessEngine implements ProcessHooks {
       const ran = await this.#runtime.runForProcess(turn.tx, turn.loaded, element.action, live.row.recordId, origin);
       if (!ran.ok) return this.#failed(turn, live, id, null, ran.message, scope);
       turn.records.delete(live.row.recordId);
-      await this.#event(turn, live, 'ran', id, { action: element.action });
+      await this.#event(turn, live, 'ran', id, { action: element.action, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
       await this.#actionCommitted(turn, element.action, live.row.recordId, null);
       await this.#recordChanged(turn, live.entity, live.row.recordId, before);
     } else if (element.skill) {
@@ -1514,7 +1686,7 @@ export class ProcessEngine implements ProcessHooks {
         calls: [{ step: id, label: element.name, skill: element.skill, input }],
         onBehalfOf: origin.onBehalfOf,
       });
-      await this.#event(turn, live, 'skill_queued', id, { skill: element.skill });
+      await this.#event(turn, live, 'skill_queued', id, { skill: element.skill, ...inRun(scope), ...undoOf(element.undo, live.row.recordId) });
     }
     return this.#leave(turn, live, id, scope);
   }

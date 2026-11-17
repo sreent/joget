@@ -397,6 +397,51 @@ describe('BPMN 2.0 files', () => {
     expect(kept.ok && kept.notes).toContain('Read the condition "${days > 10}" of (s) as record.days > 10');
   });
 
+  it('carry errors and escalations with their codes, undos, cancels and transactions out and back', () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    definition['actions'].book_room = update('Book a room', { reason: 'Room booked' });
+    definition['actions'].free_room = update('Free the room', { reason: 'Room freed' });
+    definition['processes'].leave_approval = {
+      label: 'Leave approval',
+      entity: 'leave_request',
+      elements: {
+        start: { type: 'startEvent', actions: ['request_leave'] },
+        booking: { type: 'subProcess', name: 'Booking', transaction: true },
+        b_start: { type: 'startEvent', in: 'booking' },
+        book: { type: 'serviceTask', name: 'Book a room', in: 'booking', action: 'book_room', undo: 'free_room' },
+        late: { type: 'intermediateThrowEvent', in: 'booking', escalation: { code: 'late' } },
+        b_cancel: { type: 'endEvent', in: 'booking', cancel: true },
+        cancelled: { type: 'boundaryEvent', attachedTo: 'booking', cancel: true },
+        heard: { type: 'boundaryEvent', attachedTo: 'booking', interrupting: false, escalation: true },
+        failed: { type: 'boundaryEvent', attachedTo: 'booking', error: { code: 'full' } },
+        undo: { type: 'endEvent', compensate: true },
+        end: { type: 'endEvent' },
+        told: { type: 'endEvent' },
+      },
+      flows: {
+        f1: { from: 'start', to: 'booking' },
+        b1: { from: 'b_start', to: 'book' },
+        b2: { from: 'book', to: 'late' },
+        b3: { from: 'late', to: 'b_cancel' },
+        f2: { from: 'booking', to: 'end' },
+        f3: { from: 'cancelled', to: 'end' },
+        f4: { from: 'heard', to: 'told' },
+        f5: { from: 'failed', to: 'undo' },
+      },
+    };
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:transaction id="booking" name="Booking">');
+    expect(xml).toContain('<bpmn:escalation id="Escalation_late" name="late" escalationCode="late" />');
+    expect(xml).toContain('<bpmn:error id="Error_full" name="full" errorCode="full" />');
+    expect(xml).toContain('<bpmn:serviceTask id="book_undo_task" name="Undo: Book a room" isForCompensation="true" implementation="urn:ambit:action" ambit:action="free_room" />');
+    const back = bpmnToProcesses(xml, { ...app, processes: {} });
+    expect(back.ok ? [] : back.issues).toEqual([]);
+    const { diagram: _diagram, ...process } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    expect(process).toEqual(app.processes!['leave_approval']);
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);
@@ -471,7 +516,7 @@ describe('BPMN 2.0 files', () => {
     <startEvent id="s"><messageEventDefinition /></startEvent>
     <scriptTask id="t1" name="Compute" scriptFormat="javascript"><script>x = 1</script></scriptTask>
     <inclusiveGateway id="g" />
-    <transaction id="tx" />
+    <complexGateway id="cx" />
     <userTask id="u" name="Everyone decides" ambit:role="manager"><multiInstanceLoopCharacteristics /></userTask>
     <sequenceFlow id="f" sourceRef="s" targetRef="t1"><conditionExpression>amount &gt; 5</conditionExpression></sequenceFlow>
   </process>
@@ -484,7 +529,7 @@ describe('BPMN 2.0 files', () => {
           element: 't1',
           message: 'Ambit runs no code in javascript: write the script as Ambit\'s steps (scriptFormat urn:ambit:steps), or run one of the app\'s actions with a service task: "Compute" (t1)',
         },
-        { element: 'tx', message: "Ambit doesn't run a transaction yet: (tx)" },
+        { element: 'cx', message: "Ambit doesn't run a complex gateway yet: (cx)" },
         { element: 'u', message: 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide: "Everyone decides" (u)' },
         { element: 'f', message: 'Ambit can\'t read the condition "amount > 5" of (f): Unknown name amount. Write it as a condition on the record\'s fields' },
       ],

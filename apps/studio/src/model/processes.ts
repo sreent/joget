@@ -30,7 +30,16 @@ type Shape = Diagram['shapes'][string];
  * What the palette adds: an element of a type; a catch event that waits for an action instead of
  * a time; or a throw event that marks a milestone, sends a message, or links to a catch link.
  */
-export type ElementKind = Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent' | 'intermediateThrowEvent'> | 'messageEvent' | 'conditionEvent' | 'milestone' | 'messageThrow' | 'link';
+export type ElementKind =
+  | Exclude<ProcessElementType, 'startEvent' | 'boundaryEvent' | 'intermediateThrowEvent'>
+  | 'messageEvent'
+  | 'conditionEvent'
+  | 'milestone'
+  | 'messageThrow'
+  | 'link'
+  | 'escalationThrow'
+  | 'undoThrow'
+  | 'transaction';
 
 /** Where the rest of BPMN stands in the palette. */
 export type PaletteGroup = 'Tasks' | 'Gateways' | 'Events' | 'Parts';
@@ -56,8 +65,11 @@ export const PALETTE: ReadonlyArray<{ readonly kind: ElementKind; readonly label
   { kind: 'messageThrow', label: 'Send a message', hint: 'Run an action as a message, and go on', group: 'Events' },
   { kind: 'milestone', label: 'Milestone', hint: 'A point that the history marks', group: 'Events' },
   { kind: 'link', label: 'Link', hint: 'Jump from here to a catch link, to spare a long flow', group: 'Events' },
+  { kind: 'escalationThrow', label: 'Escalate', hint: 'Tell the sub-process or call around it, which can take a path for it', group: 'Events' },
+  { kind: 'undoThrow', label: 'Undo', hint: 'Undo what completed here, newest first, with each task\'s undo action', group: 'Events' },
   { kind: 'subProcess', label: 'Sub-process', hint: 'A part with its own start and end, and deadlines for all of it', group: 'Parts' },
   { kind: 'callActivity', label: 'Call process', hint: 'Run another process of the app, and wait until it ends', group: 'Parts' },
+  { kind: 'transaction', label: 'Transaction', hint: 'A sub-process that a cancel end undoes as one', group: 'Parts' },
 ];
 
 const PREFIX: Readonly<Record<ElementKind, string>> = {
@@ -82,12 +94,15 @@ const PREFIX: Readonly<Record<ElementKind, string>> = {
   link: 'link',
   eventBasedGateway: 'first',
   conditionEvent: 'wait',
+  escalationThrow: 'escalate',
+  undoThrow: 'undo',
+  transaction: 'transaction',
 };
 
 const SIZE = { event: { width: 36, height: 36 }, task: { width: 100, height: 80 }, gateway: { width: 50, height: 50 }, sub: { width: 340, height: 180 } } as const;
-const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'conditionEvent', 'milestone', 'messageThrow', 'link']);
+const EVENT_KINDS: ReadonlySet<string> = new Set(['messageEvent', 'conditionEvent', 'milestone', 'messageThrow', 'link', 'escalationThrow', 'undoThrow']);
 export const sizeOf = (type: ProcessElementType | ElementKind) =>
-  type === 'subProcess' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
+  type === 'subProcess' || type === 'transaction' ? SIZE.sub : type.endsWith('Event') || EVENT_KINDS.has(type) ? SIZE.event : type.endsWith('Gateway') ? SIZE.gateway : SIZE.task;
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -268,6 +283,12 @@ export function newElement(definition: Definition, process: Process, type: Eleme
       return { type: 'intermediateThrowEvent', name: 'Go on', link: freeLink(process) };
     case 'subProcess':
       return { type, name: 'New sub-process' };
+    case 'transaction':
+      return { type: 'subProcess', name: 'New transaction', transaction: true };
+    case 'escalationThrow':
+      return { type: 'intermediateThrowEvent', name: 'Escalate', escalation: true };
+    case 'undoThrow':
+      return { type: 'intermediateThrowEvent', name: 'Undo', compensate: true };
     case 'callActivity': {
       const choice = callChoices(definition, self)[0];
       return {
@@ -592,22 +613,46 @@ export function arrange(definition: Definition, name: string): Definition {
  * What a boundary can wait for: a deadline or an action saved on the record, on a user task, a
  * sub-process or a call; the failure of an action, on a system task or a sub-process.
  */
-export type BoundaryKind = 'timer' | 'message' | 'condition' | 'error';
+export type BoundaryKind = 'timer' | 'message' | 'condition' | 'error' | 'escalation' | 'cancel';
 
-/** The elements whose boundary takes an event of a kind. */
+/** The elements whose boundary takes an event of a kind. A cancel event sits on a transaction only. */
 export const BOUNDARY_HOSTS: Readonly<Record<BoundaryKind, readonly ProcessElementType[]>> = {
   timer: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
   message: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
   condition: ['userTask', 'receiveTask', 'subProcess', 'callActivity'],
-  error: ['serviceTask', 'scriptTask', 'sendTask', 'subProcess'],
+  error: ['serviceTask', 'scriptTask', 'sendTask', 'subProcess', 'callActivity'],
+  escalation: ['subProcess', 'callActivity'],
+  cancel: ['subProcess'],
 };
+
+/** The kinds of event that an element's boundary takes. */
+export function boundaryKinds(host: ProcessElement): BoundaryKind[] {
+  return (Object.keys(BOUNDARY_HOSTS) as BoundaryKind[]).filter(
+    (kind) => BOUNDARY_HOSTS[kind].includes(host.type) && (kind !== 'cancel' || (host.type === 'subProcess' && host.transaction === true)) && !(kind === 'error' && host.type === 'serviceTask' && host.skill),
+  );
+}
 
 const BOUNDARY: Readonly<Record<BoundaryKind, { readonly prefix: string; readonly end: string; readonly endPrefix: string }>> = {
   timer: { prefix: 'deadline', end: 'Too late', endPrefix: 'too_late' },
   message: { prefix: 'message', end: 'Stopped', endPrefix: 'stopped' },
   condition: { prefix: 'condition', end: 'Changed', endPrefix: 'changed' },
   error: { prefix: 'error', end: 'Failed', endPrefix: 'failed' },
+  escalation: { prefix: 'escalation', end: 'Escalated', endPrefix: 'escalated' },
+  cancel: { prefix: 'cancel', end: 'Cancelled', endPrefix: 'cancelled' },
 };
+
+/**
+ * The update actions that can undo what a task changed: on the record the process is about, or for
+ * a send task, on the record its message goes to.
+ */
+export function undoChoices(definition: Definition, process: Process, task: string): string[] {
+  const element = process.elements[task];
+  if (element?.type === 'sendTask' && element.message.record) {
+    const field = definition.entities[process.entity]?.fields.find((each) => each.name === element.message.record);
+    return field?.type === 'reference' ? updateActions(definition, field.entity) : [];
+  }
+  return updateActions(definition, process.entity);
+}
 
 /**
  * The update actions that can interrupt a user task, a sub-process or a call as a message: not an
@@ -636,11 +681,13 @@ export function addBoundary(definition: Definition, name: string, task: string, 
   let id = '';
   const next = withProcess(definition, name, (process) => {
     const host = process.elements[task];
-    if (!host || !BOUNDARY_HOSTS[kind].includes(host.type)) return;
+    if (!host || !boundaryKinds(host).includes(kind)) return;
     let event: BoundaryEventElement;
     if (kind === 'timer') event = { type: 'boundaryEvent', name: 'Deadline', attachedTo: task, interrupting: true, timer: { duration: 'P3D' } };
     else if (kind === 'condition') event = { type: 'boundaryEvent', name: 'When it holds', attachedTo: task, interrupting: false, condition: startingCondition(definition, process.entity) };
     else if (kind === 'error') event = { type: 'boundaryEvent', name: 'Error', attachedTo: task, interrupting: true, error: true };
+    else if (kind === 'escalation') event = { type: 'boundaryEvent', name: 'Escalation', attachedTo: task, interrupting: false, escalation: true };
+    else if (kind === 'cancel') event = { type: 'boundaryEvent', name: 'Cancelled', attachedTo: task, interrupting: true, cancel: true };
     else {
       const action = messageChoices(definition, process, task)[0];
       if (!action) return;

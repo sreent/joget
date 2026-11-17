@@ -512,6 +512,94 @@ describe('conditions, event-based gateways and starts by themselves', () => {
   });
 });
 
+/**
+ * The leave app where approved leave books a room in a transaction, which a cancel end undoes;
+ * a review that escalates to HR when it runs late; and a budget check that ends with an error code
+ * that its sub-process catches.
+ */
+function raises(edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined): Record<string, any> {
+  return leave((process, definition) => {
+    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    definition['actions'].book_room = update('Book a room', { reason: 'Room booked' });
+    definition['actions'].free_room = update('Free the room', { reason: 'Room freed' });
+    Object.assign(process.elements, {
+      booking: { type: 'subProcess', name: 'Booking', transaction: true },
+      b_start: { type: 'startEvent', in: 'booking' },
+      book: { type: 'serviceTask', name: 'Book a room', in: 'booking', action: 'book_room', undo: 'free_room' },
+      b_check: { type: 'exclusiveGateway', in: 'booking' },
+      b_end: { type: 'endEvent', in: 'booking' },
+      b_cancel: { type: 'endEvent', name: 'Too long', in: 'booking', cancel: true },
+      cancelled: { type: 'boundaryEvent', attachedTo: 'booking', cancel: true },
+      review: { type: 'subProcess', name: 'Review' },
+      r_start: { type: 'startEvent', in: 'review' },
+      late: { type: 'intermediateThrowEvent', name: 'Late', in: 'review', escalation: { code: 'late' } },
+      r_end: { type: 'endEvent', in: 'review' },
+      no_budget: { type: 'endEvent', name: 'No budget', in: 'review', error: { code: 'no_budget' } },
+      r_gate: { type: 'exclusiveGateway', in: 'review' },
+      heard: { type: 'boundaryEvent', attachedTo: 'review', interrupting: false, escalation: { code: 'late' } },
+      broke: { type: 'boundaryEvent', attachedTo: 'review', error: { code: 'no_budget' } },
+      undo_all: { type: 'intermediateThrowEvent', name: 'Undo', compensate: true },
+      hr: { type: 'manualTask', name: 'Tell HR' },
+    });
+    process.flows.on_approve.to = 'booking';
+    Object.assign(process.flows, {
+      b1: { from: 'b_start', to: 'book' },
+      b2: { from: 'book', to: 'b_check' },
+      b3: { from: 'b_check', to: 'b_cancel', when: { gt: [{ ref: 'record.days' }, 10] } },
+      b4: { from: 'b_check', to: 'b_end', default: true },
+      after_booking: { from: 'booking', to: 'review' },
+      after_cancel: { from: 'cancelled', to: 'approved' },
+      r1: { from: 'r_start', to: 'r_gate' },
+      r2: { from: 'r_gate', to: 'late', when: { gt: [{ ref: 'record.days' }, 5] } },
+      r3: { from: 'r_gate', to: 'no_budget', when: { gt: [{ ref: 'record.days' }, 20] } },
+      r4: { from: 'r_gate', to: 'r_end', default: true },
+      r5: { from: 'late', to: 'r_end' },
+      after_review: { from: 'review', to: 'approved' },
+      to_hr: { from: 'heard', to: 'hr' },
+      from_hr: { from: 'hr', to: 'approved' },
+      to_undo: { from: 'broke', to: 'undo_all' },
+      undone: { from: 'undo_all', to: 'rejected' },
+    });
+    delete process.diagram;
+    edit(process, definition);
+  });
+}
+
+describe('errors, escalations, undo and transactions', () => {
+  it('pass the checks, and an undo action is something the process runs by itself', () => {
+    const definition = valid(raises());
+    expect(processWork(definition.processes!['leave_approval']!).actions).toEqual(['book_room', 'free_room']);
+  });
+
+  it('are checked: a cancel in a transaction with a way out, an error that something catches, an escalation on what holds work', () => {
+    const issues = issuesOf(
+      raises((process, definition) => {
+        delete process.elements.cancelled;
+        delete process.flows.after_cancel;
+        process.elements.stray_cancel = { type: 'endEvent', in: 'review', cancel: true };
+        process.flows.r6 = { from: 'r_gate', to: 'stray_cancel', when: { lt: [{ ref: 'record.days' }, 1] } };
+        process.elements.broke.error = { code: 'other' };
+        process.elements.on_task = { type: 'boundaryEvent', attachedTo: 'decide', escalation: true };
+        process.flows.on_task_out = { from: 'on_task', to: 'rejected' };
+        process.elements.book.undo = 'request_leave';
+        process.elements.coded = { type: 'boundaryEvent', attachedTo: 'book', error: { code: 'full' } };
+        process.flows.coded_out = { from: 'coded', to: 'b_end' };
+        definition['actions'].free_room.entity = 'leave_request';
+      }),
+    );
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        'processes.leave_approval.elements.booking: Booking has a cancel end event inside it, but no cancel event on its boundary to leave by',
+        'processes.leave_approval.elements.stray_cancel.cancel: A cancel end event sits in a transaction',
+        'processes.leave_approval.elements.no_budget.error: Nothing catches the error that No budget raises: put it in a sub-process with an error event, or call this process from one with an error event on the call',
+        "processes.leave_approval.elements.on_task.attachedTo: Decide on the leave can't hear an escalation: an escalation event sits on a sub-process or a call, for what escalates inside it",
+        'processes.leave_approval.elements.book.undo: request_leave creates a record: an undo changes the record back',
+        'processes.leave_approval.elements.coded.error: Boundary event coded catches only the error full, but a task that fails raises no code: leave the code out',
+      ]),
+    );
+  });
+});
+
 describe('votes, when several people decide', () => {
   const all = { count: 'all', outcome: 'approve', otherwise: 'reject' } as const;
   it('decide as soon as the outcome is sure, either way', () => {

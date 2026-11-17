@@ -594,4 +594,49 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByRole('button', { name: 'Open Second look', exact: true }).click();
     await visible(page.getByTestId('process-canvas').getByText('Seen', { exact: true }));
   });
+
+  it('designs a transaction that books a room and frees it again, with a cancel and an escalation', async () => {
+    // The leave template, with an action that books a room and one that frees it.
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with a room', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
+    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    current.definition.actions.book_room = update('Book a room', { reason: 'Room booked' });
+    current.definition.actions.free_room = update('Free the room', { reason: 'Room freed' });
+    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    expect(put.statusCode, put.body).toBe(200);
+
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    // Once approved, a transaction books a room, which freeing it undoes.
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('transaction');
+    await visible(page.getByRole('heading', { name: 'Transaction', exact: true }));
+    await page.getByTestId('rf__node-start_1').click();
+    await page.getByRole('button', { name: 'System task', exact: true }).click();
+    await page.getByLabel("Runs, with the app's authority").selectOption('book_room');
+    await page.getByLabel('Undone by', { exact: true }).selectOption('free_room');
+    // Its end cancels it: the transaction gets a cancel event to leave by.
+    await page.getByTestId('rf__node-end_1').click();
+    await page.getByLabel('As it ends', { exact: true }).selectOption('cancel');
+    await visible(canvas.getByText('Cancelled', { exact: true }));
+    // The transaction also hears an escalation of the code "late".
+    await canvas.getByText('New transaction', { exact: true }).click();
+    await page.getByRole('button', { name: 'Hear an escalation', exact: true }).click();
+    await page.getByLabel('Hears the escalation', { exact: true }).fill('late');
+    await shot(page, '15h-process-transaction');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 3' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['transaction_1']).toEqual({ type: 'subProcess', name: 'New transaction', transaction: true });
+    expect(saved.elements['system_1']).toMatchObject({ type: 'serviceTask', in: 'transaction_1', action: 'book_room', undo: 'free_room' });
+    expect(saved.elements['end_1']).toEqual({ type: 'endEvent', in: 'transaction_1', terminate: false, cancel: true });
+    expect(saved.elements['cancel_1']).toEqual({ type: 'boundaryEvent', name: 'Cancelled', attachedTo: 'transaction_1', interrupting: true, cancel: true });
+    expect(saved.elements['escalation_1']).toEqual({ type: 'boundaryEvent', name: 'Escalation', attachedTo: 'transaction_1', interrupting: false, escalation: { code: 'late' } });
+  });
 });

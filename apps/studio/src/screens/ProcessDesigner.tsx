@@ -9,6 +9,7 @@ import {
   type Flow,
   type Process,
   type ProcessElement,
+  type Raised,
 } from '@platform/app-model';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { applyNodeChanges, Background, Controls, Handle, MarkerType, Position, ReactFlow, type Connection, type Edge, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
@@ -22,7 +23,7 @@ import {
   addBoundary,
   addElement,
   arrange,
-  BOUNDARY_HOSTS,
+  boundaryKinds,
   callChoices,
   connect,
   sendChoices,
@@ -39,11 +40,11 @@ import {
   removeElement,
   removeFlow,
   removeProcess,
+  undoChoices,
   updateActions,
   updateElement,
   updateFlow,
   updateProcess,
-  type BoundaryKind,
   type ElementKind,
 } from '../model/processes.js';
 import type { Definition } from '../types.js';
@@ -76,9 +77,10 @@ const FILLED_PATH: Partial<Record<ProcessElement['type'], string>> = {
 
 /**
  * BPMN's markers for what an event waits for or throws: a clock for a time, an envelope for a
- * message, a lightning bolt for an error, an arrow for a link. A throw event's marker is filled.
+ * message, a lightning bolt for an error, an arrow for a link, an arrowhead for an escalation, two
+ * triangles that point back for an undo, and a cross for a cancel. A throw event's marker is filled.
  */
-function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'message' | 'error' | 'link' | 'condition'; size?: number; filled?: boolean }) {
+function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'message' | 'error' | 'link' | 'condition' | 'escalation' | 'compensation' | 'cancel'; size?: number; filled?: boolean }) {
   const fill = filled ? 'currentColor' : 'none';
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden className="text-text">
@@ -92,7 +94,13 @@ function EventIcon({ kind, size = 16, filled = false }: { kind: 'timer' | 'messa
       ) : kind === 'link' ? (
         <path d="M2.5 6h6.5V3.5L13.5 8 9 12.5V10H2.5Z" fill={fill} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       ) : kind === 'error' ? (
-        <path d="M3 13.5 6 6l3.5 3.5L13 2.5 10 10 6.5 6.5Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+        <path d="M3 13.5 6 6l3.5 3.5L13 2.5 10 10 6.5 6.5Z" fill={fill} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      ) : kind === 'escalation' ? (
+        <path d="M8 2.5 12 13 8 9.5 4 13Z" fill={fill} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      ) : kind === 'compensation' ? (
+        <path d="M8 4.5v7L3 8Zm5.5 0v7L8.5 8Z" fill={fill} stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+      ) : kind === 'cancel' ? (
+        <path d="m4 4 8 8m0-8-8 8" fill="none" stroke="currentColor" strokeWidth={filled ? 2.6 : 1.6} strokeLinecap="round" />
       ) : (
         <>
           <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.3" />
@@ -135,10 +143,22 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
           {element.type === 'startEvent' && (element.timer || element.condition) ? <EventIcon kind={element.timer ? 'timer' : 'condition'} size={18} /> : null}
           {element.type === 'intermediateThrowEvent' ? (
             <div className="grid size-7 place-items-center rounded-full border border-text">
-              {element.message ? <EventIcon kind="message" filled /> : element.link !== undefined ? <EventIcon kind="link" filled /> : null}
+              {element.message ? (
+                <EventIcon kind="message" filled />
+              ) : element.link !== undefined ? (
+                <EventIcon kind="link" filled />
+              ) : element.escalation ? (
+                <EventIcon kind="escalation" filled />
+              ) : element.compensate ? (
+                <EventIcon kind="compensation" filled />
+              ) : null}
             </div>
           ) : null}
           {end && element.message ? <EventIcon kind="message" size={14} filled /> : null}
+          {end && element.error ? <EventIcon kind="error" size={16} filled /> : null}
+          {end && element.escalation ? <EventIcon kind="escalation" size={16} filled /> : null}
+          {end && element.compensate ? <EventIcon kind="compensation" size={16} filled /> : null}
+          {end && element.cancel ? <EventIcon kind="cancel" size={16} filled /> : null}
           {end && element.terminate ? <div className="size-4 rounded-full bg-text" /> : null}
         </div>
         {label ? <span className="absolute top-10 left-1/2 w-28 -translate-x-1/2 text-center text-[11px] leading-tight text-muted">{label}</span> : null}
@@ -158,7 +178,10 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
   if (element.type === 'subProcess') {
     // Drawn open, with what it holds inside it: its name at the top.
     return (
-      <div className={cx('relative rounded-xl border-[1.5px] border-text bg-surface/50', ring)} style={{ width: data.size?.width ?? 340, height: data.size?.height ?? 180 }}>
+      <div
+        className={cx('relative rounded-xl border-text bg-surface/50', element.transaction ? 'border-[5px] border-double' : 'border-[1.5px]', ring)}
+        style={{ width: data.size?.width ?? 340, height: data.size?.height ?? 180 }}
+      >
         <span className="absolute top-2 left-3 text-xs font-semibold text-text">{label}</span>
         {markers}
         {handles}
@@ -209,6 +232,11 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
             ? [2, 6, 10].map((y) => <line key={y} x1="1" x2="11" y1={y} y2={y} stroke="currentColor" strokeWidth="1.5" />)
             : [2, 6, 10].map((x) => <line key={x} y1="1" y2="11" x1={x} x2={x} stroke="currentColor" strokeWidth="1.5" />)}
         </svg>
+      ) : null}
+      {'undo' in element && element.undo ? (
+        <span className="absolute right-1.5 bottom-1" title={`Undone by ${element.undo}`}>
+          <EventIcon kind="compensation" size={12} />
+        </span>
       ) : null}
       {element.type === 'callActivity' ? (
         // BPMN's marker for a call: a small square with a plus.
@@ -773,13 +801,87 @@ const TYPE_LABELS: Readonly<Record<ProcessElement['type'], string>> = {
 function typeLabel(element: ProcessElement): string {
   if ((element.type === 'intermediateCatchEvent' || element.type === 'intermediateThrowEvent') && element.link !== undefined) return 'Link';
   if (element.type === 'intermediateThrowEvent' && element.message) return 'Send a message';
+  if (element.type === 'intermediateThrowEvent' && element.escalation) return 'Escalate';
+  if (element.type === 'intermediateThrowEvent' && element.compensate) return 'Undo';
+  if (element.type === 'subProcess' && element.transaction) return 'Transaction';
   if (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') {
     const kind = eventKind(element);
     if (kind === 'message') return 'Message';
     if (kind === 'error') return 'Error';
     if (kind === 'condition') return 'Condition';
+    if (kind === 'escalation') return 'Escalation';
+    if (kind === 'cancel') return 'Cancel';
   }
   return TYPE_LABELS[element.type];
+}
+
+/** The code of an error or an escalation. A catch for that code, or one for all, takes it; without a code, only a catch for all does. */
+function CodeInput({ label, hint, value, onChange }: { label: string; hint: string; value: Raised; onChange: (value: Raised) => void }) {
+  return (
+    <Field label={label} hint={hint}>
+      {(inputId) => (
+        <TextInput
+          id={inputId}
+          value={value === true ? '' : value.code}
+          placeholder="Any"
+          onChange={(event) => {
+            const code = event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            onChange(code ? { code } : true);
+          }}
+        />
+      )}
+    </Field>
+  );
+}
+
+/** What undoes a task's change: an update action that an undo event, or a cancelled transaction, runs. */
+function UndoPicker({ definition, name, id, onChange }: { definition: Definition; name: string; id: string; onChange: (definition: Definition) => void }) {
+  const process = definition.processes![name]!;
+  const element = process.elements[id];
+  if (element?.type !== 'serviceTask' && element?.type !== 'scriptTask' && element?.type !== 'sendTask') return null;
+  const choices = undoChoices(definition, process, id);
+  return (
+    <Field label="Undone by" hint="An action that changes the record back, if an undo event or a cancelled transaction asks for it. It runs once, newest first.">
+      {(inputId) => (
+        <Select
+          id={inputId}
+          value={element.undo ?? ''}
+          onChange={(event) =>
+            onChange(
+              updateElement(definition, name, id, (current) => {
+                if (current.type !== 'serviceTask' && current.type !== 'scriptTask' && current.type !== 'sendTask') return current;
+                const { undo: _undo, ...rest } = current;
+                return event.target.value ? { ...rest, undo: event.target.value } : rest;
+              }),
+            )
+          }
+        >
+          <option value="">Nothing</option>
+          {element.undo && !choices.includes(element.undo) ? (
+            <option value={element.undo} disabled>
+              {element.undo}
+            </option>
+          ) : null}
+          {choices.map((action) => (
+            <option key={action} value={action}>
+              {definition.actions[action]!.label}
+            </option>
+          ))}
+        </Select>
+      )}
+    </Field>
+  );
+}
+
+/** How an end event ends its path, as the select of its panel names it. */
+type EndWay = 'none' | 'terminate' | 'message' | 'error' | 'escalation' | 'compensate' | 'cancel';
+function endWay(element: Extract<ProcessElement, { type: 'endEvent' }>): EndWay {
+  if (element.terminate) return 'terminate';
+  if (element.message) return 'message';
+  if (element.error) return 'error';
+  if (element.escalation) return 'escalation';
+  if (element.compensate) return 'compensate';
+  return element.cancel ? 'cancel' : 'none';
 }
 
 /** The message an element sends: an action that the process runs on its record, or on the one a reference field names. */
@@ -857,14 +959,18 @@ function BoundaryEvents(props: {
   const process = definition.processes![name]!;
   const host = process.elements[id];
   if (!host || (host.type === 'serviceTask' && host.skill)) return null;
-  const kinds = (Object.keys(BOUNDARY_HOSTS) as BoundaryKind[]).filter((kind) => BOUNDARY_HOSTS[kind].includes(host.type));
+  const kinds = boundaryKinds(host);
   const words = ENDS[host.type] ?? ENDS['userTask']!;
   const actions = updateActions(definition, process.entity);
   const events = Object.entries(process.elements).flatMap(([other, candidate]) => (candidate.type === 'boundaryEvent' && candidate.attachedTo === id ? [{ id: other, event: candidate }] : []));
   const deadlines = events.flatMap(({ id: other, event }) => (event.timer ? [{ id: other, event, timer: event.timer }] : []));
   const messages = events.flatMap(({ id: other, event }) => (event.message ? [{ id: other, event, action: event.message.action }] : []));
   const conditions = events.flatMap(({ id: other, event }) => (event.condition ? [{ id: other, event, condition: event.condition }] : []));
-  const error = events.find(({ event }) => event.error);
+  const errors = events.flatMap(({ id: other, event }) => (event.error ? [{ id: other, error: event.error }] : []));
+  const escalations = events.flatMap(({ id: other, event }) => (event.escalation ? [{ id: other, event, escalation: event.escalation }] : []));
+  const cancel = events.find(({ event }) => event.cancel);
+  // An error with a code comes from an error end event, inside a sub-process or a called process; a task's failure has none.
+  const coded = host.type === 'subProcess' || host.type === 'callActivity';
   const free = messageChoices(definition, process, id);
   return (
     <>
@@ -977,22 +1083,70 @@ function BoundaryEvents(props: {
       ) : null}
       {kinds.includes('error') ? (
         <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
-          <legend className="px-1 text-sm text-muted">{host.type === 'subProcess' ? 'If an action inside it fails' : 'If the action fails'}</legend>
-          {error ? (
-            <>
-              <Problems messages={problems.get(error.id)} />
+          <legend className="px-1 text-sm text-muted">{host.type === 'subProcess' ? 'If something inside it fails' : host.type === 'callActivity' ? 'If the called process fails' : 'If the action fails'}</legend>
+          {errors.map(({ id: caught, error }) => (
+            <div key={caught} className="grid gap-1.5 rounded-md bg-sunken p-2">
+              <Problems messages={problems.get(caught)} />
+              {coded ? (
+                <CodeInput
+                  label="Catches the error"
+                  hint="An error end event with this code. Empty: any error, and an action that fails."
+                  value={error}
+                  onChange={(next) => onChange(updateElement(definition, name, caught, (current) => (current.type === 'boundaryEvent' ? { ...current, error: next } : current)))}
+                />
+              ) : null}
               <p className="m-0 text-sm">
-                The process leads on by the error's path{host.type === 'subProcess' ? ', and what still runs inside ends' : ''}. Drag from the lightning bolt to lead it elsewhere.
+                The process leads on by the error's path{coded ? ', and what still runs inside ends' : ''}. Drag from the lightning bolt to lead it elsewhere.
               </p>
-              <Remove onClick={() => onChange(removeElement(definition, name, error.id))}>Remove the error event</Remove>
+              <Remove onClick={() => onChange(removeElement(definition, name, caught))}>Remove the error event</Remove>
+            </div>
+          ))}
+          {errors.length ? null : <p className="m-0 text-sm text-muted">The process stops at the action until an admin retries it.</p>}
+          {!errors.length || coded ? (
+            <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'error').definition)}>
+              {errors.length ? 'Catch another error' : 'Catch the failure'}
+            </Button>
+          ) : null}
+        </fieldset>
+      ) : null}
+      {kinds.includes('escalation') ? (
+        <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+          <legend className="px-1 text-sm text-muted">{host.type === 'callActivity' ? 'When the called process escalates' : 'When something inside escalates'}</legend>
+          {escalations.map(({ id: heard, event, escalation }) => (
+            <div key={heard} className="grid gap-1.5 rounded-md bg-sunken p-2">
+              <Problems messages={problems.get(heard)} />
+              <CodeInput
+                label="Hears the escalation"
+                hint="An escalation with this code. Empty: any escalation."
+                value={escalation}
+                onChange={(next) => onChange(updateElement(definition, name, heard, (current) => (current.type === 'boundaryEvent' ? { ...current, escalation: next } : current)))}
+              />
+              <Checkbox
+                label={words.interrupts}
+                checked={event.interrupting}
+                onChange={(interrupting) => onChange(updateElement(definition, name, heard, (current) => ({ ...current, interrupting }) as ProcessElement))}
+              />
+              <Remove onClick={() => onChange(removeElement(definition, name, heard))}>Remove the escalation event</Remove>
+            </div>
+          ))}
+          <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'escalation').definition)}>
+            Hear an escalation
+          </Button>
+        </fieldset>
+      ) : null}
+      {kinds.includes('cancel') ? (
+        <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+          <legend className="px-1 text-sm text-muted">When the transaction is cancelled</legend>
+          {cancel ? (
+            <>
+              <Problems messages={problems.get(cancel.id)} />
+              <p className="m-0 text-sm">A cancel end inside undoes what completed in the transaction, newest first. Then the process leads on by this path.</p>
+              <Remove onClick={() => onChange(removeElement(definition, name, cancel.id))}>Remove the cancel event</Remove>
             </>
           ) : (
-            <>
-              <p className="m-0 text-sm text-muted">The process stops at the action until an admin retries it.</p>
-              <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'error').definition)}>
-                Catch the failure
-              </Button>
-            </>
+            <Button size="sm" onClick={() => onChange(addBoundary(definition, name, id, 'cancel').definition)}>
+              Add a cancel event
+            </Button>
           )}
         </fieldset>
       ) : null}
@@ -1035,6 +1189,8 @@ function ElementPanel(props: {
     ),
   ];
   const links = Object.values(process.elements).flatMap((candidate) => (candidate.type === 'intermediateCatchEvent' && candidate.link !== undefined ? [candidate.link] : []));
+  const around = 'in' in element && element.in !== undefined ? process.elements[element.in] : undefined;
+  const inTransaction = around?.type === 'subProcess' && around.transaction === true;
   // The action a catch event waits for, kept apart: the narrowing of the element doesn't reach a field's render function.
   const awaited = element.type === 'intermediateCatchEvent' ? element.message?.action : undefined;
 
@@ -1125,37 +1281,86 @@ function ElementPanel(props: {
       ) : null}
       {element.type === 'endEvent' ? (
         <>
-          <Checkbox
-            label="End the whole process here, other paths too"
-            checked={element.terminate}
-            onChange={(terminate) =>
-              set((current) => {
-                if (current.type !== 'endEvent') return current;
-                const { message: _message, ...rest } = current;
-                return { ...rest, terminate };
-              })
-            }
-          />
-          <Checkbox
-            label="Send a message as it ends"
-            checked={element.message !== undefined}
-            disabled={!sendChoices(definition, name).length}
-            onChange={(on) =>
-              set((current) => {
-                if (current.type !== 'endEvent') return current;
-                const { message: _message, ...rest } = current;
-                const first = sendChoices(definition, name)[0];
-                return on && first ? { ...rest, terminate: false, message: { action: first.action, ...(first.record ? { record: first.record } : {}) } } : rest;
-              })
-            }
-          />
+          <Field label="As it ends">
+            {(inputId) => (
+              <Select
+                id={inputId}
+                value={endWay(element)}
+                onChange={(event) => {
+                  const way = event.target.value;
+                  let next = updateElement(definition, name, id, (current) => {
+                    if (current.type !== 'endEvent') return current;
+                    const { message: _message, error: _error, escalation: _escalation, compensate: _compensate, cancel: _cancel, ...rest } = current;
+                    const plain = { ...rest, terminate: way === 'terminate' };
+                    const first = sendChoices(definition, name)[0];
+                    if (way === 'message' && first) return { ...plain, message: { action: first.action, ...(first.record ? { record: first.record } : {}) } };
+                    if (way === 'error') return { ...plain, error: true };
+                    if (way === 'escalation') return { ...plain, escalation: true };
+                    if (way === 'compensate') return { ...plain, compensate: true };
+                    if (way === 'cancel') return { ...plain, cancel: true };
+                    return plain;
+                  });
+                  // A cancel leaves the transaction by its cancel event: add one if it has none.
+                  const around = element.in;
+                  const leaves = Object.values(process.elements).some((other) => other.type === 'boundaryEvent' && other.attachedTo === around && other.cancel);
+                  if (way === 'cancel' && around !== undefined && !leaves) next = addBoundary(next, name, around, 'cancel').definition;
+                  onChange(next);
+                }}
+              >
+                <option value="none">Nothing more happens</option>
+                <option value="terminate">{element.in === undefined ? 'All other paths end too' : 'All other paths in the sub-process end too'}</option>
+                <option value="message" disabled={!sendChoices(definition, name).length}>
+                  It sends a message
+                </option>
+                <option value="error">It raises an error</option>
+                <option value="escalation">It escalates</option>
+                <option value="compensate">It undoes what completed here</option>
+                {inTransaction ? <option value="cancel">It cancels the transaction</option> : null}
+              </Select>
+            )}
+          </Field>
           {element.message ? <SendPicker definition={definition} name={name} value={element.message} onChange={(message) => set((current) => ({ ...current, message }) as ProcessElement)} /> : null}
+          {element.error ? (
+            <CodeInput
+              label="Error code"
+              hint="The error event on a sub-process or call around it with this code, or one for any error, catches it, and ends what it sits on."
+              value={element.error}
+              onChange={(error) => set((current) => ({ ...current, error }) as ProcessElement)}
+            />
+          ) : null}
+          {element.escalation ? (
+            <CodeInput
+              label="Escalation code"
+              hint="The escalation event on a sub-process or call around it with this code, or one for any escalation, hears it."
+              value={element.escalation}
+              onChange={(escalation) => set((current) => ({ ...current, escalation }) as ProcessElement)}
+            />
+          ) : null}
+          {element.compensate ? (
+            <p className="m-0 text-sm text-muted">Each task that completed {element.in === undefined ? 'in the process' : 'in the sub-process'} and has an undo action runs it once, newest first.</p>
+          ) : null}
+          {element.cancel ? <p className="m-0 text-sm text-muted">What completed in the transaction is undone, newest first, and the path leaves by its cancel event.</p> : null}
         </>
       ) : null}
       {element.type === 'scriptTask' ? <ScriptSteps definition={definition} name={name} id={id} onChange={onChange} /> : null}
+      {element.type === 'scriptTask' ? <UndoPicker definition={definition} name={name} id={id} onChange={onChange} /> : null}
       {element.type === 'scriptTask' || element.type === 'sendTask' ? <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} /> : null}
       {element.type === 'sendTask' || (element.type === 'intermediateThrowEvent' && element.message) ? (
         <SendPicker definition={definition} name={name} value={element.message!} onChange={(message) => set((current) => ({ ...current, message }) as ProcessElement)} />
+      ) : null}
+      {element.type === 'sendTask' ? <UndoPicker definition={definition} name={name} id={id} onChange={onChange} /> : null}
+      {element.type === 'intermediateThrowEvent' && element.escalation ? (
+        <CodeInput
+          label="Escalation code"
+          hint="The escalation event on a sub-process or call around it with this code, or one for any escalation, hears it. The path goes on, unless that event ends what it came from."
+          value={element.escalation}
+          onChange={(escalation) => set((current) => ({ ...current, escalation }) as ProcessElement)}
+        />
+      ) : null}
+      {element.type === 'intermediateThrowEvent' && element.compensate ? (
+        <p className="m-0 text-sm text-muted">
+          Each task that completed {element.in === undefined ? 'in the process' : 'in the sub-process'} and has an undo action runs it once, newest first. Then the path goes on.
+        </p>
       ) : null}
       {element.type === 'businessRuleTask' ? (
         <fieldset className="m-0 grid gap-1 rounded-md border border-line p-3">
@@ -1244,7 +1449,7 @@ function ElementPanel(props: {
           )}
         </Field>
       ) : null}
-      {element.type === 'intermediateThrowEvent' && element.link === undefined && !element.message ? (
+      {element.type === 'intermediateThrowEvent' && element.link === undefined && !element.message && !element.escalation && !element.compensate ? (
         <p className="m-0 text-sm text-muted">A milestone: the instance's history marks when a path passes it.</p>
       ) : null}
       {element.type === 'userTask' ? (
@@ -1443,9 +1648,21 @@ function ElementPanel(props: {
           </Field>
         )
       ) : null}
+      {element.type === 'serviceTask' && element.action ? <UndoPicker definition={definition} name={name} id={id} onChange={onChange} /> : null}
       {element.type === 'serviceTask' ? <BoundaryEvents definition={definition} name={name} id={id} problems={problems} onChange={onChange} /> : null}
       {element.type === 'subProcess' ? (
         <>
+          <Checkbox
+            label="A transaction: a cancel end inside undoes what completed in it"
+            checked={element.transaction === true}
+            onChange={(on) =>
+              set((current) => {
+                if (current.type !== 'subProcess') return current;
+                const { transaction: _transaction, ...rest } = current;
+                return on ? { ...rest, transaction: true } : rest;
+              })
+            }
+          />
           <p className="m-0 text-sm text-muted">
             It ends when no path is left inside it. Select a flow inside it to add there. An event on its edge acts on all of it: a deadline for the whole part, or an action inside it that fails.
           </p>

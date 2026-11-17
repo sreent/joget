@@ -14,7 +14,7 @@ import {
   type StoredField,
 } from './fields.js';
 import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { elementName, insideOf, linkTarget, plainStartOf, processGraph, processWork, scopeOf, scopesOf, startEventsOf } from './processes.js';
+import { catcherOn, elementName, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
 import {
   AppDefinition,
   LINE_PATH_PATTERN,
@@ -1137,6 +1137,21 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
       if (message.record) issues.push({ path: `${path}.record`, message: 'A process hears actions on its own record only' });
       messageAction(message.action, `${path}.action`);
     };
+    /** An undo action: an update of the record that the task changed, with no person. */
+    const undoAction = (undo: string, target: string, path: string) => {
+      const action = definition.actions[undo];
+      if (!action) issues.push({ path, message: `No action named ${undo}` });
+      else if (action.entity !== target) issues.push({ path, message: `${undo} works on ${action.entity}, but the task changes ${target}` });
+      else if (action.operation !== 'update') issues.push({ path, message: `${undo} creates a record: an undo changes the record back` });
+      else if (readsPrincipal(action)) issues.push({ path, message: `${undo} reads the person who runs it, but a process undoes with no person` });
+    };
+    /** Where an error or an escalation of a code that an element throws is caught: a sub-process around it, or a call of this process. */
+    const caughtAround = (id: string, kind: 'error' | 'escalation', code: string | undefined): boolean =>
+      scopesOf(process, id).some((scope) => catcherOn(process, graph, scope, kind, code) !== undefined) ||
+      Object.values(definition.processes ?? {}).some((caller) => {
+        const callerGraph = processGraph(caller);
+        return Object.entries(caller.elements).some(([callId, element]) => element.type === 'callActivity' && element.process === name && catcherOn(caller, callerGraph, callId, kind, code) !== undefined);
+      });
     /** A message the process sends: an update action that it runs with the app's authority, on its record or on the one a reference field names. */
     const sent = (message: Message, path: string) => {
       let target = process.entity;
@@ -1201,15 +1216,26 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
             startedBy.set(action, id);
           });
           break;
-        case 'endEvent':
+        case 'endEvent': {
           if (element.in === undefined) ends++;
-          if (element.message) {
-            sent(element.message, `${path}.message`);
-            if (element.terminate) issues.push({ path, message: `${label(id)} sends a message or ends everything: one of the two` });
+          const ways = [element.terminate, element.message, element.error, element.escalation, element.compensate, element.cancel].filter(Boolean).length;
+          if (ways > 1) issues.push({ path, message: `${label(id)} ends in one way: for all, or with a message, an error, an escalation, an undo or a cancel` });
+          if (element.message) sent(element.message, `${path}.message`);
+          if (element.error && !caughtAround(id, 'error', raisedCode(element.error))) {
+            issues.push({
+              path: `${path}.error`,
+              message: `Nothing catches the error that ${label(id)} raises: put it in a sub-process with an error event, or call this process from one with an error event on the call`,
+            });
+          }
+          if (element.cancel) {
+            const transaction = element.in !== undefined ? process.elements[element.in] : undefined;
+            if (transaction?.type !== 'subProcess' || !transaction.transaction) issues.push({ path: `${path}.cancel`, message: 'A cancel end event sits in a transaction' });
           }
           break;
+        }
         case 'scriptTask': {
           if (!element.steps.length) issues.push({ path: `${path}.steps`, message: `${label(id)} needs a step` });
+          if (element.undo) undoAction(element.undo, process.entity, `${path}.undo`);
           // The steps are checked as an action's: the script runs as an update of the process's record.
           const script: Action = { label: element.name, description: element.name, entity: process.entity, operation: 'update', input: [], set: {}, confirm: 'none', steps: element.steps };
           checkSteps(definition, script, path, fields, lines, issues);
@@ -1239,16 +1265,23 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           }
           break;
         }
-        case 'sendTask':
+        case 'sendTask': {
           sent(element.message, `${path}.message`);
+          if (element.undo) {
+            const field = element.message.record ? fields.get(element.message.record)?.field : undefined;
+            undoAction(element.undo, field?.type === 'reference' ? field.entity : process.entity, `${path}.undo`);
+          }
           oneOut();
           break;
+        }
         case 'receiveTask':
           heard(element.message, `${path}.message`);
           oneOut();
           break;
         case 'intermediateThrowEvent': {
-          if (element.message && element.link !== undefined) issues.push({ path, message: `${label(id)} sends a message or is a link: one of the two` });
+          if ([element.message, element.link, element.escalation, element.compensate].filter((kind) => kind !== undefined).length > 1) {
+            issues.push({ path, message: `${label(id)} sends a message, escalates, undoes, or is a link: one of these` });
+          }
           if (element.message) sent(element.message, `${path}.message`);
           if (element.link !== undefined) {
             if (!linkTarget(process, id)) issues.push({ path: `${path}.link`, message: `No catch link named ${element.link} is where ${label(id)} is` });
@@ -1262,6 +1295,12 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
           const inner = startEventsOf(process, id);
           if (inner.length !== 1) issues.push({ path, message: inner.length ? `${label(id)} starts at one start event inside it` : `${label(id)} needs a start event inside it` });
           if (!Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id)) issues.push({ path, message: `${label(id)} needs an end event inside it` });
+          const cancels = Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id && other.cancel);
+          const leaves = (graph.boundaries.get(id) ?? []).some((boundary) => {
+            const event = process.elements[boundary];
+            return event?.type === 'boundaryEvent' && event.cancel;
+          });
+          if (element.transaction && cancels && !leaves) issues.push({ path, message: `${label(id)} has a cancel end event inside it, but no cancel event on its boundary to leave by` });
           oneOut();
           break;
         }
@@ -1362,6 +1401,7 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         }
         case 'serviceTask':
           if (Boolean(element.action) === Boolean(element.skill)) issues.push({ path, message: `${label(id)} runs an action or starts an a7c skill: one of the two` });
+          if (element.undo) undoAction(element.undo, process.entity, `${path}.undo`);
           if (element.action && updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
             issues.push({ path: `${path}.action`, message: `${element.action} reads the person who runs it, but a service task runs it with no person` });
           }
@@ -1427,25 +1467,36 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
         }
         case 'boundaryEvent': {
           const host = process.elements[element.attachedTo];
-          const kinds = [element.timer, element.message, element.error, element.condition].filter(Boolean).length;
-          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message, a condition or an error: one of these` });
+          const kinds = [element.timer, element.message, element.error, element.condition, element.escalation, element.cancel].filter(Boolean).length;
+          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message, a condition, an error, an escalation or a cancel: one of these` });
           if (element.condition) checkCondition(element.condition, scope, `${path}.condition`, issues);
           if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
-          else if (element.error) {
-            if (!['serviceTask', 'scriptTask', 'sendTask', 'subProcess'].includes(host.type)) {
+          else if (element.escalation) {
+            if (host.type !== 'subProcess' && host.type !== 'callActivity') {
+              issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} can't hear an escalation: an escalation event sits on a sub-process or a call, for what escalates inside it` });
+            }
+          } else if (element.cancel) {
+            if (host.type !== 'subProcess' || !host.transaction) issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a transaction: a cancel event sits on a transaction` });
+            if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'A cancel always ends the transaction' });
+          } else if (element.error) {
+            if (!['serviceTask', 'scriptTask', 'sendTask', 'subProcess', 'callActivity'].includes(host.type)) {
               issues.push({
                 path: `${path}.attachedTo`,
-                message: `${label(element.attachedTo)} can't catch an error: an error sits on a task that changes a record, which can fail, or on a sub-process, for what fails inside it`,
+                message: `${label(element.attachedTo)} can't catch an error: an error sits on a task that changes a record, which can fail, or on a sub-process or a call, for what fails inside it`,
               });
             } else if (host.type === 'serviceTask' && host.skill) {
               issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} starts an a7c skill, which runs later in a7c: an error event catches the failure of an action` });
+            } else if (host.type !== 'subProcess' && host.type !== 'callActivity' && raisedCode(element.error) !== undefined) {
+              // A task's failure has no code: only an error end event inside a sub-process or a called process raises one.
+              issues.push({ path: `${path}.error`, message: `${label(id)} catches only the error ${raisedCode(element.error)}, but a task that fails raises no code: leave the code out` });
             }
             if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'An error always ends what it sits on' });
-            const errors = (graph.boundaries.get(element.attachedTo) ?? []).filter((other) => {
+            // One error event for each code, and one for any.
+            const same = (graph.boundaries.get(element.attachedTo) ?? []).filter((other) => {
               const candidate = process.elements[other];
-              return candidate?.type === 'boundaryEvent' && candidate.error;
+              return candidate?.type === 'boundaryEvent' && candidate.error !== undefined && raisedCode(candidate.error) === raisedCode(element.error);
             });
-            if (errors[0] !== id && errors.includes(id)) issues.push({ path, message: `${label(element.attachedTo)} has one error event at most` });
+            if (same[0] !== id && same.includes(id)) issues.push({ path, message: `${label(element.attachedTo)} has one error event for each code at most` });
           } else if (!['userTask', 'receiveTask', 'subProcess', 'callActivity'].includes(host.type)) {
             issues.push({
               path: `${path}.attachedTo`,

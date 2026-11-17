@@ -1,6 +1,6 @@
 import { evaluateCondition, type Condition, type ConditionEnv } from '@platform/authz';
 import type { StoredDefinition } from './fields.js';
-import { DURATION_PATTERN, type BoundaryEventElement, type CatchEventElement, type Process, type ProcessElement, type ProcessElementType, type Timer, type VoteRule } from './schema.js';
+import { DURATION_PATTERN, type BoundaryEventElement, type CatchEventElement, type Process, type ProcessElement, type ProcessElementType, type Raised, type Timer, type VoteRule } from './schema.js';
 import { conditionRecord, type RecordValues } from './values.js';
 
 /*
@@ -251,12 +251,30 @@ export function reachable(process: Process, graph: ProcessGraph, from: string): 
   return seen;
 }
 
-/** What an event waits for: a time, an action saved on the record (a message), a condition on the record, the failure of an action, or a link. */
-export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' | 'condition' | 'link' {
+/** What an event waits for: a time, an action saved on the record (a message), a condition on the record, an error, an escalation, a cancel, or a link. */
+export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' | 'condition' | 'link' | 'escalation' | 'cancel' {
   if (event.message) return 'message';
   if (event.condition) return 'condition';
   if (event.type === 'intermediateCatchEvent' && event.link !== undefined) return 'link';
+  if (event.type === 'boundaryEvent' && event.escalation) return 'escalation';
+  if (event.type === 'boundaryEvent' && event.cancel) return 'cancel';
   return event.type === 'boundaryEvent' && event.error ? 'error' : 'timer';
+}
+
+/** The code of an error or an escalation, if it has one. */
+export const raisedCode = (raised: Raised | undefined): string | undefined => (raised === undefined || raised === true ? undefined : raised.code);
+
+/** Whether a catch takes a throw: a catch without a code takes all; one with a code, only the throws of that code. */
+export const catches = (catcher: Raised | undefined, thrown: string | undefined): boolean => catcher !== undefined && (catcher === true || catcher.code === thrown);
+
+/** The event on a host's boundary that catches an error or an escalation of a code: the one for that code first, then one for all. */
+export function catcherOn(process: Process, graph: ProcessGraph, host: string, kind: 'error' | 'escalation', code: string | undefined): string | undefined {
+  const catchers = (graph.boundaries.get(host) ?? []).flatMap((boundary) => {
+    const event = process.elements[boundary];
+    const raised = event?.type === 'boundaryEvent' ? event[kind] : undefined;
+    return raised !== undefined && catches(raised, code) ? [{ boundary, all: raised === true }] : [];
+  });
+  return (catchers.find((catcher) => !catcher.all) ?? catchers[0])?.boundary;
 }
 
 /** The actions whose commit a process waits for at a message: at a catch event, a receive task, or on a boundary. */
@@ -314,8 +332,9 @@ export function processWork(process: Process): {
   readonly scripts: readonly string[];
 } {
   const tasks = Object.values(process.elements).filter((element): element is Extract<ProcessElement, { type: 'serviceTask' }> => element.type === 'serviceTask');
+  const undoes = Object.values(process.elements).flatMap((element) => ('undo' in element && element.undo ? [element.undo] : []));
   return {
-    actions: [...new Set([...tasks.flatMap((task) => (task.action ? [task.action] : [])), ...sentMessages(process).map((message) => message.action)])],
+    actions: [...new Set([...tasks.flatMap((task) => (task.action ? [task.action] : [])), ...sentMessages(process).map((message) => message.action), ...undoes])],
     skills: [...new Set(tasks.flatMap((task) => (task.skill ? [task.skill] : [])))],
     calls: [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'callActivity' ? [element.process] : [])))],
     scripts: Object.values(process.elements).flatMap((element) => (element.type === 'scriptTask' ? [element.name] : [])),

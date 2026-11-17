@@ -948,6 +948,167 @@ describe('conditions, event-based gateways and starts by themselves', () => {
   });
 });
 
+describe('errors with codes, escalations, undo and transactions', () => {
+  /** The leave app with a room to book and to free again, and a note for HR. */
+  const withRoom = (definition: Record<string, any>) => {
+    definition['entities'].leave_request.fields.push({ name: 'room', label: 'Room', type: 'text' }, { name: 'hr_note', label: 'Note for HR', type: 'text' });
+    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    definition['actions'].book_room = update('Book a room', { room: 'Booked' });
+    definition['actions'].free_room = update('Free the room', { room: 'Freed' });
+    definition['actions'].tell_hr = update('Tell HR', { hr_note: 'Late' });
+  };
+  const values = async (app: string, id: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200)).values;
+  const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
+
+  it('books a room in a transaction, and a cancel inside it frees the room again', async () => {
+    const app = await leaveApp('Leave, with a room', (definition) => {
+      withRoom(definition);
+      definition['processes'].leave_approval = {
+        label: 'Leave, with a room',
+        entity: 'leave_request',
+        elements: {
+          requested: { type: 'startEvent', actions: ['request_leave'] },
+          booking: { type: 'subProcess', name: 'Booking', transaction: true },
+          b_start: { type: 'startEvent', in: 'booking' },
+          book: { type: 'serviceTask', name: 'Book a room', in: 'booking', action: 'book_room', undo: 'free_room' },
+          b_gate: { type: 'exclusiveGateway', in: 'booking' },
+          b_cancel: { type: 'endEvent', name: 'Too long', in: 'booking', cancel: true },
+          b_end: { type: 'endEvent', in: 'booking' },
+          cancelled: { type: 'boundaryEvent', name: 'Cancelled', attachedTo: 'booking', cancel: true },
+          booked: { type: 'endEvent', name: 'Booked' },
+          no_room: { type: 'endEvent', name: 'No room' },
+        },
+        flows: {
+          f1: { from: 'requested', to: 'booking' },
+          b1: { from: 'b_start', to: 'book' },
+          b2: { from: 'book', to: 'b_gate' },
+          b3: { from: 'b_gate', to: 'b_cancel', when: { gt: [{ ref: 'record.days' }, 10] } },
+          b4: { from: 'b_gate', to: 'b_end', default: true },
+          f2: { from: 'booking', to: 'booked' },
+          f3: { from: 'cancelled', to: 'no_room' },
+        },
+      };
+    });
+
+    // Short leave: the transaction completes, and the room stays booked.
+    const short = await ask(app, { days: 3, starts: '2027-09-06', ends: '2027-09-08' });
+    let [instance] = await processesOf(app, short.record.id);
+    expect(instance.status).toBe('completed');
+    expect(kinds(instance)).toEqual([
+      ['started', 'requested'],
+      ['entered', 'booking'],
+      ['ran', 'book'],
+      ['exited', 'booking'],
+      ['ended', 'booked'],
+    ]);
+    expect(instance.events[2].detail).toEqual({ action: 'book_room', scope: expect.any(String), undo: 'free_room', recordId: short.record.id });
+    expect((await values(app, short.record.id)).room).toBe('Booked');
+
+    // Long leave: the cancel end undoes the booking, and the path leaves by the cancel event.
+    const long = await ask(app, { days: 12, starts: '2027-10-04', ends: '2027-10-19' });
+    [instance] = await processesOf(app, long.record.id);
+    expect(instance.status).toBe('completed');
+    expect(kinds(instance)).toEqual([
+      ['started', 'requested'],
+      ['entered', 'booking'],
+      ['ran', 'book'],
+      ['compensated', 'book'],
+      ['transaction_cancelled', 'cancelled'],
+      ['ended', 'no_room'],
+    ]);
+    expect(instance.events[3].detail).toMatchObject({ of: expect.any(String), action: 'free_room', from: 'b_cancel' });
+    expect(instance.events[4].detail).toEqual({ transaction: 'booking', from: 'b_cancel' });
+    expect((await values(app, long.record.id)).room).toBe('Freed');
+  });
+
+  it('hears an escalation from a called process, and an error from it undoes what the caller did', async () => {
+    const app = await leaveApp('Leave, with a budget', (definition) => {
+      withRoom(definition);
+      definition['processes'].budget_check = {
+        label: 'Budget check',
+        entity: 'leave_request',
+        elements: {
+          start: { type: 'startEvent' },
+          gate: { type: 'exclusiveGateway', name: 'How long?' },
+          no_budget: { type: 'endEvent', name: 'No budget', error: { code: 'no_budget' } },
+          late: { type: 'intermediateThrowEvent', name: 'Late', escalation: { code: 'late' } },
+          fine: { type: 'endEvent', name: 'Fine' },
+        },
+        flows: {
+          f1: { from: 'start', to: 'gate' },
+          over: { from: 'gate', to: 'no_budget', when: { gt: [{ ref: 'record.days' }, 20] } },
+          long: { from: 'gate', to: 'late', when: { all: [{ gt: [{ ref: 'record.days' }, 5] }, { lte: [{ ref: 'record.days' }, 20] }] } },
+          short: { from: 'gate', to: 'fine', default: true },
+          f2: { from: 'late', to: 'fine' },
+        },
+      };
+      definition['processes'].leave_approval = {
+        label: 'Leave, with a budget',
+        entity: 'leave_request',
+        elements: {
+          requested: { type: 'startEvent', actions: ['request_leave'] },
+          book: { type: 'serviceTask', name: 'Book a room', action: 'book_room', undo: 'free_room' },
+          check: { type: 'callActivity', name: 'Check the budget', process: 'budget_check' },
+          heard: { type: 'boundaryEvent', name: 'Late', attachedTo: 'check', interrupting: false, escalation: { code: 'late' } },
+          tell: { type: 'serviceTask', name: 'Tell HR', action: 'tell_hr' },
+          broke: { type: 'boundaryEvent', name: 'No budget', attachedTo: 'check', error: { code: 'no_budget' } },
+          undo: { type: 'intermediateThrowEvent', name: 'Undo', compensate: true },
+          approved: { type: 'endEvent', name: 'Approved' },
+          told: { type: 'endEvent', name: 'Told' },
+          refused: { type: 'endEvent', name: 'Refused' },
+        },
+        flows: {
+          f1: { from: 'requested', to: 'book' },
+          f2: { from: 'book', to: 'check' },
+          f3: { from: 'check', to: 'approved' },
+          f4: { from: 'heard', to: 'tell' },
+          f5: { from: 'tell', to: 'told' },
+          f6: { from: 'broke', to: 'undo' },
+          f7: { from: 'undo', to: 'refused' },
+        },
+      };
+    });
+    const of = async (recordId: string, process: string) => (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
+
+    // Short leave: the budget holds, and the leave is approved with its room.
+    const short = await ask(app, { days: 3, starts: '2027-11-15', ends: '2027-11-17' });
+    let leave = await of(short.record.id, 'leave_approval');
+    expect(leave.status).toBe('completed');
+    expect(leave.events.at(-1)).toMatchObject({ kind: 'ended', element: 'approved' });
+
+    // Longer leave: the check escalates, HR hears of it, and the check goes on to its end.
+    const longer = await ask(app, { days: 8, starts: '2027-11-22', ends: '2027-12-01' });
+    leave = await of(longer.record.id, 'leave_approval');
+    const check = await of(longer.record.id, 'budget_check');
+    expect(check).toMatchObject({ status: 'completed', calledBy: leave.id });
+    expect(leave.status).toBe('completed');
+    expect(leave.events.find((event: { kind: string }) => event.kind === 'escalated')).toMatchObject({ element: 'heard', detail: { from: 'late', code: 'late', instance: check.id } });
+    expect(await values(app, longer.record.id)).toMatchObject({ room: 'Booked', hr_note: 'Late' });
+
+    // Leave beyond the budget: the check ends with an error, which the call catches, and the caller frees the room.
+    const over = await ask(app, { days: 25, starts: '2028-01-03', ends: '2028-02-04' });
+    leave = await of(over.record.id, 'leave_approval');
+    const failed = await of(over.record.id, 'budget_check');
+    expect(failed.status).toBe('cancelled');
+    expect(failed.events.at(-1)).toMatchObject({ kind: 'cancelled', element: 'no_budget' });
+    expect(leave.status).toBe('completed');
+    expect(kinds(leave)).toEqual([
+      ['started', 'requested'],
+      ['ran', 'book'],
+      ['called', 'check'],
+      ['error_caught', 'broke'],
+      ['compensated', 'book'],
+      ['ended', 'refused'],
+    ]);
+    expect(leave.events[3].detail).toEqual({ from: 'no_budget', code: 'no_budget', instance: failed.id });
+    expect((await values(app, over.record.id)).room).toBe('Freed');
+
+    // Started by itself, nothing catches the error: the path waits for an operator.
+    const alone = (await inject({ method: 'POST', url: `/v1/apps/${app}/processes/budget_check/start`, ...as(alice), payload: { recordId: over.record.id } }, 201)).json();
+    expect(alone).toMatchObject({ status: 'running', stuck: [{ element: 'no_budget', error: 'No budget: nothing catches the error no_budget' }] });
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

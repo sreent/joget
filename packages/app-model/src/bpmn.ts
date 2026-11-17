@@ -2,8 +2,8 @@ import { isRef, type Condition } from '@platform/authz';
 import { conditionText, parseConditionText } from './condition-text.js';
 import { isExpression, type Expression } from './expressions.js';
 import { entityFields, lineOwners, type StoredDefinition } from './fields.js';
-import { messageActions, processGraph, scopeOf, scopesOf, sentMessages } from './processes.js';
-import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Several, type Step, type Timer } from './schema.js';
+import { messageActions, processGraph, raisedCode, scopeOf, scopesOf, sentMessages } from './processes.js';
+import { DURATION_PATTERN, ELEMENT_ID_PATTERN, NAME_PATTERN, type Diagram, type Flow, type Message, type Process, type ProcessElement, type Raised, type Several, type Step, type Timer } from './schema.js';
 import { mapRefs } from './validate.js';
 import { attribute, childElements, parseXml, textOf, writeXml, XmlError, type XmlElement, type XmlOut } from './xml.js';
 
@@ -249,6 +249,8 @@ const TAGS: Readonly<Record<ProcessElement['type'], string>> = {
 
 /** The ID of the BPMN message that stands for an action committing on the record. */
 const messageId = (action: string) => `Message_${action}`;
+/** The ID of the BPMN error or escalation of a code. */
+const raisedId = (kind: 'error' | 'escalation', code: string) => `${kind === 'error' ? 'Error' : 'Escalation'}_${code}`;
 /** The language of a script task's script: Ambit's steps, as JSON. Ambit runs no other script. */
 export const STEPS_FORMAT = 'urn:ambit:steps';
 /** The implementation of a business rule task that checks the app's rules. */
@@ -366,10 +368,31 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         children.push({ name: 'bpmn:conditionalEventDefinition', attributes: { id: `${id}_condition` }, children: [formal('bpmn:condition', LANGUAGES.condition, conditionText(element.condition))] });
       }
       if ('message' in element && element.message) children.push(messageDefinition(id, element.message));
-      if (element.type === 'boundaryEvent' && element.error) children.push({ name: 'bpmn:errorEventDefinition', attributes: { id: `${id}_error` } });
+      if ('error' in element && element.error) children.push(raisedDefinition(id, 'error', element.error));
+      if ('escalation' in element && element.escalation) children.push(raisedDefinition(id, 'escalation', element.escalation));
+      if ('compensate' in element && element.compensate) children.push({ name: 'bpmn:compensateEventDefinition', attributes: { id: `${id}_compensate` } });
+      if ('cancel' in element && element.cancel) children.push({ name: 'bpmn:cancelEventDefinition', attributes: { id: `${id}_cancel` } });
       if ('link' in element && element.link !== undefined) children.push({ name: 'bpmn:linkEventDefinition', attributes: { id: `${id}_link`, name: element.link } });
     }
-    return { name: TAGS[element.type], attributes, children };
+    // A transaction is BPMN's own element.
+    return { name: element.type === 'subProcess' && element.transaction ? 'bpmn:transaction' : TAGS[element.type], attributes, children };
+  };
+  /** An error or an escalation, by its code: BPMN keeps each code in a root element that events refer to. */
+  const raisedDefinition = (id: string, kind: 'error' | 'escalation', raised: Raised): XmlOut => {
+    const code = raisedCode(raised);
+    return { name: `bpmn:${kind}EventDefinition`, attributes: { id: `${id}_${kind}`, [`${kind}Ref`]: code ? raisedId(kind, code) : undefined } };
+  };
+  /**
+   * What undoes a task, as BPMN draws it: a compensation event on the task's boundary, joined by an
+   * association to a handler task for compensation, which runs the undo action.
+   */
+  const undoXml = (id: string, element: ProcessElement): XmlOut[] => {
+    if (!('undo' in element) || !element.undo) return [];
+    return [
+      { name: 'bpmn:boundaryEvent', attributes: { id: `${id}_undo`, attachedToRef: id }, children: [{ name: 'bpmn:compensateEventDefinition', attributes: { id: `${id}_undo_def` } }] },
+      { name: 'bpmn:serviceTask', attributes: { id: `${id}_undo_task`, name: `Undo: ${element.name}`, isForCompensation: 'true', implementation: 'urn:ambit:action', 'ambit:action': element.undo } },
+      { name: 'bpmn:association', attributes: { id: `${id}_undo_link`, associationDirection: 'One', sourceRef: `${id}_undo`, targetRef: `${id}_undo_task` } },
+    ];
   };
   const flowXml = (id: string, flow: Flow): XmlOut => {
     const children: XmlOut[] = [];
@@ -380,7 +403,7 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
   /** The elements and flows of the process itself, or of one of its sub-processes. */
   function contentOf(scope: string | undefined): XmlOut[] {
     return [
-      ...Object.entries(process!.elements).flatMap(([id, element]) => (scopeOf(process!, id) === scope ? [elementXml(id, element)] : [])),
+      ...Object.entries(process!.elements).flatMap(([id, element]) => (scopeOf(process!, id) === scope ? [elementXml(id, element), ...undoXml(id, element)] : [])),
       ...Object.entries(process!.flows).flatMap(([id, flow]) => (scopeOf(process!, flow.from) === scope ? [flowXml(id, flow)] : [])),
     ];
   }
@@ -396,6 +419,15 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     },
     children: [bounds(shape), ...(shape.label ? [{ name: 'bpmndi:BPMNLabel', children: [bounds(shape.label)] }] : [])],
   }));
+  // The compensation that stands for an undo: its event at the task's bottom left, its handler below the task.
+  for (const [id, element] of Object.entries(process.elements)) {
+    const shape = diagram.shapes[id];
+    if (!('undo' in element) || !element.undo || !shape) continue;
+    shapes.push(
+      { name: 'bpmndi:BPMNShape', attributes: { id: `${id}_undo_di`, bpmnElement: `${id}_undo` }, children: [bounds({ x: shape.x + 2, y: shape.y + shape.height - 18, width: 36, height: 36 })] },
+      { name: 'bpmndi:BPMNShape', attributes: { id: `${id}_undo_task_di`, bpmnElement: `${id}_undo_task` }, children: [bounds({ x: shape.x, y: shape.y + shape.height + 60, width: 100, height: 80 })] },
+    );
+  }
   const edges: XmlOut[] = Object.entries(diagram.edges).map(([id, edge]) => ({
     name: 'bpmndi:BPMNEdge',
     attributes: { id: `${id}_di`, bpmnElement: id },
@@ -422,6 +454,17 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
         name: 'bpmn:message',
         attributes: { id: messageId(action), name: action, 'ambit:action': action },
       })),
+      // Each code of an error or an escalation that the process throws or catches.
+      ...(['error', 'escalation'] as const).flatMap((kind) =>
+        [
+          ...new Set(
+            Object.values(process.elements).flatMap((element) => {
+              const code = kind in element ? raisedCode((element as Record<string, unknown>)[kind] as Raised | undefined) : undefined;
+              return code ? [code] : [];
+            }),
+          ),
+        ].map((code) => ({ name: `bpmn:${kind}`, attributes: { id: raisedId(kind, code), name: code, [`${kind}Code`]: code } })),
+      ),
       {
         name: 'bpmn:process',
         attributes: { id: name, name: process.label, isExecutable: 'true', 'ambit:entity': process.entity },
@@ -453,7 +496,6 @@ const NODE_PARTS = new Set(['incoming', 'outgoing', 'multiInstanceLoopCharacteri
 /** The elements Ambit doesn't run yet, as a sentence names them. */
 const KINDS: Readonly<Record<string, string>> = {
   adHocSubProcess: 'an ad hoc sub-process',
-  transaction: 'a transaction',
   complexGateway: 'a complex gateway',
 };
 const EVENT_KINDS: Readonly<Record<string, string>> = {
@@ -540,6 +582,10 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
     for (const edge of childElements(plane, BPMN_DI, 'BPMNEdge')) edgesOf.set(attribute(edge, 'bpmnElement') ?? '', edge);
   }
 
+  /** The codes of the errors and escalations of the file, by ID. */
+  const codes = new Map(
+    (['error', 'escalation'] as const).flatMap((kind) => bpmn(root, kind).map((item) => [attribute(item, 'id') ?? '', attribute(item, `${kind}Code`) ?? attribute(item, 'name')] as const)),
+  );
   const messages = new Map(
     bpmn(root, 'message').map((message) => [attribute(message, 'id') ?? '', { name: attribute(message, 'name'), action: attribute(message, 'action', AMBIT_BPMN) }] as const),
   );
@@ -597,6 +643,7 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
     const flows: Record<string, Flow> = {};
     const defaults = new Set<string>();
     const collapsed: string[] = [];
+    const undos: Array<{ readonly boundary: string; readonly host: string | undefined }> = [];
     /** Read what stands in the process itself, or in one of its sub-processes. */
     const read = (container: XmlElement, scope: string | undefined): void => {
       for (const node of childElements(container)) {
@@ -606,6 +653,8 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           continue;
         }
         if (node.local === 'sequenceFlow' || NODE_PARTS.has(node.local)) continue;
+        // A handler for compensation is a task's undo action: it comes in as part of the task it undoes.
+        if (attribute(node, 'isForCompensation') === 'true') continue;
         const id = idOf(attribute(node, 'id'), node);
         if (!id) continue;
         const name = label(node);
@@ -654,6 +703,12 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           return action;
         };
         const linkName = () => attribute(bpmn(node, 'linkEventDefinition')[0]!, 'name')?.trim() || undefined;
+        /** An error or an escalation that an event throws or catches: by its code, or any. */
+        const raisedOf = (kind: 'error' | 'escalation'): Raised => {
+          const ref = attribute(bpmn(node, `${kind}EventDefinition`)[0]!, `${kind}Ref`);
+          const code = ref ? codes.get(ref) : undefined;
+          return code && NAME_PATTERN.test(code) ? { code } : true;
+        };
         /** The condition of a conditional event: Ambit's text as it is, another tool's with its names as the record's fields. */
         const conditionOf = (): Condition | undefined => {
           const expression = bpmn(bpmn(node, 'conditionalEventDefinition')[0]!, 'condition')[0];
@@ -684,13 +739,20 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             else elements[id] = { type: 'startEvent', ...(name ? { name } : {}), actions };
             break;
           }
-          case 'endEvent':
-            if (kinds.length > 1 || kinds.some((kind) => kind !== 'terminate' && kind !== 'message')) refuse(`Ambit doesn't end a process with a ${kinds.join(' or ')} event yet`);
-            else if (kinds[0] === 'message') {
+          case 'endEvent': {
+            const plain = { type: 'endEvent' as const, ...(name ? { name } : {}), terminate: false };
+            if (kinds.length > 1 || kinds.some((kind) => !['terminate', 'message', 'error', 'escalation', 'compensation', 'cancel'].includes(kind))) {
+              refuse(`Ambit doesn't end a process with a ${kinds.join(' or ')} event yet`);
+            } else if (kinds[0] === 'message') {
               const message = messageFrom(bpmn(node, 'messageEventDefinition')[0]!);
-              if (message) elements[id] = { type: 'endEvent', ...(name ? { name } : {}), terminate: false, message };
-            } else elements[id] = { type: 'endEvent', ...(name ? { name } : {}), terminate: kinds.includes('terminate') };
+              if (message) elements[id] = { ...plain, message };
+            } else if (kinds[0] === 'error') elements[id] = { ...plain, error: raisedOf('error') };
+            else if (kinds[0] === 'escalation') elements[id] = { ...plain, escalation: raisedOf('escalation') };
+            else if (kinds[0] === 'compensation') elements[id] = { ...plain, compensate: true };
+            else if (kinds[0] === 'cancel') elements[id] = { ...plain, cancel: true };
+            else elements[id] = { ...plain, terminate: kinds.includes('terminate') };
             break;
+          }
           case 'scriptTask': {
             const format = attribute(node, 'scriptFormat');
             const script = bpmn(node, 'script')[0];
@@ -725,11 +787,13 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             break;
           }
           case 'intermediateThrowEvent': {
-            if (kinds.length > 1 || (kinds.length === 1 && kinds[0] !== 'message' && kinds[0] !== 'link')) {
+            if (kinds.length > 1 || (kinds.length === 1 && !['message', 'link', 'escalation', 'compensation'].includes(kinds[0]!))) {
               refuse(`Ambit doesn't throw a ${kinds.join(' or ')} event yet`);
               break;
             }
-            if (kinds[0] === 'message') {
+            if (kinds[0] === 'escalation') elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), escalation: raisedOf('escalation') };
+            else if (kinds[0] === 'compensation') elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), compensate: true };
+            else if (kinds[0] === 'message') {
               const message = messageFrom(bpmn(node, 'messageEventDefinition')[0]!);
               if (message) elements[id] = { type: 'intermediateThrowEvent', ...(name ? { name } : {}), message };
             } else if (kinds[0] === 'link') {
@@ -833,12 +897,13 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             }
             break;
           }
-          case 'subProcess': {
+          case 'subProcess':
+          case 'transaction': {
             if (attribute(node, 'triggeredByEvent') === 'true') {
               refuse("Ambit doesn't run an event sub-process yet");
               break;
             }
-            elements[id] = { type: 'subProcess', name: name ?? id, ...(documentation ? { description: documentation } : {}) };
+            elements[id] = { type: 'subProcess', name: name ?? id, ...(documentation ? { description: documentation } : {}), ...(node.local === 'transaction' ? { transaction: true as const } : {}) };
             if (attribute(shapesOf.get(attribute(node, 'id') ?? '') ?? node, 'isExpanded') !== 'true') collapsed.push(id);
             read(node, id);
             break;
@@ -855,7 +920,12 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             break;
           }
           case 'boundaryEvent': {
-            if (kinds.length !== 1 || !['timer', 'message', 'error', 'conditional'].includes(kinds[0]!)) {
+            if (kinds.length === 1 && kinds[0] === 'compensation') {
+              // An undo: the task's compensation handler, read with the associations of the container.
+              undos.push({ boundary: id, host: idOf(attribute(node, 'attachedToRef'), node) });
+              break;
+            }
+            if (kinds.length !== 1 || !['timer', 'message', 'error', 'conditional', 'escalation', 'cancel'].includes(kinds[0]!)) {
               refuse(`Ambit doesn't catch a ${kinds.join(' or ') || 'plain'} event on a task yet`);
               break;
             }
@@ -872,8 +942,12 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
             } else if (kinds[0] === 'message') {
               const action = messageOf();
               if (action) elements[id] = { ...base, message: { action } };
+            } else if (kinds[0] === 'escalation') {
+              elements[id] = { ...base, escalation: raisedOf('escalation') };
+            } else if (kinds[0] === 'cancel') {
+              elements[id] = { ...base, interrupting: true, cancel: true };
             } else {
-              elements[id] = { ...base, interrupting: true, error: true };
+              elements[id] = { ...base, interrupting: true, error: raisedOf('error') };
             }
             break;
           }
@@ -886,7 +960,27 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
       }
     };
     read(source, undefined);
-    const sequenceFlows = (container: XmlElement): XmlElement[] => [...bpmn(container, 'sequenceFlow'), ...bpmn(container, 'subProcess').flatMap(sequenceFlows)];
+    const sequenceFlows = (container: XmlElement): XmlElement[] => [
+      ...bpmn(container, 'sequenceFlow'),
+      ...[...bpmn(container, 'subProcess'), ...bpmn(container, 'transaction')].flatMap(sequenceFlows),
+    ];
+    // Undos: each compensation event leads, by an association, to a handler that runs the undo action.
+    const containers = (container: XmlElement): XmlElement[] => [container, ...[...bpmn(container, 'subProcess'), ...bpmn(container, 'transaction')].flatMap(containers)];
+    const associations = containers(source).flatMap((container) => bpmn(container, 'association'));
+    const handlers = new Map(
+      containers(source).flatMap((container) => childElements(container).filter((child) => attribute(child, 'isForCompensation') === 'true').map((child) => [attribute(child, 'id') ?? '', child] as const)),
+    );
+    for (const { boundary, host } of undos) {
+      const link = associations.find((association) => idOf(attribute(association, 'sourceRef'), association) === boundary);
+      const handler = link ? handlers.get(attribute(link, 'targetRef') ?? '') : undefined;
+      const action = handler ? attribute(handler, 'action', AMBIT_BPMN) : undefined;
+      const task = host ? elements[host] : undefined;
+      if (!action || !task || !('undo' in task || task.type === 'serviceTask' || task.type === 'scriptTask' || task.type === 'sendTask')) {
+        issues.push({ element: boundary, message: `Ambit undoes a task with one of the app's actions: give the compensation handler of ${boundary} an ambit:action` });
+        continue;
+      }
+      if (task.type === 'serviceTask' || task.type === 'scriptTask' || task.type === 'sendTask') elements[host!] = { ...task, undo: action };
+    }
     for (const node of sequenceFlows(source)) {
       const id = idOf(attribute(node, 'id'), node);
       const from = idOf(attribute(node, 'sourceRef'), node);
