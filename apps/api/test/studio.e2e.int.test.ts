@@ -119,6 +119,18 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByRole('button', { name: 'Save as revision 2' }).click();
     await visible(page.getByText('revision 2'));
     await hidden(page.getByText('Unsaved changes.'));
+
+    // The data model as a canvas: each entity a box of its fields, and an arrow to its lines.
+    await page.getByRole('button', { name: 'Canvas', exact: true }).click();
+    const model = page.getByTestId('model-canvas');
+    await visible(model.getByTestId('model-entity-expense_line'));
+    await visible(model.getByText('its lines'));
+    // A field chosen on the canvas opens beside it, as in the list.
+    await model.getByRole('button', { name: 'Open the field Expense claim: Journey' }).click();
+    await visible(panel(page, 'Field').getByLabel('Label', { exact: true }));
+    expect(await panel(page, 'Field').getByLabel('Label', { exact: true }).inputValue()).toBe('Journey');
+    await shot(page, '2b-data-model');
+    await page.getByRole('button', { name: 'List', exact: true }).click();
   });
 
   it('shows lines under the record they belong to, and works out the total', async () => {

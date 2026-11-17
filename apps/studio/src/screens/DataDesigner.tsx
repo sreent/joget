@@ -22,6 +22,7 @@ import {
   updateField,
 } from '../model/edit.js';
 import type { Definition, Field as FieldDef, FieldType } from '../types.js';
+import { ModelCanvas } from './ModelCanvas.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
@@ -34,6 +35,8 @@ export function DataDesigner({ definition, onChange }: Props) {
   const [selected, setSelected] = useState<string | null>(ordered[0] ?? null);
   const [field, setField] = useState<number | null>(null);
   const [newEntity, setNewEntity] = useState('');
+  // The model as a canvas of all its entities, or the chosen entity's fields as a list.
+  const [show, setShow] = useState<'canvas' | 'list'>('list');
   const entityName = selected && definition.entities[selected] ? selected : (ordered[0] ?? null);
   const entity = entityName ? definition.entities[entityName] : undefined;
 
@@ -78,7 +81,26 @@ export function DataDesigner({ definition, onChange }: Props) {
         </form>
       </Card>
 
-      {entity && entityName ? (
+      <div className="grid min-w-0 content-start gap-3">
+      <div className="modes justify-self-end" role="group" aria-label="Show the data as">
+        <button type="button" aria-pressed={show === 'canvas'} onClick={() => setShow('canvas')}>
+          Canvas
+        </button>
+        <button type="button" aria-pressed={show === 'list'} onClick={() => setShow('list')}>
+          List
+        </button>
+      </div>
+      {show === 'canvas' && entityName ? (
+        <ModelCanvas
+          definition={definition}
+          entity={entityName}
+          field={field}
+          onPick={(name, index) => {
+            setSelected(name);
+            setField(index ?? null);
+          }}
+        />
+      ) : entity && entityName ? (
         <EntityPanel
           key={entityName}
           definition={definition}
@@ -99,6 +121,7 @@ export function DataDesigner({ definition, onChange }: Props) {
       ) : (
         <EmptyState title="No entities yet">An entity is a kind of record, such as an expense claim. Add one on the left.</EmptyState>
       )}
+      </div>
 
       {entity && entityName && field !== null && entity.fields[field] ? (
         <FieldPanel
