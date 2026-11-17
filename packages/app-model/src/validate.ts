@@ -350,8 +350,12 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
                   ...(element.timer && 'date' in element.timer ? { timer: { date: field(element.timer.date) } } : {}),
                   ...(element.condition ? { condition: condition(entity, element.condition) } : {}),
                 };
-              case 'callActivity':
-                return element.record ? { ...element, record: field(element.record) } : element;
+              case 'callActivity': {
+                // A call for each record names a field of the called process's entity.
+                const called = definition.processes?.[element.process];
+                const each = element.each && called ? { ...element.each, field: fieldName(entityName(called.entity))(element.each.field) } : element.each;
+                return { ...element, ...(element.record ? { record: field(element.record) } : {}), ...(each ? { each } : {}) };
+              }
               case 'scriptTask':
                 return { ...element, steps: element.steps.map((each) => step(entity, each)) };
               default:
@@ -1365,9 +1369,17 @@ function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
             else if (called && called.entity !== field.entity) {
               issues.push({ path: `${path}.record`, message: `${element.record} refers to ${field.entity}, but ${called.label} is about ${called.entity}` });
             }
+          } else if (element.each) {
+            // For each record that refers to this one: a reference field of the called process's entity.
+            const field = called ? definition.entities[called.entity]?.fields.find((candidate) => candidate.name === element.each!.field) : undefined;
+            if (called && !field) issues.push({ path: `${path}.each.field`, message: `${called.entity} has no field ${element.each.field}` });
+            else if (field && (field.type !== 'reference' || field.entity !== process.entity)) {
+              issues.push({ path: `${path}.each.field`, message: `${element.each.field} doesn't refer to ${process.entity}: a call runs for each record that refers to this one` });
+            }
           } else if (called && called.entity !== process.entity) {
             issues.push({ path: `${path}.record`, message: `${called.label} is about ${called.entity}: name the reference field whose record it runs on` });
           }
+          if (element.record !== undefined && element.each) issues.push({ path, message: `${label(id)} runs on the record a field names, or for each record that refers to this one: one of the two` });
           if (called) {
             const start = plainStartOf(called);
             const at = start ? called.elements[start] : undefined;

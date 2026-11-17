@@ -1461,6 +1461,69 @@ describe('loops', () => {
   });
 });
 
+describe('calls for each record', () => {
+  it('run a process for each day of a request, at once or one after another, and go on once all have ended', async () => {
+    for (const sequential of [false, true]) {
+      const name = sequential ? 'Leave, day by day' : 'Leave, all days at once';
+      const app = await passingApp(name, (definition) => {
+        definition['entities'].leave_day = {
+          label: 'Leave day',
+          pluralLabel: 'Leave days',
+          fields: [
+            { name: 'request', label: 'Request', type: 'reference', entity: 'leave_request', required: true },
+            { name: 'day', label: 'Day', type: 'date', required: true },
+            { name: 'note', label: 'Note', type: 'text' },
+          ],
+        };
+        definition['actions'].add_day = { label: 'Add a day', description: 'Add a day.', entity: 'leave_day', operation: 'create', input: ['request', 'day'], set: {}, confirm: 'none' };
+        definition['actions'].confirm_day = { label: 'Confirm the day', description: 'Confirm the day.', entity: 'leave_day', operation: 'update', input: [], set: { note: 'Confirmed' }, confirm: 'none' };
+        definition['roles'].employee.entities.leave_day = { read: true, create: true, update: true };
+        definition['roles'].employee.actions.push('add_day', 'confirm_day');
+        definition['roles'].manager.entities.leave_day = { read: true };
+        // Each day waits until someone confirms it.
+        definition['processes'].day_check = {
+          label: 'Day check',
+          entity: 'leave_day',
+          elements: { start: { type: 'startEvent' }, wait: { type: 'receiveTask', name: 'Until confirmed', message: { action: 'confirm_day' } }, end: { type: 'endEvent' } },
+          flows: { f1: { from: 'start', to: 'wait' }, f2: { from: 'wait', to: 'end' } },
+        };
+        const process = definition['processes'].leave_approval;
+        process.elements.days = { type: 'callActivity', name: 'Check each day', process: 'day_check', each: { field: 'request', ...(sequential ? { sequential: true } : {}) } };
+        process.flows.on_approve.to = 'days';
+        process.flows.days_done = { from: 'days', to: 'approved' };
+        delete process.diagram;
+      });
+      const asked = await ask(app, { starts: '2028-09-04', ends: '2028-09-05', days: 2 });
+      const days: string[] = [];
+      for (const day of ['2028-09-04', '2028-09-05']) {
+        days.push((await json({ method: 'POST', url: `/v1/apps/${app}/actions/add_day/run`, ...as(alice), payload: { values: { request: asked.record.id, day } } }, 201)).record.id);
+      }
+      const dayChecks = async (day: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_day/records/${day}/processes`, ...as(alice) }, 200)).instances;
+      const confirm = (day: string) => inject({ method: 'POST', url: `/v1/apps/${app}/actions/confirm_day/run`, ...as(alice), payload: { recordId: day } }, 200);
+
+      // Approved: the days are checked, all at once or the first only.
+      const [task] = (await inbox(bob)).filter((open: { recordId: string }) => open.recordId === asked.record.id);
+      await complete(bob, task.id, 'approve');
+      let [leave] = await processesOf(app, asked.record.id);
+      expect(leave).toMatchObject({ status: 'running', waiting: [{ element: 'days', name: 'Check each day' }] });
+      expect(leave.events.find((event: { kind: string }) => event.kind === 'called').detail).toMatchObject({ process: 'day_check', records: 2 });
+      expect((await dayChecks(days[0]!))[0]).toMatchObject({ status: 'running', calledBy: leave.id });
+      expect(await dayChecks(days[1]!)).toHaveLength(sequential ? 0 : 1);
+
+      // The first day is confirmed: the leave still waits for the second, which starts now if it waited its turn.
+      await confirm(days[0]!);
+      [leave] = await processesOf(app, asked.record.id);
+      expect(leave.status).toBe('running');
+      expect((await dayChecks(days[1]!))[0]).toMatchObject({ status: 'running' });
+      // Once the second is confirmed too, the leave goes on.
+      await confirm(days[1]!);
+      [leave] = await processesOf(app, asked.record.id);
+      expect(leave.status).toBe('completed');
+      expect(leave.events.filter((event: { kind: string }) => event.kind === 'returned')).toHaveLength(2);
+    }
+  });
+});
+
 describe('a deadline', () => {
   it('takes a late task away from the manager, to HR', async () => {
     const strict = await leaveApp('Leave, with a deadline', (definition) => {

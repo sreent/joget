@@ -837,6 +837,50 @@ describe('loops', () => {
   });
 });
 
+describe('calls for each record', () => {
+  /** The leave app where each day of a request gets a check of its own, by a process about the days. */
+  const forEach = (edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined) =>
+    leave((process, definition) => {
+      definition['entities'].leave_day = {
+        label: 'Leave day',
+        pluralLabel: 'Leave days',
+        fields: [
+          { name: 'request', label: 'Request', type: 'reference', entity: 'leave_request', required: true },
+          { name: 'day', label: 'Day', type: 'date' },
+        ],
+      };
+      definition['processes'].day_check = {
+        label: 'Day check',
+        entity: 'leave_day',
+        elements: { start: { type: 'startEvent' }, look: { type: 'manualTask', name: 'Look at the day' }, end: { type: 'endEvent' } },
+        flows: { f1: { from: 'start', to: 'look' }, f2: { from: 'look', to: 'end' } },
+      };
+      process.elements.days = { type: 'callActivity', name: 'Check each day', process: 'day_check', each: { field: 'request' } };
+      process.flows.to_decide.to = 'days';
+      process.flows.checked = { from: 'days', to: 'decide' };
+      delete process.diagram;
+      edit(process, definition);
+    });
+
+  it('pass the checks, and a rename of the field carries into the call', () => {
+    const before = valid(forEach());
+    const renamed = structuredClone(before) as unknown as Record<string, any>;
+    renamed['entities'].leave_day.fields.find((field: { name: string }) => field.name === 'request').name = 'leave';
+    const result = validateDefinition(renamed, before, ids());
+    if (!result.ok) throw new Error(JSON.stringify(result.issues));
+    expect(result.definition.processes!['leave_approval']!.elements['days']).toMatchObject({ each: { field: 'leave' } });
+  });
+
+  it('are checked: the field refers to this record, and the call runs on one record or for each', () => {
+    expect(issuesOf(forEach((process) => (process.elements.days.each.field = 'day')))).toEqual([
+      "processes.leave_approval.elements.days.each.field: day doesn't refer to leave_request: a call runs for each record that refers to this one",
+    ]);
+    expect(issuesOf(forEach((process) => (process.elements.days.record = 'manager')))).toEqual(
+      expect.arrayContaining(['processes.leave_approval.elements.days: Check each day runs on the record a field names, or for each record that refers to this one: one of the two']),
+    );
+  });
+});
+
 describe('votes, when several people decide', () => {
   const all = { count: 'all', outcome: 'approve', otherwise: 'reject' } as const;
   it('decide as soon as the outcome is sure, either way', () => {

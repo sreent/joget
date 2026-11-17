@@ -614,6 +614,34 @@ describe('BPMN 2.0 files', () => {
     expect(read).toEqual(was);
   });
 
+  it('carry a call for each record out and back as a multi-instance call', () => {
+    const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
+    definition['entities'].leave_day = {
+      label: 'Leave day',
+      pluralLabel: 'Leave days',
+      fields: [{ name: 'request', label: 'Request', type: 'reference', entity: 'leave_request', required: true }],
+    };
+    definition['processes'].day_check = {
+      label: 'Day check',
+      entity: 'leave_day',
+      elements: { start: { type: 'startEvent' }, end: { type: 'endEvent' } },
+      flows: { f1: { from: 'start', to: 'end' } },
+    };
+    const process = definition['processes'].leave_approval;
+    process.elements.days = { type: 'callActivity', name: 'Check each day', process: 'day_check', each: { field: 'request', sequential: true } };
+    process.flows.to_decide.to = 'days';
+    process.flows.checked = { from: 'days', to: 'decide' };
+    delete process.diagram;
+    const app = valid(definition);
+    const xml = processToBpmn(app, 'leave_approval');
+    expect(xml).toContain('<bpmn:multiInstanceLoopCharacteristics isSequential="true" ambit:each="request" />');
+    const back = bpmnToProcesses(xml, { ...app, processes: { day_check: app.processes!['day_check']! } });
+    expect(back.ok ? [] : back.issues).toEqual([]);
+    const { diagram: _diagram, ...read } = back.ok ? back.processes['leave_approval']! : ({} as never);
+    const { diagram: _was, ...was } = app.processes!['leave_approval']!;
+    expect(read).toEqual(was);
+  });
+
   it('lay out a process drawn without a diagram, so other tools can show it', () => {
     const bare = { ...leave.processes!['leave_approval']!, diagram: undefined };
     const layout = layoutProcess(bare);

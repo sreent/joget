@@ -1519,6 +1519,24 @@ export class AppRuntime {
     return row ? recordValues(parseRecord(entity, row).record) : null;
   }
 
+  /**
+   * The records of an entity whose reference field names a record, by ID, oldest first: those that
+   * a call for each record runs its process on. At most 200.
+   */
+  async recordsReferring(tx: AppTransaction, loaded: LoadedApp, entityName: string, field: string, id: string): Promise<string[]> {
+    const entity = this.entity(loaded, entityName);
+    const query = selectRecords({
+      names: this.#names(loaded),
+      entity,
+      fields: ['id'],
+      grants: [true],
+      where: [{ eq: [{ ref: `record.${field}` }, id] }],
+      sort: [{ field: 'id', direction: 'asc' }],
+      limit: 200,
+    });
+    return (await tx.query(query.text, query.values)).rows.map((row) => String(row['id']));
+  }
+
   /** Lock a record for the rest of the transaction. The engine locks the record before its process, as an action does. */
   async lockRecord(tx: AppTransaction, loaded: LoadedApp, entityName: string, id: string): Promise<boolean> {
     return (await this.#lock(tx, loaded, this.entity(loaded, entityName), id)) !== null;

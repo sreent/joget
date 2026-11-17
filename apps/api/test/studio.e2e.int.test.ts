@@ -773,4 +773,43 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
     expect(saved.elements['decide']).toMatchObject({ repeat: { while: { exists: 'record.kind' }, max: 3 } });
   });
+
+  it('designs a call that runs a process for each day of a request, one after another', async () => {
+    const started = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave with days', template: 'leave' } });
+    expect(started.statusCode, started.body).toBe(201);
+    const leaveId: string = started.json().app.id;
+    const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json();
+    current.definition.entities.leave_day = {
+      label: 'Leave day',
+      pluralLabel: 'Leave days',
+      fields: [{ name: 'request', label: 'Request', type: 'reference', entity: 'leave_request', required: true }],
+    };
+    current.definition.processes.day_check = {
+      label: 'Day check',
+      entity: 'leave_day',
+      elements: { start: { type: 'startEvent', name: 'Start' }, end: { type: 'endEvent', name: 'Checked' } },
+      flows: { through: { from: 'start', to: 'end' } },
+    };
+    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    expect(put.statusCode, put.body).toBe(200);
+
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/processes`);
+    const canvas = page.getByTestId('process-canvas');
+    await page.getByLabel('Process', { exact: true }).selectOption('leave_approval');
+    await visible(canvas.getByText('Decide on the leave', { exact: true }));
+    await page.getByTestId('rf__edge-on_approve').locator('.react-flow__edge-textbg').click();
+    await page.getByLabel('More BPMN', { exact: true }).selectOption('callActivity');
+    await visible(page.getByRole('heading', { name: 'Call process', exact: true }));
+    await page.getByLabel('Runs the process', { exact: true }).selectOption('day_check||request');
+    await page.getByLabel('One record after another, not all at once', { exact: true }).check();
+    await visible(canvas.getByLabel('For each record, one after another'));
+    await shot(page, '15n-process-call-each');
+
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: 'Save as revision 3' }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition.processes.leave_approval;
+    expect(saved.elements['call_1']).toMatchObject({ type: 'callActivity', process: 'day_check', each: { field: 'request', sequential: true } });
+  });
 });

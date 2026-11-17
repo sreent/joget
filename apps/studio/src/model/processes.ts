@@ -156,16 +156,23 @@ function fit(process: Process, id: string): void {
 }
 
 /** The processes a call activity can run: another about the same entity, on the same record, or one about an entity that a reference field refers to, on that record. */
-export function callChoices(definition: Definition, name: string): Array<{ readonly process: string; readonly record?: string; readonly label: string }> {
+export function callChoices(definition: Definition, name: string): Array<{ readonly process: string; readonly record?: string; readonly each?: string; readonly label: string }> {
   const self = definition.processes?.[name];
   if (!self) return [];
   const fields = definition.entities[self.entity]?.fields ?? [];
   return Object.entries(definition.processes ?? {}).flatMap(([other, process]) => {
     if (other === name) return [];
     if (process.entity === self.entity) return [{ process: other, label: process.label }];
-    return fields.flatMap((field) =>
-      field.type === 'reference' && field.entity === process.entity ? [{ process: other, record: field.name, label: `${process.label}, on the record's ${field.label.toLowerCase()}` }] : [],
-    );
+    const target = definition.entities[process.entity];
+    return [
+      ...fields.flatMap((field) =>
+        field.type === 'reference' && field.entity === process.entity ? [{ process: other, record: field.name, label: `${process.label}, on the record's ${field.label.toLowerCase()}` }] : [],
+      ),
+      // For each record of the other entity that refers to this one, such as each line of a claim.
+      ...(target?.fields ?? []).flatMap((field) =>
+        field.type === 'reference' && field.entity === self.entity ? [{ process: other, each: field.name, label: `${process.label}: each ${target!.label.toLowerCase()} (${field.label.toLowerCase()})` }] : [],
+      ),
+    ];
   });
 }
 
@@ -318,6 +325,7 @@ export function newElement(definition: Definition, process: Process, type: Eleme
         name: choice ? definition.processes![choice.process]!.label : 'Call a process',
         process: choice?.process ?? 'process',
         ...(choice?.record ? { record: choice.record } : {}),
+        ...(choice?.each ? { each: { field: choice.each } } : {}),
       };
     }
     case 'userTask':

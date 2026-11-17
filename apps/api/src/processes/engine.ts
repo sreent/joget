@@ -1419,6 +1419,7 @@ export class ProcessEngine implements ProcessHooks {
     if (!called) return stuck(`the app has no process ${element.process}`);
     const start = plainStartOf(called);
     if (!start) return stuck(`${called.label} has no start event`);
+    if (element.each) return this.#callEach(turn, live, id, flow, element, called, start, scope);
     const record = (await this.#record(turn, live)) ?? {};
     let recordId = live.row.recordId;
     if (element.record) {
@@ -1437,6 +1438,61 @@ export class ProcessEngine implements ProcessHooks {
     await this.#boundaryTimers(turn, live, id, { tokenId }, record);
     const child = await this.#start(turn, element.process, start, recordId, null, { instanceId: live.row.id, tokenId, startedBy: live.row.startedBy });
     await this.#event(turn, live, 'called', id, { process: element.process, instance: child.row.id, recordId });
+  }
+
+  /**
+   * A call for each record that refers to this one: the process starts on each of them, all at
+   * once or one after another, and the call waits until every run has ended. With no such record,
+   * the path goes straight on.
+   */
+  async #callEach(turn: Turn, live: Live, id: string, flow: string | null, element: CallActivityElement, called: Process, start: string, scope: string | null): Promise<void> {
+    const each = element.each!;
+    const records = await this.#runtime.recordsReferring(turn.tx, turn.loaded, called.entity, each.field, live.row.recordId);
+    if (!records.length) {
+      await this.#event(turn, live, 'called', id, { process: element.process, records: 0 });
+      return this.#leave(turn, live, id, scope);
+    }
+    // The records first, in one order, as actions on them would take them.
+    for (const recordId of records) await this.#runtime.lockRecord(turn.tx, turn.loaded, called.entity, recordId);
+    const running = await turn.tx.db
+      .select({ id: processInstances.id })
+      .from(processInstances)
+      .where(and(eq(processInstances.environmentId, turn.loaded.env.id), eq(processInstances.process, element.process), inArray(processInstances.recordId, records), eq(processInstances.status, 'running')));
+    if (running.length) return this.#stuck(turn, live, id, flow, `${element.name}: ${called.label} already runs for ${running.length} of the records`, scope);
+    const tokenId = await this.#wait(turn, live, id, flow, scope);
+    await this.#boundaryTimers(turn, live, id, { tokenId }, (await this.#record(turn, live)) ?? {});
+    for (const recordId of each.sequential ? records.slice(0, 1) : records) {
+      await this.#start(turn, element.process, start, recordId, null, { instanceId: live.row.id, tokenId, startedBy: live.row.startedBy });
+    }
+    await this.#event(turn, live, 'called', id, { process: element.process, records: records.length, ...(each.sequential ? { sequential: true } : {}) });
+  }
+
+  /**
+   * A run of a call for each record ended. One after another, the next record's run starts. Once
+   * every run has ended, the call goes on; if any was cancelled, it waits for an operator, and
+   * trying again runs them all anew.
+   */
+  async #returnEach(turn: Turn, live: Live, token: TokenRow, element: CallActivityElement, called: Live, status: 'completed' | 'cancelled'): Promise<void> {
+    const db = turn.tx.db;
+    if (status === 'completed') await this.#event(turn, live, 'returned', token.element, { instance: called.row.id, recordId: called.row.recordId });
+    const runs = await db.select({ status: processInstances.status, recordId: processInstances.recordId }).from(processInstances).where(eq(processInstances.calledByToken, token.id));
+    if (runs.some((run) => run.status === 'running')) return;
+    const cancelled = runs.filter((run) => run.status === 'cancelled').length;
+    const target = turn.loaded.definition.processes?.[element.process];
+    const start = target ? plainStartOf(target) : undefined;
+    if (element.each?.sequential && !cancelled && target && start) {
+      const records = await this.#runtime.recordsReferring(turn.tx, turn.loaded, target.entity, element.each.field, live.row.recordId);
+      const done = new Set(runs.map((run) => run.recordId));
+      const next = records.find((recordId) => !done.has(recordId));
+      if (next && (await this.#runtime.lockRecord(turn.tx, turn.loaded, target.entity, next)) && !(await this.#runsOn(turn, element.process, next))) {
+        await this.#start(turn, element.process, start, next, null, { instanceId: live.row.id, tokenId: token.id, startedBy: live.row.startedBy });
+        return;
+      }
+    }
+    await db.delete(processTokens).where(eq(processTokens.id, token.id));
+    await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
+    if (cancelled) return this.#stuck(turn, live, token.element, token.arrivedBy, `${element.name}: ${cancelled} of its runs were cancelled: try again to run them all anew`, token.scope);
+    return this.#leave(turn, live, token.element, token.scope);
   }
 
   /** Cancel the instance that a call activity's token waits for, without sending it back to the caller. */
@@ -1470,6 +1526,8 @@ export class ProcessEngine implements ProcessHooks {
     const caller = await this.#caller(turn, called);
     if (!caller) return;
     const { live, token } = caller;
+    const element = live.process.elements[token.element];
+    if (element?.type === 'callActivity' && element.each) return this.#returnEach(turn, live, token, element, called, status);
     await db.delete(processTokens).where(eq(processTokens.id, token.id));
     await db.update(processTimers).set({ status: 'cancelled' }).where(and(eq(processTimers.tokenId, token.id), eq(processTimers.status, 'waiting')));
     if (status === 'completed') {

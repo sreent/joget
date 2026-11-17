@@ -760,6 +760,12 @@ const CallActivity = z.strictObject({
   process: Name,
   /** A reference field of the record, for a process about the entity it refers to. */
   record: Name.optional(),
+  /**
+   * Runs the process once for each record of its entity whose reference field `field` names this
+   * record, such as each line of an expense claim: all at once, or one after another. The call ends
+   * once every run has ended.
+   */
+  each: z.strictObject({ field: Name, sequential: z.literal(true).optional() }).optional(),
   repeat: Repeat.optional(),
 });
 /**

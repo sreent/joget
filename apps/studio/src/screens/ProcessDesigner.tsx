@@ -280,6 +280,13 @@ function Shape({ data, selected }: NodeProps<ShapeNode>) {
         </span>
       ) : null}
       {canRepeat(element) && element.repeat ? <LoopMarker className={element.type === 'callActivity' ? 'bottom-1 left-[calc(50%-18px)]' : 'bottom-1 left-1/2 -translate-x-1/2'} /> : null}
+      {element.type === 'callActivity' && element.each ? (
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-label={element.each.sequential ? 'For each record, one after another' : 'For each record, at once'} className="absolute bottom-1.5 left-[calc(50%+12px)] text-text">
+          {element.each.sequential
+            ? [2, 6, 10].map((y) => <line key={y} x1="1" x2="11" y1={y} y2={y} stroke="currentColor" strokeWidth="1.5" />)
+            : [2, 6, 10].map((x) => <line key={x} y1="1" y2="11" x1={x} x2={x} stroke="currentColor" strokeWidth="1.5" />)}
+        </svg>
+      ) : null}
       {element.type === 'callActivity' ? (
         // BPMN's marker for a call: a small square with a plus.
         <span className="absolute bottom-1 left-1/2 grid size-3.5 -translate-x-1/2 place-items-center border border-text text-[10px] leading-none text-text" aria-hidden>
@@ -2013,31 +2020,46 @@ function ElementPanel(props: {
             {(inputId) => (
               <Select
                 id={inputId}
-                value={`${element.process}|${element.record ?? ''}`}
+                value={`${element.process}|${element.record ?? ''}|${element.each?.field ?? ''}`}
                 onChange={(event) =>
                   set((current) => {
                     if (current.type !== 'callActivity') return current;
-                    const [called = '', record] = event.target.value.split('|');
-                    const { record: _record, ...rest } = current;
+                    const [called = '', record, each] = event.target.value.split('|');
+                    const { record: _record, each: _each, ...rest } = current;
                     // A name that only repeated the called process's label follows it.
                     const named = current.name !== (definition.processes?.[current.process]?.label ?? current.process);
-                    return { ...rest, ...(named ? {} : { name: definition.processes?.[called]?.label ?? called }), process: called, ...(record ? { record } : {}) };
+                    return {
+                      ...rest,
+                      ...(named ? {} : { name: definition.processes?.[called]?.label ?? called }),
+                      process: called,
+                      ...(record ? { record } : {}),
+                      ...(each ? { each: { field: each } } : {}),
+                    };
                   })
                 }
               >
-                {calls.some((call) => call.process === element.process && (call.record ?? '') === (element.record ?? '')) ? null : (
-                  <option value={`${element.process}|${element.record ?? ''}`} disabled>
+                {calls.some((call) => call.process === element.process && (call.record ?? '') === (element.record ?? '') && (call.each ?? '') === (element.each?.field ?? '')) ? null : (
+                  <option value={`${element.process}|${element.record ?? ''}|${element.each?.field ?? ''}`} disabled>
                     Choose a process
                   </option>
                 )}
                 {calls.map((call) => (
-                  <option key={`${call.process}|${call.record ?? ''}`} value={`${call.process}|${call.record ?? ''}`}>
+                  <option key={`${call.process}|${call.record ?? ''}|${call.each ?? ''}`} value={`${call.process}|${call.record ?? ''}|${call.each ?? ''}`}>
                     {call.label}
                   </option>
                 ))}
               </Select>
             )}
           </Field>
+          {element.each ? (
+            <Checkbox
+              label="One record after another, not all at once"
+              checked={element.each.sequential === true}
+              onChange={(sequential) =>
+                set((current) => (current.type === 'callActivity' && current.each ? { ...current, each: sequential ? { ...current.each, sequential: true } : { field: current.each.field } } : current))
+              }
+            />
+          ) : null}
           {definition.processes?.[element.process] ? (
             <Button size="sm" onClick={() => onOpen(element.process)}>
               Open {definition.processes[element.process]!.label}

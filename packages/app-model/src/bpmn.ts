@@ -362,6 +362,10 @@ export function processToBpmn(definition: StoredDefinition, name: string): strin
     if (element.type === 'subProcess') children.push(...contentOf(id));
     // An ad hoc sub-process's condition comes after what it holds.
     if (element.type === 'subProcess' && element.adHoc && element.completeWhen) children.push(formal('bpmn:completionCondition', LANGUAGES.condition, conditionText(element.completeWhen)));
+    // A call for each record that refers to this one: BPMN's multi-instance loop, with Ambit's field.
+    if (element.type === 'callActivity' && element.each) {
+      children.push({ name: 'bpmn:multiInstanceLoopCharacteristics', attributes: { isSequential: element.each.sequential ? 'true' : 'false', 'ambit:each': element.each.field } });
+    }
     if (element.type === 'userTask' && element.several) {
       const { people, sequential, decide } = element.several;
       children.push({
@@ -704,8 +708,12 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
           if (max !== most) notes.add(`${describe(node)} repeats ${max} times at most: give it a loopMaximum of 100 or less`);
           repeat = { while: parsed.condition, max, ...(attribute(standard, 'testBefore') === 'true' ? { before: true as const } : {}) };
         }
-        if (loop && (node.local !== 'userTask' || !several(loop))) {
-          refuse(loop && node.local === 'userTask' ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide' : "Ambit doesn't run a task that repeats yet");
+        if (loop && !(node.local === 'userTask' && several(loop)) && !(node.local === 'callActivity' && attribute(loop, 'each', AMBIT_BPMN))) {
+          refuse(
+            loop && node.local === 'userTask'
+              ? 'Say who votes and what decides, with Ambit\'s settings for a task that several people decide'
+              : 'Ambit runs a multi-instance activity as a user task that several people decide, or as a call for each record that refers to this one, with ambit:each',
+          );
           continue;
         }
         const timerOf = (): Timer | undefined => {
@@ -1016,7 +1024,9 @@ export function bpmnToProcesses(xml: string, definition: StoredDefinition, optio
               break;
             }
             const record = ambit(node, 'record');
-            elements[id] = { type: 'callActivity', name: name ?? id, ...(documentation ? { description: documentation } : {}), process, ...(record ? { record } : {}) };
+            const field = loop ? attribute(loop, 'each', AMBIT_BPMN) : undefined;
+            const each = field ? { field, ...(attribute(loop!, 'isSequential') === 'true' ? { sequential: true as const } : {}) } : undefined;
+            elements[id] = { type: 'callActivity', name: name ?? id, ...(documentation ? { description: documentation } : {}), process, ...(record ? { record } : {}), ...(each ? { each } : {}) };
             break;
           }
           case 'boundaryEvent': {
