@@ -968,7 +968,7 @@ export class ProcessEngine implements ProcessHooks {
     if (!after) return;
     turn.records.set(recordId, after);
     const holds = (condition: Condition, values: RecordValues | null, outcomes: Readonly<Record<string, string>> = {}) =>
-      values !== null && evaluateCondition(condition, processConditionEnv({ record: values, outcomes }));
+      values !== null && evaluateCondition(condition, processConditionEnv({ record: values, outcomes, now: turn.now }));
     for (const start of automaticStarts(turn.loaded.definition, entity)) {
       if (start.condition && holds(start.condition, after) && !holds(start.condition, before) && !(await this.#runsOn(turn, start.process, recordId))) {
         await this.#start(turn, start.process, start.element, recordId, null, undefined, 'condition');
@@ -1284,7 +1284,7 @@ export class ProcessEngine implements ProcessHooks {
     const element = run ? live.process.elements[run.element] : undefined;
     if (!run || element?.type !== 'subProcess' || !element.adHoc || !element.completeWhen) return;
     const record = (await this.#record(turn, live)) ?? {};
-    if (!evaluateCondition(element.completeWhen, processConditionEnv({ record, outcomes: live.outcomes }))) return;
+    if (!evaluateCondition(element.completeWhen, processConditionEnv({ record, outcomes: live.outcomes, now: turn.now }))) return;
     await this.#event(turn, live, 'condition', run.element, { completes: true });
     await this.#clearScope(turn, live, run.id, 'condition');
   }
@@ -1696,7 +1696,7 @@ export class ProcessEngine implements ProcessHooks {
         const record = (await this.#record(turn, live)) ?? {};
         const targets = this.#gatewayTargets(live, id);
         // A condition after it that holds already takes the path at once.
-        const env = processConditionEnv({ record, outcomes: live.outcomes });
+        const env = processConditionEnv({ record, outcomes: live.outcomes, now: turn.now });
         const now = targets.find((target) => {
           const candidate = live.process.elements[target];
           return candidate?.type === 'intermediateCatchEvent' && candidate.condition !== undefined && evaluateCondition(candidate.condition, env);
@@ -1724,7 +1724,7 @@ export class ProcessEngine implements ProcessHooks {
         if (element.condition) {
           // A condition that holds already lets the path through; otherwise the path waits until a change makes it hold.
           const record = (await this.#record(turn, live)) ?? {};
-          if (evaluateCondition(element.condition, processConditionEnv({ record, outcomes: live.outcomes }))) {
+          if (evaluateCondition(element.condition, processConditionEnv({ record, outcomes: live.outcomes, now: turn.now }))) {
             await this.#event(turn, live, 'condition', id, null);
             return this.#leave(turn, live, id, scope);
           }
@@ -1805,7 +1805,7 @@ export class ProcessEngine implements ProcessHooks {
 
   /** Whether a condition holds now, on the record and the outcomes of the tasks. */
   async #holds(turn: Turn, live: Live, condition: Condition): Promise<boolean> {
-    return evaluateCondition(condition, processConditionEnv({ record: (await this.#record(turn, live)) ?? {}, outcomes: live.outcomes }));
+    return evaluateCondition(condition, processConditionEnv({ now: turn.now, record: (await this.#record(turn, live)) ?? {}, outcomes: live.outcomes }));
   }
 
   /** Count a time of an activity that repeats, or forget its count. */

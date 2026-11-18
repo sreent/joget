@@ -137,9 +137,9 @@ export function jsTypeOf(kind: ValueKind): 'string' | 'number' | 'boolean' | 'ar
   }
 }
 
-/** Kinds that conditions can test. Dates and timestamps can't be compared yet, so they are left out. */
-export function isConditionKind(kind: ValueKind): boolean {
-  return kind !== 'date' && kind !== 'datetime';
+/** Kinds that have an order, so that conditions compare them: numbers, dates and times. */
+export function isOrderedKind(kind: ValueKind): boolean {
+  return kind === 'number' || kind === 'date' || kind === 'datetime';
 }
 
 /** Kinds a list can be sorted by. */

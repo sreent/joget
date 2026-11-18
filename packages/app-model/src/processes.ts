@@ -1,4 +1,4 @@
-import { evaluateCondition, type Condition, type ConditionEnv } from '@platform/authz';
+import { CLOCK, evaluateCondition, type Condition, type ConditionEnv } from '@platform/authz';
 import type { StoredDefinition } from './fields.js';
 import { DURATION_PATTERN, type BoundaryEventElement, type CatchEventElement, type Process, type ProcessElement, type ProcessElementType, type Raised, type Timer, type VoteRule } from './schema.js';
 import { conditionRecord, type RecordValues } from './values.js';
@@ -222,12 +222,15 @@ export function timerFiresAt(timer: Timer, startedAt: Date, record: RecordValues
 export interface ProcessState {
   readonly record: RecordValues;
   readonly outcomes: Readonly<Record<string, string>>;
+  /** The engine's time, for today and now in conditions; the clock's without it. */
+  readonly now?: Date | undefined;
 }
 
 export function processConditionEnv(state: ProcessState): ConditionEnv {
   return {
     record: conditionRecord(state.record),
     tasks: Object.fromEntries(Object.entries(state.outcomes).map(([id, outcome]) => [id, { outcome }])),
+    ...(state.now ? { [CLOCK]: state.now } : {}),
   };
 }
 

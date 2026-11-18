@@ -1,5 +1,5 @@
 import type { Definition, Field } from '../types.js';
-import { isGroup, OP_LABELS, recordChoices, toModel, type Clause, type Condition, type Group } from './conditions.js';
+import { isGroup, opLabel, recordChoices, relativeWords, toModel, type Clause, type Condition, type Group } from './conditions.js';
 import { lineOwner } from './edit.js';
 import { writableFields } from './logic.js';
 
@@ -219,8 +219,16 @@ export function describeExpression(definition: Definition, entity: string, expre
 
 function describeClause(definition: Definition, entity: string, clause: Clause): string {
   const left = refLabel(definition, entity, clause.ref);
-  const right = clause.right ? (clause.right.kind === 'ref' ? refLabel(definition, entity, clause.right.ref) : Array.isArray(clause.right.value) ? clause.right.value.join(', ') : String(clause.right.value)) : '';
-  return `${left} ${OP_LABELS[clause.op]}${right ? ` ${right}` : ''}`;
+  const right = clause.right
+    ? clause.right.kind === 'ref'
+      ? refLabel(definition, entity, clause.right.ref)
+      : clause.right.kind === 'relative'
+        ? relativeWords(clause.right)
+        : Array.isArray(clause.right.value)
+          ? clause.right.value.join(', ')
+          : String(clause.right.value)
+    : '';
+  return `${left} ${opLabel(clause.op, clause.right?.kind === 'relative' ? 'date' : 'other')}${right ? ` ${right}` : ''}`;
 }
 
 function describeGroup(definition: Definition, entity: string, group: Group): string {

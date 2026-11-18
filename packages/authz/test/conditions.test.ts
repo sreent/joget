@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  conditionRefs,
   evaluateCondition,
   isCondition,
+  partialEvaluate,
+  relativeValue,
   isKnownPermissionPattern,
   matchesPermission,
   patternCovers,
@@ -85,5 +88,34 @@ describe('permission patterns', () => {
     expect(isKnownPermissionPattern('record.*')).toBe(true);
     expect(isKnownPermissionPattern('space.read')).toBe(true);
     expect(isKnownPermissionPattern('rocket.launch')).toBe(false);
+  });
+});
+
+describe('dates and times', () => {
+  const env = { $now: '2026-11-18T09:30:00Z', record: { starts: '2026-11-20', ends: '2026-11-15', at: '2026-11-18T08:00:00Z' } };
+
+  it('compare as the moments they name, and a date is the start of its day', () => {
+    expect(evaluateCondition({ gt: [{ ref: 'record.starts' }, { ref: 'record.ends' }] }, env)).toBe(true);
+    expect(evaluateCondition({ lt: [{ ref: 'record.at' }, '2026-11-18T09:00:00+00:00'] }, env)).toBe(true);
+    expect(evaluateCondition({ gte: [{ ref: 'record.at' }, '2026-11-18'] }, env)).toBe(true);
+    // Text that names no moment never compares.
+    expect(evaluateCondition({ lt: ['soon', { ref: 'record.starts' }] }, env)).toBe(false);
+    expect(evaluateCondition({ lt: [1, { ref: 'record.starts' }] }, env)).toBe(false);
+  });
+
+  it('take today and now from the clock the environment carries, with offsets', () => {
+    expect(relativeValue({ today: 2 }, new Date('2026-11-18T23:59:00Z'))).toBe('2026-11-20');
+    expect(relativeValue({ now: -2 }, new Date('2026-11-18T09:30:00Z'))).toBe('2026-11-18T07:30:00.000Z');
+    expect(evaluateCondition({ gte: [{ ref: 'record.starts' }, { today: 2 }] }, env)).toBe(true);
+    expect(evaluateCondition({ gte: [{ ref: 'record.starts' }, { today: 3 }] }, env)).toBe(false);
+    expect(evaluateCondition({ eq: [{ ref: 'record.ends' }, { today: -3 }] }, env)).toBe(true);
+    expect(evaluateCondition({ lt: [{ ref: 'record.at' }, { now: -1 }] }, env)).toBe(true);
+    expect(isCondition({ lt: [{ ref: 'record.at' }, { now: -1 }] })).toBe(true);
+    expect(isCondition({ lt: [{ ref: 'record.at' }, { now: 1.5 }] })).toBe(false);
+    expect(conditionRefs({ lt: [{ ref: 'record.at' }, { today: 0 }] })).toEqual(['record.at']);
+  });
+
+  it('fill today in when they leave the record for the database', () => {
+    expect(partialEvaluate({ lt: [{ ref: 'record.starts' }, { today: 0 }] }, { $now: '2026-11-18T09:30:00Z' }, ['record'])).toEqual({ lt: [{ ref: 'record.starts' }, '2026-11-18'] });
   });
 });

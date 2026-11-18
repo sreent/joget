@@ -112,7 +112,7 @@ describe('validateDefinition', () => {
     broken.rules.hotel_cap.assert = { lte: [{ ref: 'record.category' }, 250] };
     broken.roles.requester.entities.expense_claim.read.where = { eq: [{ ref: 'record.total' }, 'lots'] };
     expect(issuesOf(broken)).toEqual([
-      "rules.hotel_cap.assert: lte compares numbers, and category isn't one",
+      'rules.hotel_cap.assert: lte compares numbers, dates and times, and category is none of them',
       'actions.submit_claim.input: total is worked out from lines',
       'actions.submit_claim.input: lines needs at least one line, so the action must take it as input',
       'roles.requester.entities.expense_claim.read.where: total holds numbers, not strings',

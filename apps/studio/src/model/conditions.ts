@@ -15,8 +15,14 @@ export type Literal = string | number | boolean | null | readonly string[];
 export type Op = 'eq' | 'ne' | 'lt' | 'lte' | 'gt' | 'gte' | 'in' | 'notIn' | 'contains' | 'exists' | 'missing';
 export const COMPARE = ['eq', 'ne', 'lt', 'lte', 'gt', 'gte'] as const;
 
-/** The other side of a clause: a value, or a reference such as `principal.id` or `input.status`. */
-export type Side = { readonly kind: 'value'; readonly value: Literal } | { readonly kind: 'ref'; readonly ref: string };
+/**
+ * The other side of a clause: a value; a reference such as `principal.id` or `input.status`; or
+ * today or now, so many days or hours away.
+ */
+export type Side =
+  | { readonly kind: 'value'; readonly value: Literal }
+  | { readonly kind: 'ref'; readonly ref: string }
+  | { readonly kind: 'relative'; readonly unit: 'today' | 'now'; readonly amount: number };
 
 export interface Clause {
   readonly ref: string;
@@ -32,6 +38,13 @@ export interface Group {
 
 export const isGroup = (item: Clause | Group): item is Group => 'match' in item;
 const isRef = (operand: unknown): operand is { ref: string } => typeof operand === 'object' && operand !== null && !Array.isArray(operand) && typeof (operand as { ref?: unknown }).ref === 'string';
+const relativeOf = (operand: unknown): Extract<Side, { kind: 'relative' }> | null => {
+  if (typeof operand !== 'object' || operand === null || Array.isArray(operand)) return null;
+  const object = operand as Record<string, unknown>;
+  if (typeof object['today'] === 'number') return { kind: 'relative', unit: 'today', amount: object['today'] };
+  if (typeof object['now'] === 'number') return { kind: 'relative', unit: 'now', amount: object['now'] };
+  return null;
+};
 const isLiteral = (operand: unknown): operand is Literal =>
   operand === null || ['string', 'number', 'boolean'].includes(typeof operand) || (Array.isArray(operand) && operand.every((item) => typeof item === 'string'));
 
@@ -54,6 +67,8 @@ function clauseOf(condition: Condition): Clause | null {
     const [left, right] = (condition as Record<string, readonly [unknown, unknown]>)[op]!;
     if (!isRef(left)) return null;
     if (isRef(right)) return { ref: left.ref, op, right: { kind: 'ref', ref: right.ref } };
+    const relative = relativeOf(right);
+    if (relative) return { ref: left.ref, op, right: relative };
     return isLiteral(right) ? { ref: left.ref, op, right: { kind: 'value', value: right } } : null;
   }
   return null;
@@ -74,7 +89,8 @@ export function toModel(condition: Condition | undefined, depth = 0): Group | nu
 
 function clauseJson(clause: Clause): Condition {
   const ref = { ref: clause.ref };
-  const right: unknown = clause.right?.kind === 'ref' ? { ref: clause.right.ref } : (clause.right?.value ?? null);
+  const right: unknown =
+    clause.right?.kind === 'ref' ? { ref: clause.right.ref } : clause.right?.kind === 'relative' ? { [clause.right.unit]: clause.right.amount } : (clause.right?.value ?? null);
   const list: readonly unknown[] = Array.isArray(right) ? right : right === null ? [] : [right];
   switch (clause.op) {
     case 'exists':
@@ -156,7 +172,7 @@ export function recordChoices(definition: Definition, entity: string, line = fal
   return line ? own : [...own, ...SYSTEM];
 }
 
-/** The operators that suit a kind. Dates can only be tested for a value, until conditions compare them. */
+/** The operators that suit a kind. Dates and times compare: before, after, or on. */
 export function opsFor(kind: Kind): Op[] {
   switch (kind) {
     case 'number':
@@ -171,8 +187,23 @@ export function opsFor(kind: Kind): Op[] {
     case 'id':
       return ['eq', 'ne', 'exists', 'missing'];
     case 'date':
-      return ['exists', 'missing'];
+      return ['lt', 'lte', 'gt', 'gte', 'eq', 'ne', 'exists', 'missing'];
   }
+}
+
+/** How a builder reads an operator: dates and times are before or after, other values less or more. */
+export function opLabel(op: Op, kind: Kind | 'other'): string {
+  if (kind !== 'date') return OP_LABELS[op];
+  return { eq: 'is on', ne: 'is not on', lt: 'is before', lte: 'is on or before', gt: 'is after', gte: 'is on or after' }[op as 'eq'] ?? OP_LABELS[op];
+}
+
+/** Today or now, so many days or hours away, in words: "today", "3 days from today", "2 hours ago". */
+export function relativeWords(side: { readonly unit: 'today' | 'now'; readonly amount: number }): string {
+  const unit = side.unit === 'today' ? 'day' : 'hour';
+  if (side.amount === 0) return side.unit;
+  const amount = Math.abs(side.amount);
+  const units = `${amount} ${unit}${amount === 1 ? '' : 's'}`;
+  return side.amount < 0 ? `${units} ago` : `${units} from ${side.unit}`;
 }
 
 export const OP_LABELS: Record<Op, string> = {
@@ -192,6 +223,8 @@ export const OP_LABELS: Record<Op, string> = {
 /** A new clause on a reference: the first operator that suits it, with an empty value. */
 export function newClause(choice: RefChoice): Clause {
   const op = opsFor(choice.kind)[0]!;
+  // A date starts out compared with today.
+  if (choice.kind === 'date') return { ref: choice.ref, op, right: { kind: 'relative', unit: 'today', amount: 0 } };
   return { ref: choice.ref, op, ...(op === 'exists' ? {} : { right: { kind: 'value', value: defaultValue(choice, op) } }) };
 }
 

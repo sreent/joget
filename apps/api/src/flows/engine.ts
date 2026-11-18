@@ -1,5 +1,5 @@
 import { uuidv7 } from '@platform/audit';
-import { evaluateCondition, partialEvaluate, type Condition } from '@platform/authz';
+import { CLOCK, evaluateCondition, partialEvaluate, type Condition } from '@platform/authz';
 import { evaluateExpression, flowWaits, roundTo, type AppFlow, type Expression, type FlowRun, type FlowStep, type FlowType, type RecordValues } from '@platform/app-model';
 import { requirePerson } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
@@ -225,7 +225,7 @@ export class FlowEngine implements FlowHooks {
       }
       return value(expression);
     };
-    const holds = (condition: Condition) => evaluateCondition(condition, { ...frame.all(), principal: caller.principal });
+    const holds = (condition: Condition) => evaluateCondition(condition, { ...frame.all(), principal: caller.principal, [CLOCK]: state.now });
     const values = (given: Readonly<Record<string, Expression>>) => Object.fromEntries(Object.entries(given).map(([field, expression]) => [field, value(expression)]));
     const record = (name: string): FlowRecord & { readonly [ENTITY]: string } => {
       const held = frame.get(name);
@@ -239,7 +239,7 @@ export class FlowEngine implements FlowHooks {
         return;
       case 'find': {
         // What the condition says of the flow's variables is known now; what it says of the records goes to the database.
-        const residual = step.where ? partialEvaluate(step.where, { ...frame.all(), principal: caller.principal }, ['record']) : true;
+        const residual = step.where ? partialEvaluate(step.where, { ...frame.all(), principal: caller.principal, [CLOCK]: state.now }, ['record']) : true;
         const found = residual === false ? [] : await this.#runtime.flowFind(tx, loaded, step.entity, residual === true ? undefined : residual, step.sort ?? [], step.first ? 1 : step.limit);
         const tagged = found.map((each) => tag(each, step.entity));
         frame.set(step.var, step.first ? (tagged[0] ?? null) : tagged);

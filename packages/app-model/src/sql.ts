@@ -1,5 +1,5 @@
-import { COMPARISON_OPERATORS, evaluateCondition, isRef, type Condition, type Operand } from '@platform/authz';
-import { isConditionKind, jsTypeOf, type FieldInfo, type ValueKind } from './fields.js';
+import { COMPARISON_OPERATORS, evaluateCondition, isRef, isRelativeTime, relativeValue, timeOf, type Condition, type Operand } from '@platform/authz';
+import { jsTypeOf, type FieldInfo, type ValueKind } from './fields.js';
 import { isCanonicalUuid, type FieldValue } from './values.js';
 
 /**
@@ -80,17 +80,21 @@ export function compileCondition(
     return { kind: 'column', info, sql: `${alias}.${ident(info.column)}` };
   };
   const term = (operand: Operand): Term => {
+    // Today and now are filled in as a request is checked; one that reaches here takes the clock's.
+    if (isRelativeTime(operand)) return { kind: 'literal', value: relativeValue(operand, new Date()) };
     if (!isRef(operand)) return { kind: 'literal', value: operand };
-    const t = column(operand.ref);
-    if (!isConditionKind(t.info.kind)) throw new CompileError(`${operand.ref} can't be compared in conditions`);
-    return t;
+    return column(operand.ref);
   };
+  const isDateKind = (kind: ValueKind) => kind === 'date' || kind === 'datetime';
 
   /** A parameter equal to `value` as a stored value of the column, or null if no stored value can equal it. */
   const equalTo = (info: FieldInfo, value: string | number | boolean | null): string | null => {
     const type = jsTypeOf(info.kind);
     if (value === null || type === 'array' || typeof value !== type) return null;
     if (info.kind === 'uuid' && !isCanonicalUuid(value)) return null;
+    // A date equals only a date, and a time a time: other text would not even cast.
+    if (info.kind === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return null;
+    if (info.kind === 'datetime' && (timeOf(value) === undefined || /^\d{4}-\d{2}-\d{2}$/.test(String(value)))) return null;
     if (typeof value === 'string' && value.includes('\u0000')) return null;
     return sql.param(value, sqlType(info.kind));
   };
@@ -134,8 +138,15 @@ export function compileCondition(
       return parameter ? `((${column.sql} <> ${parameter}) IS TRUE)` : `(${column.sql} IS NOT NULL)`;
     }
 
-    // Only numbers compare. Decide that before creating any parameter, so none goes unused.
+    // Numbers compare, and so do dates and times. Decide that before creating any parameter, so none goes unused.
     const isNumber = (t: Term) => (t.kind === 'column' ? t.info.kind === 'number' : typeof t.value === 'number');
+    const isTime = (t: Term) => (t.kind === 'column' ? isDateKind(t.info.kind) : timeOf(t.value) !== undefined);
+    if (isTime(a) && isTime(b)) {
+      // A date is the start of its day in UTC, as evaluateCondition takes it.
+      const moment = (t: Term) =>
+        t.kind === 'column' ? (t.info.kind === 'date' ? `(${t.sql}::timestamp AT TIME ZONE 'UTC')` : t.sql) : sql.param(new Date(timeOf(t.value)!).toISOString(), 'timestamptz');
+      return `((${moment(a)} ${SQL_COMPARISON[op]} ${moment(b)}) IS TRUE)`;
+    }
     if (!isNumber(a) || !isNumber(b)) return 'FALSE';
     const side = (t: Term) => (t.kind === 'column' ? t.sql : sql.param(t.value, 'numeric'));
     return `((${side(a)} ${SQL_COMPARISON[op]} ${side(b)}) IS TRUE)`;

@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { COMPARISON_OPERATORS, isRef, type Condition, type Operand } from '@platform/authz';
+import { COMPARISON_OPERATORS, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
 import {
   entityFields,
-  isConditionKind,
+  isOrderedKind,
   isSortableKind,
   isWritable,
   jsTypeOf,
@@ -13,7 +13,7 @@ import {
   type StoredEntity,
   type StoredField,
 } from './fields.js';
-import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
+import { calculationKind, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
 import { mapRefs } from './condition-refs.js';
 import { checkFlowRun, checkFlows, renameInFlows } from './flows.js';
 import { compileFlows, flowWaits } from './waiting.js';
@@ -453,9 +453,6 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
         if (!info && scope.lines?.has(name)) {
           issues.push({ path, message: `${ref}: conditions can't test lines one by one. Add a rollup, such as a total, and test that` });
         } else if (!info) issues.push({ path, message: `${ref}: no such field` });
-        else if (!presenceOnly && !isConditionKind(info.kind)) {
-          issues.push({ path, message: `${ref}: dates and times can't be compared in conditions yet, only tested with "exists"` });
-        }
       }
     } else if (root === 'tasks' && scope.tasks) {
       if (!name || rest.length !== 1 || rest[0] !== 'outcome') issues.push({ path, message: `${ref}: refer to a task's outcome as tasks.<task>.outcome` });
@@ -479,6 +476,7 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
 
   const literalMatches = (info: FieldInfo, literal: Operand): string | null => {
     if (isRef(literal)) return null;
+    if (isRelativeTime(literal)) return info.kind === 'date' || info.kind === 'datetime' ? null : `${info.name} isn't a date or a time, so it doesn't compare with today or now`;
     if (literal === null) return `${info.name}: test for an empty field with "exists" rather than null`;
     const expected = jsTypeOf(info.kind);
     if (expected === 'array') return `${info.name} is a multiple choice: test it with "in"`;
@@ -521,8 +519,18 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
       if (op === 'eq' || op === 'ne') {
         const problem = literalMatches(info, b);
         if (problem) issues.push({ path, message: problem });
-      } else if (info.kind !== 'number' || (!isRef(b) && typeof b !== 'number')) {
-        issues.push({ path, message: `${op} compares numbers, and ${info.name} isn't one` });
+      } else if (!isOrderedKind(info.kind)) {
+        issues.push({ path, message: `${op} compares numbers, dates and times, and ${info.name} is none of them` });
+      } else {
+        // A number compares with a number; a date or a time with a date, a time, today or now.
+        const other = fieldOf(b);
+        const time = info.kind !== 'number';
+        const fits = isRef(b)
+          ? !other || (time ? other.kind === 'date' || other.kind === 'datetime' : other.kind === 'number')
+          : time
+            ? isRelativeTime(b) || timeOf(b) !== undefined
+            : typeof b === 'number';
+        if (!fits) issues.push({ path, message: `${info.name} holds ${time ? 'dates or times' : 'numbers'}, so compare it with ${time ? 'a date, a time, today or now' : 'a number'}` });
       }
     }
   };
@@ -583,13 +591,10 @@ function checkSteps(
     if ('now' in expression) return 'datetime';
     const op = operatorOf(expression);
     if (!op) return 'any';
-    const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : (expression as Record<string, readonly Expression[]>)[op]!;
-    const kinds = operands.map((operand) => kindOf(operand, at));
-    if (op === 'concat') return 'text';
-    for (const kind of kinds) {
-      if (kind !== 'number' && kind !== 'null' && kind !== 'any') issues.push({ path: at, message: `${op} works on numbers, not on ${KIND_WORDS[kind]}` });
-    }
-    return 'number';
+    if (op === 'if') checkCondition((expression as { if: readonly [Condition, Expression, Expression] }).if[0], { record: fields, lines }, at, issues);
+    const worked = calculationKind(op, operandsOf(expression).map((operand) => kindOf(operand, at)));
+    for (const message of worked.problems) issues.push({ path: at, message });
+    return worked.kind;
   };
   /** Check that a value fits the field it goes into. Literals are checked as the field would check them. */
   const fits = (info: FieldInfo, expression: Expression, at: string, label: string): void => {

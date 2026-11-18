@@ -48,6 +48,10 @@ describe('conditions as builders edit them', () => {
       'record.updated_at:date',
     ]);
     expect(recordChoices(definition, 'expense_line', true).map((c) => c.ref)).toEqual(['record.date', 'record.merchant', 'record.category', 'record.amount', 'record.receipt']);
-    expect(opsFor('date')).toEqual(['exists', 'missing']);
+    expect(opsFor('date')).toEqual(['lt', 'lte', 'gt', 'gte', 'eq', 'ne', 'exists', 'missing']);
+    // A date compares with today or now, so many days or hours away, and comes back as it went.
+    const soon: Condition = { lt: [{ ref: 'record.starts' }, { today: 3 }] } as Condition;
+    expect(toModel(soon)).toEqual({ match: 'all', items: [{ ref: 'record.starts', op: 'lt', right: { kind: 'relative', unit: 'today', amount: 3 } }] });
+    expect(fromModel(toModel(soon)!)).toEqual(soon);
   });
 });

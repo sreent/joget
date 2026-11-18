@@ -4,7 +4,7 @@ import {
   fromModel,
   isGroup,
   newClause,
-  OP_LABELS,
+  opLabel,
   opsFor,
   toModel,
   type Clause,
@@ -123,16 +123,19 @@ function ClauseEditor({ clause, onChange, onRemove, choices, compareWith }: { cl
         value={clause.op}
         onChange={(e) => {
           const op = e.target.value as Op;
-          onChange({ ref: clause.ref, op, ...(op === 'exists' || op === 'missing' ? {} : { right: { kind: 'value', value: defaultValue(choice, op) } }) });
+          if (op === 'exists' || op === 'missing') return onChange({ ref: clause.ref, op });
+          // A date keeps what it compares with as the test changes.
+          const right = choice.kind === 'date' && clause.right ? clause.right : { kind: 'value' as const, value: defaultValue(choice, op) };
+          onChange({ ref: clause.ref, op, right });
         }}
       >
         {ops.map((op) => (
           <option key={op} value={op}>
-            {OP_LABELS[op]}
+            {opLabel(op, choice.kind)}
           </option>
         ))}
       </Select>
-      {needsValue ? <RightSide clause={clause} choice={choice} others={others} onChange={onChange} /> : null}
+      {needsValue && choice.kind === 'date' ? <DateSide clause={clause} others={others} onChange={onChange} /> : needsValue ? <RightSide clause={clause} choice={choice} others={others} onChange={onChange} /> : null}
       <Button size="sm" variant="ghost" aria-label="Remove this condition" onClick={onRemove}>
         ✕
       </Button>
@@ -140,12 +143,55 @@ function ClauseEditor({ clause, onChange, onRemove, choices, compareWith }: { cl
   );
 }
 
+/** What a date or a time compares with: today or now, so many days or hours away; a date; or another date. */
+function DateSide({ clause, others, onChange }: { clause: Clause; others: readonly RefChoice[]; onChange: (clause: Clause) => void }) {
+  const right = clause.right ?? { kind: 'relative' as const, unit: 'today' as const, amount: 0 };
+  const mode = right.kind === 'relative' ? right.unit : right.kind === 'ref' ? right.ref : 'value';
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      <Select
+        aria-label="Compare with"
+        className="w-auto"
+        value={mode}
+        onChange={(e) => {
+          const next = e.target.value;
+          onChange({ ...clause, right: next === 'today' || next === 'now' ? { kind: 'relative', unit: next, amount: 0 } : next === 'value' ? { kind: 'value', value: '' } : { kind: 'ref', ref: next } });
+        }}
+      >
+        <option value="today">today</option>
+        <option value="now">now</option>
+        <option value="value">a date</option>
+        {others.map((other) => (
+          <option key={other.ref} value={other.ref}>
+            {other.label}
+          </option>
+        ))}
+      </Select>
+      {right.kind === 'relative' ? (
+        <>
+          <TextInput
+            aria-label={right.unit === 'today' ? 'Days from today' : 'Hours from now'}
+            type="number"
+            className="w-20"
+            value={right.amount}
+            onChange={(e) => onChange({ ...clause, right: { ...right, amount: Math.trunc(Number(e.target.value) || 0) } })}
+          />
+          <span className="text-xs text-muted">{right.unit === 'today' ? 'days from today; less than 0 for days ago' : 'hours from now; less than 0 for hours ago'}</span>
+        </>
+      ) : null}
+      {right.kind === 'value' ? (
+        <TextInput aria-label="Date" type="date" className="w-44" value={typeof right.value === 'string' ? right.value : ''} onChange={(e) => onChange({ ...clause, right: { kind: 'value', value: e.target.value } })} />
+      ) : null}
+    </span>
+  );
+}
+
 function RightSide({ clause, choice, others, onChange }: { clause: Clause; choice: RefChoice; others: readonly RefChoice[]; onChange: (clause: Clause) => void }) {
-  const right = clause.right ?? { kind: 'value' as const, value: defaultValue(choice, clause.op) };
+  const current = clause.right && clause.right.kind !== 'relative' ? clause.right : { kind: 'value' as const, value: defaultValue(choice, clause.op) };
   const setValue = (value: Literal) => onChange({ ...clause, right: { kind: 'value', value } });
   const list = clause.op === 'in' || clause.op === 'notIn';
   // A person is compared with the person using it; a value or a parameter otherwise.
-  const source = right.kind === 'ref' ? right.ref : 'value';
+  const source = current.kind === 'ref' ? current.ref : 'value';
   const sources = list ? [] : others;
   return (
     <span className="flex flex-wrap items-start gap-1.5">
@@ -164,8 +210,8 @@ function RightSide({ clause, choice, others, onChange }: { clause: Clause; choic
           ))}
         </Select>
       ) : null}
-      {right.kind === 'value' && choice.kind !== 'person' ? <ValueInput choice={choice} list={list} value={right.value} onChange={setValue} /> : null}
-      {right.kind === 'value' && choice.kind === 'person' && !sources.length ? <span className="py-1.5 text-sm text-muted">the person using it</span> : null}
+      {current.kind === 'value' && choice.kind !== 'person' ? <ValueInput choice={choice} list={list} value={current.value} onChange={setValue} /> : null}
+      {current.kind === 'value' && choice.kind === 'person' && !sources.length ? <span className="py-1.5 text-sm text-muted">the person using it</span> : null}
     </span>
   );
 }

@@ -123,7 +123,7 @@ describe('flows', () => {
       'flows.broken.steps[7].field: title isn\'t a lines field of expense_claim',
       'flows.broken.steps[8].in: title isn\'t a lines field of expense_claim',
       'flows.broken.steps[9].field: Say which number field to total',
-      'flows.broken.steps[10].assert: gt compares numbers, and claim.title isn\'t one',
+      'flows.broken.steps[10].assert: gt compares numbers, dates and times, and claim.title is none of them',
       'flows.broken.steps[11].input.claim: Give a record of expense_claim: a variable that holds one',
       'flows.broken.steps[11].input.extra: Record the spend takes no extra',
       'flows.broken.steps[12].flow: No flow named nowhere',

@@ -1,4 +1,4 @@
-import { isRef, type Condition, type Operand } from '@platform/authz';
+import { isRef, isRelativeTime, type Condition, type Operand } from '@platform/authz';
 
 /*
  * Conditions as text, such as `record.days > 10 && record.kind == "annual"`: for a change request
@@ -7,7 +7,12 @@ import { isRef, type Condition, type Operand } from '@platform/authz';
  */
 
 function operandText(operand: Operand): string {
-  return isRef(operand) ? operand.ref : JSON.stringify(operand);
+  if (isRef(operand)) return operand.ref;
+  if (isRelativeTime(operand)) {
+    const [base, n, unit] = 'today' in operand ? ['today', operand.today, 'day'] : ['now', operand.now, 'hour'];
+    return n === 0 ? base : `${base} ${n > 0 ? '+' : '-'} ${Math.abs(n)} ${unit}${Math.abs(n) === 1 ? '' : 's'}`;
+  }
+  return JSON.stringify(operand);
 }
 
 /** Write a condition as text. */

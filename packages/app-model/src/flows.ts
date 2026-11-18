@@ -1,7 +1,7 @@
-import { COMPARISON_OPERATORS, conditionRefs, isRef, type Condition, type Operand } from '@platform/authz';
+import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
-import { mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { entityFields, fieldKind, isConditionKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
+import { calculationKind, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
+import { entityFields, fieldKind, isOrderedKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
 import { MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStep, type FlowType, type Voters, type WaitFor } from './schema.js';
 import { canonicalValue } from './values.js';
 import { atProcessLevel, flowSubject, flowWaits, innerLists, stepWaits, withLists } from './waiting.js';
@@ -189,7 +189,8 @@ function expressionKind(definition: FlowLookup, expression: Expression, scope: S
   }
   if ('today' in expression) return 'date';
   if ('now' in expression) return 'datetime';
-  return operatorOf(expression) === 'concat' ? 'text' : 'number';
+  const op = operatorOf(expression);
+  return op ? calculationKind(op, operandsOf(expression).map((operand) => expressionKind(definition, operand, scope))).kind : 'any';
 }
 
 type Resolved = { readonly ok: true; readonly kind: VarKind } | { readonly ok: false; readonly message: string };
@@ -312,11 +313,10 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
     if ('now' in expression) return 'datetime';
     const op = operatorOf(expression);
     if (!op) return 'any';
-    const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : (expression as Record<string, readonly Expression[]>)[op]!;
-    const kinds = operands.map((operand) => kindAt(operand, scope, at));
-    if (op === 'concat') return 'text';
-    for (const kind of kinds) if (kind !== 'number' && kind !== 'null' && kind !== 'any') issue(at, `${op} works on numbers, not on ${KIND_WORDS[kind]}`);
-    return 'number';
+    if (op === 'if') condition((expression as { if: readonly [Condition, Expression, Expression] }).if[0], scope, at);
+    const worked = calculationKind(op, operandsOf(expression).map((operand) => kindAt(operand, scope, at)));
+    for (const message of worked.problems) issue(at, message);
+    return worked.kind;
   };
 
   /** A value fits the field it goes into. Literals are checked as the field would check them. */
@@ -394,12 +394,19 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
       const op = (['eq', 'ne', ...COMPARISON_OPERATORS] as const).find((key) => key in inner)!;
       if (op === 'eq' || op === 'ne') return;
       const [left, right] = (inner as Record<string, readonly [Operand, Operand]>)[op]!;
-      for (const operand of [left, right]) {
-        const kind = isRef(operand) ? kindOfOperand(operand) : typeof operand === 'number' ? 'number' : 'any';
-        if (kind && kind !== 'number' && kind !== 'any') {
-          issue(at, `${op} compares numbers, and ${isRef(operand) ? operand.ref : JSON.stringify(operand)} isn't one${kind !== 'null' && !isConditionKind(kind) ? ': dates and times can only be tested with "exists" yet' : ''}`);
-        }
+      // Numbers compare with numbers, and dates and times with each other.
+      const order = (operand: Operand): 'number' | 'time' | 'other' | undefined => {
+        if (isRelativeTime(operand)) return 'time';
+        const kind = isRef(operand) ? kindOfOperand(operand) : typeof operand === 'number' ? 'number' : timeOf(operand) !== undefined ? 'date' : 'text';
+        if (kind === undefined || kind === 'any' || kind === 'null') return undefined;
+        return !isOrderedKind(kind) ? 'other' : kind === 'number' ? 'number' : 'time';
+      };
+      const [a, b] = [order(left), order(right)];
+      const words = (operand: Operand) => (isRef(operand) ? operand.ref : JSON.stringify(operand));
+      for (const [operand, side] of [[left, a], [right, b]] as const) {
+        if (side === 'other') issue(at, `${op} compares numbers, dates and times, and ${words(operand)} is none of them`);
       }
+      if (a && b && a !== 'other' && b !== 'other' && a !== b) issue(at, `${op} compares a number with a number, or a date or a time with a date or a time: not ${words(left)} with ${words(right)}`);
     };
     visit(c);
   };
@@ -659,13 +666,7 @@ export function checkFlowRun(definition: StoredDefinition, run: FlowRun, from: {
 }
 
 function refsOf(expression: Expression): string[] {
-  if (expression === null || typeof expression !== 'object' || Array.isArray(expression)) return [];
-  if ('ref' in expression) return [expression.ref];
-  if ('today' in expression || 'now' in expression) return [];
-  const op = operatorOf(expression);
-  if (!op) return [];
-  const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : (expression as Record<string, readonly Expression[]>)[op]!;
-  return operands.flatMap(refsOf);
+  return expressionRefs(expression);
 }
 
 /** What a flow does to records, by entity, the flows it calls and whom its tasks ask: what a change request names. */

@@ -1,9 +1,14 @@
+import { CLOCK, conditionRefs, evaluateCondition, isCondition, timeOf, type Condition } from '@platform/authz';
+import { mapRefs } from './condition-refs.js';
+
 /**
  * Values that steps work out (design §6.2). An expression is plain JSON, like a condition, so it
  * can be stored, compared and reviewed: a constant; a reference to a field of the record
  * (`record.total`) or to the person (`principal.id`); today's date or the time now, in UTC; or a
- * small calculation. There are no loops and no calls, so an expression always ends, and gives the
- * same value for the same record, person and time.
+ * small calculation: arithmetic, dates and times moved by days or hours, the days between two
+ * dates, a value chosen by a condition, and text made upper or lower case, trimmed, cut or
+ * measured. There are no loops and no calls, so an expression always ends, and gives the same
+ * value for the same record, person and time.
  */
 export type Expression =
   | string
@@ -19,12 +24,29 @@ export type Expression =
   | { readonly mul: readonly Expression[] }
   | { readonly div: readonly [Expression, Expression] }
   | { readonly round: readonly [Expression, number] }
-  | { readonly concat: readonly Expression[] };
+  | { readonly concat: readonly Expression[] }
+  /** A date or a time, so many days later (or earlier, when negative). */
+  | { readonly add_days: readonly [Expression, Expression] }
+  /** A time, so many hours later (or earlier). */
+  | { readonly add_hours: readonly [Expression, Expression] }
+  /** The whole days from the first date or time to the second. */
+  | { readonly days_between: readonly [Expression, Expression] }
+  /** The second value if the condition holds, else the third. */
+  | { readonly if: readonly [Condition, Expression, Expression] }
+  | { readonly upper: readonly [Expression] }
+  | { readonly lower: readonly [Expression] }
+  | { readonly trim: readonly [Expression] }
+  /** How many characters a text has: 0 for an empty one. */
+  | { readonly text_length: readonly [Expression] }
+  /** The first so many characters of a text. */
+  | { readonly left: readonly [Expression, Expression] }
+  /** The first value that isn't empty. */
+  | { readonly coalesce: readonly Expression[] };
 
 /** A value an expression gives: what a field holds, in its canonical JSON form. */
 export type ExpressionValue = string | number | boolean | readonly string[] | null;
 
-export const EXPRESSION_OPERATORS = ['add', 'sub', 'mul', 'div', 'round', 'concat'] as const;
+export const EXPRESSION_OPERATORS = ['add', 'sub', 'mul', 'div', 'round', 'concat', 'add_days', 'add_hours', 'days_between', 'if', 'upper', 'lower', 'trim', 'text_length', 'left', 'coalesce'] as const;
 export type ExpressionOperator = (typeof EXPRESSION_OPERATORS)[number];
 
 const MAX_DEPTH = 8;
@@ -62,9 +84,22 @@ export function isExpression(value: unknown, depth = 0): value is Expression {
     case 'mul':
     case 'concat':
       return operands(2, MAX_OPERANDS);
+    case 'coalesce':
+      return operands(2, MAX_OPERANDS);
     case 'sub':
     case 'div':
+    case 'add_days':
+    case 'add_hours':
+    case 'days_between':
+    case 'left':
       return operands(2, 2);
+    case 'upper':
+    case 'lower':
+    case 'trim':
+    case 'text_length':
+      return operands(1, 1);
+    case 'if':
+      return Array.isArray(argument) && argument.length === 3 && isCondition(argument[0]) && isExpression(argument[1], depth + 1) && isExpression(argument[2], depth + 1);
     case 'round':
       return (
         Array.isArray(argument) &&
@@ -85,14 +120,21 @@ export function operatorOf(expression: Expression): ExpressionOperator | undefin
   return EXPRESSION_OPERATORS.find((op) => op in expression);
 }
 
-/** The references an expression makes, such as `record.total` and `principal.id`. */
+/** The operands of a calculation that are expressions: all of them, but a rounding's digits and a choice's condition. */
+export function operandsOf(expression: Expression): readonly Expression[] {
+  const op = operatorOf(expression);
+  if (!op) return [];
+  if (op === 'round') return [(expression as { round: readonly [Expression, number] }).round[0]];
+  if (op === 'if') return (expression as { if: readonly [Condition, Expression, Expression] }).if.slice(1) as Expression[];
+  return (expression as Record<string, readonly Expression[]>)[op] ?? [];
+}
+
+/** The references an expression makes, such as `record.total` and `principal.id`, those of a choice's condition too. */
 export function expressionRefs(expression: Expression): string[] {
   if (!isObject(expression)) return [];
   if ('ref' in expression) return [expression.ref];
-  const op = operatorOf(expression);
-  if (!op) return [];
-  const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : ((expression as Record<string, readonly Expression[]>)[op] ?? []);
-  return operands.flatMap(expressionRefs);
+  const own = operatorOf(expression) === 'if' ? conditionRefs((expression as { if: readonly [Condition, Expression, Expression] }).if[0]) : [];
+  return [...own, ...operandsOf(expression).flatMap(expressionRefs)];
 }
 
 /** The same expression with each reference mapped, for example after a field is renamed. */
@@ -105,8 +147,69 @@ export function mapExpressionRefs(expression: Expression, map: (ref: string) => 
     const [value, digits] = (expression as { round: readonly [Expression, number] }).round;
     return { round: [mapExpressionRefs(value, map), digits] };
   }
+  if (op === 'if') {
+    const [when, then, otherwise] = (expression as { if: readonly [Condition, Expression, Expression] }).if;
+    return { if: [mapRefs(when, map), mapExpressionRefs(then, map), mapExpressionRefs(otherwise, map)] };
+  }
   const operands = (expression as Record<string, readonly Expression[]>)[op]!.map((operand) => mapExpressionRefs(operand, map));
   return { [op]: operands } as unknown as Expression;
+}
+
+/** The kinds of value an expression can give, as a field's value kinds, with nothing and anything. */
+export type CalculationKind = 'text' | 'uuid' | 'number' | 'boolean' | 'date' | 'datetime' | 'text[]' | 'null' | 'any';
+
+const KIND_WORDS: Readonly<Record<CalculationKind, string>> = {
+  text: 'text',
+  uuid: 'an ID of a person or a record',
+  number: 'a number',
+  boolean: 'yes or no',
+  date: 'a date',
+  datetime: 'a time',
+  'text[]': 'a list of options',
+  null: 'nothing',
+  any: 'any value',
+};
+
+/**
+ * The kind of value a calculation gives, from the kinds of its operands (for a choice, of its two
+ * values), and what doesn't fit, in words. The checks of steps and of flows share it.
+ */
+export function calculationKind(op: ExpressionOperator, kinds: readonly CalculationKind[]): { readonly kind: CalculationKind; readonly problems: readonly string[] } {
+  const loose = (kind: CalculationKind | undefined) => kind === undefined || kind === 'null' || kind === 'any';
+  const problems: string[] = [];
+  const need = (kind: CalculationKind | undefined, fit: readonly CalculationKind[], what: string) => {
+    if (!loose(kind) && !fit.includes(kind!)) problems.push(`${op} works on ${what}, not on ${KIND_WORDS[kind!]}`);
+  };
+  const first = kinds.find((kind) => !loose(kind));
+  switch (op) {
+    case 'concat':
+    case 'upper':
+    case 'lower':
+    case 'trim':
+      return { kind: 'text', problems };
+    case 'text_length':
+      return { kind: 'number', problems };
+    case 'left':
+      need(kinds[1], ['number'], 'a number of characters');
+      return { kind: 'text', problems };
+    case 'coalesce':
+    case 'if':
+      return { kind: first ?? 'any', problems };
+    case 'add_days':
+      need(kinds[0], ['date', 'datetime'], 'a date or a time');
+      need(kinds[1], ['number'], 'a number of days');
+      return { kind: kinds[0] === 'datetime' ? 'datetime' : loose(kinds[0]) ? 'any' : 'date', problems };
+    case 'add_hours':
+      need(kinds[0], ['date', 'datetime'], 'a time');
+      need(kinds[1], ['number'], 'a number of hours');
+      return { kind: 'datetime', problems };
+    case 'days_between':
+      for (const kind of kinds) need(kind, ['date', 'datetime'], 'dates and times');
+      return { kind: 'number', problems };
+    default:
+      for (const kind of kinds) if (!loose(kind) && kind !== 'number') problems.push(`${op} works on numbers, not on ${KIND_WORDS[kind]}`);
+      return { kind: 'number', problems };
+  }
 }
 
 export interface ExpressionScope {
@@ -122,6 +225,26 @@ export type Evaluated = { readonly ok: true; readonly value: ExpressionValue } |
 
 const value = (v: ExpressionValue): Evaluated => ({ ok: true, value: v });
 const failure = (message: string): Evaluated => ({ ok: false, message });
+
+const DAY = 86_400_000;
+const isDate = (v: ExpressionValue): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+/** Dates and times moved by days or hours, and the days between two of them. An empty operand gives an empty value. */
+function dates(op: 'add_days' | 'add_hours' | 'days_between', operands: readonly ExpressionValue[]): Evaluated {
+  const [first, second] = operands;
+  if (first === null || second === null || first === undefined || second === undefined) return value(null);
+  if (op === 'days_between') {
+    const [from, to] = [timeOf(first), timeOf(second)];
+    if (from === undefined || to === undefined) return failure('days_between works on dates and times');
+    return value(Math.trunc((to - from) / DAY));
+  }
+  const at = timeOf(first);
+  if (at === undefined) return failure(`${op} works on ${op === 'add_days' ? 'a date or a time' : 'a time'}`);
+  if (typeof second !== 'number') return failure(`${op} adds a number`);
+  // A date moves by whole days and stays a date; a time moves by the exact amount.
+  if (op === 'add_days' && isDate(first)) return value(new Date(at + Math.round(second) * DAY).toISOString().slice(0, 10));
+  return value(new Date(at + second * (op === 'add_days' ? DAY : 3_600_000)).toISOString());
+}
 
 function scalar(raw: unknown): ExpressionValue {
   if (raw === undefined || raw === null) return null;
@@ -175,6 +298,11 @@ export function evaluateExpression(expression: Expression, scope: ExpressionScop
     if (!result.ok || result.value === null) return result;
     return typeof result.value === 'number' ? value(roundTo(result.value, digits)) : failure('round works on numbers');
   }
+  if (op === 'if') {
+    const [when, then, otherwise] = (expression as { if: readonly [Condition, Expression, Expression] }).if;
+    const env = { ...scope.vars, record: scope.record, principal: scope.principal, [CLOCK]: scope.now };
+    return evaluateExpression(evaluateCondition(when, env) ? then : otherwise, scope);
+  }
   const operands: ExpressionValue[] = [];
   for (const operand of (expression as Record<string, readonly Expression[]>)[op]!) {
     const result = evaluateExpression(operand, scope);
@@ -183,6 +311,30 @@ export function evaluateExpression(expression: Expression, scope: ExpressionScop
   }
   if (op === 'concat') {
     return value(operands.map((v) => (v === null ? '' : Array.isArray(v) ? v.join(', ') : String(v))).join(''));
+  }
+  if (op === 'coalesce') return value(operands.find((v) => v !== null && v !== '' && !(Array.isArray(v) && !v.length)) ?? null);
+  const text = (v: ExpressionValue) => (v === null ? '' : Array.isArray(v) ? v.join(', ') : String(v));
+  switch (op) {
+    case 'upper':
+      return value(operands[0] === null ? null : text(operands[0]!).toUpperCase());
+    case 'lower':
+      return value(operands[0] === null ? null : text(operands[0]!).toLowerCase());
+    case 'trim':
+      return value(operands[0] === null ? null : text(operands[0]!).trim());
+    case 'text_length':
+      return value([...text(operands[0] ?? null)].length);
+    case 'left': {
+      const [whole, count] = operands;
+      if (whole === null || count === null) return value(null);
+      if (typeof count !== 'number' || count < 0) return failure('left takes a number of characters');
+      return value([...text(whole!)].slice(0, Math.floor(count)).join(''));
+    }
+    case 'add_days':
+    case 'add_hours':
+    case 'days_between':
+      return dates(op, operands);
+    default:
+      break;
   }
   if (operands.some((v) => v === null)) return value(null);
   if (!operands.every((v): v is number => typeof v === 'number')) return failure(`${op} works on numbers`);

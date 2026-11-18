@@ -17,7 +17,7 @@ import {
   type WaitFor,
 } from '@platform/app-model';
 import type { Definition } from '../types.js';
-import { isGroup, OP_LABELS, recordChoices, toModel, type Clause, type Condition, type Group, type Kind, type RefChoice } from './conditions.js';
+import { isGroup, opLabel, recordChoices, relativeWords, toModel, type Clause, type Condition, type Group, type Kind, type RefChoice } from './conditions.js';
 import { toName } from './edit.js';
 
 /*
@@ -330,8 +330,10 @@ function conditionWords(definition: Definition, condition: Condition, entity?: s
   const ref = (path: string) => (path === 'principal.id' ? 'the person running it' : (fields.find((choice) => choice.ref === path)?.label ?? path));
   const literal = (value: unknown) => (Array.isArray(value) ? value.join(', ') : typeof value === 'string' ? `“${value}”` : String(value));
   const clause = (c: Clause) => {
-    const right = !c.right ? '' : c.right.kind === 'ref' ? ref(c.right.ref) : literal(c.right.value);
-    return `${ref(c.ref)} ${OP_LABELS[c.op]}${right ? ` ${right}` : ''}`;
+    const right = !c.right ? '' : c.right.kind === 'ref' ? ref(c.right.ref) : c.right.kind === 'relative' ? relativeWords(c.right) : literal(c.right.value);
+    // A date or a time is before or after; other values are less or more.
+    const dated = c.right?.kind === 'relative' || (c.right?.kind === 'value' && typeof c.right.value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(c.right.value)) || fields.find((choice) => choice.ref === c.ref)?.kind === 'date';
+    return `${ref(c.ref)} ${opLabel(c.op, dated ? 'date' : 'other')}${right ? ` ${right}` : ''}`;
   };
   const group = (g: Group): string => g.items.map((item) => (isGroup(item) ? `(${group(item)})` : clause(item))).join(g.match === 'all' ? ' and ' : ' or ');
   return group(model);
