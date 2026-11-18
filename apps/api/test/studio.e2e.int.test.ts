@@ -6,7 +6,8 @@ import { callTool, modelMessage, say, scriptedModel, type ScriptedModel } from '
 
 /**
  * The studio in a real browser, end to end: build an app from the example, rename a field, save,
- * submit a claim through the generated form, and see a colleague's limited view.
+ * submit a claim through the generated form, and see a colleague's limited view. Each test makes
+ * its own apps and records, so it runs alone or in any order (--sequence.shuffle).
  *
  * Opt-in, because it needs Chromium and a built studio:
  *   pnpm --filter @platform/studio build
@@ -69,13 +70,16 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   let bob: Session;
   let carol: Session;
   let browser: Browser;
-  let appId: string;
   let model: ScriptedModel;
 
   beforeAll(async () => {
     // The installation's model, scripted: the chat that builds apps is on.
     model = scriptedModel();
-    t = await startTestApp({ PUBLIC_BASE_URL: BASE, AI_PROVIDER: 'anthropic', AI_MODEL: 'test-model', AI_API_KEY_FILE: '/run/secrets/unused' }, { models: model.client });
+    // Each test makes its own apps, more than a personal space holds by default.
+    t = await startTestApp(
+      { PUBLIC_BASE_URL: BASE, AI_PROVIDER: 'anthropic', AI_MODEL: 'test-model', AI_API_KEY_FILE: '/run/secrets/unused', PERSONAL_SPACE_MAX_APPS: '100' },
+      { models: model.client },
+    );
     await t.app.listen({ host: '127.0.0.1', port: PORT });
     [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
     const { chromium } = createRequire(import.meta.url)('playwright') as { chromium: { launch(): Promise<Browser> } };
@@ -100,6 +104,24 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
   };
   const panel = (page: Page, heading: string): Locator => page.locator('section', { has: page.getByRole('heading', { name: heading, exact: true }) });
+  /** Each test makes its own app, so that it runs alone or in any order. */
+  const newApp = async (session: Session, name: string, template = 'expenses'): Promise<string> => {
+    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${session.personalSpaceId}/apps/import`, cookies: session.cookies, payload: { name, template } });
+    expect(created.statusCode, created.body).toBe(201);
+    return created.json().app.id;
+  };
+  /** A claim the person submits through the API: a receipt for each line, all on one day. */
+  const submitClaim = async (session: Session, appId: string, title: string, lines: ReadonlyArray<{ merchant: string; category: string; amount: number }>): Promise<{ id: string }> => {
+    const values = { title, lines: lines.map((line) => ({ date: '2026-11-02', ...line })) };
+    const done = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/actions/submit_claim/run`, cookies: session.cookies, payload: { values } });
+    expect(done.statusCode, done.body).toBe(201);
+    return done.json().record;
+  };
+  const SINGAPORE = [
+    { merchant: 'Comfort taxi', category: 'travel', amount: 32.4 },
+    { merchant: 'Marina Bay Sands', category: 'hotel', amount: 270 },
+  ];
+  const PENANG = [{ merchant: 'Eastern & Oriental', category: 'hotel', amount: 240 }];
 
   it('builds an app from the example, renames a field and saves it', async () => {
     const page = await open(alice);
@@ -110,7 +132,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(page, '1-home');
     await page.getByRole('button', { name: 'Create app' }).click();
     await page.waitForURL(/\/build\/data$/);
-    appId = page.url().split('/apps/')[1]!.split('/')[0]!;
+    const appId = page.url().split('/apps/')[1]!.split('/')[0]!;
 
     await page.getByRole('button', { name: /^Trip/ }).click();
     const field = panel(page, 'Field');
@@ -142,9 +164,16 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(await panel(page, 'Field').getByLabel('Label', { exact: true }).inputValue()).toBe('New text');
     await page.getByRole('button', { name: 'Discard' }).click();
     await page.getByRole('button', { name: 'List', exact: true }).click();
+
+    // The renamed field kept its place on the form.
+    await page.goto(`${BASE}/studio/apps/${appId}/build/forms`);
+    expect(await page.getByLabel('Title', { exact: true }).inputValue()).toBe('Claim an expense');
+    await visible(page.getByRole('button', { name: 'Journey', exact: true }));
+    await shot(page, '4-form-designer');
   });
 
   it('shows lines under the record they belong to, and works out the total', async () => {
+    const appId = await newApp(alice, 'Expenses, lines');
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/data`);
     await page.getByRole('button', { name: /^Total \(SGD\)/ }).click();
@@ -155,21 +184,13 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(page, '2b-lines');
   });
 
-  it('lays out the form', async () => {
-    const page = await open(alice);
-    await page.goto(`${BASE}/studio/apps/${appId}/build/forms`);
-    expect(await page.getByLabel('Title', { exact: true }).inputValue()).toBe('Claim an expense');
-    // The renamed field kept its place on the form.
-    await visible(page.getByRole('button', { name: 'Journey', exact: true }));
-    await shot(page, '4-form-designer');
-  });
-
   it('submits a claim with its receipts through the generated form, and shows its history', async () => {
+    const appId = await newApp(alice, 'Expenses, a claim');
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}`);
     await page.getByRole('link', { name: '+ Claim an expense' }).click();
     await page.getByLabel('Title').fill('Singapore trip');
-    await page.getByLabel('Journey').fill('Singapore');
+    await page.getByLabel('Trip').fill('Singapore');
     await page.getByLabel('Receipt 1, Date').fill('2026-11-02');
     await page.getByLabel('Receipt 1, Merchant').fill('Comfort taxi');
     await page.getByLabel('Receipt 1, Category').selectOption('travel');
@@ -204,13 +225,14 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('lets the person correct a line an agent proposed, on the review page, and approve it', async () => {
+    const appId = await newApp(alice, 'Expenses, proposed');
     const token = await t.app.inject({ method: 'POST', url: '/v1/me/tokens', cookies: alice.cookies, payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } });
     const run = await t.app.inject({
       method: 'POST',
       url: `/v1/apps/${appId}/actions/submit_claim/run`,
       headers: { authorization: `Bearer ${token.json().token}` },
       payload: {
-        values: { title: 'Penang trip', journey: 'Penang', lines: [{ date: '2026-11-09', merchant: 'Eastern & Oriental', category: 'hotel', amount: 280 }] },
+        values: { title: 'Penang trip', trip: 'Penang', lines: [{ date: '2026-11-09', merchant: 'Eastern & Oriental', category: 'hotel', amount: 280 }] },
         provenance: { 'lines[0].amount': { source: 'document', document: 'receipt.jpg' } },
       },
     });
@@ -229,6 +251,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it("shows a colleague only what their role allows, in dark mode too", async () => {
+    const appId = await newApp(alice, 'Expenses, shared');
     const share = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'requester' } });
     expect(share.statusCode, share.body).toBe(201);
     const page = await open(bob, 'dark');
@@ -248,6 +271,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('builds a rule and a role without JSON, and the app follows them', async () => {
+    const appId = await newApp(alice, 'Expenses, ruled');
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/rules`);
     await page.getByLabel('New rule').fill('Total cap');
@@ -286,6 +310,9 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('designs a page and the menu, and each role sees its own pages', async () => {
+    const appId = await newApp(alice, 'Expenses, pages');
+    await submitClaim(alice, appId, 'Singapore trip', SINGAPORE);
+    await submitClaim(alice, appId, 'Penang trip', PENANG);
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);
     await visible(page.getByRole('button', { name: /^To approve/ }));
@@ -293,7 +320,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByRole('button', { name: 'Add page' }).click();
     await page.getByLabel('Title (optional)').fill('The latest ten');
     await page.getByLabel('Shows at first').fill('10');
-    await page.getByLabel('Journey', { exact: true }).click();
+    await page.getByLabel('Trip', { exact: true }).click();
     await page.getByRole('button', { name: 'Add text' }).click();
     await page.getByLabel('A note that stands out').click();
     await page.getByLabel('Text', { exact: true }).fill('Newest first. Open one to see its receipts.');
@@ -338,6 +365,9 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('shows a dashboard of numbers and charts, and builds one more chart in the page designer', async () => {
+    const appId = await newApp(alice, 'Expenses, dashboard');
+    await submitClaim(alice, appId, 'Singapore trip', SINGAPORE);
+    await submitClaim(alice, appId, 'Penang trip', PENANG);
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}`);
     await page.getByRole('link', { name: 'Spending' }).click();
@@ -371,6 +401,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('designs a query that answers with numbers, for agents to ask', async () => {
+    const appId = await newApp(alice, 'Expenses, query');
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/queries`);
     await page.getByRole('button', { name: /^My spending by category/ }).click();
@@ -386,6 +417,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('designs the flow an action runs before it saves, on its canvas like any flow', async () => {
+    const appId = await newApp(alice, 'Expenses, before it saves');
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
     await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
@@ -670,6 +702,8 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {
+    const appId = await newApp(alice, 'Expenses, a flow');
+    await submitClaim(alice, appId, 'Singapore trip', SINGAPORE);
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);
     await page.getByLabel('New flow').fill('Count the lines');
@@ -736,6 +770,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('shows a loop, a decision and an error handler on the flow canvas', async () => {
+    const appId = await newApp(alice, 'Expenses, a loop');
     const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json();
     current.definition.flows.check_claim = {
       label: 'Check a claim',
@@ -1099,6 +1134,8 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {
+    const appId = await newApp(alice, 'Expenses, a claim page');
+    await submitClaim(alice, appId, 'Singapore trip', SINGAPORE);
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);
     await page.getByLabel('New page').fill('Claim');
@@ -1137,6 +1174,7 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('builds by chat: the chat changes the draft, and the builder undoes it or reviews and saves it', async () => {
+    const appId = await newApp(alice, 'Expenses, by chat');
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/data`);
     await page.getByRole('button', { name: 'Build by chat' }).click();

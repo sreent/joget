@@ -138,6 +138,13 @@ pnpm --filter @platform/studio build && STUDIO_E2E=1 SCREENSHOT_DIR=/tmp/shots \
 
 That runs two: the studio's own (`studio.e2e`), and governed delivery from a working copy to Prod and back (`delivery.e2e`).
 
+Each browser test makes its own apps and records, so one runs alone (`-t "<its name>"`), and all of them run in any order:
+
+```bash
+STUDIO_E2E=1 TEST_DATABASE_URL=postgres://platform:platform@localhost:5432/platform \
+  pnpm --filter @platform/api test:integration -- studio.e2e --sequence.shuffle
+```
+
 Type-check and build everything:
 
 ```bash
