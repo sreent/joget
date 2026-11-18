@@ -211,7 +211,7 @@ describe('sharing with colleagues', () => {
     expect(carols.pages.my_claims.blocks.map((block: { type: string }) => block.type)).toEqual(['list']);
     expect(carols.pages.to_approve.blocks[1]).toMatchObject({
       type: 'list',
-      index: 1,
+      path: '1',
       actions: ['approve_claim'],
       columns: [{ name: 'title' }, { name: 'total' }, { name: 'owner', label: 'Owner' }, { name: 'created_at', label: 'Created' }],
     });
@@ -233,7 +233,7 @@ describe('sharing with colleagues', () => {
     const summary = async (session: Session, block: number, expected = 200) =>
       (await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/spending/blocks/${block}/summary`, ...as(session) }, expected)).json();
     const carols = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(carol) }, 200)).json();
-    expect(carols.pages.spending.blocks.map((block: { type: string; index: number }) => `${block.type}:${block.index}`)).toEqual(['stat:0', 'stat:1', 'stat:2', 'chart:3', 'chart:4']);
+    expect(carols.pages.spending.blocks.map((block: { type: string; path: string }) => `${block.type}:${block.path}`)).toEqual(['stat:0', 'stat:1', 'stat:2', 'chart:3', 'chart:4']);
     expect(carols.pages.spending.blocks[3]).toMatchObject({ title: 'Spending by category (SGD)', show: 'bar', width: 'half', op: 'sum', decimals: 2, group: { label: 'Category', kind: 'value' } });
     expect(carols.pages.spending.blocks[4]).toMatchObject({ show: 'column', group: { label: 'Date', kind: 'period', period: 'month' } });
 
@@ -259,7 +259,7 @@ describe('sharing with colleagues', () => {
     await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), payload: { definition, baseRevision: revision } }, 200);
     // Carol sees bank accounts masked, so the chart isn't on her page, and its numbers are refused.
     const carols = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(carol) }, 200)).json();
-    expect(carols.pages.spending.blocks.map((block: { index: number }) => block.index)).not.toContain(5);
+    expect(carols.pages.spending.blocks.map((block: { path: string }) => block.path)).not.toContain('5');
     const refused = await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/spending/blocks/5/summary`, ...as(carol) }, 403);
     expect(refused.json().error).toBe('hidden_field');
     // Bob reads his own bank account in full, so he may group by it.

@@ -837,6 +837,44 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.getByRole('heading', { name: 'Taxi' }));
   });
 
+  it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);
+    await page.getByLabel('New page').fill('Claim');
+    await page.getByRole('button', { name: 'Add page' }).click();
+    await page.getByLabel('About', { exact: true }).selectOption('expense_claim');
+    await page.getByRole('button', { name: 'Add fields of the record' }).click();
+    await page.getByRole('button', { name: 'Add tabs' }).click();
+    await page.getByLabel('Tab 1', { exact: true }).fill('Money');
+    await page.getByLabel('Tab 2', { exact: true }).fill('Notes');
+    await page.getByRole('button', { name: 'Money: add number' }).click();
+    // The list a new page starts with goes: this page is about one claim.
+    await page.getByRole('button', { name: /^List.*block 1$/ }).click();
+    await page.getByRole('button', { name: 'Remove the selected block' }).click();
+    await shot(page, '29-record-page-designer');
+    // A row of My claims opens the page.
+    await page.getByRole('button', { name: /^My claims/ }).click();
+    await page.getByRole('button', { name: /^List.*block 2$/ }).click();
+    await page.getByLabel('A row opens', { exact: true }).selectOption('claim');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.pages.claim).toMatchObject({ record: { entity: 'expense_claim' }, blocks: [{ type: 'fields' }, { type: 'tabs', tabs: [{ label: 'Money', blocks: [{}, { type: 'stat' }] }, { label: 'Notes' }] }] });
+    expect(saved.pages.my_claims.blocks[1].open).toBe('claim');
+
+    // In the app, the row opens the page about that claim: its fields, and its tabs.
+    await page.goto(`${BASE}/studio/apps/${appId}`);
+    await page.getByRole('link', { name: 'Singapore trip' }).first().click();
+    await page.waitForURL(/\/pages\/claim\//);
+    await visible(page.getByRole('heading', { name: 'Singapore trip' }));
+    await visible(page.getByText('Bank account', { exact: true }));
+    const tabs = page.getByRole('group', { name: 'Tabs' });
+    await tabs.getByRole('button', { name: 'Notes', exact: true }).click();
+    await visible(page.getByText('What the second tab shows.'));
+    await shot(page, '30-record-page');
+  });
+
   it('builds by chat: the chat changes the draft, and the builder undoes it or reviews and saves it', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/data`);

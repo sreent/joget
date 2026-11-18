@@ -2,6 +2,7 @@ import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
 import { conditionRefs, evaluateCondition, partialEvaluate, type Condition, type Policy, type QueryGrant } from '@platform/authz';
 import {
   beforeGives,
+  blockAt,
   buildCard,
   canonicalValue,
   checkActionInput,
@@ -1051,11 +1052,23 @@ export class AppRuntime {
     });
   }
 
-  /** The number or chart block of a page, or a 404 if the page has none there. */
-  summaryBlock(loaded: LoadedApp, page: string, index: number): StatBlock | ChartBlock {
-    const block = loaded.definition.pages[page]?.blocks[index];
+  /** The number or chart block of a page, at its path, or a 404 if the page has none there. */
+  summaryBlock(loaded: LoadedApp, page: string, path: string): StatBlock | ChartBlock {
+    const found = loaded.definition.pages[page];
+    const block = found ? blockAt(found, path) : undefined;
     if (block?.type !== 'stat' && block?.type !== 'chart') throw notFound('Chart');
     return block;
+  }
+
+  /**
+   * On a page about one record, a block of the records that refer to it: the condition that keeps
+   * only those. It narrows what the block shows; the caller's own permissions still decide.
+   */
+  #referringTo(block: { readonly of?: string | undefined }, record: string | undefined, filter: Condition | undefined): Condition | undefined {
+    if (block.of === undefined) return filter;
+    if (!record) throw unprocessable('record_required', 'This block shows the records that refer to one record: give its ID');
+    const of: Condition = { eq: [{ ref: `record.${block.of}` }, record] };
+    return filter ? { all: [filter, of] } : of;
   }
 
   /**
@@ -1063,14 +1076,15 @@ export class AppRuntime {
    * their lines. A field it totals, groups by or filters on must show in full to the caller in
    * every record: otherwise the number would tell them what their role hides.
    */
-  async runSummary(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, page: string, index: number, decision: AllowedQuery): Promise<SummaryOut> {
-    const block = this.summaryBlock(loaded, page, index);
+  async runSummary(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, page: string, path: string, decision: AllowedQuery, record?: string): Promise<SummaryOut> {
+    const block = this.summaryBlock(loaded, page, path);
+    const filter = this.#referringTo(block, record, block.filter);
     return this.#summarize(auth, loaded, {
       entity: block.entity,
       measure: block.measure,
       ...(block.type === 'chart' ? { group: block.group, limit: block.limit } : {}),
       ...(block.range ? { range: block.range } : {}),
-      ...(block.filter ? { filter: block.filter } : {}),
+      ...(filter ? { filter } : {}),
     }, decision, {});
   }
 
@@ -1158,9 +1172,10 @@ export class AppRuntime {
     return { groups, other, more };
   }
 
-  /** The list block of a page, or a 404 if the page has no list there. */
-  listBlock(loaded: LoadedApp, page: string, index: number): ListBlock {
-    const block = loaded.definition.pages[page]?.blocks[index];
+  /** The list block of a page, at its path, or a 404 if the page has no list there. */
+  listBlock(loaded: LoadedApp, page: string, path: string): ListBlock {
+    const found = loaded.definition.pages[page];
+    const block = found ? blockAt(found, path) : undefined;
     if (block?.type !== 'list') throw notFound('List');
     return block;
   }
@@ -1174,11 +1189,12 @@ export class AppRuntime {
     auth: AuthContext,
     loaded: LoadedApp,
     page: string,
-    index: number,
-    input: { readonly decision: AllowedQuery; readonly cursor?: string },
+    path: string,
+    input: { readonly decision: AllowedQuery; readonly cursor?: string; readonly record?: string },
   ): Promise<Page> {
-    const block = this.listBlock(loaded, page, index);
-    const where = block.filter ? partialEvaluate(block.filter, { principal: principalEnv(auth), input: {}, context: {} }, ['record']) : true;
+    const block = this.listBlock(loaded, page, path);
+    const filter = this.#referringTo(block, input.record, block.filter);
+    const where = filter ? partialEvaluate(filter, { principal: principalEnv(auth), input: {}, context: {} }, ['record']) : true;
     if (where === false) return { records: [], nextCursor: null };
     const entity = this.entity(loaded, block.entity);
     return this.list(request, auth, loaded, block.entity, {

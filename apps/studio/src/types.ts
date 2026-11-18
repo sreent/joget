@@ -256,14 +256,18 @@ export interface UiColumn {
 }
 
 /** A block of a page, as the person may use it. A list names its place in the page, which reads its records. */
+/** A block of a page, named by its path: "2", or "2.1.0" inside tabs. `of` keeps the records that refer to the page's record. */
 export type UiBlock =
   | { type: 'text'; style: 'heading' | 'paragraph' | 'note'; text: string }
-  | { type: 'list'; index: number; entity: string; title?: string; columns: UiColumn[]; actions: string[]; empty?: string }
+  | { type: 'list'; path: string; entity: string; title?: string; columns: UiColumn[]; actions: string[]; empty?: string; of?: string; open?: string }
   | { type: 'buttons'; buttons: Array<{ form: string; label?: string } | { page: string; label?: string }> }
-  | { type: 'stat'; index: number; entity: string; label: string; op: string; decimals: number }
+  | { type: 'stat'; path: string; entity: string; label: string; op: string; decimals: number; of?: string }
+  | { type: 'fields'; path: string; title?: string; fields: string[]; actions: string[] }
+  | { type: 'tabs'; tabs: Array<{ label: string; blocks: UiBlock[] }> }
   | {
       type: 'chart';
-      index: number;
+      path: string;
+      of?: string;
       entity: string;
       title: string;
       show: 'bar' | 'column' | 'line' | 'table';
@@ -276,6 +280,8 @@ export type UiBlock =
 export interface UiPage {
   label: string;
   description?: string;
+  /** A page about one record of this entity: a list's row opens it. */
+  record?: { entity: string };
   blocks: UiBlock[];
 }
 

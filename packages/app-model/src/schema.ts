@@ -834,6 +834,21 @@ const ListBlock = z.strictObject({
   actions: z.array(Name).max(5).default([]),
   /** What to say when there are no records. */
   empty: z.string().trim().min(1).max(200).optional(),
+  /**
+   * On a page about one record: only the records whose reference field of this name points at it,
+   * such as a customer's orders on the customer's page.
+   */
+  of: Name.optional(),
+  /** The page about one record that a row opens. Without one, a row opens the record's own screen. */
+  open: Name.optional(),
+});
+
+/** The fields of the record a page is about, and update actions that run on it in one click. */
+const FieldsBlock = z.strictObject({
+  type: z.literal('fields'),
+  title: Label.optional(),
+  fields: z.array(Name).min(1).max(40),
+  actions: z.array(Name).max(5).default([]),
 });
 
 /** Buttons that open a form, or another page. */
@@ -853,6 +868,8 @@ const StatBlock = z.strictObject({
   measure: Measure,
   filter: ConditionSchema.optional(),
   range: TimeRange.optional(),
+  /** On a page about one record: only the records whose reference field of this name points at it. */
+  of: Name.optional(),
 });
 
 /**
@@ -873,10 +890,26 @@ const ChartBlock = z.strictObject({
   /** At most this many bars or points: for periods, the latest; otherwise the largest, the rest as "Other". */
   limit: z.int().min(2).max(24).default(8),
   width: z.enum(['full', 'half']).default('half'),
+  /** On a page about one record: only the records whose reference field of this name points at it. */
+  of: Name.optional(),
 });
 
-export const PageBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock, StatBlock, ChartBlock]);
+/** A block that a tab holds: any but tabs, which go one level deep. */
+const TabBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock, StatBlock, ChartBlock, FieldsBlock]);
+/** Tabs, each holding blocks: one tab shows at a time, as a choice of views. */
+const TabsBlock = z.strictObject({
+  type: z.literal('tabs'),
+  tabs: z
+    .array(z.strictObject({ label: Label, blocks: z.array(TabBlock).min(1).max(20) }))
+    .min(2)
+    .max(8),
+});
+
+export const PageBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock, StatBlock, ChartBlock, FieldsBlock, TabsBlock]);
 export type PageBlock = z.infer<typeof PageBlock>;
+export type TabBlock = z.infer<typeof TabBlock>;
+export type FieldsBlock = z.infer<typeof FieldsBlock>;
+export type TabsBlock = z.infer<typeof TabsBlock>;
 export type ListBlock = z.infer<typeof ListBlock>;
 export type StatBlock = z.infer<typeof StatBlock>;
 export type ChartBlock = z.infer<typeof ChartBlock>;
@@ -894,9 +927,20 @@ export const Page = z.strictObject({
    * the app's roles, such as its builder, see every page.
    */
   roles: z.array(Name).max(20).optional(),
+  /**
+   * A page about one record of an entity: a list's row opens it, and its blocks show that record,
+   * its fields and the records that refer to it. The menu can't open it, as it needs its record.
+   */
+  record: z.strictObject({ entity: Name }).optional(),
   blocks: z.array(PageBlock).min(1).max(30),
 });
 export type Page = z.infer<typeof Page>;
+
+/**
+ * Where a block is on its page: its place, as "2"; or, inside tabs, the tabs' place, the tab and
+ * the block's place in it, as "2.1.0".
+ */
+export const BLOCK_PATH = /^(\d{1,2})(?:\.(\d)\.(\d{1,2}))?$/;
 
 /** One item of an app's menu: a page, a form, an entity's records, or a heading over the items below it. */
 export const NavItem = z.union([

@@ -11,6 +11,8 @@ import {
   addBlock,
   addNavItem,
   addPage,
+  addTab,
+  blockAt,
   changeListEntity,
   describeBlock,
   listable,
@@ -28,6 +30,9 @@ import {
   updateNavItem,
   updatePage,
   newChart,
+  recordPages,
+  referringFields,
+  updateTab,
   type Block,
   type BlockType,
   type ChartBlock,
@@ -41,7 +46,10 @@ import { Checklist, Choice } from './LogicDesigners.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
-const BLOCK_NAMES: Readonly<Record<BlockType, string>> = { text: 'Text', list: 'List', buttons: 'Buttons', stat: 'Number', chart: 'Chart' };
+const BLOCK_NAMES: Readonly<Record<BlockType, string>> = { text: 'Text', list: 'List', buttons: 'Buttons', stat: 'Number', chart: 'Chart', fields: 'Fields of the record', tabs: 'Tabs' };
+/** What can go on a page, and in a tab: all but tabs, which go one level deep. */
+const INNER_TYPES = ['text', 'list', 'buttons', 'stat', 'chart', 'fields'] as const;
+const badgeTone = (type: BlockType) => (type === 'list' ? 'accent' : type === 'buttons' ? 'good' : type === 'stat' || type === 'chart' ? 'agent' : type === 'fields' ? 'warn' : 'idle');
 
 /** A vertical list whose rows drag to reorder, by a handle, or with the keyboard. */
 function SortableRows({ ids, onMove, children }: { ids: string[]; onMove: (from: number, to: number) => void; children: ReactNode }) {
@@ -85,7 +93,8 @@ function Row({ id, label, selected, onSelect, children }: { id: string; label: s
 export function PagesDesigner({ definition, onChange }: Props) {
   const pages = Object.keys(definition.pages);
   const [selected, setSelected] = useState<string | null>(pages[0] ?? null);
-  const [block, setBlock] = useState<number | null>(null);
+  // The chosen block, by its path: "2", or "2.1.0" inside tabs.
+  const [block, setBlock] = useState<string | null>(null);
   const [label, setLabel] = useState('');
   const current = selected && definition.pages[selected] ? selected : (pages[0] ?? null);
 
@@ -119,7 +128,7 @@ export function PagesDesigner({ definition, onChange }: Props) {
             const result = addPage(definition, label.trim());
             onChange(result.definition);
             setSelected(result.name);
-            setBlock(0);
+            setBlock('0');
             setLabel('');
           }}
         >
@@ -148,10 +157,10 @@ export function PagesDesigner({ definition, onChange }: Props) {
         <EmptyState title="No pages yet">A page brings together lists of records, buttons and text, for each kind of person who uses the app. Without pages, an app shows its forms and lists.</EmptyState>
       )}
 
-      {current && block !== null && definition.pages[current]?.blocks[block] ? (
+      {current && block !== null && blockAt(definition, current, block) ? (
         <Card className="grid content-start gap-3">
-          <h2 className="m-0 text-lg font-semibold">{BLOCK_NAMES[definition.pages[current]!.blocks[block]!.type]}</h2>
-          <BlockPanel definition={definition} onChange={onChange} page={current} index={block} />
+          <h2 className="m-0 text-lg font-semibold">{BLOCK_NAMES[blockAt(definition, current, block)!.type]}</h2>
+          <BlockPanel definition={definition} onChange={onChange} page={current} path={block} />
         </Card>
       ) : (
         <Card className="grid content-start">
@@ -162,20 +171,30 @@ export function PagesDesigner({ definition, onChange }: Props) {
   );
 }
 
-function PageCanvas(props: Props & { name: string; block: number | null; onBlock: (index: number | null) => void; onRename: (name: string) => void; onRemove: () => void }) {
+function PageCanvas(props: Props & { name: string; block: string | null; onBlock: (path: string | null) => void; onRename: (name: string) => void; onRemove: () => void }) {
   const { definition, onChange, name } = props;
   const page = definition.pages[name]!;
   const [newName, setNewName] = useState(name);
   useEffect(() => setNewName(name), [name]);
   const roles = Object.entries(definition.roles);
   const ids = page.blocks.map((_, index) => `block:${index}`);
-  const add = (type: BlockType) => {
-    const result = addBlock(definition, name, type);
-    if (result.index === -1) return;
+  const add = (type: BlockType, into?: { index: number; tab: number }) => {
+    const result = addBlock(definition, name, type, into);
+    if (!result.path) return;
     onChange(result.definition);
-    props.onBlock(result.index);
+    props.onBlock(result.path);
   };
-  const can = (type: BlockType) => addBlock(definition, name, type).index !== -1;
+  const can = (type: BlockType) => addBlock(definition, name, type).path !== '';
+  const why = (type: BlockType) => (can(type) ? undefined : type === 'list' ? 'Add an entity first' : type === 'fields' ? 'Say which records the page is about' : 'Add a form or another page first');
+  const row = (block: Block | InnerBlockOf, path: string, label: string) => (
+    <>
+      <Badge tone={badgeTone(block.type)}>{block.type === 'text' && block.style === 'heading' ? 'Heading' : BLOCK_NAMES[block.type]}</Badge>
+      <span className="min-w-0 flex-1 truncate" title={describeBlock(definition, block as Block)}>
+        {describeBlock(definition, block as Block)}
+      </span>
+      <span className="sr-only">{label}</span>
+    </>
+  );
 
   return (
     // One column that may shrink, so that a long block description truncates and does not widen the card.
@@ -205,6 +224,18 @@ function PageCanvas(props: Props & { name: string; block: number | null; onBlock
       <Field label="Description (optional)">
         {(id) => <TextInput id={id} value={page.description ?? ''} onChange={(e) => onChange(updatePage(definition, name, { description: e.target.value }))} />}
       </Field>
+      <Field label="About" hint={page.record ? "A row of a list opens it, and its blocks show that record. The menu can't open it." : 'A page of its own, which the menu and buttons open.'}>
+        {(id) => (
+          <Select id={id} value={page.record?.entity ?? ''} onChange={(e) => onChange(updatePage(definition, name, { record: e.target.value ? { entity: e.target.value } : undefined }))}>
+            <option value="">Nothing in particular</option>
+            {listable(definition).map((entity) => (
+              <option key={entity} value={entity}>
+                One {definition.entities[entity]!.label.toLowerCase()}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
       {roles.length ? (
         <Checklist
           label="Shown to"
@@ -220,32 +251,71 @@ function PageCanvas(props: Props & { name: string; block: number | null; onBlock
         <SortableRows
           ids={ids}
           onMove={(from, to) => {
-            onChange(moveBlock(definition, name, from, to));
-            if (props.block === from) props.onBlock(to);
+            onChange(moveBlock(definition, name, String(from), to));
+            if (props.block === String(from)) props.onBlock(String(to));
           }}
         >
           {page.blocks.map((block, index) => (
-            <Row key={ids[index]} id={ids[index]!} label={`${BLOCK_NAMES[block.type]} block ${index + 1}`} selected={props.block === index} onSelect={() => props.onBlock(index)}>
-              <Badge tone={block.type === 'list' ? 'accent' : block.type === 'buttons' ? 'good' : block.type === 'stat' || block.type === 'chart' ? 'agent' : 'idle'}>{block.type === 'text' && block.style === 'heading' ? 'Heading' : BLOCK_NAMES[block.type]}</Badge>
-              <span className="min-w-0 flex-1 truncate" title={describeBlock(definition, block)}>
-                {describeBlock(definition, block)}
-              </span>
+            <Row key={ids[index]} id={ids[index]!} label={`${BLOCK_NAMES[block.type]} block ${index + 1}`} selected={props.block === String(index)} onSelect={() => props.onBlock(String(index))}>
+              {row(block, String(index), `${BLOCK_NAMES[block.type]} block ${index + 1}`)}
             </Row>
           ))}
         </SortableRows>
+        {/* The blocks that each tab holds, under its tabs. */}
+        {page.blocks.map((block, index) =>
+          block.type === 'tabs' ? (
+            <div key={`tabs:${index}`} className="grid gap-2 rounded-md border border-line p-2">
+              {block.tabs.map((tab, t) => (
+                <div key={t} className="grid gap-1.5">
+                  <span className="text-xs font-semibold text-muted">
+                    Block {index + 1}, tab {t + 1}: {tab.label}
+                  </span>
+                  <ul className="m-0 grid list-none gap-1 p-0 pl-3">
+                    {tab.blocks.map((inner, i) => {
+                      const path = `${index}.${t}.${i}`;
+                      return (
+                        <li key={path}>
+                          <button
+                            type="button"
+                            aria-current={props.block === path ? 'true' : undefined}
+                            aria-label={`${tab.label}: ${BLOCK_NAMES[inner.type]} block ${i + 1}`}
+                            className={cx('flex w-full items-center gap-2 rounded-md border bg-surface px-2 py-1.5 text-left text-sm', props.block === path ? 'border-accent' : 'border-line')}
+                            onClick={() => props.onBlock(path)}
+                          >
+                            {row(inner, path, '')}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <div className="flex flex-wrap gap-1.5 pl-3">
+                    {INNER_TYPES.map((type) => (
+                      <Button key={type} size="sm" variant="ghost" onClick={() => add(type, { index, tab: t })} disabled={!can(type)} title={why(type)}>
+                        {tab.label}: add {BLOCK_NAMES[type].toLowerCase()}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null,
+        )}
         <div className="flex flex-wrap gap-2">
-          {(['text', 'list', 'buttons', 'stat', 'chart'] as const).map((type) => (
-            <Button key={type} size="sm" onClick={() => add(type)} disabled={!can(type)} title={can(type) ? undefined : type === 'list' ? 'Add an entity first' : 'Add a form or another page first'}>
+          {[...INNER_TYPES, 'tabs' as const].map((type) => (
+            <Button key={type} size="sm" onClick={() => add(type)} disabled={!can(type)} title={why(type)}>
               Add {BLOCK_NAMES[type].toLowerCase()}
             </Button>
           ))}
-          {props.block !== null && page.blocks.length > 1 ? (
+          {props.block !== null ? (
             <Button
               size="sm"
               variant="ghost"
               onClick={() => {
-                onChange(removeBlock(definition, name, props.block!));
-                props.onBlock(null);
+                const next = removeBlock(definition, name, props.block!);
+                if (next !== definition) {
+                  onChange(next);
+                  props.onBlock(null);
+                }
               }}
             >
               Remove the selected block
@@ -262,9 +332,12 @@ function PageCanvas(props: Props & { name: string; block: number | null; onBlock
   );
 }
 
-function BlockPanel({ definition, onChange, page, index }: Props & { page: string; index: number }) {
-  const block = definition.pages[page]!.blocks[index]!;
-  const set = (patch: Record<string, unknown>) => onChange(updateBlock(definition, page, index, patch));
+type InnerBlockOf = Extract<Block, { type: 'tabs' }>['tabs'][number]['blocks'][number];
+
+function BlockPanel({ definition, onChange, page, path }: Props & { page: string; path: string }) {
+  const block = blockAt(definition, page, path)!;
+  const set = (patch: Record<string, unknown>) => onChange(updateBlock(definition, page, path, patch));
+  const about = definition.pages[page]?.record?.entity;
   if (block.type === 'text') {
     return (
       <>
@@ -284,9 +357,83 @@ function BlockPanel({ definition, onChange, page, index }: Props & { page: strin
       </>
     );
   }
+  if (block.type === 'tabs') {
+    const index = Number(path);
+    return (
+      <div className="grid gap-2">
+        <span className="text-sm text-muted">Its tabs, which a person chooses between</span>
+        {block.tabs.map((tab, t) => (
+          <div key={t} className="flex items-center gap-2">
+            <TextInput aria-label={`Tab ${t + 1}`} value={tab.label} onChange={(e) => onChange(updateTab(definition, page, index, t, e.target.value))} />
+            <Button size="sm" variant="ghost" aria-label={`Remove tab ${t + 1}`} disabled={block.tabs.length <= 2} onClick={() => onChange(updateTab(definition, page, index, t, null))}>
+              ✕
+            </Button>
+          </div>
+        ))}
+        <div>
+          <Button size="sm" disabled={block.tabs.length >= 8} onClick={() => onChange(addTab(definition, page, index))}>
+            Add a tab
+          </Button>
+        </div>
+        <p className="m-0 text-xs text-faint">Add blocks to each tab under the page's blocks.</p>
+      </div>
+    );
+  }
+  if (block.type === 'fields') {
+    const fields = about ? (definition.entities[about]?.fields ?? []) : [];
+    const actions = about ? rowActions(definition, about) : [];
+    return (
+      <>
+        <Field label="Title (optional)">{(id) => <TextInput id={id} value={block.title ?? ''} onChange={(e) => set({ title: e.target.value || undefined })} />}</Field>
+        <Checklist
+          label="Shows"
+          options={[...fields.filter((field) => field.type !== 'file').map((field) => ({ value: field.name, label: field.label })), ...SYSTEM_COLUMNS]}
+          selected={block.fields}
+          onChange={(next) => (next.length ? set({ fields: next }) : undefined)}
+          hint="People see only the fields their role may read."
+        />
+        {actions.length ? (
+          <Checklist
+            label="Runs on the record"
+            options={actions.map((action) => ({ value: action, label: definition.actions[action]!.label }))}
+            selected={block.actions ?? []}
+            onChange={(next) => set({ actions: next })}
+            hint="Actions that change the record and take no input, as buttons."
+          />
+        ) : null}
+      </>
+    );
+  }
   if (block.type === 'buttons') return <ButtonsPanel definition={definition} buttons={block.buttons} onButtons={(buttons) => set({ buttons })} page={page} />;
-  if (block.type === 'stat' || block.type === 'chart') return <SummaryPanel definition={definition} block={block} set={set} />;
-  return <ListPanel definition={definition} onChange={onChange} page={page} index={index} block={block} set={set} />;
+  if (block.type === 'stat' || block.type === 'chart') {
+    return (
+      <>
+        <SummaryPanel definition={definition} block={block} set={set} />
+        {about ? <OfField definition={definition} entity={block.entity} about={about} value={block.of} onChange={(of) => set({ of })} /> : null}
+      </>
+    );
+  }
+  return <ListPanel definition={definition} onChange={onChange} page={page} path={path} block={block} set={set} />;
+}
+
+/** On a page about one record: whether a block shows only the records that refer to it, and by which field. */
+function OfField({ definition, entity, about, value, onChange }: { definition: Definition; entity: string; about: string; value: string | undefined; onChange: (of: string | undefined) => void }) {
+  const fields = referringFields(definition, entity, about);
+  if (!fields.length && value === undefined) return null;
+  return (
+    <Field label="Which records" hint={`On this page about one ${definition.entities[about]?.label.toLowerCase() ?? about}, it can show only those that refer to it.`}>
+      {(id) => (
+        <Select id={id} value={value ?? ''} onChange={(e) => onChange(e.target.value || undefined)}>
+          <option value="">All of them</option>
+          {fields.map((field) => (
+            <option key={field.name} value={field.name}>
+              Those whose {field.label} is this one
+            </option>
+          ))}
+        </Select>
+      )}
+    </Field>
+  );
 }
 
 /** A number or a chart: what it works out, over which records, and, for a chart, by what and how it shows. */
@@ -365,7 +512,9 @@ function SummaryPanel({ definition, block, set }: { definition: Definition; bloc
   );
 }
 
-function ListPanel({ definition, onChange, page, index, block, set }: Props & { page: string; index: number; block: ListBlock; set: (patch: Record<string, unknown>) => void }) {
+function ListPanel({ definition, onChange, page, path, block, set }: Props & { page: string; path: string; block: ListBlock; set: (patch: Record<string, unknown>) => void }) {
+  const about = definition.pages[page]?.record?.entity;
+  const opens = recordPages(definition, block.entity);
   const fields = (definition.entities[block.entity]?.fields ?? []).filter((field) => field.type !== 'lines');
   const columns = [...fields.map((field) => ({ value: field.name, label: field.label })), ...SYSTEM_COLUMNS];
   const sortable = [...fields.filter((field) => !(field.type === 'choice' && field.multiple)).map((field) => ({ value: field.name, label: field.label })), ...SYSTEM_COLUMNS];
@@ -376,7 +525,7 @@ function ListPanel({ definition, onChange, page, index, block, set }: Props & { 
       <Field label="Title (optional)">{(id) => <TextInput id={id} value={block.title ?? ''} onChange={(e) => set({ title: e.target.value || undefined })} />}</Field>
       <Field label="Lists">
         {(id) => (
-          <Select id={id} value={block.entity} onChange={(e) => onChange(changeListEntity(definition, page, index, e.target.value))}>
+          <Select id={id} value={block.entity} onChange={(e) => onChange(changeListEntity(definition, page, path, e.target.value))}>
             {listable(definition).map((entity) => (
               <option key={entity} value={entity}>
                 {definition.entities[entity]!.pluralLabel ?? definition.entities[entity]!.label}
@@ -435,6 +584,21 @@ function ListPanel({ definition, onChange, page, index, block, set }: Props & { 
         />
       ) : null}
       <Field label="When there are none">{(id) => <TextInput id={id} placeholder="Nothing here yet." value={block.empty ?? ''} onChange={(e) => set({ empty: e.target.value || undefined })} />}</Field>
+      {about ? <OfField definition={definition} entity={block.entity} about={about} value={block.of} onChange={(of) => set({ of })} /> : null}
+      {opens.length || block.open ? (
+        <Field label="A row opens">
+          {(id) => (
+            <Select id={id} value={block.open ?? ''} onChange={(e) => set({ open: e.target.value || undefined })}>
+              <option value="">The record's own screen</option>
+              {opens.map((each) => (
+                <option key={each.name} value={each.name}>
+                  The page {each.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      ) : null}
     </>
   );
 }

@@ -33,7 +33,7 @@ export type Route =
   | { readonly name: 'change'; readonly changeRequestId: string }
   /**
    * Using an app: an entity's records (`page`, and a record), a form (`page` is `new`), or one of
-   * the app's own pages (`appPage`). `env` picks a team app's environment: `staging`, or a
+   * the app's own pages (`appPage`, and its record for a page about one record). `env` picks a team app's environment: `staging`, or a
    * preview's environment ID. Prod by default.
    */
   | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string; readonly appPage?: string; readonly env?: string };
@@ -55,7 +55,7 @@ export function parse(pathname: string, search = ''): Route {
   }
   const env = new URLSearchParams(search).get('env');
   // An app's page is /pages/<name>. A name is never a UUID, so a record of an entity called "pages" is still reachable.
-  if (parts[2] === 'pages' && parts[3] && !UUID.test(parts[3])) return { name: 'use', appId, appPage: parts[3], ...(env ? { env } : {}) };
+  if (parts[2] === 'pages' && parts[3] && !UUID.test(parts[3])) return { name: 'use', appId, appPage: parts[3], ...(parts[4] ? { recordId: parts[4] } : {}), ...(env ? { env } : {}) };
   return { name: 'use', appId, ...(parts[2] ? { page: parts[2] } : {}), ...(parts[3] ? { recordId: parts[3] } : {}), ...(env ? { env } : {}) };
 }
 
@@ -72,7 +72,8 @@ export function href(route: Route): string {
     case 'change':
       return `${BASE}/changes/${encodeURIComponent(route.changeRequestId)}`;
     case 'use': {
-      const parts = route.appPage ? ['pages', route.appPage] : [route.page, route.recordId];
+      // A page about one record names its record after the page.
+      const parts = route.appPage ? ['pages', route.appPage, route.recordId] : [route.page, route.recordId];
       const path = [`${BASE}/apps/${encodeURIComponent(route.appId)}`, ...parts].filter(Boolean).map((p, i) => (i ? encodeURIComponent(p!) : p)).join('/');
       return route.env ? `${path}?env=${encodeURIComponent(route.env)}` : path;
     }

@@ -7,6 +7,7 @@ export * from './expressions.js';
 export * from './flows.js';
 export * from './fields.js';
 export * from './migrations.js';
+export * from './pages.js';
 export * from './roles.js';
 export * from './rules.js';
 export * from './schedules.js';

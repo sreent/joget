@@ -1,6 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import { BLOCK_PATH } from '@platform/app-model';
 import { once, requireAuth, requireQueryDecision } from '../access/rules.js';
 import type { AppContext } from '../context.js';
 import { badRequest, notFound } from '../errors.js';
@@ -28,6 +29,9 @@ const SummaryOutSchema = z.union([
 ]);
 
 /** The records API, queries and actions: the runtime of the built-in store (design §6). */
+/** Where a block is on its page: "2", or "2.1.0" inside tabs. */
+const BlockPath = z.string().regex(BLOCK_PATH, 'Name a block by its place, such as 2, or 2.1.0 inside tabs');
+
 export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginAsyncZod {
   /** The app in the environment the request names: Prod by default for a team app, or Staging, or a preview. */
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
@@ -173,16 +177,16 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
             resource: async (request) => {
               const loaded = await theApp(request);
               const { page, block } = request.params as { page: string; block: string };
-              return recordResource(ctx.org.id, loaded, runtime.listBlock(loaded, page, Number(block)).entity);
+              return recordResource(ctx.org.id, loaded, runtime.listBlock(loaded, page, block).entity);
             },
             policy,
           },
         },
         schema: {
           tags: ['records'],
-          summary: "The records of a list on one of the app's pages, under your record permissions",
-          params: AppParams.extend({ page: z.string().min(1).max(63), block: z.coerce.number().int().min(0).max(29) }),
-          querystring: EnvQuery.extend({ cursor: z.string().max(4000).optional() }),
+          summary: "The records of a list on one of the app's pages, under your record permissions. On a page about one record, give it as record",
+          params: AppParams.extend({ page: z.string().min(1).max(63), block: BlockPath }),
+          querystring: EnvQuery.extend({ cursor: z.string().max(4000).optional(), record: z.uuid().optional() }),
           response: { 200: PageOut },
         },
       },
@@ -190,6 +194,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         runtime.runList(request, requireAuth(request), await theApp(request), request.params.page, request.params.block, {
           decision: requireQueryDecision(request),
           ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
+          ...(request.query.record ? { record: request.query.record } : {}),
         }),
     );
 
@@ -203,21 +208,21 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
             resource: async (request) => {
               const loaded = await theApp(request);
               const { page, block } = request.params as { page: string; block: string };
-              return recordResource(ctx.org.id, loaded, runtime.summaryBlock(loaded, page, Number(block)).entity);
+              return recordResource(ctx.org.id, loaded, runtime.summaryBlock(loaded, page, block).entity);
             },
             policy,
           },
         },
         schema: {
           tags: ['records'],
-          summary: "A number, or a chart's numbers, on one of the app's pages: worked out over the records you may read",
-          params: AppParams.extend({ page: z.string().min(1).max(63), block: z.coerce.number().int().min(0).max(29) }),
-          querystring: EnvQuery,
+          summary: "A number, or a chart's numbers, on one of the app's pages: worked out over the records you may read. On a page about one record, give it as record",
+          params: AppParams.extend({ page: z.string().min(1).max(63), block: BlockPath }),
+          querystring: EnvQuery.extend({ record: z.uuid().optional() }),
           response: { 200: SummaryOutSchema },
         },
       },
       async (request) =>
-        runtime.runSummary(request, requireAuth(request), await theApp(request), request.params.page, request.params.block, requireQueryDecision(request)),
+        runtime.runSummary(request, requireAuth(request), await theApp(request), request.params.page, request.params.block, requireQueryDecision(request), request.query.record),
     );
 
     app.post(

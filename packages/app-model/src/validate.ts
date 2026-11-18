@@ -26,6 +26,7 @@ import {
   type Action,
   type Entity,
   type Message,
+  type PageBlock,
   type Process,
   type ProcessElement,
   type SimpleStep,
@@ -33,6 +34,7 @@ import {
   type Timer,
 } from './schema.js';
 import { beforeGives, checkBeforeFlows, moveSteps, readsPrincipal } from './before.js';
+import { blockPlace, pageBlocks } from './pages.js';
 import { canonicalValue } from './values.js';
 
 export interface Issue {
@@ -275,32 +277,40 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       }),
     ),
   }));
-  const pages = mapRecord(definition.pages ?? {}, (page) => ({
-    ...page,
-    blocks: page.blocks.map((block) => {
-      if (block.type === 'stat' || block.type === 'chart') {
-        const entity = entityName(block.entity);
-        const path = pathName(entity);
-        return {
-          ...block,
-          entity,
-          measure: { ...block.measure, ...(block.measure.field ? { field: path(block.measure.field) } : {}) },
-          ...(block.type === 'chart' ? { group: { ...block.group, field: path(block.group.field) } } : {}),
-          ...(block.range ? { range: { ...block.range, field: path(block.range.field) } } : {}),
-          ...(block.filter ? { filter: condition(entity, block.filter) } : {}),
-        };
-      }
-      if (block.type !== 'list') return block;
+  /** A block, with renames of entities and fields carried through it. `about` is the entity of the record its page is about. */
+  const renameBlock = <B extends PageBlock>(block: B, about: string | undefined): B => {
+    // `of` names a reference field of the block's entity, which points at the page's record.
+    const of = (entity: string, field: string | undefined) => (field ? { of: fieldName(entity)(field) } : {});
+    if (block.type === 'stat' || block.type === 'chart') {
       const entity = entityName(block.entity);
+      const path = pathName(entity);
       return {
         ...block,
         entity,
-        columns: block.columns.map(fieldName(entity)),
+        measure: { ...block.measure, ...(block.measure.field ? { field: path(block.measure.field) } : {}) },
+        ...(block.type === 'chart' ? { group: { ...block.group, field: path(block.group.field) } } : {}),
+        ...(block.range ? { range: { ...block.range, field: path(block.range.field) } } : {}),
         ...(block.filter ? { filter: condition(entity, block.filter) } : {}),
-        sort: block.sort.map((sort) => ({ ...sort, field: fieldName(entity)(sort.field) })),
+        ...of(entity, block.of),
       };
-    }),
-  }));
+    }
+    if (block.type === 'fields') return about ? { ...block, fields: block.fields.map(fieldName(about)) } : block;
+    if (block.type === 'tabs') return { ...block, tabs: block.tabs.map((tab) => ({ ...tab, blocks: tab.blocks.map((inner) => renameBlock(inner, about)) })) };
+    if (block.type !== 'list') return block;
+    const entity = entityName(block.entity);
+    return {
+      ...block,
+      entity,
+      columns: block.columns.map(fieldName(entity)),
+      ...(block.filter ? { filter: condition(entity, block.filter) } : {}),
+      sort: block.sort.map((sort) => ({ ...sort, field: fieldName(entity)(sort.field) })),
+      ...of(entity, block.of),
+    };
+  };
+  const pages = mapRecord(definition.pages ?? {}, (page) => {
+    const about = page.record ? entityName(page.record.entity) : undefined;
+    return { ...page, ...(page.record ? { record: { entity: about! } } : {}), blocks: page.blocks.map((block) => renameBlock(block, about)) };
+  });
   const navigation = definition.navigation
     ? { ...definition.navigation, items: definition.navigation.items.map((item) => ('entity' in item ? { ...item, entity: entityName(item.entity) } : item)) }
     : undefined;
@@ -1019,23 +1029,56 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     );
   }
 
+  /** The pages about one record: a link can't open one, since it needs its record. */
+  const recordPage = (name: string) => definition.pages[name]?.record !== undefined;
   for (const [name, page] of Object.entries(definition.pages ?? {})) {
     for (const role of page.roles ?? []) if (!definition.roles[role]) issues.push({ path: `pages.${name}.roles`, message: `No role named ${role}` });
-    page.blocks.forEach((block, index) => {
-      const path = `pages.${name}.blocks[${index}]`;
+    const about = page.record ? recordEntityAt(page.record.entity, `pages.${name}.record.entity`) && page.record.entity : undefined;
+    /** An update action that runs on a record in one click. */
+    const oneClick = (actionName: string, entity: string, at: string, where: string) => {
+      const action = definition.actions[actionName];
+      if (!action) issues.push({ path: at, message: `No action named ${actionName}` });
+      else if (action.entity !== entity || action.operation !== 'update') issues.push({ path: at, message: `${actionName} doesn't change a ${entity} record, so it can't run on ${where}` });
+      else if (action.input.length) issues.push({ path: at, message: `${actionName} takes input, so it can't run in one click: open it from a form instead` });
+    };
+    /** `of`: a reference field of the block's entity that points at the record the page is about. */
+    const ofField = (entity: string, field: string | undefined, at: string) => {
+      if (field === undefined) return;
+      if (!page.record) return issues.push({ path: `${at}.of`, message: 'Only a page about one record shows the records that refer to it' });
+      const declared = definition.entities[entity]?.fields.find((f) => f.name === field);
+      if (declared?.type !== 'reference' || declared.entity !== page.record.entity) {
+        issues.push({ path: `${at}.of`, message: `${field} isn't a field of ${entity} that refers to a ${page.record.entity}` });
+      }
+    };
+    for (const { block, path: where } of pageBlocks(page)) {
+      const path = `pages.${name}.${blockPlace(where)}`;
       if (block.type === 'buttons') {
         block.buttons.forEach((button, b) => {
           if ('form' in button && !definition.forms[button.form]) issues.push({ path: `${path}.buttons[${b}]`, message: `No form named ${button.form}` });
           if ('page' in button && !definition.pages[button.page]) issues.push({ path: `${path}.buttons[${b}]`, message: `No page named ${button.page}` });
+          else if ('page' in button && recordPage(button.page)) issues.push({ path: `${path}.buttons[${b}]`, message: `${button.page} is about one record, so a list's row opens it, not a button` });
         });
+      }
+      if (block.type === 'fields') {
+        if (!about) {
+          issues.push({ path, message: 'Only a page about one record shows its fields: say which entity the page is about' });
+          continue;
+        }
+        // A lines field shows as a table of its lines.
+        const fields = entityFields(definition.entities[about]!);
+        const lines = linesOf.get(about)!;
+        for (const field of block.fields) if ((!fields.has(field) && !lines.has(field)) || field === 'version') issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
+        for (const actionName of block.actions) oneClick(actionName, about, `${path}.actions`, 'this record');
+        continue;
       }
       if (block.type === 'stat' || block.type === 'chart') {
         checkSummary(block, path);
-        return;
+        ofField(block.entity, block.of, path);
+        continue;
       }
-      if (block.type !== 'list') return;
+      if (block.type !== 'list') continue;
       const fields = recordEntityAt(block.entity, `${path}.entity`);
-      if (!fields) return;
+      if (!fields) continue;
       const lines = linesOf.get(block.entity)!;
       const shown = new Set<string>();
       for (const column of block.columns) {
@@ -1051,24 +1094,24 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         if (!info) issues.push({ path: `${path}.sort[${s}]`, message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}` });
         else if (!isSortableKind(info.kind)) issues.push({ path: `${path}.sort[${s}]`, message: `${sort.field} can't be sorted` });
       });
-      for (const actionName of block.actions) {
-        const action = definition.actions[actionName];
-        if (!action) issues.push({ path: `${path}.actions`, message: `No action named ${actionName}` });
-        else if (action.entity !== block.entity || action.operation !== 'update') {
-          issues.push({ path: `${path}.actions`, message: `${actionName} doesn't change a ${block.entity} record, so it can't run on a row` });
-        } else if (action.input.length) {
-          issues.push({ path: `${path}.actions`, message: `${actionName} takes input, so it can't run in one click: open it from a form instead` });
-        }
+      for (const actionName of block.actions) oneClick(actionName, block.entity, `${path}.actions`, 'a row');
+      ofField(block.entity, block.of, path);
+      if (block.open !== undefined) {
+        const opened = definition.pages[block.open];
+        if (!opened) issues.push({ path: `${path}.open`, message: `No page named ${block.open}` });
+        else if (opened.record?.entity !== block.entity) issues.push({ path: `${path}.open`, message: `${block.open} isn't a page about one ${block.entity}, so a row can't open it` });
       }
-    });
+    }
   }
 
   if (definition.navigation) {
     const { home, items } = definition.navigation;
     if (home && !definition.pages[home]) issues.push({ path: 'navigation.home', message: `No page named ${home}` });
+    else if (home && recordPage(home)) issues.push({ path: 'navigation.home', message: `${home} is about one record, so the app can't open on it` });
     items.forEach((item, index) => {
       const path = `navigation.items[${index}]`;
       if ('page' in item && !definition.pages[item.page]) issues.push({ path, message: `No page named ${item.page}` });
+      else if ('page' in item && recordPage(item.page)) issues.push({ path, message: `${item.page} is about one record, so a list's row opens it, not the menu` });
       if ('form' in item && !definition.forms[item.form]) issues.push({ path, message: `No form named ${item.form}` });
       if ('entity' in item) recordEntityAt(item.entity, path);
     });

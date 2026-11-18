@@ -140,15 +140,15 @@ export const api = {
   createRecord: (target: string | AppAt, entity: string, values: Record<string, unknown>) => call<RecordOut>('POST', `${records(target, entity)}${envParams(target)}`, { values }),
   updateRecord: (target: string | AppAt, entity: string, recordId: string, values: Record<string, unknown>, version: number) =>
     call<RecordOut>('PATCH', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`, { values, version }),
-  pageRecords: (target: string | AppAt, page: string, block: number, cursor?: string) =>
+  pageRecords: (target: string | AppAt, page: string, block: string, cursor?: string, record?: string) =>
     call<{ records: RecordOut[]; nextCursor: string | null }>(
       'GET',
-      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/records${envParams(target, cursor ? { cursor } : {})}`,
+      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/records${envParams(target, { ...(cursor ? { cursor } : {}), ...(record ? { record } : {}) })}`,
     ),
-  pageSummary: (target: string | AppAt, page: string, block: number) =>
+  pageSummary: (target: string | AppAt, page: string, block: string, record?: string) =>
     call<{ value: number | null } | { groups: Array<{ key: string | null; label: string | null; value: number | null }>; other: number | null; more: number }>(
       'GET',
-      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/summary${envParams(target)}`,
+      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/summary${envParams(target, record ? { record } : {})}`,
     ),
   history: (target: string | AppAt, entity: string, recordId: string) =>
     call<{ history: HistoryEntry[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/history${envParams(target)}`),

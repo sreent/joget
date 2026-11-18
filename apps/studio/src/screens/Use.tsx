@@ -16,7 +16,7 @@ import type { HistoryEntry, Line, RecordOut, RecordValue, UiBlock, UiEntity, UiF
 
 /** What the screen shows: one of the app's pages, a form, an entity's records, or one record. */
 type View =
-  | { readonly kind: 'page'; readonly name: string }
+  | { readonly kind: 'page'; readonly name: string; readonly record?: string }
   | { readonly kind: 'form'; readonly name: string }
   | { readonly kind: 'list'; readonly entity: string }
   | { readonly kind: 'record'; readonly entity: string; readonly id: string }
@@ -45,7 +45,7 @@ export function Use({ appId, env, page, recordId, appPage }: { appId: string; en
   if (!ui.data) return <p className="text-muted">Loading…</p>;
   const manifest = ui.data;
   const view: View = appPage
-    ? { kind: 'page', name: appPage }
+    ? { kind: 'page', name: appPage, ...(recordId ? { record: recordId } : {}) }
     : page === 'new' && recordId
       ? { kind: 'form', name: recordId }
       : page
@@ -76,7 +76,7 @@ export function Use({ appId, env, page, recordId, appPage }: { appId: string; en
           {manifest.app.movedTo ? <MovedNotice movedTo={manifest.app.movedTo} /> : null}
           {view.kind === 'page' ? (
             manifest.pages[view.name] ? (
-              <PageView at={at} manifest={manifest} name={view.name} />
+              <PageView at={at} manifest={manifest} name={view.name} {...(view.record ? { record: view.record } : {})} />
             ) : (
               <EmptyState title="This page isn't here for you">It doesn't exist, or it's meant for people in other roles.</EmptyState>
             )
@@ -163,29 +163,131 @@ function rowsOf(blocks: readonly UiBlock[]): Array<{ kind: 'stats' | 'charts' | 
   return rows;
 }
 
-/** One of the app's pages: its blocks, top to bottom. */
-function PageView({ at, manifest, name }: { at: AppAt; manifest: UiManifest; name: string }) {
+/** Where a block is: its page, and on a page about one record, that record. */
+interface BlockAt {
+  readonly at: AppAt;
+  readonly manifest: UiManifest;
+  readonly page: string;
+  readonly record?: string | undefined;
+}
+
+/** One of the app's pages: its blocks, top to bottom. A page about one record shows that record. */
+function PageView({ at, manifest, name, record }: { at: AppAt; manifest: UiManifest; name: string; record?: string }) {
   const page = manifest.pages[name]!;
+  const about = page.record ? manifest.entities[page.record.entity] : undefined;
+  const found = useQuery({
+    queryKey: ['record', at.id, at.env, page.record?.entity, record],
+    queryFn: () => api.record(at, page.record!.entity, record!),
+    enabled: Boolean(about && record),
+  });
+  if (page.record && !record) return <EmptyState title="Open it from a list">This page is about one record: a row of a list opens it.</EmptyState>;
+  if (page.record && found.isError) return <Notice tone="bad">This record isn't here for you.</Notice>;
+  const title = about && found.data ? (about.titleField ? display(about.fields.find((f) => f.name === about.titleField), found.data.values?.[about.titleField]) : found.data.id) : null;
   return (
     <div className="grid gap-5">
       <div>
-        <h2 className="m-0 text-2xl font-semibold tracking-tight">{page.label}</h2>
+        {about ? <p className="m-0 text-sm text-muted">{page.label}</p> : null}
+        <h2 className="m-0 text-2xl font-semibold tracking-tight">{about ? (title ?? '…') : page.label}</h2>
         {page.description ? <p className="m-0 mt-1 text-muted">{page.description}</p> : null}
       </div>
-      {rowsOf(page.blocks).map((row, r) =>
+      <Blocks where={{ at, manifest, page: name, record }} blocks={page.blocks} />
+    </div>
+  );
+}
+
+/** Blocks laid out top to bottom: numbers side by side, half-width charts two by two. */
+function Blocks({ where, blocks }: { where: BlockAt; blocks: readonly UiBlock[] }) {
+  return (
+    <>
+      {rowsOf(blocks).map((row, r) =>
         row.kind === 'stats' ? (
           <div key={r} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {row.blocks.map((block) => (block.type === 'stat' ? <StatBlockView key={block.index} at={at} page={name} block={block} /> : null))}
+            {row.blocks.map((block) => (block.type === 'stat' ? <StatBlockView key={block.path} where={where} block={block} /> : null))}
           </div>
         ) : row.kind === 'charts' ? (
           <div key={r} className="grid gap-4 lg:grid-cols-2">
-            {row.blocks.map((block) => (block.type === 'chart' ? <ChartBlockView key={block.index} at={at} page={name} block={block} /> : null))}
+            {row.blocks.map((block) => (block.type === 'chart' ? <ChartBlockView key={block.path} where={where} block={block} /> : null))}
           </div>
         ) : (
-          <BlockView key={r} at={at} manifest={manifest} page={name} block={row.blocks[0]!} index={r} />
+          <BlockView key={r} where={where} block={row.blocks[0]!} index={r} />
         ),
       )}
+    </>
+  );
+}
+
+/** Tabs: one shows at a time, as a choice of views. */
+function TabsBlockView({ where, block }: { where: BlockAt; block: Extract<UiBlock, { type: 'tabs' }> }) {
+  const [shown, setShown] = useState(0);
+  const tab = block.tabs[Math.min(shown, block.tabs.length - 1)]!;
+  return (
+    <div className="grid gap-4">
+      <div className="modes justify-self-start" role="group" aria-label="Tabs">
+        {block.tabs.map((each, t) => (
+          <button key={each.label} type="button" aria-pressed={each === tab} onClick={() => setShown(t)}>
+            {each.label}
+          </button>
+        ))}
+      </div>
+      <Blocks where={where} blocks={tab.blocks} />
     </div>
+  );
+}
+
+/** The fields of the record a page is about, as the person may read them, and the actions that run on it in one click. */
+function FieldsBlockView({ where, block }: { where: BlockAt; block: Extract<UiBlock, { type: 'fields' }> }) {
+  const { at, manifest } = where;
+  const client = useQueryClient();
+  const entityName = manifest.pages[where.page]?.record?.entity ?? '';
+  const entity = manifest.entities[entityName];
+  const record = useQuery({ queryKey: ['record', at.id, at.env, entityName, where.record], queryFn: () => api.record(at, entityName, where.record!), enabled: Boolean(entity && where.record) });
+  const run = useMutation({
+    mutationFn: (action: string) => api.runAction(at, action, { values: {}, recordId: record.data!.id, version: record.data!.version }),
+    onSuccess: () => Promise.all(['pageList', 'pageSummary', 'records', 'record', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] }))),
+  });
+  if (!entity || !record.data) return null;
+  const data = record.data;
+  return (
+    <Card className="grid gap-4">
+      {block.title ? <h3 className="m-0 text-base font-semibold">{block.title}</h3> : null}
+      <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
+        {block.fields.map((name) => {
+          const field = entity.fields.find((f) => f.name === name);
+          const system = SYSTEM_TIMES.has(name) ? (name === 'created_at' ? data.createdAt : data.updatedAt) : undefined;
+          const person = SYSTEM_PEOPLE[name];
+          if (!field && system === undefined && !person) return null;
+          const lines = field?.type === 'lines';
+          return (
+            <div key={name} className="contents">
+              <dt className={cx('text-muted', lines && 'sm:col-span-2')}>{field?.label ?? SYSTEM_LABELS[name] ?? name}</dt>
+              <dd className={cx('m-0', lines && 'sm:col-span-2')}>
+                {field && lines ? (
+                  <LinesTable field={field} value={data.values?.[name]} masked={data.masked ?? []} />
+                ) : field ? (
+                  <Cell field={field} record={data} />
+                ) : person ? (
+                  data[person] ? <PersonName id={data[person]!} /> : '—'
+                ) : system ? (
+                  new Date(system).toLocaleString()
+                ) : (
+                  '—'
+                )}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      {block.actions.length ? (
+        <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+          {block.actions.map((action) => (
+            <Button key={action} variant="primary" disabled={run.isPending} onClick={() => run.mutate(action)}>
+              {manifest.actions[action]?.label ?? action}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+      {run.error ? <Notice tone="bad">{run.error instanceof ApiError ? run.error.message : 'It failed.'}</Notice> : null}
+    </Card>
   );
 }
 
@@ -196,28 +298,36 @@ function summaryState(query: { isPending: boolean; isError: boolean; error: unkn
   return 'ready';
 }
 
-function StatBlockView({ at, page, block }: { at: AppAt; page: string; block: Extract<UiBlock, { type: 'stat' }> }) {
-  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.index], queryFn: () => api.pageSummary(at, page, block.index), placeholderData: keepPreviousData });
+function StatBlockView({ where, block }: { where: BlockAt; block: Extract<UiBlock, { type: 'stat' }> }) {
+  const { at, page } = where;
+  const record = block.of ? where.record : undefined;
+  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.path, record], queryFn: () => api.pageSummary(at, page, block.path, record), placeholderData: keepPreviousData });
   const value = summary.data && 'value' in summary.data ? summary.data.value : undefined;
   return <StatTile label={block.label} value={value} decimals={block.decimals} state={summaryState(summary)} />;
 }
 
-function ChartBlockView({ at, page, block }: { at: AppAt; page: string; block: Extract<UiBlock, { type: 'chart' }> }) {
-  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.index], queryFn: () => api.pageSummary(at, page, block.index), placeholderData: keepPreviousData });
+function ChartBlockView({ where, block }: { where: BlockAt; block: Extract<UiBlock, { type: 'chart' }> }) {
+  const { at, page } = where;
+  const record = block.of ? where.record : undefined;
+  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.path, record], queryFn: () => api.pageSummary(at, page, block.path, record), placeholderData: keepPreviousData });
   const data = summary.data && 'groups' in summary.data ? summary.data : undefined;
   return <ChartCard spec={block} data={data} state={summaryState(summary)} refreshing={summary.isFetching && !summary.isPending} />;
 }
 
-/** A block on its own row: text, buttons, a list, or a full-width chart. */
-function BlockView({ at, manifest, page, block, index }: { at: AppAt; manifest: UiManifest; page: string; block: UiBlock; index: number }) {
-  const name = page;
+/** A block on its own row: text, buttons, a list, the record's fields, tabs, or a full-width chart. */
+function BlockView({ where, block, index }: { where: BlockAt; block: UiBlock; index: number }) {
+  const { at, manifest } = where;
   return (
     <>
       {[block].map((block) =>
         block.type === 'stat' ? (
-          <StatBlockView key={index} at={at} page={page} block={block} />
+          <StatBlockView key={index} where={where} block={block} />
         ) : block.type === 'chart' ? (
-          <ChartBlockView key={index} at={at} page={page} block={block} />
+          <ChartBlockView key={index} where={where} block={block} />
+        ) : block.type === 'fields' ? (
+          <FieldsBlockView key={index} where={where} block={block} />
+        ) : block.type === 'tabs' ? (
+          <TabsBlockView key={index} where={where} block={block} />
         ) : block.type === 'text' ? (
           block.style === 'heading' ? (
             <h3 key={index} className="m-0 text-lg font-semibold">
@@ -247,7 +357,7 @@ function BlockView({ at, manifest, page, block, index }: { at: AppAt; manifest: 
             })}
           </div>
         ) : (
-          <ListBlockView key={index} at={at} manifest={manifest} page={name} block={block} />
+          <ListBlockView key={index} where={where} block={block} />
         ),
       )}
     </>
@@ -255,15 +365,19 @@ function BlockView({ at, manifest, page, block, index }: { at: AppAt; manifest: 
 }
 
 const SYSTEM_TIMES = new Set(['created_at', 'updated_at']);
+const SYSTEM_LABELS: Readonly<Record<string, string>> = { created_at: 'Created', updated_at: 'Last changed', owner: 'Owner', created_by: 'Created by', updated_by: 'Changed by' };
 const SYSTEM_PEOPLE: Readonly<Record<string, 'owner' | 'createdBy' | 'updatedBy'>> = { owner: 'owner', created_by: 'createdBy', updated_by: 'updatedBy' };
 
 /** A list on a page: its records under the person's own permissions, with more on request, and its row actions. */
-function ListBlockView({ at, manifest, page, block }: { at: AppAt; manifest: UiManifest; page: string; block: Extract<UiBlock, { type: 'list' }> }) {
+function ListBlockView({ where, block }: { where: BlockAt; block: Extract<UiBlock, { type: 'list' }> }) {
+  const { at, manifest, page } = where;
   const client = useQueryClient();
   const entity = manifest.entities[block.entity];
+  // On a page about one record, a list of the records that refer to it.
+  const about = block.of ? where.record : undefined;
   const rows = useInfiniteQuery({
-    queryKey: ['pageList', at.id, at.env, page, block.index],
-    queryFn: ({ pageParam }) => api.pageRecords(at, page, block.index, pageParam),
+    queryKey: ['pageList', at.id, at.env, page, block.path, about],
+    queryFn: ({ pageParam }) => api.pageRecords(at, page, block.path, pageParam, about),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
@@ -272,6 +386,8 @@ function ListBlockView({ at, manifest, page, block }: { at: AppAt; manifest: UiM
     onSuccess: () => Promise.all(['pageList', 'records', 'record', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] }))),
   });
   const records = rows.data?.pages.flatMap((p) => p.records) ?? [];
+  /** Where a row goes: the page about one record that the list names, or the record's own screen. */
+  const opens = (id: string): Route => (block.open ? { name: 'use', ...atRoute(at), appPage: block.open, recordId: id } : { name: 'use', ...atRoute(at), page: block.entity, recordId: id });
   const cell = (column: (typeof block.columns)[number], record: RecordOut) => {
     if (SYSTEM_TIMES.has(column.name)) {
       const value = column.name === 'created_at' ? record.createdAt : record.updatedAt;
@@ -309,11 +425,11 @@ function ListBlockView({ at, manifest, page, block }: { at: AppAt; manifest: UiM
             </thead>
             <tbody>
               {records.map((record) => (
-                <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate({ name: 'use', ...atRoute(at), page: block.entity, recordId: record.id })}>
+                <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate(opens(record.id))}>
                   {block.columns.map((column, i) => (
                     <td key={column.name} className="px-4 py-2.5">
                       {i === 0 ? (
-                        <Link to={{ name: 'use', ...atRoute(at), page: block.entity, recordId: record.id }} className="font-medium" onClick={(e) => e.stopPropagation()}>
+                        <Link to={opens(record.id)} className="font-medium" onClick={(e) => e.stopPropagation()}>
                           {cell(column, record)}
                         </Link>
                       ) : (
