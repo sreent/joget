@@ -27,8 +27,10 @@ function stable(value: unknown): string {
 const same = (a: unknown, b: unknown): boolean => stable(a) === stable(b);
 
 /** The parts of a definition, each a map of named artifacts. The menu is one artifact on its own. */
-export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages', 'processes', 'flows'] as const;
+export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages', 'processes', 'flows', 'connections', 'webhooks', 'tests'] as const;
 export type DefinitionSection = (typeof DEFINITION_SECTIONS)[number] | 'navigation';
+/** The parts that came later: a definition without them leaves them out, so that its digest stays as it was. */
+const LATER_SECTIONS: ReadonlySet<DefinitionSection> = new Set(['processes', 'flows', 'connections', 'webhooks', 'tests']);
 
 export interface DefinitionChange {
   readonly section: DefinitionSection;
@@ -544,8 +546,7 @@ export function mergeDefinitions(base: StoredDefinition, ours: StoredDefinition,
       }
       if (pick !== undefined) out[name] = pick;
     }
-    // A definition without processes or flows leaves them out, so its digest stays as it was.
-    if ((section !== 'processes' && section !== 'flows') || Object.keys(out).length) merged[section] = out;
+    if (!LATER_SECTIONS.has(section) || Object.keys(out).length) merged[section] = out;
   }
   const [bn, on, tn] = [base.navigation, ours.navigation, theirs.navigation];
   const menu = same(on, tn) || same(bn, on) ? tn : same(bn, tn) ? on : null;

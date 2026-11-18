@@ -9,6 +9,7 @@ import type {
   FlowCase,
   HistoryEntry,
   ImportResult,
+  TestsRun,
   Me,
   Person,
   Plan,
@@ -138,6 +139,8 @@ export const api = {
   ui: (target: string | AppAt) => call<UiManifest>('GET', `${app(at(target).id)}/ui${envParams(target)}`),
   records: (target: string | AppAt, entity: string, cursor?: string) =>
     call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`),
+  /** Run the app's saved tests, each in a transaction that is undone. */
+  runTests: (target: string | AppAt, only?: string[]) => call<TestsRun>('POST', `${app(at(target).id)}/tests/run${envParams(target)}`, only ? { only } : {}),
   /** Bring records in from CSV: all of its lines, or none. A dry run checks it and writes nothing. */
   importRecords: (target: string | AppAt, entity: string, body: { csv: string; name?: string; dryRun: boolean }) => call<ImportResult>('POST', `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/import${envParams(target)}`, body),
   /** Where the records the person can read are taken out as CSV. */

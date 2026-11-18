@@ -21,6 +21,7 @@ export type BuildTab =
   | 'webhooks'
   | 'share'
   | 'history'
+  | 'tests'
   | 'advanced';
 export type Route =
   | { readonly name: 'home' }
@@ -39,7 +40,7 @@ export type Route =
   | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string; readonly appPage?: string; readonly env?: string };
 
 const BASE = '/studio';
-const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'flows', 'connections', 'webhooks', 'share', 'history', 'advanced'];
+const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'flows', 'connections', 'webhooks', 'share', 'history', 'tests', 'advanced'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function parse(pathname: string, search = ''): Route {

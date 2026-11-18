@@ -1067,6 +1067,37 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(step('steps[4]'));
   });
 
+  it('writes a test of what the app must do, saves it, and runs it', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await page.getByLabel('Name').fill('Claims with tests');
+    await page.getByLabel('Start from').selectOption('expenses');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const testedId = page.url().split('/apps/')[1]!.split('/')[0]!;
+    await page.getByRole('link', { name: 'Tests', exact: true }).click();
+
+    // A claim with no receipts is refused, whoever submits it.
+    await page.getByLabel('New test').fill('No receipts, no claim');
+    await page.getByRole('button', { name: 'Add test' }).click();
+    const test = page.getByRole('region', { name: 'Test', exact: true });
+    await test.getByLabel('What they give: add a value').selectOption('title');
+    await test.getByLabel('What they give: Title').fill('Taxi');
+    await test.getByLabel('It must').selectOption('refused');
+    await shot(page, '38-a-test');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${testedId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.tests.no_receipts_no_claim).toMatchObject({ when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } }, then: { outcome: 'refused' } });
+
+    // It runs on the saved app, and passes.
+    await page.getByRole('button', { name: 'Run the tests' }).click();
+    await visible(page.getByText('All passed'));
+    await visible(page.getByRole('list', { name: 'Test results' }).getByText('No receipts, no claim'));
+    await shot(page, '39-tests-passed');
+  });
+
   it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);

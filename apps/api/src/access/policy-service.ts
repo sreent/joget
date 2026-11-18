@@ -125,6 +125,7 @@ export class PolicyService {
 
   /** Active bindings of a principal and of every group it belongs to. */
   async bindingsFor(principal: Principal, executor: Executor = this.#db): Promise<Binding[]> {
+    if (principal.bindings) return [...principal.bindings];
     const direct = and(eq(bindings.principalType, principal.type), eq(bindings.principalId, principal.id));
     const viaGroups = principal.groupIds.length
       ? and(eq(bindings.principalType, 'group'), inArray(bindings.principalId, [...principal.groupIds]))

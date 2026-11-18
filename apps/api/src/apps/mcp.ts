@@ -455,6 +455,29 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
       },
     },
     {
+      name: 'run_tests',
+      title: "Run an app's tests",
+      description:
+        "Run the tests in an app's saved definition (its tests section, see describe_format) in its sandbox: a personal app or a working copy. Each test makes its records, has someone in a role run an action, and checks what comes of it, in a transaction that is undone. Every change request runs them too, and a test that fails stops the merge.",
+      inputSchema: {
+        type: 'object',
+        properties: { ...appId, only: { type: 'array', items: { type: 'string' }, maxItems: 100, description: 'The names of the tests to run; all of them without it' } },
+        required: ['app_id'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true },
+      run: async (args) => {
+        const only = args['only'];
+        if (only !== undefined && !(Array.isArray(only) && only.every((name) => typeof name === 'string'))) throw new HttpError(400, 'invalid_arguments', 'only is a list of test names');
+        const results = await runtime.runTests(request, await sandbox(args), only);
+        return { passed: results.filter((result) => result.passed).length, failed: results.filter((result) => !result.passed).length, results };
+      },
+      summarize: (result) => {
+        const counts = z.object({ passed: z.number(), failed: z.number() }).safeParse(result);
+        return counts.success ? `${counts.data.passed} passed, ${counts.data.failed} failed.` : '';
+      },
+    },
+    {
       name: 'start_working_copy',
       title: 'Edit a team app in your space',
       description:

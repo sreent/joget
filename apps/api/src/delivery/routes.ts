@@ -9,7 +9,7 @@ import { isTeamApp, type AppRef } from '../apps/catalog.js';
 import { appResource, environmentResource } from '../apps/resources.js';
 import { describeApp, describeEnvironments, NO_AUTHOR } from '../apps/routes.js';
 import type { AppRuntime } from '../apps/runtime.js';
-import { AppOut, AppParams, EnvironmentOut, PlanOut } from '../apps/schemas.js';
+import { TestsOut, AppOut, AppParams, EnvironmentOut, PlanOut } from '../apps/schemas.js';
 import type { AppContext } from '../context.js';
 import { unprocessable } from '../errors.js';
 import type { ChangeRequestRow, Delivery, DeploymentRow, ReleaseRow } from './service.js';
@@ -39,6 +39,7 @@ const ChecksOut = z.object({
   access: z.array(z.object({ role: z.string(), kind: z.enum(['gains', 'loses', 'changes']), text: z.string(), holders: z.number().int() })),
   capabilities: z.array(z.object({ tool: z.string(), change: z.enum(['added', 'removed', 'changed']), text: z.string() })),
   lint: z.array(z.string()),
+  tests: TestsOut.optional(),
 });
 
 const ChangeRequestOut = ChangeRequestSummaryOut.extend({

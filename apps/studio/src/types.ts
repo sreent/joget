@@ -102,6 +102,8 @@ export interface ChangeRequest extends ChangeRequestSummary {
     access: Array<{ role: string; kind: 'gains' | 'loses' | 'changes'; text: string; holders: number }>;
     capabilities: Array<{ tool: string; change: 'added' | 'removed' | 'changed'; text: string }>;
     lint: string[];
+    /** The head's tests, run on its preview: a test that fails stops the merge. */
+    tests?: TestsRun;
   };
   changes: Array<{ section: string; name: string; change: 'added' | 'removed' | 'changed'; from?: string; details: string[] }>;
   behind: boolean;
@@ -506,4 +508,21 @@ export interface ImportResult {
   rows: number;
   issues: Array<{ row: number; field?: string; message: string }>;
   created: number;
+}
+
+/** What one of the app's tests found: whether it passed, what the action did, and where the record differs from what the test expects. */
+export interface TestResult {
+  name: string;
+  label: string;
+  passed: boolean;
+  outcome: 'saved' | 'refused' | 'error';
+  message?: string;
+  mismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
+}
+
+/** A run of the app's tests: how many passed and failed, and each test's result. */
+export interface TestsRun {
+  passed: number;
+  failed: number;
+  results: TestResult[];
 }

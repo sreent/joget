@@ -43,7 +43,7 @@ import { checkPermission } from '../access/check.js';
 import { spaceResource } from '../access/resources.js';
 import { digestOf, insertRevision, type AppBuilder, type PlannedStep } from '../apps/builder.js';
 import { isTeamApp, type AppRef, type EnvironmentRow, type LoadedApp, type SpaceRow } from '../apps/catalog.js';
-import type { AppRuntime } from '../apps/runtime.js';
+import type { AppRuntime, TestResult } from '../apps/runtime.js';
 import { pgError } from '../apps/pg-errors.js';
 import { lockEnvironment, withTransaction } from '../apps/transaction.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
@@ -67,6 +67,8 @@ export interface ChangeChecks {
   readonly access: ReadonlyArray<AccessChange & { readonly holders: number }>;
   readonly capabilities: readonly CapabilityChange[];
   readonly lint: readonly string[];
+  /** The head's tests, run on its preview: a test that fails stops the merge. */
+  readonly tests?: { readonly passed: number; readonly failed: number; readonly results: readonly TestResult[] };
 }
 
 /** Where review stands: approvals on the current head, and who asked for changes. */
@@ -242,6 +244,31 @@ export class Delivery {
    * one up to date. The head becomes a revision off the main line, and a preview runs it.
    */
   async submit(request: FastifyRequest, auth: AuthContext, copy: LoadedApp, input: { readonly title?: string; readonly description?: string }): Promise<ChangeRequestRow> {
+    const row = await this.#submit(request, auth, copy, input);
+    return this.#runTests(request, row);
+  }
+
+  /**
+   * Run a change request's tests on its preview, which runs its head, and keep their results with
+   * its checks. A test that fails stops the merge, as reviewers see.
+   */
+  async #runTests(request: FastifyRequest, row: ChangeRequestRow): Promise<ChangeRequestRow> {
+    const ctx = this.#ctx;
+    const [preview] = await ctx.db.select({ id: appEnvironments.id }).from(appEnvironments).where(and(eq(appEnvironments.changeRequestId, row.id), eq(appEnvironments.status, 'active')));
+    if (!preview) return row;
+    const loaded = await ctx.apps.load(row.appId, { id: preview.id });
+    if (!Object.keys(loaded.definition.tests ?? {}).length) return row;
+    const results = await this.#runtime.runTests(request, loaded);
+    const tests = { passed: results.filter((result) => result.passed).length, failed: results.filter((result) => !result.passed).length, results };
+    const [updated] = await ctx.db
+      .update(changeRequests)
+      .set({ checks: { ...(row.checks as Record<string, unknown>), tests } as unknown as Record<string, unknown> })
+      .where(and(eq(changeRequests.id, row.id), eq(changeRequests.headDigest, row.headDigest)))
+      .returning();
+    return updated ?? row;
+  }
+
+  async #submit(request: FastifyRequest, auth: AuthContext, copy: LoadedApp, input: { readonly title?: string; readonly description?: string }): Promise<ChangeRequestRow> {
     const ctx = this.#ctx;
     if (!copy.app.workingCopyOf) throw unprocessable('not_a_working_copy', 'Submit changes from a working copy of a team app');
     if (copy.app.ownerUserId !== auth.actor.id) throw forbidden('not_your_working_copy', 'Only the builder whose working copy this is can submit it');
@@ -501,6 +528,12 @@ export class Delivery {
           : `The change needs ${state.required} approval(s) of its current version from someone other than its author`,
         { approvals: state },
       );
+    }
+    // The head's tests ran on its preview: a change that breaks what the app must do doesn't merge.
+    const tests = (cr.checks as unknown as ChangeChecks).tests;
+    if (tests && tests.failed > 0) {
+      const failing = tests.results.filter((result) => !result.passed).map((result) => result.label);
+      throw conflict('tests_failing', `${tests.failed === 1 ? 'A test fails' : `${tests.failed} tests fail`}: ${failing.join('; ')}. The author puts the change right and submits it again.`, { tests });
     }
     const team = await ctx.apps.ref(cr.appId);
     const now = ctx.now();

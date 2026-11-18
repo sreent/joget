@@ -23,6 +23,11 @@ export interface Principal {
   readonly mfaAt?: Date;
   /** Extra attributes available to conditions as `principal.<name>`, for example a department. */
   readonly attributes?: Readonly<Record<string, unknown>>;
+  /**
+   * Bindings the server gives the principal itself, instead of those stored: the role of the
+   * person an app's test acts as. Never taken from a request.
+   */
+  readonly bindings?: readonly Binding[];
 }
 
 /** Which fields of a record a grant covers. Absent means every field. */

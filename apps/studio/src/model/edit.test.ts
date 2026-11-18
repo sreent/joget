@@ -152,3 +152,18 @@ describe('editing a draft', () => {
     expect(setFormula(d, entity, 2, undefined).entities[entity]!.fields[2]).not.toHaveProperty('formula');
   });
 });
+
+describe('tests', () => {
+  it('adds a test that runs an action that makes a record, as a role that may run it, and takes it out again', async () => {
+    const { addTest, removeTest, givenName, givenOf } = await import('./tests.js');
+    const { EXPENSE_APP } = await import('@platform/app-model');
+    const start = structuredClone(EXPENSE_APP) as unknown as Parameters<typeof addTest>[0];
+    const { definition, name } = addTest(start, 'A requester submits a claim');
+    expect(name).toBe('a_requester_submits_a_claim');
+    expect(definition.tests?.[name]).toMatchObject({ when: { action: 'submit_claim', as: 'requester' }, then: { outcome: 'saved' } });
+    const test = { ...definition.tests![name]!, given: { expense_claim: { entity: 'expense_claim', values: {} } } };
+    expect(givenName(test, 'expense_claim')).toBe('expense_claim_2');
+    expect(givenOf(test, 'expense_claim')).toEqual(['expense_claim']);
+    expect(removeTest(definition, name)).not.toHaveProperty('tests');
+  });
+});

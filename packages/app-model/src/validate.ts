@@ -40,6 +40,7 @@ import { beforeGives, checkBeforeFlows, moveSteps, readsPrincipal } from './befo
 import { blockPlace, pageBlocks } from './pages.js';
 import { FORMULA_OPERATORS } from './formulas.js';
 import { canonicalValue, isCanonicalUuid } from './values.js';
+import { givenRefs } from './tests.js';
 
 export interface Issue {
   /** Where in the definition, for example `entities.expense_claim.fields[2].name`. */
@@ -128,6 +129,7 @@ export function validateDefinition(input: unknown, previous?: StoredDefinition, 
     checkFlows(definition, issues);
     checkBeforeFlows(definition, issues);
     checkWaitingFlows(definition, issues);
+    checkTests(definition, issues);
   }
   return issues.length ? { ok: false, issues } : { ok: true, definition, notes };
 }
@@ -419,6 +421,19 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       })
     : undefined;
   const flows = definition.flows ? renameInFlows({ ...definition, entities }, definition.flows, entityName, fieldName) : undefined;
+  // A test names entities and fields by name too: its values follow their renames.
+  const testValues = (entity: string, values: Readonly<Record<string, unknown>>) => Object.fromEntries(Object.entries(values).map(([field, value]) => [fieldName(entity)(field), value]));
+  const tests = definition.tests
+    ? mapRecord(definition.tests, (test) => {
+        const subject = entityName(definition.actions[test.when.action]?.entity ?? '');
+        return {
+          ...test,
+          given: mapRecord(test.given, (record) => ({ ...record, entity: entityName(record.entity), values: testValues(entityName(record.entity), record.values) })),
+          when: { ...test.when, values: testValues(subject, test.when.values) },
+          then: test.then.outcome === 'saved' ? { ...test.then, values: testValues(subject, test.then.values) } : test.then,
+        };
+      })
+    : undefined;
   for (const change of touched) notes.push(`Updated references for the rename ${change}`);
   return {
     ...definition,
@@ -433,6 +448,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
     ...(navigation ? { navigation } : {}),
     ...(processes ? { processes } : {}),
     ...(flows ? { flows } : {}),
+    ...(tests ? { tests } : {}),
   } as StoredDefinition;
 }
 
@@ -630,6 +646,44 @@ function comparesWithClock(condition: Condition): boolean {
   if ('exists' in condition) return false;
   const operands: ReadonlyArray<Operand | readonly Operand[]> = Object.values(condition)[0] ?? [];
   return operands.flat().some((operand) => isRelativeTime(operand));
+}
+
+/**
+ * Check the app's tests: the action and the role each names, the records it makes first, and the
+ * fields its values are for. The values themselves are checked as the test runs, as any input is.
+ */
+function checkTests(definition: StoredDefinition, issues: Issue[]): void {
+  const lines = lineOwners(definition);
+  for (const [name, test] of Object.entries(definition.tests ?? {})) {
+    const path = `tests.${name}`;
+    const values = (entity: string, given: Readonly<Record<string, unknown>>, at: string, inputs?: readonly string[]) => {
+      const known = definition.entities[entity];
+      for (const [field, value] of Object.entries(given)) {
+        if (known && field !== 'owner' && !known.fields.some((f) => f.name === field)) issues.push({ path: `${at}.${field}`, message: `${known.label} has no field ${field}` });
+        else if (inputs && !inputs.includes(field)) issues.push({ path: `${at}.${field}`, message: `${field} isn't one of the action's inputs` });
+        for (const ref of givenRefs(value)) if (!(ref in test.given)) issues.push({ path: `${at}.${field}`, message: `The test makes no record named ${ref}` });
+      }
+    };
+    for (const [given, record] of Object.entries(test.given)) {
+      const at = `${path}.given.${given}`;
+      if (!definition.entities[record.entity]) issues.push({ path: `${at}.entity`, message: `No entity named ${record.entity}` });
+      else if (lines.has(record.entity)) issues.push({ path: `${at}.entity`, message: `${record.entity} is the lines of another entity: make that record, with its lines` });
+      else values(record.entity, record.values, `${at}.values`);
+    }
+    if (!definition.roles[test.when.as]) issues.push({ path: `${path}.when.as`, message: `No role named ${test.when.as}` });
+    const action = definition.actions[test.when.action];
+    if (!action) {
+      issues.push({ path: `${path}.when.action`, message: `No action named ${test.when.action}` });
+      continue;
+    }
+    const record = test.when.record ? test.given[test.when.record] : undefined;
+    if (action.operation === 'update' && !test.when.record) issues.push({ path: `${path}.when.record`, message: `${action.label} changes a record: name one that the test makes` });
+    else if (action.operation === 'create' && test.when.record) issues.push({ path: `${path}.when.record`, message: `${action.label} makes its own record: it changes none` });
+    else if (test.when.record && !record) issues.push({ path: `${path}.when.record`, message: `The test makes no record named ${test.when.record}` });
+    else if (record && record.entity !== action.entity) issues.push({ path: `${path}.when.record`, message: `${test.when.record} is a record of ${record.entity}, and ${action.label} changes one of ${action.entity}` });
+    values(action.entity, test.when.values, `${path}.when.values`, [...action.input]);
+    if (test.then.outcome === 'saved') values(action.entity, test.then.values, `${path}.then.values`);
+  }
 }
 
 function checkFormula(field: Field, formula: Expression, fields: ReadonlyMap<string, FieldInfo>, lines: ReadonlySet<string>, path: string, issues: Issue[]): void {

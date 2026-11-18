@@ -17,6 +17,7 @@ import { FormDesigner } from './FormDesigner.js';
 import { ActionsDesigner, CardsDesigner, QueriesDesigner, RulesDesigner } from './LogicDesigners.js';
 import { MenuDesigner, PagesDesigner } from './PagesDesigner.js';
 import { RolesDesigner } from './RolesDesigner.js';
+import { TestsDesigner } from './TestsDesigner.js';
 
 type Part = { readonly tab: BuildTab; readonly label: string };
 
@@ -64,9 +65,10 @@ const VIEWS: ReadonlyArray<{ readonly label: string; readonly parts: readonly Pa
     ],
   },
 ];
-const DESIGNERS: readonly BuildTab[] = ['data', 'rules', 'queries', 'forms', 'cards', 'pages', 'menu', 'flows', 'actions', 'connections', 'webhooks', 'roles'];
+const DESIGNERS: readonly BuildTab[] = ['data', 'rules', 'queries', 'forms', 'cards', 'pages', 'menu', 'flows', 'actions', 'connections', 'webhooks', 'roles', 'tests'];
 /** Around the app, beside its views: a team app's delivery first; a personal app's history and settings. */
 const AROUND: readonly Part[] = [
+  { tab: 'tests', label: 'Tests' },
   { tab: 'history', label: 'History' },
   { tab: 'advanced', label: 'Advanced' },
 ];
@@ -309,6 +311,7 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
         {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={edit} readOnly={team || chatBusy} dirty={dirty} {...(item ? { open: item } : {})} /> : null}
         {tab === 'connections' ? <ConnectionsDesigner definition={draft} onChange={edit} /> : null}
         {tab === 'webhooks' ? <WebhooksDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'tests' && !team ? <TestsDesigner appId={appId} definition={draft} onChange={edit} dirty={dirty} /> : null}
         {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={edit} /> : null}
         </ProblemsContext.Provider>
         </div>

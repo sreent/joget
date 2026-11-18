@@ -1376,7 +1376,44 @@ export const AppRole = z.strictObject({
 });
 export type AppRole = z.infer<typeof AppRole>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50, flows: 100, connections: 30, webhooks: 30 } as const;
+/**
+ * Values of a test's record, by field: as the field holds them, with `{ "given": "<name>" }` for
+ * the ID of a record the test made first, and a list of them for a reference to several.
+ */
+const TestValues = z.record(Name, z.unknown()).refine((values) => Object.keys(values).length <= 100, 'At most 100 values');
+
+/**
+ * A test of the app (design §6.7): the records there are first, an action that someone in one of
+ * the app's roles runs, and what must come of it: the record saved, with some of its values, or
+ * the action refused. It runs in a transaction that is undone. Every change request runs the tests,
+ * and a test that fails stops the merge.
+ */
+export const AppTest = z.strictObject({
+  label: Label,
+  description: Description.optional(),
+  /** The records there are before the action runs, by a name the test gives them. The app makes them, whatever the role. */
+  given: z
+    .record(Name, z.strictObject({ entity: Name, values: TestValues.default({}) }))
+    .refine((given) => Object.keys(given).length <= 20, 'At most 20 records')
+    .default({}),
+  when: z.strictObject({
+    action: Name,
+    /** The role of the person who runs it. */
+    as: Name,
+    /** For an action that changes a record: which of the given records. */
+    record: Name.optional(),
+    values: TestValues.default({}),
+  }),
+  then: z.discriminatedUnion('outcome', [
+    /** The action saves its record; each value here must be the record's. */
+    z.strictObject({ outcome: z.literal('saved'), values: TestValues.default({}) }),
+    /** The action is refused, with a message that holds this text, if given. */
+    z.strictObject({ outcome: z.literal('refused'), message: z.string().trim().min(1).max(500).optional() }),
+  ]),
+});
+export type AppTest = z.infer<typeof AppTest>;
+
+export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50, flows: 100, connections: 30, webhooks: 30, tests: 100 } as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
   z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
@@ -1414,6 +1451,11 @@ export const AppDefinition = z.strictObject({
   webhooks: z
     .record(Name, Webhook)
     .refine((map) => Object.keys(map).length <= LIMITS.webhooks, `At most ${LIMITS.webhooks} webhooks`)
+    .optional(),
+  /** What the app must do, as tests that every change request runs. */
+  tests: z
+    .record(Name, AppTest)
+    .refine((map) => Object.keys(map).length <= LIMITS.tests, `At most ${LIMITS.tests} tests`)
     .optional(),
 });
 export type AppDefinition = z.infer<typeof AppDefinition>;

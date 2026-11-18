@@ -193,3 +193,19 @@ export const ProvenanceIn = z
   .record(z.string(), z.record(z.string(), z.unknown()))
   .optional()
   .describe('Where each value came from: { field: { source: "document" | "agent" | "person" | "platform", ... } }');
+
+/** What the app's tests found: how many passed and failed, and each test's result. */
+export const TestsOut = z.object({
+  passed: z.number().int(),
+  failed: z.number().int(),
+  results: z.array(
+    z.object({
+      name: z.string(),
+      label: z.string(),
+      passed: z.boolean(),
+      outcome: z.enum(['saved', 'refused', 'error']),
+      message: z.string().optional(),
+      mismatches: z.array(z.object({ field: z.string(), expected: z.unknown(), actual: z.unknown() })).optional(),
+    }),
+  ),
+});

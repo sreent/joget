@@ -1,5 +1,5 @@
 import type { Decision, Resource } from '@platform/authz';
-import { appRoleName, AppDefinition, EXPENSE_APP } from '@platform/app-model';
+import { appRoleName, AppDefinition, EXPENSE_APP, NAME_PATTERN } from '@platform/app-model';
 import { appEnvironments, appRevisions, apps, bindings, changeRequests, releases, spaces, type Executor } from '@platform/db';
 import { and, desc, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -16,7 +16,7 @@ import { changeRequestRequired, type AppBuilder } from './builder.js';
 import { envSelector, isLoaded, isTeamApp, type AppRef, type EnvironmentRow, type LoadedApp } from './catalog.js';
 import { appResource, environmentResource } from './resources.js';
 import type { AppRuntime } from './runtime.js';
-import { AppOut, AppParams, EnvironmentOut, EnvQuery, PlanOut } from './schemas.js';
+import { AppOut, AppParams, EnvironmentOut, EnvQuery, PlanOut, TestsOut } from './schemas.js';
 import { describeUi } from './ui.js';
 
 type AppOutput = z.infer<typeof AppOut>;
@@ -439,6 +439,25 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
       const fromHeader = typeof ifMatch === 'string' ? Number(ifMatch.replaceAll('"', '').replace(/^W\//, '')) : undefined;
       return body.baseRevision ?? (Number.isInteger(fromHeader) ? fromHeader : undefined);
     };
+
+    app.post(
+      '/v1/apps/:appId/tests/run',
+      {
+        config: { access: buildRule('app.edit') },
+        schema: {
+          tags: ['apps'],
+          summary: "Run the app's saved tests, each in a transaction that is undone: in the sandbox, or in the environment the request names",
+          params: AppParams,
+          querystring: EnvQuery,
+          body: z.strictObject({ only: z.array(z.string().regex(NAME_PATTERN)).max(100).optional() }),
+          response: { 200: TestsOut },
+        },
+      },
+      async (request) => {
+        const results = await runtime.runTests(request, await theApp(request), request.body.only);
+        return { passed: results.filter((result) => result.passed).length, failed: results.filter((result) => !result.passed).length, results };
+      },
+    );
 
     app.post(
       '/v1/apps/:appId/definition/plan',

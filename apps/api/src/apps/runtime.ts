@@ -1,10 +1,14 @@
 import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
-import { conditionRefs, evaluateCondition, partialEvaluate, type Condition, type Policy, type QueryGrant } from '@platform/authz';
+import { conditionRefs, evaluateCondition, partialEvaluate, type Binding, type Condition, type Policy, type QueryGrant } from '@platform/authz';
 import {
   beforeGives,
   blockAt,
+  appRoleId,
   buildCard,
   cellValue,
+  testMismatches,
+  withGivenIds,
+  type AppTest,
   importColumns,
   isComputed,
   MAX_IMPORT_ROWS,
@@ -272,12 +276,22 @@ export interface FlowHooks {
       readonly principal: Record<string, unknown>;
       readonly auth: AuthContext | null;
       readonly now: Date;
+      /** For a test: the flow changes nothing in another system. */
+      readonly dryRun?: boolean;
     },
   ): Promise<BeforeResult>;
   afterAction(
     tx: AppTransaction,
     loaded: LoadedApp,
-    event: { readonly action: string; readonly entity: string; readonly record: RecordValues; readonly writer: Writer; readonly principal: Record<string, unknown>; readonly auth: AuthContext | null },
+    event: {
+      readonly action: string;
+      readonly entity: string;
+      readonly record: RecordValues;
+      readonly writer: Writer;
+      readonly principal: Record<string, unknown>;
+      readonly auth: AuthContext | null;
+      readonly dryRun?: boolean;
+    },
   ): Promise<void>;
 }
 
@@ -303,7 +317,7 @@ interface ActionRun {
   readonly action: Action;
   readonly entity: StoredEntity;
   readonly input: ActionInput;
-  readonly options: { readonly revises?: ProposalRow };
+  readonly options: ActionOptions;
   readonly check: ReturnType<typeof checkActionInput>;
   readonly provenance: Record<string, Provenance>;
   readonly permission: AllowedQuery;
@@ -600,6 +614,8 @@ export class AppRuntime {
       }
     }
     if (explicitOwner && typeof values['owner'] === 'string') ids.add(values['owner']);
+    // The person a test acts as is the test's own, and no one in the directory.
+    ids.delete(TEST_PERSON);
     if (ids.size === 0) return;
     const found = await this.#ctx.db
       .select({ id: users.id })
@@ -981,6 +997,94 @@ export class AppRuntime {
   }
 
   /**
+   * Run the app's tests (design §6.7), each in a transaction that is undone. A test makes its
+   * records first, as the app does, whatever the role may do. Then a person in the test's role runs
+   * its action, with that role's permissions, the action's rules and flows; a flow changes nothing
+   * in another system. Then the record as it saves, or why the action was refused, is checked
+   * against what the test expects.
+   */
+  async runTests(request: FastifyRequest, loaded: LoadedApp, only?: readonly string[]): Promise<TestResult[]> {
+    // A test makes records and runs flows, even if it undoes them: never among the records people use.
+    if (loaded.env.kind === 'staging' || loaded.env.kind === 'prod') {
+      throw unprocessable('not_a_sandbox', `Tests run in a sandbox or in a change request's preview, not in ${loaded.env.kind === 'prod' ? 'Prod' : 'Staging'}: run them in a working copy`);
+    }
+    const results: TestResult[] = [];
+    for (const [name, test] of Object.entries(loaded.definition.tests ?? {})) {
+      if (!only || only.includes(name)) results.push(await this.#runTest(request, loaded, name, test));
+    }
+    return results;
+  }
+
+  async #runTest(request: FastifyRequest, loaded: LoadedApp, name: string, test: AppTest): Promise<TestResult> {
+    const auth = testAuth(loaded, test.when.as);
+    const action = loaded.definition.actions[test.when.action]!;
+    const result = (outcome: TestResult['outcome'], passed: boolean, more: { readonly message?: string; readonly mismatches?: TestResult['mismatches'] } = {}): TestResult => ({
+      name,
+      label: test.label,
+      passed,
+      outcome,
+      ...(more.message ? { message: more.message } : {}),
+      ...(more.mismatches?.length ? { mismatches: more.mismatches } : {}),
+    });
+    return withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
+      this.#sameRevision(tx, loaded);
+      // The records there are first, as the app makes them.
+      const ids = new Map<string, string>();
+      for (const [given, record] of Object.entries(test.given)) {
+        try {
+          const ready = await this.#prepareCreate(request, auth, loaded, record.entity, { values: withGivenIds(record.values, ids) }, processAuthority('record.create', record.entity, 'test'));
+          ids.set(given, (await this.#writeCreate(tx, request, auth, loaded, ready)).id);
+        } catch (error) {
+          if (!(error instanceof HttpError)) throw error;
+          throw new RolledBack(result('error', false, { message: `The test can't make ${given}: ${refusal(error)}` }));
+        }
+      }
+      // The action, as someone in the role.
+      const allowed = await this.#ctx.policy.authorize(auth.principal, 'action.run', this.capability(loaded, 'action', test.when.action), undefined, await this.policy(loaded));
+      let saved: StoredRecord | null = null;
+      let refused: string | null = allowed.allowed ? null : `Someone in the role ${loaded.definition.roles[test.when.as]?.label ?? test.when.as} may not ${action.label.toLowerCase()}`;
+      if (!refused) {
+        try {
+          const recordId = test.when.record ? ids.get(test.when.record) : undefined;
+          const run = await this.#prepareAction({ kind: 'request', request, auth }, loaded, test.when.action, { values: withGivenIds(test.when.values, ids), ...(recordId ? { recordId } : {}) }, { test: true });
+          const done = await this.#runActionIn(tx, run);
+          if (done.status === 'done') saved = await this.#lock(tx, loaded, this.entity(loaded, action.entity), done.record.id);
+          else refused = 'It waits for a confirmation';
+        } catch (error) {
+          if (!(error instanceof HttpError)) throw error;
+          refused = refusal(error);
+        }
+      }
+      if (test.then.outcome === 'refused') {
+        const expected = test.then.message;
+        const passed = refused !== null && (!expected || refused.toLowerCase().includes(expected.toLowerCase()));
+        throw new RolledBack(result(refused ? 'refused' : 'saved', passed, refused ? { message: refused } : {}));
+      }
+      if (!saved) throw new RolledBack(result('refused', false, { message: refused ?? 'It saved nothing' }));
+      const wanted = test.then.values;
+      const entity = this.entity(loaded, action.entity);
+      const linesWanted = linesFieldsOf(entity).filter((field) => field.name in wanted);
+      const lines = linesWanted.length ? await this.#readLines(tx, loaded, [saved.id], linesWanted) : undefined;
+      const actual: Record<string, unknown> = { ...recordValues(saved), owner: saved.owner };
+      for (const field of linesWanted) actual[field.name] = (lines?.get(field.name)?.get(saved.id) ?? []).map((line) => line.values);
+      const expected = withGivenIds(wanted, ids);
+      // A line is checked by the values the test gives for it, in the order of the lines.
+      for (const field of linesWanted) {
+        const want = expected[field.name];
+        const got = actual[field.name];
+        if (Array.isArray(want) && Array.isArray(got) && want.length === got.length) {
+          actual[field.name] = got.map((line, i) => (typeof want[i] === 'object' && want[i] !== null ? Object.fromEntries(Object.keys(want[i] as object).map((key) => [key, (line as Record<string, unknown>)[key] ?? null])) : line));
+        }
+      }
+      const mismatches = testMismatches(expected, actual);
+      throw new RolledBack(result('saved', mismatches.length === 0, { mismatches }));
+    }).catch((error: unknown) => {
+      if (error instanceof RolledBack) return error.result as TestResult;
+      throw error;
+    });
+  }
+
+  /**
    * Bring records in from CSV text (design §6.1). Each row is a create, with its checks, rules and
    * permissions, and the import writes all of its records or none. A dry run writes them in a
    * transaction it then rolls back, so it also finds what only writing finds, such as a value
@@ -1045,14 +1149,14 @@ export class AppRuntime {
         try {
           await this.#writeCreate(tx, request, auth, loaded, create, { import: document });
         } catch (error) {
-          if (error instanceof HttpError) throw new RolledBack({ ...result, issues: rowIssues(row, error) });
+          if (error instanceof HttpError) throw new RolledBack<ImportResult>({ ...result, issues: rowIssues(row, error) });
           throw error;
         }
       }
-      if (input.dryRun) throw new RolledBack(result);
+      if (input.dryRun) throw new RolledBack<ImportResult>(result);
       return { ...result, created: ready.length };
     }).catch((error: unknown) => {
-      if (error instanceof RolledBack) return error.result;
+      if (error instanceof RolledBack) return error.result as ImportResult;
       throw error;
     });
   }
@@ -1656,7 +1760,7 @@ export class AppRuntime {
   }
 
   /** Check an action's input and decide whether its caller may run it at all, before any transaction. */
-  async #prepareAction(origin: ActionOrigin, loaded: LoadedApp, name: string, input: ActionInput, options: { readonly revises?: ProposalRow }): Promise<ActionRun> {
+  async #prepareAction(origin: ActionOrigin, loaded: LoadedApp, name: string, input: ActionInput, options: ActionOptions): Promise<ActionRun> {
     const ctx = this.#ctx;
     const action = loaded.definition.actions[name];
     if (!action) throw notFound('Action');
@@ -1755,6 +1859,7 @@ export class AppRuntime {
         principal: run.principal,
         auth: run.origin.kind === 'request' ? run.origin.auth : null,
         now,
+        ...(run.options.test ? { dryRun: true } : {}),
       });
       draft = { ...ran.record };
       worked = Object.fromEntries(Object.entries(ran.lines).map(([field, list]) => [field, [...list]]));
@@ -1859,6 +1964,7 @@ export class AppRuntime {
         writer: run.writer,
         principal: run.principal,
         auth: run.origin.kind === 'request' ? run.origin.auth : null,
+        ...(run.options.test ? { dryRun: true } : {}),
       });
     }
     // The processes it moves: tasks it decides complete, and processes it starts begin (design §6.10).
@@ -2361,11 +2467,48 @@ const MAX_EXPORT_ROWS = 10_000;
 
 const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Thrown to roll an import back, a dry run or one with a line that can't be written, with what it found. */
-class RolledBack extends Error {
-  constructor(readonly result: ImportResult) {
-    super('The import wrote nothing');
+/** Thrown to undo a transaction, with what it found: an import's dry run, or line that can't be written; a test, always. */
+class RolledBack<T = ImportResult> extends Error {
+  constructor(readonly result: T) {
+    super('Nothing was written');
   }
+}
+
+/** The person each test acts as: no one in the directory, and in no role but the test's. */
+export const TEST_PERSON = '00000000-0000-4000-8000-000000007e57';
+
+/** How a test's person signs in: as the test person, holding the test's role in the app's environment, and nothing else. */
+function testAuth(loaded: LoadedApp, role: string): AuthContext {
+  const binding: Binding = { id: `test:${role}`, principalType: 'user', principalId: TEST_PERSON, roleId: appRoleId(loaded.app.id, role), scope: { type: 'env', id: loaded.env.id } };
+  return {
+    actor: { type: 'user', id: TEST_PERSON, name: 'The test', email: null },
+    principal: { type: 'user', id: TEST_PERSON, groupIds: [], bindings: [binding] },
+    credential: { kind: 'session', sessionId: 'test' },
+  };
+}
+
+/** Why an action was refused, as a test reports it: the error's message, with each issue it names. */
+function refusal(error: HttpError): string {
+  const details = error.details as { issues?: Array<{ field?: string; message: string }> } | undefined;
+  const issues = details?.issues?.map((issue) => (issue.field ? `${issue.field}: ${issue.message}` : issue.message)) ?? [];
+  return issues.length ? `${error.message}: ${issues.join('; ')}` : error.message;
+}
+
+/** What a test found: whether it passed, what the action did, and where the record differs from what the test expects. */
+export interface TestResult {
+  readonly name: string;
+  readonly label: string;
+  readonly passed: boolean;
+  /** The record saved, the action refused, or the test couldn't make its records. */
+  readonly outcome: 'saved' | 'refused' | 'error';
+  readonly message?: string;
+  readonly mismatches?: Array<{ readonly field: string; readonly expected: unknown; readonly actual: unknown }>;
+}
+
+/** How an action runs: as a revision of a proposal, or for a test, whose flows change nothing in another system. */
+interface ActionOptions {
+  readonly revises?: ProposalRow;
+  readonly test?: boolean;
 }
 
 /** What stopped one line of an import, from the error a create gives. */

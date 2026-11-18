@@ -10,7 +10,9 @@ export interface CheckOptions {
   readonly context?: Record<string, unknown>;
 }
 
-async function deny(ctx: AppContext, request: FastifyRequest, action: string, resource: Resource, reasons: Decision['reasons']): Promise<never> {
+async function deny(ctx: AppContext, request: FastifyRequest, action: string, resource: Resource, reasons: Decision['reasons'], tested = false): Promise<never> {
+  // The person a test acts as is no one: what a test is refused is its result, not an attempt to log.
+  if (tested) throw forbidden('forbidden', `You are not allowed to ${action} here`, { action, reasons });
   await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
     action: 'access.denied',
     outcome: 'denied',
@@ -32,7 +34,7 @@ export async function checkPermission(
   options: CheckOptions = {},
 ): Promise<Decision> {
   const decision = await ctx.policy.authorize(auth.principal, action, resource, options.context, options.policy);
-  if (!decision.allowed) await deny(ctx, request, action, resource, decision.reasons);
+  if (!decision.allowed) await deny(ctx, request, action, resource, decision.reasons, auth.principal.bindings !== undefined);
   return decision;
 }
 
@@ -64,7 +66,7 @@ export async function checkQuery(
   options: CheckOptions = {},
 ): Promise<AllowedQuery> {
   const decision = await ctx.policy.query(auth.principal, action, resource, options);
-  if (!decision.allowed) await deny(ctx, request, action, resource, decision.reasons);
+  if (!decision.allowed) await deny(ctx, request, action, resource, decision.reasons, auth.principal.bindings !== undefined);
   return decision as AllowedQuery;
 }
 

@@ -4,6 +4,7 @@ import { api, ApiError, needsStepUp, stepUp } from '../api.js';
 import { Badge, Button, Card, Checkbox, cx, Dialog, EmptyState, Field, Notice, TextInput } from '../components/ui.js';
 import { Link, navigate } from '../router.js';
 import type { AppSummary, ChangeRequest, Deployment, Me, PlanStep, Release } from '../types.js';
+import { TestResults } from '../components/tests.js';
 
 const ENV_NAMES = { prod: 'Prod', staging: 'Staging' } as const;
 const SECTION_NAMES: Readonly<Record<string, string>> = {
@@ -15,6 +16,11 @@ const SECTION_NAMES: Readonly<Record<string, string>> = {
   forms: 'Form',
   roles: 'Role',
   pages: 'Page',
+  processes: 'Process',
+  flows: 'Flow',
+  connections: 'Connection',
+  webhooks: 'Webhook',
+  tests: 'Test',
   navigation: 'The',
 };
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -351,6 +357,12 @@ export function ChangeRequestPage({ id, me }: { id: string; me: Me }) {
               ))}
             </ul>
           </Section>
+          {checks.tests ? (
+            <Section title="Tests">
+              <TestResults run={checks.tests} />
+              {checks.tests.failed ? <Notice tone="bad">A change whose tests fail doesn't merge. The author puts it right and submits it again.</Notice> : null}
+            </Section>
+          ) : null}
           <Section title="Data in Prod">
             <Steps steps={checks.migration.steps} empty="No change to the data model: names, labels, forms or rules only." />
             {checks.migration.destructive ? <Notice tone="bad">This deletes data. It goes into a release of its own, and that release can't be rolled back.</Notice> : null}

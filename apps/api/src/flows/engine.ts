@@ -161,7 +161,7 @@ export class FlowEngine implements FlowHooks {
     const flow = run ? loaded.definition.flows?.[run.flow] : undefined;
     if (!run || (flow && flowWaits(flow, loaded.definition.flows))) return;
     const input = this.inputFrom(loaded, run, event.entity, event.record, event.principal);
-    await this.run(tx, loaded, run.flow, input, { writer: event.writer, principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action } });
+    await this.run(tx, loaded, run.flow, input, { writer: event.writer, principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action }, ...(event.dryRun ? { dryRun: true } : {}) });
   }
 
   /**
@@ -175,7 +175,7 @@ export class FlowEngine implements FlowHooks {
     if (!action || !run) throw notFound('Flow');
     const person = event.principal['id'];
     const draft = new Draft(loaded.definition, event.entity, event.record, event.lines, { now: event.now, person: typeof person === 'string' ? person : undefined });
-    const caller: FlowCaller = { writer: flowWriter(event.writer, run.flow), principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action } };
+    const caller: FlowCaller = { writer: flowWriter(event.writer, run.flow), principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action }, ...(event.dryRun ? { dryRun: true } : {}) };
     const state: State = {
       tx,
       loaded,

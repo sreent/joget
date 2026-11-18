@@ -715,7 +715,7 @@ sequenceDiagram
 - **The studio is a visual low-code builder,** like Joget and Mendix. It has designers for the data model, forms, rules, actions, queries, review cards and roles, then pages, navigation and dashboards, and the flows that actions run before they save. Builders work in their personal space, where every change applies at once to their sandbox.
   - The first slice ships in phase 1. The data designer edits entities and fields, reorders them by dragging, and renames without touching data. Saving shows the migration plan first, and anything that deletes data needs a second confirmation. The form designer lays fields out in sections, at full or half width, with labels and help, and picks the action a form submits through, so its rules and confirmation apply.
   - **Forms that adapt (added 2026-11-18).** A field of the data model can be required only while a condition of the record holds (`requiredWhen`). It is a rule of the field's own: every write checks it, whatever the path, and a form shows the field as required while it holds. A field can start a new record with a default worked out as the record is created: a date the day it is created or some days from it, a time the moment it is created, a person the one who creates it; a process creates with no person, so that default gives nothing there. On a form, a field can show only while a condition of the values on the form holds (`visibleWhen`), and a field it hides sends no value: showing is the form's business, requiring is the data's. A form can ask a section at a time (`layout: steps`), drawn as Ocean's JourneyPath, and checks each section before the next; the server checks everything again on submit. Rules, actions, queries, review cards and roles have designers too, from phase 2's first step: conditions are built as clauses (a field, a test, a value; all or any of them), and roles as a matrix of who may do what with which records. The whole definition can still be edited as JSON, and is checked like any other change when it's saved.
-  - **Building with a safety net (added 2026-11-18).** The studio runs the checks that the server runs as a draft saves, in the browser, as the draft changes. The toolbar says how many problems the draft has, as a badge that opens them, each with a link to its designer; on a flow's canvas, each step shows its count of problems in its corner. Undo and redo take the draft back and forward, from their buttons or with Ctrl or Cmd and Z (with Shift, or Y, to redo); what someone types into one text box in a burst is one change. On the canvas, a step is copied, cut and pasted, by its buttons or its keys, and moves by being dragged onto another arrow, after which the flow lays itself out again.
+  - **Building with a safety net (added 2026-11-18).** The studio runs the checks that the server runs as a draft saves, in the browser, as the draft changes. The toolbar says how many problems the draft has, as a badge that opens them, each with a link to its designer; on a flow's canvas, each step shows its count of problems in its corner. Undo and redo take the draft back and forward, from their buttons or with Ctrl or Cmd and Z (with Shift, or Y, to redo); what someone types into one text box in a burst is one change. On the canvas, a step is copied, cut and pasted, by its buttons or its keys, and moves by being dragged onto another arrow, after which the flow lays itself out again. The tests designer writes the app's tests and runs them (§6.7).
   - Every app gets its screens without design work: lists, forms and record pages, generated from what each person may do, so a colleague in a narrow role sees only what that role allows. Pages and dashboards designed in phase 2 replace these defaults where a builder wants something else.
   - **Pages and the menu (built in phase 2).**
     - A page is blocks, top to bottom: headings, text and notes; lists of records; and buttons that open forms or other pages.
@@ -749,7 +749,7 @@ sequenceDiagram
   - change a definition with the same small edits as the studio's chat (`edit_definition`), instead of sending all of it again;
   - validate a change, and see its migration plan and permission diff;
   - apply the change to the personal sandbox;
-  - run scenario tests;
+  - run the app's tests (§6.7);
   - open a change request.
 - **Operators have an MCP server too (`/mcp/ops`, built in phase 3).** An operator's AI client lists the apps they operate, shows where each process instance waits and why one is stuck, tries stuck instances and failed skill calls again, cancels an instance, throws a signal, and moves a task to someone who holds its role. Its tools share the checks of the operator routes: the owner operates a personal app, and in a team space operators do, with the ops permissions. Deciding tasks, approving and deleting data are not among its tools (§5.7).
 - **The same gates apply.**
@@ -818,7 +818,7 @@ Rolling back means re-activating the previous release in that environment (§7.1
 - **Permission diff:** a plain-language summary of who gains or loses access to what, for example "*Approver* can now export *Expense claim*".
 - **Capability diff:** which tools agents gain or lose, and any confirmation level that changes, for example "*submit_claim* now needs only a preview".
 - A **migration plan** for data-model changes, with destructive steps flagged.
-- Scenario tests, where present.
+- The app's tests, where present: a test that fails stops the merge.
 
 **Concurrency.** Each builder has their own working copy. Artifacts carry versions for optimistic locking, merges are three-way at the artifact level, and conflicts are shown in the UI. Real-time co-editing can come later.
 
@@ -835,6 +835,14 @@ Rolling back means re-activating the previous release in that environment (§7.1
 - When the main line moved on, the merge is three-way at the artifact level. An entity, rule, action, query, card, form or role that changed on one side only takes that side. One that changed differently on both sides conflicts, and the merge is refused. The merged definition is validated again.
 - A release is signed with the platform's Ed25519 key, over a manifest of the app, its number, revision, definition digest, previous release and contents. A database trigger refuses any change to it. Listing releases checks each signature and each definition's digest.
 - A change that deletes data goes in a release of its own. A release that would delete data and hold more than one change is refused, with the revision to release first.
+
+**Tests of what an app must do (added 2026-11-18).** An app's definition keeps its tests (`tests`), so they travel, merge and are reviewed with the app.
+
+- A test names the records there are first, and makes them as the app makes them, whatever the role. Then someone who holds one of the app's roles runs an action, with values, on one of those records if the action changes one. Last, it says what must come of it: the record saved, with some of its values, a line's among them, or the action refused, with a message that holds some text.
+- The person a test acts as is a test person who holds only that role, in that environment. So a test proves the permissions too: a requester can't approve. A refusal of a test is not on the audit log, as nobody was refused.
+- Each test runs in one transaction, which is always undone, so nothing it does stays. Its flows run as dry runs: they call services only to read, and tell nobody.
+- The tests designer writes them, and runs them on the saved app (`POST /v1/apps/{appId}/tests/run`), as AI clients do with the MCP tool `run_tests`. Tests run in a sandbox or in a change request's preview, never in Staging or Prod.
+- Every change request runs its tests on its preview, when it is submitted and when it is brought up to date, and keeps the results with its other checks. A test that fails stops the merge, whatever the reviews.
 
 ### 6.8 Data-model migrations
 

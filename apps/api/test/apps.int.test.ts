@@ -593,6 +593,18 @@ describe('building with an AI client', () => {
     expect((await edit({ edits: [{ op: 'replace', path: '/entities/expense_claim/label', value: '' }] })).result).toMatchObject({ isError: true, structuredContent: { error: 'invalid_definition' } });
   });
 
+  it("runs the app's tests, and says how many passed", async () => {
+    const run = (args: Record<string, unknown>) => rpc(builderToken, '/mcp/build', 'tools/call', { name: 'run_tests', arguments: { app_id: appId, ...args } });
+    expect((await run({})).result.structuredContent).toEqual({ passed: 0, failed: 0, results: [] });
+    const test = { label: 'No receipts, no claim', when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } }, then: { outcome: 'refused' } };
+    const edited = await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'edit_definition', arguments: { app_id: appId, edits: [{ op: 'add', path: '/tests', value: { no_receipts: test } }], apply: true } });
+    expect(edited.result.isError).toBeUndefined();
+    const ran = await run({ only: ['no_receipts'] });
+    expect(ran.result.content[0].text).toMatch(/^1 passed, 0 failed\./);
+    expect(ran.result.structuredContent.results).toEqual([expect.objectContaining({ name: 'no_receipts', passed: true, outcome: 'refused' })]);
+    expect((await run({ only: 'no_receipts' })).result).toMatchObject({ isError: true, structuredContent: { error: 'invalid_arguments' } });
+  });
+
   it("can't reach apps the person can't build", async () => {
     const bobToken = await mintPat(bob, ['app.read', 'app.edit']);
     const denied = await rpc(bobToken, '/mcp/build', 'tools/call', { name: 'get_definition', arguments: { app_id: appId } });

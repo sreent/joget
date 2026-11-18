@@ -165,6 +165,25 @@ describe('the three-way merge', () => {
     expect(result).toEqual({ ok: false, conflicts: [{ section: 'actions', name: 'submit_claim', ours: 'changed', theirs: 'removed' }] });
   });
 
+  it("keeps a change's connections, webhooks and tests while the main line moved on", () => {
+    const ours = changed(base, (d) => {
+      d.connections = { erp: { kind: 'service', label: 'ERP', url: 'https://erp.example.com', auth: { type: 'none' } } };
+      d.tests = { submits: { label: 'A requester submits', when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } }, then: { outcome: 'refused' } } };
+    });
+    const theirs = changed(base, (d) => {
+      d.queries.my_claims.limit = 20;
+    });
+    const result = mergeDefinitions(base, ours, theirs);
+    expect(result.ok).toBe(true);
+    const merged = valid(result.ok ? result.definition : {}, theirs);
+    expect(Object.keys(merged.connections ?? {})).toEqual(['erp']);
+    expect(Object.keys(merged.tests ?? {})).toEqual(['submits']);
+    expect(merged.queries['my_claims']!.limit).toBe(20);
+    // A definition without them still leaves them out.
+    const plain = mergeDefinitions(base, theirs, theirs);
+    expect(plain.ok && ['connections', 'webhooks', 'tests'].some((section) => section in plain.definition)).toBe(false);
+  });
+
   it('accepts the same change made on both sides', () => {
     const edit = (d: Record<string, any>) => {
       d.queries.my_claims.limit = 20;
