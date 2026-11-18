@@ -1,5 +1,5 @@
 import type { StoredDefinition } from './fields.js';
-import { alwaysGiven } from './steps.js';
+import { beforeGives } from './before.js';
 import { checkInput, type InputCheck } from './values.js';
 
 /**
@@ -9,6 +9,6 @@ import { checkInput, type InputCheck } from './values.js';
 export function checkActionInput(definition: StoredDefinition, actionName: string, input: Readonly<Record<string, unknown>>): InputCheck {
   const action = definition.actions[actionName];
   if (!action) throw new Error(`No action ${actionName}`);
-  // A field the steps always set needs no input: the steps give it its value.
-  return checkInput(definition, action.entity, input, { mode: action.operation, allowed: new Set(action.input), fixed: action.set, given: alwaysGiven(action.steps ?? []) });
+  // A field that the flow before it saves always sets needs no input: the flow gives it its value.
+  return checkInput(definition, action.entity, input, { mode: action.operation, allowed: new Set(action.input), fixed: action.set, given: beforeGives(definition, action) });
 }

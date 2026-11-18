@@ -143,6 +143,26 @@ export function addFlow(definition: Definition, label: string): { definition: De
   return { definition: { ...definition, flows: { ...flows, [name]: { label, input: {}, steps: [] } } }, name };
 }
 
+/**
+ * A new flow for an action to run before it saves, with no steps yet. Its input is the record the
+ * action saves, named after its entity.
+ */
+export function addBeforeFlow(definition: Definition, action: string): { definition: Definition; name: string } {
+  const spec = definition.actions[action]!;
+  const flows: Flows = definition.flows ?? {};
+  const label = `${spec.label}: before it saves`;
+  const name = toName(label, Object.keys(flows));
+  const variable = ['record', 'principal'].includes(spec.entity) ? `the_${spec.entity}` : spec.entity;
+  return {
+    definition: {
+      ...definition,
+      flows: { ...flows, [name]: { label, input: { [variable]: { type: 'record', entity: spec.entity } }, steps: [] } },
+      actions: { ...definition.actions, [action]: { ...spec, before: { flow: name, input: { [variable]: { ref: 'record' } } } } },
+    },
+    name,
+  };
+}
+
 /** Remove a flow, and the roles' and actions' mentions of it. Process tasks that run it are left for the checks to name. */
 export function removeFlow(definition: Definition, name: string): Definition {
   const flows = { ...(definition.flows ?? {}) };
@@ -150,9 +170,8 @@ export function removeFlow(definition: Definition, name: string): Definition {
   const roles = Object.fromEntries(Object.entries(definition.roles).map(([role, spec]) => [role, spec.flows ? { ...spec, flows: spec.flows.filter((flow) => flow !== name) } : spec]));
   const actions = Object.fromEntries(
     Object.entries(definition.actions).map(([action, spec]) => {
-      if (spec.flow?.flow !== name) return [action, spec];
-      const { flow: _, ...rest } = spec;
-      return [action, rest];
+      const { flow, before, ...rest } = spec;
+      return [action, { ...rest, ...(flow && flow.flow !== name ? { flow } : {}), ...(before && before.flow !== name ? { before } : {}) }];
     }),
   );
   return { ...definition, flows, roles, actions } as Definition;
@@ -451,6 +470,8 @@ const fieldLabelOf = (definition: Definition, entity: string | undefined) => (fi
 export function startsWords(definition: Definition, flow: AppFlow): string {
   const lowerFirst = (text: string) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
   if (flow.schedule) return lowerFirst(scheduleWords(flow.schedule));
+  const shaping = shapingActions(definition, flow);
+  if (shaping.length) return shaping.length === 1 ? `before ${shaping[0]!.label} saves` : `before ${shaping.length} actions save`;
   const subject = flowSubject(flow);
   const [first, ...more] = flow.starts ?? [];
   if (first && subject) {
@@ -460,6 +481,11 @@ export function startsWords(definition: Definition, flow: AppFlow): string {
   }
   const inputs = Object.keys(flow.input);
   return inputs.length ? `with ${inputs.join(', ')}` : 'when it runs';
+}
+
+/** The actions that run a flow before they save: what it changes is their record, as the person who runs them. */
+export function shapingActions(definition: Definition, flow: AppFlow): Array<Definition['actions'][string]> {
+  return Object.values(definition.actions).filter((action) => action.before !== undefined && definition.flows?.[action.before.flow] === flow);
 }
 
 /** The lists of steps a step holds, each with what a builder calls it: for the list view of a canvas. */
@@ -630,6 +656,8 @@ interface Piece {
 interface Ctx {
   readonly definition: Definition;
   readonly entity?: string | undefined;
+  /** For a flow that runs before an action saves: its changes are the person's own, to the record the action saves. */
+  readonly shaping?: boolean;
   /** The paths of the frames folded to one box. */
   readonly folded: ReadonlySet<string>;
 }
@@ -1043,8 +1071,8 @@ function stepPiece(c: Ctx, step: FlowStep, path: string): Piece {
     label: words.words,
     ...(words.about ? { about: words.about } : {}),
     ...(words.tone ? { tone: words.tone } : {}),
-    // A flow writes with the app's authority, in the name of whoever started it.
-    ...(writes ? { who: { kind: 'own' as const, words: 'the app' } } : {}),
+    // A flow writes with the app's authority, in the name of whoever started it. Before an action saves, it writes nothing yet.
+    ...(writes && !c.shaping ? { who: { kind: 'own' as const, words: 'the app' } } : {}),
   });
 }
 
@@ -1108,7 +1136,7 @@ export function layoutFlow(
   folded: ReadonlySet<string> = new Set(),
 ): { readonly nodes: CanvasNode[]; readonly edges: CanvasEdge[]; readonly width: number; readonly height: number } {
   wires = 0;
-  const c: Ctx = { definition, entity: flowSubject(flow)?.entity, folded };
+  const c: Ctx = { definition, entity: flowSubject(flow)?.entity, folded, shaping: shapingActions(definition, flow).length > 0 };
   // The start ring's words sit centred under it: a long line of them needs room on the left.
   const about = startsWords(definition, flow);
   const lead = Math.max(0, Math.round((about.length * CAPTION_CHAR) / 2 - RING / 2 - MARGIN + 6));

@@ -366,6 +366,8 @@ const FlowCheck = z.strictObject({
   assert: ConditionSchema,
   message: z.string().trim().min(1).max(500),
   severity: z.enum(['error', 'warning']).default('error'),
+  /** The values the message is about, as claim.iban: a form marks those of the record its action saves. */
+  fields: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,62}\.[a-z][a-z0-9_]{0,62}$/, 'Name a field of a record variable, as claim.iban')).max(20).optional(),
 });
 /** Run another flow of the app, and keep its result. */
 const FlowCall = z.strictObject({ type: z.literal('call'), flow: Name, input: FlowValues.default({}), var: Name.optional() });
@@ -478,7 +480,7 @@ export type FlowStep =
   | { readonly type: 'add_line'; readonly record: string; readonly field: string; readonly values: Record<string, Expression> }
   | { readonly type: 'each'; readonly in: string; readonly as: string; readonly steps: FlowStep[] }
   | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStep[]; readonly else: FlowStep[] }
-  | { readonly type: 'check'; readonly assert: Condition; readonly message: string; readonly severity: 'error' | 'warning' }
+  | { readonly type: 'check'; readonly assert: Condition; readonly message: string; readonly severity: 'error' | 'warning'; readonly fields?: string[] | undefined }
   | { readonly type: 'call'; readonly flow: string; readonly input: Record<string, Expression>; readonly var?: string | undefined }
   | { readonly type: 'try'; readonly steps: FlowStep[]; readonly catch: FlowStep[]; readonly rollback: boolean; readonly error?: string | undefined }
   | { readonly type: 'total'; readonly var: string; readonly of: string; readonly op: 'count' | 'sum' | 'avg' | 'min' | 'max'; readonly field?: string | undefined }
@@ -670,12 +672,17 @@ export const Action = z.strictObject({
   confirm: z.enum(CONFIRMATION_LEVELS).default('preview'),
   /** The review card a person checks before confirming. */
   card: Name.optional(),
+  /**
+   * A flow that runs before the action saves, on the record as the action shapes it: it checks the
+   * record, and changes it and adds lines to it. It runs whenever the change is worked out, so a
+   * preview and a proposal show its result, and a person approves exactly that.
+   */
+  before: FlowRun.optional(),
   /** A flow that runs once the action writes its record, in the same transaction. */
   flow: FlowRun.optional(),
   /**
-   * What the action does after it takes its input and sets its values, step by step: set values,
-   * add lines, check and branch. The steps run when the change is worked out,
-   * so a preview and a proposal show their result, and a person approves exactly that.
+   * Steps, as an older definition gave them. Checking the definition moves them into a flow that
+   * runs before the action saves, which does the same.
    */
   steps: z.array(Step).max(MAX_STEPS).optional(),
 });

@@ -29,6 +29,7 @@ interface Locator {
   getByTestId(testId: string): Locator;
   locator(selector: string, options?: { has?: Locator }): Locator;
   first(): Locator;
+  last(): Locator;
   filter(options: { hasText: string }): Locator;
   setInputFiles(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
 }
@@ -379,22 +380,29 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.queries.my_spending.summary).toMatchObject({ measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, limit: 5 });
   });
 
-  it('designs the steps of an action', async () => {
+  it('designs the flow an action runs before it saves, on its canvas like any flow', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
     await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
-    const steps = page.getByRole('region', { name: 'Steps' });
-    await visible(steps.getByRole('button', { name: /^Step 3: Warn unless Total \(SGD\) is at most 1000/ }));
-    await steps.getByRole('button', { name: 'Check', exact: true }).click();
-    await steps.getByLabel('Message', { exact: true }).fill('A claim needs a title');
-    await steps.getByLabel("When it doesn't hold", { exact: true }).selectOption('warning');
-    await steps.getByRole('button', { name: /^Step 2: Set Approver/ }).click();
-    await shot(page, '21-steps-designer');
+    // The example checks an approval before it saves: one flow language for all the app's logic.
+    expect(await page.getByLabel('Before it saves, runs a flow', { exact: true }).inputValue()).toBe('check_approval');
+    await page.getByRole('link', { name: 'Open Check the approval on its canvas' }).click();
+    const canvas = page.getByTestId('flow-canvas');
+    await visible(canvas.getByTestId('flow-step-steps[2]'));
+    await visible(page.getByText('Approve an expense claim runs it before it saves its record', { exact: false }));
+    await canvas.getByRole('button', { name: 'Add a step at steps[3]' }).click();
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    const step = page.getByRole('region', { name: 'Step' });
+    await step.getByLabel('Message', { exact: true }).fill('A claim needs a title');
+    await step.getByLabel("When it doesn't hold", { exact: true }).selectOption('warning');
+    await visible(canvas.getByText('A claim needs a title', { exact: true }));
+    await shot(page, '21-before-it-saves');
     await page.getByRole('button', { name: 'Review and save' }).click();
     await page.getByRole('button', { name: /^Save as revision/ }).click();
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
-    expect(saved.actions.approve_claim.steps.at(-1)).toEqual({ type: 'check', assert: { exists: 'record.title' }, message: 'A claim needs a title', severity: 'warning' });
+    expect(saved.flows.check_approval.steps.at(-1)).toMatchObject({ type: 'check', message: 'A claim needs a title', severity: 'warning' });
+    expect(saved.actions.approve_claim.before).toEqual({ flow: 'check_approval', input: { claim: { ref: 'record' } } });
   });
 
   it('designs a flow that waits on its canvas, and the manager decides in their inbox', async () => {
@@ -653,7 +661,6 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);
-    await visible(page.getByText('Add a flow to design it', { exact: false }));
     await page.getByLabel('New flow').fill('Count the lines');
     await page.getByRole('button', { name: 'Add flow' }).click();
     const settings = page.getByRole('region', { name: 'Flow' });
@@ -708,7 +715,8 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.goto(`${BASE}/studio/apps/${appId}/build/actions`);
     await page.getByRole('button', { name: /^Approve an expense claim/ }).click();
     await page.getByLabel('Then runs a flow', { exact: true }).selectOption('count_the_lines');
-    await visible(page.getByText('is the expense claim itself.', { exact: false }));
+    // Its record input is the claim itself, as it is for the flow before it saves.
+    await visible(page.getByText('is the expense claim itself.', { exact: false }).last());
     await page.getByRole('button', { name: 'Review and save' }).click();
     await page.getByRole('button', { name: /^Save as revision/ }).click();
     await hidden(page.getByText('Unsaved changes.'));

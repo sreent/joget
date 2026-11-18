@@ -51,6 +51,7 @@ function withFlows(): Json {
   draft.roles.approver.entities.budget = { read: true };
   draft.roles.approver.flows = ['over_budget', 'report'];
   draft.flows = {
+    ...draft.flows,
     record_spend: {
       label: 'Record the spend',
       input: { claim: { type: 'record', entity: 'expense_claim' } },

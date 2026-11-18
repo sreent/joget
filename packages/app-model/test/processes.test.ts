@@ -1071,7 +1071,7 @@ describe('a process in review', () => {
           entity: 'leave_request',
           operation: 'update',
           input: [],
-          steps: [{ type: 'set', field: 'decided_on', value: { today: true } }],
+          set: { status: 'approved' },
         };
         definition['roles'].manager.actions.push('mark_recorded');
         process.elements.pay = { type: 'serviceTask', name: 'Record it', action: 'mark_recorded' };

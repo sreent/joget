@@ -32,7 +32,7 @@ import {
   type Step,
   type Timer,
 } from './schema.js';
-import { alwaysGiven, readsPrincipal } from './steps.js';
+import { beforeGives, checkBeforeFlows, moveSteps, readsPrincipal } from './before.js';
 import { canonicalValue } from './values.js';
 
 export interface Issue {
@@ -78,10 +78,13 @@ export function validateDefinition(input: unknown, previous?: StoredDefinition, 
   const notes: string[] = [];
   let definition = assignIds(parsed.data, previous, generateId, issues);
   if (issues.length === 0 && previous) definition = propagateRenames(definition, previous, notes);
+  // An older definition's action steps become flows that run before their actions save.
+  if (issues.length === 0) definition = moveSteps(definition, notes);
   if (issues.length === 0) {
     checkReferences(definition, issues);
     checkProcesses(definition, issues);
     checkFlows(definition, issues);
+    checkBeforeFlows(definition, issues);
     checkWaitingFlows(definition, issues);
   }
   return issues.length ? { ok: false, issues } : { ok: true, definition, notes };
@@ -193,6 +196,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       set: Object.fromEntries(Object.entries(action.set).map(([field, value]) => [fieldName(entity)(field), value])),
       ...(action.where ? { where: condition(entity, action.where) } : {}),
       ...(action.steps ? { steps: action.steps.map((s) => step(entity, s)) } : {}),
+      ...(action.before ? { before: { ...action.before, input: mapRecord(action.before.input, (e) => mapExpressionRefs(e, refs(entity))) } } : {}),
       ...(action.flow ? { flow: { ...action.flow, input: mapRecord(action.flow.input, (e) => mapExpressionRefs(e, refs(entity))) } } : {}),
     };
   });
@@ -797,7 +801,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     checkSteps(definition, action, path, fields, lines, issues);
     if (action.operation === 'create') {
       if (action.where) issues.push({ path: `${path}.where`, message: 'Only updates apply to existing records' });
-      const stepsGive = alwaysGiven(action.steps ?? []);
+      const stepsGive = beforeGives(definition, action);
       for (const field of entity.fields) {
         const provided = input.has(field.name) || field.name in action.set || stepsGive.has(field.name) || ('default' in field && field.default !== undefined);
         if (field.required && !provided) {
@@ -1140,7 +1144,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
     if (!action) issues.push({ path, message: `No action named ${undo}` });
     else if (action.entity !== target) issues.push({ path, message: `${undo} works on ${action.entity}, but the task changes ${target}` });
     else if (action.operation !== 'update') issues.push({ path, message: `${undo} creates a record: an undo changes the record back` });
-    else if (readsPrincipal(action)) issues.push({ path, message: `${undo} reads the person who runs it, but a process undoes with no person` });
+    else if (readsPrincipal(definition, action)) issues.push({ path, message: `${undo} reads the person who runs it, but a process undoes with no person` });
   };
   /** Where an error or an escalation of a code that an element throws is caught: a sub-process around it, or a call of this process. */
   const caughtIn = (model: Process, modelGraph: ReturnType<typeof processGraph>, scopes: readonly string[], kind: 'error' | 'escalation', code: string | undefined): boolean =>
@@ -1167,7 +1171,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
     if (!action) issues.push({ path: `${path}.action`, message: `No action named ${message.action}` });
     else if (action.entity !== target) issues.push({ path: `${path}.action`, message: `${message.action} works on ${action.entity}, not on ${target}` });
     else if (action.operation !== 'update') issues.push({ path: `${path}.action`, message: `${message.action} creates a record; a message is an action that changes one` });
-    else if (readsPrincipal(action)) issues.push({ path: `${path}.action`, message: `${message.action} reads the person who runs it, but a process sends a message with no person` });
+    else if (readsPrincipal(definition, action)) issues.push({ path: `${path}.action`, message: `${message.action} reads the person who runs it, but a process sends a message with no person` });
   };
   /** An action that starts the process: it may create the record or change it. */
   const startAction = (action: string, path: string) => {
@@ -1265,7 +1269,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         // The steps are checked as an action's: the script runs as an update of the process's record.
         const script: Action = { label: element.name, description: element.name, entity: process.entity, operation: 'update', input: [], set: {}, confirm: 'none', steps: element.steps };
         checkSteps(definition, script, path, fields, lines, issues);
-        if (readsPrincipal(script)) issues.push({ path: `${path}.steps`, message: `${label(id)} reads the person who runs it, but a process runs it with no person` });
+        if (readsPrincipal(definition, script)) issues.push({ path: `${path}.steps`, message: `${label(id)} reads the person who runs it, but a process runs it with no person` });
         oneOut();
         break;
       }
@@ -1408,7 +1412,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           // No one person decides, so the outcome's action runs with the app's authority, as a service task's does.
           element.outcomes.forEach((outcome, index) => {
             const action = outcome.action ? definition.actions[outcome.action] : undefined;
-            if (action && readsPrincipal(action)) {
+            if (action && readsPrincipal(definition, action)) {
               issues.push({ path: `${path}.outcomes[${index}].action`, message: `${outcome.action} reads the person who runs it, but when several people decide, it runs with no one person` });
             }
           });
@@ -1449,7 +1453,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
       case 'serviceTask':
         if (Boolean(element.action) === Boolean(element.flow)) issues.push({ path, message: `${label(id)} runs an action or a flow: one of the two` });
         if (element.undo) undoAction(element.undo, process.entity, `${path}.undo`);
-        if (element.action && updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
+        if (element.action && updateAction(element.action, `${path}.action`) && readsPrincipal(definition, definition.actions[element.action]!)) {
           issues.push({ path: `${path}.action`, message: `${element.action} reads the person who runs it, but a service task runs it with no person` });
         }
         if (element.flow) {

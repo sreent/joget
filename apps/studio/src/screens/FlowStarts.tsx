@@ -33,6 +33,7 @@ export function HowItStarts({
   const waits = flowWaits(flow, definition.flows);
   const subject = flowSubject(flow);
   const actions = Object.values(definition.actions).filter((action) => action.flow?.flow === name);
+  const shaping = Object.values(definition.actions).filter((action) => action.before?.flow === name);
   const roles = Object.values(definition.roles).filter((role) => role.flows?.includes(name));
   const entity = subject ? definition.entities[subject.entity] : undefined;
   const update = (patch: Parameters<typeof updateFlow>[2]) => onChange(updateFlow(definition, name, patch));
@@ -50,6 +51,12 @@ export function HowItStarts({
           {actions.length === 1 ? 's' : ''} it, as {actions.length === 1 ? 'it saves its' : 'they save their'} record.
         </p>
       ) : null}
+      {shaping.length ? (
+        <p className="m-0 text-sm">
+          {shaping.map((action) => action.label).join(', ')} run{shaping.length === 1 ? 's' : ''} it before {shaping.length === 1 ? 'it saves its' : 'they save their'} record, and for{' '}
+          {shaping.length === 1 ? 'its' : 'their'} previews: it checks the record and changes it, and changes nothing else.
+        </p>
+      ) : null}
       {roles.length ? (
         <p className="m-0 text-sm">
           {roles.map((role) => role.label).join(', ')} may {waits ? 'start it on a record' : 'run it'} by hand.
@@ -57,10 +64,10 @@ export function HowItStarts({
       ) : null}
       {waits ? (
         <StartsEditor definition={definition} name={name} readOnly={readOnly} onChange={(starts) => update({ starts })} />
-      ) : (
+      ) : shaping.length ? null : (
         <ScheduleEditor appId={appId} definition={definition} name={name} readOnly={readOnly} dirty={dirty} onChange={(schedule) => update({ schedule })} />
       )}
-      {!actions.length && !roles.length && !flow.starts?.length && !flow.schedule ? <Notice tone="warn">Nothing starts it yet: have an action run it, let a role run it, or let it start by itself.</Notice> : null}
+      {!actions.length && !shaping.length && !roles.length && !flow.starts?.length && !flow.schedule ? <Notice tone="warn">Nothing starts it yet: have an action run it, let a role run it, or let it start by itself.</Notice> : null}
     </Card>
   );
 }

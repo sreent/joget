@@ -5,259 +5,28 @@ import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { Badge, Button, Field, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type Condition, type RefChoice } from '../model/conditions.js';
 import {
-  addStep,
   betweenOf,
   calc,
   calcOf,
   CALC_OPS,
   chooseOf,
+  describeExpression,
   firstFilledOf,
+  joinOf,
   shift,
   shiftOf,
   textFn,
   textFnOf,
   TEXT_FNS,
-  type Moment,
-  type TextFn,
-  describeExpression,
-  describeStep,
-  linesFields,
-  moveStep,
-  removeStep,
-  settableFields,
-  sideOf,
-  startingValue,
-  STEP_NAMES,
-  updateStep,
-  joinOf,
   valueSources,
+  startingValue,
   type CalcOp,
   type Expression,
+  type Moment,
   type Operand,
-  type SimpleStep,
-  type Step,
-  type StepPlace,
-  type StepType,
-} from '../model/steps.js';
+  type TextFn,
+} from '../model/expressions.js';
 import type { Definition, Field as FieldDef } from '../types.js';
-
-type Props = { definition: Definition; onChange: (definition: Definition) => void };
-
-const BADGES: Readonly<Record<StepType, { text: string; tone: 'accent' | 'warn' | 'idle' | 'outside' }>> = {
-  set: { text: 'Set', tone: 'accent' },
-  add_line: { text: 'Add a line', tone: 'accent' },
-  check: { text: 'Check', tone: 'warn' },
-  if: { text: 'If', tone: 'idle' },
-};
-
-const keyOf = (place: StepPlace) => (place.side === undefined ? `${place.index}` : `${place.index}.${place.side}.${place.inner}`);
-/** How a person names a step, as the platform's messages do: "Step 2", or "Step 3, then 1". */
-const nameOf = (place: StepPlace) => (place.side === undefined ? `Step ${place.index + 1}` : `Step ${place.index + 1}, ${place.side} ${(place.inner ?? 0) + 1}`);
-
-/**
- * An action's steps: a short list, run in order once the action has its input and its set values
- * (design §6.2). A branch holds two short lists.
- */
-export function StepsEditor({ definition, onChange, action, kinds }: Props & { action: string; /** The kinds of step it offers, where fewer fit, such as in a script task. */ kinds?: StepType[] }) {
-  const simple: StepType[] = kinds ?? ['set', 'add_line', 'check'];
-  const current = definition.actions[action]!;
-  const steps = (current.steps ?? []) as Step[];
-  const [open, setOpen] = useState<string | null>(null);
-  const add = (type: StepType, into?: { index: number; side: 'then' | 'else' }) => {
-    const result = addStep(definition, action, type, into);
-    if (!result.place) return;
-    onChange(result.definition);
-    setOpen(keyOf(result.place));
-  };
-  const can = (type: StepType) => addStep(definition, action, type).place !== undefined;
-
-  const item = (step: Step, place: StepPlace, count: number) => {
-    const key = keyOf(place);
-    const name = nameOf(place);
-    const position = place.side === undefined ? place.index : place.inner!;
-    return (
-      <li key={key} className="rounded-md border border-line bg-surface">
-        <div className="flex items-center gap-2 px-2 py-1.5">
-          <Badge tone={BADGES[step.type].tone}>{BADGES[step.type].text}</Badge>
-          <button
-            type="button"
-            aria-expanded={open === key}
-            aria-label={`${name}: ${describeStep(definition, current.entity, step)}`}
-            className="min-w-0 flex-1 truncate text-left text-sm"
-            title={describeStep(definition, current.entity, step)}
-            onClick={() => setOpen(open === key ? null : key)}
-          >
-            {describeStep(definition, current.entity, step)}
-          </button>
-          <Button size="sm" variant="ghost" aria-label={`Move ${name} up`} disabled={position === 0} onClick={() => onChange(moveStep(definition, action, place, -1))}>
-            ↑
-          </Button>
-          <Button size="sm" variant="ghost" aria-label={`Move ${name} down`} disabled={position === count - 1} onClick={() => onChange(moveStep(definition, action, place, 1))}>
-            ↓
-          </Button>
-          <Button size="sm" variant="ghost" aria-label={`Remove ${name}`} onClick={() => onChange(removeStep(definition, action, place))}>
-            ✕
-          </Button>
-        </div>
-        {open === key ? (
-          <div className="grid gap-3 border-t border-line p-3">
-            <StepFields definition={definition} entity={current.entity} step={step} name={name} onChange={(next) => onChange(updateStep(definition, action, place, next))} />
-          </div>
-        ) : null}
-        {step.type === 'if' ? (
-          <div className="grid gap-3 border-t border-line py-3 pr-3 pl-6">
-            {(['then', 'else'] as const).map((side) => (
-              <div key={side} className="grid gap-1.5">
-                <span className="text-xs font-semibold text-muted">{side === 'then' ? 'Then' : 'Otherwise'}</span>
-                {sideOf(step, side).length ? (
-                  <ol className="m-0 grid list-none grid-cols-1 gap-1.5 p-0">{sideOf(step, side).map((inner, i) => item(inner, { index: place.index, side, inner: i }, sideOf(step, side).length))}</ol>
-                ) : (
-                  <p className="m-0 text-xs text-faint">Nothing.</p>
-                )}
-                <AddButtons can={can} types={simple} prefix={`${name}, ${side === 'then' ? 'then' : 'otherwise'}: `} onAdd={(type) => add(type, { index: place.index, side })} />
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </li>
-    );
-  };
-
-  return (
-    <section className="grid grid-cols-1 gap-2" aria-label="Steps">
-      <div>
-        <h3 className="m-0 text-sm font-semibold text-muted">Then, step by step</h3>
-        <p className="m-0 text-xs text-faint">
-          After it takes its input and sets its values. The review card shows what the steps did. Steps can set only what the person running the action may set.
-        </p>
-      </div>
-      {steps.length ? <ol className="m-0 grid list-none grid-cols-1 gap-1.5 p-0">{steps.map((step, index) => item(step, { index }, steps.length))}</ol> : <p className="m-0 text-sm text-muted">No steps: it saves what it takes and sets.</p>}
-      <AddButtons can={can} types={[...simple, 'if']} prefix="" onAdd={(type) => add(type)} />
-    </section>
-  );
-}
-
-function AddButtons({ can, types, prefix, onAdd }: { can: (type: StepType) => boolean; types: StepType[]; prefix: string; onAdd: (type: StepType) => void }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {types.map((type) => (
-        <Button key={type} size="sm" disabled={!can(type)} aria-label={`${prefix}${STEP_NAMES[type]}`} onClick={() => onAdd(type)}>
-          {STEP_NAMES[type]}
-        </Button>
-      ))}
-    </div>
-  );
-}
-
-/** The fields of one step, by its type. */
-function StepFields({ definition, entity, step, name, onChange }: { definition: Definition; entity: string; step: Step; name: string; onChange: (step: Step) => void }) {
-  const choices = recordChoices(definition, entity);
-  const test = (value: Condition | undefined, fallback: Condition) => value ?? fallback;
-  switch (step.type) {
-    case 'set': {
-      const fields = settableFields(definition, entity);
-      const target = fields.find((f) => f.name === step.field);
-      return (
-        <>
-          <Field label="Sets">
-            {(id) => (
-              <Select
-                id={id}
-                className="w-auto justify-self-start"
-                value={step.field}
-                onChange={(e) => {
-                  const field = fields.find((f) => f.name === e.target.value);
-                  if (field) onChange({ type: 'set', field: field.name, value: startingValue(field) });
-                }}
-              >
-                {fields.map((f) => (
-                  <option key={f.name} value={f.name}>
-                    {f.label}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-          {target ? <ValueEditor definition={definition} entity={entity} target={target} label={`${name}, ${target.label}`} value={step.value} onChange={(value) => onChange({ ...step, value })} /> : null}
-        </>
-      );
-    }
-    case 'add_line': {
-      const lines = linesFields(definition, entity);
-      const field = lines.find((f) => f.name === step.field);
-      const lineFields = (definition.entities[field?.entity ?? '']?.fields ?? []).filter((f) => f.type !== 'file' && f.type !== 'lines');
-      return (
-        <>
-          <Field label="Adds a line to">
-            {(id) => (
-              <Select id={id} className="w-auto justify-self-start" value={step.field} onChange={(e) => onChange({ type: 'add_line', field: e.target.value, values: {} })}>
-                {lines.map((f) => (
-                  <option key={f.name} value={f.name}>
-                    {f.label}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-          <div className="grid gap-2">
-            {lineFields.map((lineField) => {
-              const given = lineField.name in step.values;
-              return (
-                <div key={lineField.name} className="grid gap-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">{lineField.label}</span>
-                    {lineField.required ? <span className="text-xs text-faint">required</span> : null}
-                    {given && !lineField.required ? (
-                      <Button size="sm" variant="ghost" aria-label={`${name}: leave ${lineField.label} empty`} onClick={() => onChange({ ...step, values: Object.fromEntries(Object.entries(step.values).filter(([key]) => key !== lineField.name)) })}>
-                        Leave empty
-                      </Button>
-                    ) : null}
-                    {!given ? (
-                      <Button size="sm" variant="ghost" aria-label={`${name}: give ${lineField.label} a value`} onClick={() => onChange({ ...step, values: { ...step.values, [lineField.name]: startingValue(lineField) } })}>
-                        Give it a value
-                      </Button>
-                    ) : null}
-                  </div>
-                  {given ? (
-                    <ValueEditor
-                      definition={definition}
-                      entity={entity}
-                      target={lineField}
-                      label={`${name}, ${lineField.label}`}
-                      value={step.values[lineField.name]!}
-                      onChange={(value) => onChange({ ...step, values: { ...step.values, [lineField.name]: value } })}
-                    />
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        </>
-      );
-    }
-    case 'check':
-      return (
-        <>
-          <ConditionEditor label="Must hold" value={step.assert} onChange={(assert) => onChange({ ...step, assert: test(assert, step.assert) })} choices={choices} compareWith={[THE_PERSON]} />
-          <Field label="Message" hint="What the person reads when it doesn't hold.">
-            {(id) => <TextInput id={id} value={step.message} onChange={(e) => onChange({ ...step, message: e.target.value })} />}
-          </Field>
-          <Field label="When it doesn't hold">
-            {(id) => (
-              <Select id={id} className="w-auto justify-self-start" value={step.severity ?? 'error'} onChange={(e) => onChange({ ...step, severity: e.target.value === 'warning' ? 'warning' : 'error' })}>
-                <option value="error">Stop the action</option>
-                <option value="warning">Warn, and let it through</option>
-              </Select>
-            )}
-          </Field>
-        </>
-      );
-    case 'if':
-      return <ConditionEditor label="If" value={step.when} onChange={(when) => onChange({ ...step, when: test(when, step.when) })} choices={choices} compareWith={[THE_PERSON]} />;
-  }
-}
-
-// Values
 
 type Mode = 'fixed' | 'field' | 'person' | 'today' | 'now' | 'calc' | 'join' | 'shift' | 'between' | 'choose' | 'text' | 'first' | 'formula';
 export type ValueMode = Mode;

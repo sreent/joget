@@ -77,7 +77,7 @@ const TEAM_AROUND: readonly Part[] = [
 type Review = { plan?: Plan; issues?: Issue[]; error?: string; conflict?: boolean };
 
 /** Building an app: a draft of its definition, edited in the designers, checked and saved as a new revision. */
-export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
+export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; item?: string }) {
   const client = useQueryClient();
   const summary = useQuery({ queryKey: ['app', appId], queryFn: () => api.app(appId) });
   const saved = useQuery({ queryKey: ['definition', appId], queryFn: () => api.definition(appId) });
@@ -224,11 +224,11 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         {tab === 'pages' ? <PagesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'menu' ? <MenuDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'rules' ? <RulesDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'actions' ? <ActionsDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'actions' ? <ActionsDesigner appId={appId} definition={draft} onChange={setDraft} /> : null}
         {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} /> : null}
+        {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} {...(item ? { open: item } : {})} /> : null}
         {tab === 'connections' ? <ConnectionsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'webhooks' ? <WebhooksDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}

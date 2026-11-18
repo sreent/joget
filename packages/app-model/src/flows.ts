@@ -621,6 +621,11 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
         }
         case 'check':
           condition(step.assert, scope, `${at}.assert`);
+          (step.fields ?? []).forEach((ref, index) => {
+            const resolved = resolve(ref, scope);
+            if (!resolved.ok) issue(`${at}.fields[${index}]`, resolved.message);
+            else if (resolved.kind.kind !== 'value') issue(`${at}.fields[${index}]`, `${ref} is ${describeKind(resolved.kind)}: name a field of a record`);
+          });
           return;
         case 'call': {
           const callee = flows[step.flow];
@@ -995,7 +1000,7 @@ export function renameInFlows(
             };
             break;
           case 'check':
-            next = { ...step, assert: condition(scope)(step.assert) };
+            next = { ...step, assert: condition(scope)(step.assert), ...(step.fields ? { fields: step.fields.map(ref(scope)) } : {}) };
             break;
           case 'call':
             next = { ...step, input: valuesOf(undefined, step.input, scope) };

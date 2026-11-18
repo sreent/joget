@@ -446,6 +446,8 @@ function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: s
   for (const field of Object.keys(b.set)) if (!(field in h.set)) texts.push(`${name} no longer sets ${field}`);
   if (!same(b.where, h.where)) texts.push(`${name} now applies to a different set of records`);
   if (!same(b.steps ?? [], h.steps ?? [])) texts.push(`${name} runs different steps`);
+  if (b.before?.flow !== h.before?.flow) texts.push(h.before ? `${name} now runs the flow ${h.before.flow} before it saves` : `${name} no longer runs the flow ${b.before!.flow} before it saves`);
+  else if (!same(b.before, h.before)) texts.push(`${name} gives the flow it runs before it saves different input`);
   if (b.flow?.flow !== h.flow?.flow) texts.push(h.flow ? `${name} now runs the flow ${h.flow.flow} once it saves` : `${name} no longer runs the flow ${b.flow!.flow}`);
   else if (!same(b.flow, h.flow)) texts.push(`${name} gives its flow ${h.flow!.flow} different input`);
   if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);
@@ -492,7 +494,7 @@ export function lintDefinition(definition: StoredDefinition): string[] {
     }
   }
   const runFlows = new Set([
-    ...Object.values(definition.actions).flatMap((action) => (action.flow ? [action.flow.flow] : [])),
+    ...Object.values(definition.actions).flatMap((action) => [action.before?.flow, action.flow?.flow].filter((flow) => flow !== undefined)),
     ...Object.values(definition.processes ?? {}).flatMap((process) => processWork(process).flows),
     ...Object.values(definition.flows ?? {}).flatMap((flow) => flowWork(definition, flow).calls),
     ...roles.flatMap((role) => role.flows ?? []),

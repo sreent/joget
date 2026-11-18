@@ -7,8 +7,9 @@ import { isName, lineOwner } from '../model/edit.js';
 import { groupPaths } from '../model/pages.js';
 import { addItem, recordEntities, removeItem, renameItem, updateItem, writableFields, type Section } from '../model/logic.js';
 import type { Definition, Field as FieldDef } from '../types.js';
+import { addBeforeFlow } from '../model/flows.js';
+import { Link, navigate } from '../router.js';
 import { FlowRunEditor } from './FlowRunEditor.js';
-import { StepsEditor } from './StepsEditor.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
@@ -224,7 +225,7 @@ const CONFIRM_OPTIONS = [
   { value: 'review' as const, label: 'Review: a full review, findings first', hint: 'For anything out of policy, or hard to undo.' },
 ];
 
-export function ActionsDesigner({ definition, onChange }: Props) {
+export function ActionsDesigner({ appId, definition, onChange }: Props & { appId: string }) {
   return (
     <ItemsLayout
       definition={definition}
@@ -241,12 +242,12 @@ export function ActionsDesigner({ definition, onChange }: Props) {
           </>
         );
       }}
-      panel={(name) => <ActionPanel definition={definition} onChange={onChange} name={name} />}
+      panel={(name) => <ActionPanel appId={appId} definition={definition} onChange={onChange} name={name} />}
     />
   );
 }
 
-function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
+function ActionPanel({ appId, definition, onChange, name }: Props & { appId: string; name: string }) {
   const action = definition.actions[name]!;
   const set = (patch: Partial<typeof action>) => onChange(updateItem(definition, 'actions', name, patch));
   const fields = fieldsOf(definition, action.entity);
@@ -261,7 +262,7 @@ function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
         <Field label="Label">{(id) => <TextInput id={id} value={action.label} onChange={(e) => set({ label: e.target.value })} />}</Field>
         <Field label="Works on">
           {(id) => (
-            <Select id={id} value={action.entity} onChange={(e) => set({ entity: e.target.value, input: writableFields(definition, e.target.value), set: {}, where: undefined, card: undefined, steps: undefined, flow: undefined })}>
+            <Select id={id} value={action.entity} onChange={(e) => set({ entity: e.target.value, input: writableFields(definition, e.target.value), set: {}, where: undefined, card: undefined, before: undefined, flow: undefined })}>
               {entityOptions(definition, false).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -336,7 +337,7 @@ function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
           empty="Every record the person may change."
         />
       ) : null}
-      <StepsEditor definition={definition} onChange={onChange} action={name} />
+      <BeforeItSaves appId={appId} definition={definition} onChange={onChange} name={name} />
       {Object.keys(definition.flows ?? {}).length || action.flow ? (
         <FlowRunEditor
           definition={definition}
@@ -363,6 +364,46 @@ function ActionPanel({ definition, onChange, name }: Props & { name: string }) {
         )}
       </Field>
     </>
+  );
+}
+
+/**
+ * The flow an action runs before it saves (design §6.2): it checks the record and changes it, on
+ * the canvas like every other flow, and a preview shows what it did.
+ */
+function BeforeItSaves({ appId, definition, onChange, name }: Props & { appId: string; name: string }) {
+  const action = definition.actions[name]!;
+  const flow = action.before ? definition.flows?.[action.before.flow] : undefined;
+  return (
+    <div className="grid gap-2">
+      <FlowRunEditor
+        definition={definition}
+        entity={action.entity}
+        person
+        label="Before it saves, runs a flow"
+        hint="On the record as the action shapes it, and for its preview too: the flow checks the record and changes it. It changes nothing else."
+        none="No flow"
+        value={action.before}
+        onChange={(before) => onChange(updateItem(definition, 'actions', name, { before }))}
+      />
+      {action.before && flow ? (
+        <Link className="justify-self-start text-sm" to={{ name: 'build', appId, tab: 'flows', item: action.before.flow }}>
+          Open {flow.label} on its canvas
+        </Link>
+      ) : action.before ? null : (
+        <Button
+          size="sm"
+          className="justify-self-start"
+          onClick={() => {
+            const made = addBeforeFlow(definition, name);
+            onChange(made.definition);
+            navigate({ name: 'build', appId, tab: 'flows', item: made.name });
+          }}
+        >
+          Write a flow for it
+        </Button>
+      )}
+    </div>
   );
 }
 

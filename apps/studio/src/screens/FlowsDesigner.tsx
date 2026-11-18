@@ -40,7 +40,7 @@ import {
 import type { Definition, Field as FieldDef, FlowLive } from '../types.js';
 import { HowItStarts } from './FlowStarts.js';
 import { CallServiceFields } from './ServiceStep.js';
-import { ValueEditor, type ValueMode, type ValueSources } from './StepsEditor.js';
+import { ValueEditor, type ValueMode, type ValueSources } from './ValueEditor.js';
 
 /*
  * The flow designer (design §6.2, §6.11). A flow's steps go left to right across the canvas, as a
@@ -49,12 +49,23 @@ import { ValueEditor, type ValueMode, type ValueSources } from './StepsEditor.js
  * saved flow that runs in one go on real records, and undoes what it did.
  */
 
-type Props = { appId: string; definition: Definition; onChange: (definition: Definition) => void; readOnly?: boolean; dirty?: boolean };
+type Props = {
+  appId: string;
+  definition: Definition;
+  onChange: (definition: Definition) => void;
+  readOnly?: boolean;
+  dirty?: boolean;
+  /** The flow to show first, as a link names it. */
+  open?: string;
+};
 
-export function FlowsDesigner({ appId, definition, onChange, readOnly = false, dirty = false }: Props) {
+export function FlowsDesigner({ appId, definition, onChange, readOnly = false, dirty = false, open }: Props) {
   const flows = definition.flows ?? {};
   const names = Object.keys(flows);
-  const [chosen, setChosen] = useState<string | null>(names[0] ?? null);
+  const [chosen, setChosen] = useState<string | null>(open ?? names[0] ?? null);
+  useEffect(() => {
+    if (open) setChosen(open);
+  }, [open]);
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState<{ list: string; index: number } | null>(null);
   const [label, setLabel] = useState('');

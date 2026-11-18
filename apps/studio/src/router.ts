@@ -28,7 +28,8 @@ export type Route =
   | { readonly name: 'tasks' }
   /** What reached the person: flows that told them, and their tasks' news. */
   | { readonly name: 'notices' }
-  | { readonly name: 'build'; readonly appId: string; readonly tab: BuildTab }
+  /** Building an app: a tab, and on some tabs the item it opens, such as a flow. */
+  | { readonly name: 'build'; readonly appId: string; readonly tab: BuildTab; readonly item?: string }
   | { readonly name: 'change'; readonly changeRequestId: string }
   /**
    * Using an app: an entity's records (`page`, and a record), a form (`page` is `new`), or one of
@@ -50,7 +51,7 @@ export function parse(pathname: string, search = ''): Route {
   const appId = parts[1];
   if (parts[2] === 'build') {
     const tab = TABS.includes(parts[3] as BuildTab) ? (parts[3] as BuildTab) : 'data';
-    return { name: 'build', appId, tab };
+    return { name: 'build', appId, tab, ...(parts[4] ? { item: parts[4] } : {}) };
   }
   const env = new URLSearchParams(search).get('env');
   // An app's page is /pages/<name>. A name is never a UUID, so a record of an entity called "pages" is still reachable.
@@ -67,7 +68,7 @@ export function href(route: Route): string {
     case 'notices':
       return `${BASE}/notices`;
     case 'build':
-      return `${BASE}/apps/${encodeURIComponent(route.appId)}/build/${route.tab}`;
+      return `${BASE}/apps/${encodeURIComponent(route.appId)}/build/${route.tab}${route.item ? `/${encodeURIComponent(route.item)}` : ''}`;
     case 'change':
       return `${BASE}/changes/${encodeURIComponent(route.changeRequestId)}`;
     case 'use': {

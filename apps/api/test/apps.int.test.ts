@@ -107,7 +107,7 @@ describe('building an app in a personal space', () => {
     expect(saved2.definition.actions.submit_claim.input).toContain('journey');
     const dropping = structuredClone(saved2.definition);
     dropping.entities.expense_claim.fields = dropping.entities.expense_claim.fields.filter((f: { name: string }) => f.name !== 'approver');
-    dropping.actions.approve_claim.steps = dropping.actions.approve_claim.steps.filter((step: { field?: string }) => step.field !== 'approver');
+    dropping.flows.check_approval.steps = dropping.flows.check_approval.steps.filter((step: { values?: object }) => !(step.values && 'approver' in step.values));
     dropping.roles.approver.entities.expense_claim.update.fields = { include: ['status'] };
     const held = await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), payload: { definition: dropping } }, 409);
     expect(held.json()).toMatchObject({ error: 'destructive_change', details: { plan: { destructive: true, steps: [{ kind: 'drop_field', records: 0 }] } } });

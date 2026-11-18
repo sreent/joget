@@ -82,11 +82,7 @@ export const EXPENSE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't approve your own claim" },
-        { type: 'set', field: 'approver', value: me },
-        { type: 'check', assert: { lte: [{ ref: 'record.total' }, 1000] }, severity: 'warning', message: 'A claim over SGD 1,000: check that a director agreed to it', fields: ['total'] },
-      ],
+      before: { flow: 'check_approval', input: { claim: { ref: 'record' } } },
     },
   },
   queries: {
@@ -215,6 +211,24 @@ export const EXPENSE_APP = {
           range: { field: 'lines.date', within: 'last_12_months' },
           show: 'column',
           limit: 12,
+        },
+      ],
+    },
+  },
+  flows: {
+    check_approval: {
+      label: 'Check the approval',
+      description: 'Before an approval saves: nobody approves their own claim, the approver is noted, and a large claim is flagged.',
+      input: { claim: { type: 'record', entity: 'expense_claim' } },
+      steps: [
+        { type: 'check', assert: { ne: [{ ref: 'claim.owner' }, me] }, message: "You can't approve your own claim" },
+        { type: 'change', record: 'claim', values: { approver: me } },
+        {
+          type: 'check',
+          assert: { lte: [{ ref: 'claim.total' }, 1000] },
+          severity: 'warning',
+          message: 'A claim over SGD 1,000: check that a director agreed to it',
+          fields: ['claim.total'],
         },
       ],
     },

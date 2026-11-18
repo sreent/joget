@@ -2,7 +2,7 @@ import type { FlowRun } from '@platform/app-model';
 import { Field, Notice, Select } from '../components/ui.js';
 import { startRun, typeText } from '../model/flows.js';
 import type { Definition } from '../types.js';
-import { ValueEditor, type ValueMode } from './StepsEditor.js';
+import { ValueEditor, type ValueMode } from './ValueEditor.js';
 
 /*
  * The flow that an action or a process task runs (design §6.2), and what it gives the flow's

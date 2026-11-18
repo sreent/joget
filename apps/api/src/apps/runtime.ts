@@ -1,7 +1,7 @@
 import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
 import { conditionRefs, evaluateCondition, partialEvaluate, type Condition, type Policy, type QueryGrant } from '@platform/authz';
 import {
-  alwaysGiven,
+  beforeGives,
   buildCard,
   canonicalValue,
   checkActionInput,
@@ -19,7 +19,6 @@ import {
   grantsFor,
   insertHistory,
   insertRecord,
-  linesFieldsAddedTo,
   linesFieldsOf,
   linesWritten,
   parseLines,
@@ -27,8 +26,8 @@ import {
   Provenance,
   recordValues,
   rollupValues,
-  runSteps,
   selectHistory,
+  stepsFlow,
   selectLines,
   selectRecords,
   updateRecord,
@@ -42,6 +41,7 @@ import {
   type LineInput,
   type LinesChange,
   type LineValues,
+  type RecordLines,
   type RecordValues,
   type StoredEntity,
   type StoredLine,
@@ -164,9 +164,9 @@ interface SealedEffect {
   readonly values: Record<string, FieldValue>;
   /** The lines it writes, complete, by lines field. New lines have their IDs already, so a revision can follow them. */
   readonly lines?: Record<string, StoredLine[]>;
-  /** For a create with steps: the new record's ID, which the steps already name. */
+  /** For a create with a flow before it saves: the new record's ID, which the flow already names. */
   readonly id?: string;
-  /** The fields the steps set, which the permission check counts as written. */
+  /** The fields the flow before it saves set, which the permission check counts as written. */
   readonly stepFields?: string[];
 }
 
@@ -229,7 +229,33 @@ function processAuthority(action: string, entity: string, instanceId: string): A
 }
 
 /** What runs an action's flow once the action writes its record (design §6.2). */
+/** What the flow an action runs before it saves made of the record: the action writes it, or shows it. */
+export interface BeforeResult {
+  readonly record: RecordValues;
+  readonly lines: RecordLines;
+  /** The fields it set, and the lines fields it added lines to. */
+  readonly set: readonly string[];
+  readonly linesAdded: readonly string[];
+  /** Its warnings, which travel with the change. */
+  readonly findings: readonly Finding[];
+}
+
 export interface FlowHooks {
+  /** An action's flow before it saves, on the record as the action shapes it. It writes nothing. */
+  beforeAction(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    event: {
+      readonly action: string;
+      readonly entity: string;
+      readonly record: RecordValues;
+      readonly lines: RecordLines;
+      readonly writer: Writer;
+      readonly principal: Record<string, unknown>;
+      readonly auth: AuthContext | null;
+      readonly now: Date;
+    },
+  ): Promise<BeforeResult>;
   afterAction(
     tx: AppTransaction,
     loaded: LoadedApp,
@@ -264,7 +290,8 @@ interface ActionRun {
   readonly provenance: Record<string, Provenance>;
   readonly permission: AllowedQuery;
   readonly needsConfirmation: boolean;
-  readonly steps: readonly Step[];
+  /** Whether the action runs a flow before it saves. */
+  readonly shaped: boolean;
   readonly now: Date;
   readonly commit: boolean;
   readonly proposed: NonNullable<SealedEffect['lines']>;
@@ -577,7 +604,7 @@ export class AppRuntime {
     base: Readonly<Record<string, readonly LineValues[]>>,
     current: Readonly<Record<string, readonly StoredLine[]>>,
     all: boolean,
-    /** Lines fields that get their lines later, from an action's steps: none are required yet. */
+    /** Lines fields that get their lines later, from an action's flow before it saves: none are required yet. */
     later: ReadonlySet<string> = new Set(),
   ): { lines: Record<string, LineValues[]>; rollups: Record<string, FieldValue>; paths: string[]; changed: string[] } {
     const entity = this.entity(loaded, entityName);
@@ -1183,7 +1210,7 @@ export class AppRuntime {
   /**
    * Run an update action on a record for a process's service task, in the process's transaction,
    * with the app's authority (design §6.10): the definition grants it, so no role is needed, but
-   * the action's own conditions, steps and rules still run. If they stop it, nothing it did stays,
+   * the action's own conditions, flows and rules still run. If they stop it, nothing it did stays,
    * and the answer says why.
    */
   async runForProcess(tx: AppTransaction, loaded: LoadedApp, name: string, recordId: string, origin: ProcessOrigin): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
@@ -1211,8 +1238,13 @@ export class AppRuntime {
     recordId: string,
     origin: ProcessOrigin,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
-    const action: Action = { label: script.label, description: script.label, entity: script.entity, operation: 'update', input: [], set: {}, confirm: 'none', steps: [...script.steps] };
-    const inline: LoadedApp = { ...loaded, definition: { ...loaded.definition, actions: { ...loaded.definition.actions, [script.name]: action } } };
+    // The steps run as every app's logic runs: as a flow, here one before an update of the record saves.
+    const moved = stepsFlow({ label: script.label, entity: script.entity, steps: [...script.steps] }, script.name, new Set(Object.keys(loaded.definition.flows ?? {})));
+    const action: Action = { label: script.label, description: script.label, entity: script.entity, operation: 'update', input: [], set: {}, confirm: 'none', before: moved.run };
+    const inline: LoadedApp = {
+      ...loaded,
+      definition: { ...loaded.definition, flows: { ...loaded.definition.flows, [moved.name]: moved.flow }, actions: { ...loaded.definition.actions, [script.name]: action } },
+    };
     return this.runForProcess(tx, inline, script.name, recordId, origin);
   }
 
@@ -1243,28 +1275,28 @@ export class AppRuntime {
     // Revising a proposal is the person's own edit: it waits for their approval again, through the same review.
     const needsConfirmation =
       origin.kind === 'request' && action.confirm !== 'none' && (origin.auth.credential.kind === 'token' || options.revises !== undefined);
-    const steps = action.steps ?? [];
+    const shaped = action.before !== undefined;
     const now = ctx.now();
     const commit = !input.dryRun && !needsConfirmation;
     // A revision edits the proposal's lines, which may include new lines with the IDs it gave them.
     const proposed = (options.revises?.effect as unknown as SealedEffect | undefined)?.lines ?? {};
-    // A new record gets its ID now, so that steps can name it.
+    // A new record gets its ID now, so that its flow before it saves can name it.
     const newId = action.operation === 'create' ? uuidv7(now.getTime()) : undefined;
-    // Lines fields that only the steps add to: the caller sent none of their lines.
-    const stepLines = linesFieldsAddedTo(steps).filter((field) => !(field in check.lines));
+    // Lines fields the flow before it saves may read or add to, which the caller sent no lines for.
+    const stepLines = shaped ? linesFieldsOf(entity).map((field) => field.name).filter((field) => !(field in check.lines)) : [];
     const given = [...new Set([...Object.keys(input.values), ...Object.keys(action.set)])];
     const givenScalars = given.filter((field) => !(field in check.lines));
     const writer = origin.kind === 'request' ? this.#writer(origin.request, origin.auth) : processWriter(ctx.org.id, origin);
     const principal = origin.kind === 'request' ? principalEnv(origin.auth) : {};
     const onBehalfOf = origin.kind === 'request' ? (origin.auth.actor.type === 'user' ? origin.auth.actor.id : null) : origin.onBehalfOf;
     return {
-      origin, loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, steps, now, commit, proposed, newId, stepLines, given, givenScalars, writer, principal, onBehalfOf,
+      origin, loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, now, commit, proposed, newId, stepLines, given, givenScalars, writer, principal, onBehalfOf,
     };
   }
 
   /** An action's work, in a transaction: work out the change, then propose it, or write it and move the processes it touches. */
   async #runActionIn(tx: AppTransaction, run: ActionRun): Promise<ActionResult> {
-    const { loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, steps, now, commit, proposed, newId, stepLines, given, givenScalars } = run;
+    const { loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, now, commit, proposed, newId, stepLines, given, givenScalars } = run;
     const ctx = this.#ctx;
     this.#sameRevision(tx, loaded);
     let before: StoredRecord | null = null;
@@ -1272,7 +1304,7 @@ export class AppRuntime {
     let current: Record<string, StoredLine[]> = {};
     let prepared: ReturnType<AppRuntime['prepareLinesFor']>;
     if (action.operation === 'create') {
-      prepared = this.prepareLinesFor(loaded, action.entity, check.lines, proposed, {}, true, alwaysGiven(steps));
+      prepared = this.prepareLinesFor(loaded, action.entity, check.lines, proposed, {}, true, beforeGives(loaded.definition, action));
       const after = { ...check.values, ...prepared.rollups, owner: (check.values['owner'] as string | undefined) ?? run.writer.actorId };
       if (!writeGrant(permission.grants, { fields: [...givenScalars, ...prepared.paths], after })) {
         throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a field or a value is outside what your role allows`);
@@ -1281,7 +1313,7 @@ export class AppRuntime {
       before = await this.#lock(tx, loaded, entity, input.recordId!);
       if (!before) throw notFound('Record');
       current = await this.#currentLines(tx, loaded, entity, before.id, [...Object.keys(check.lines), ...stepLines]);
-      // Lines fields that only the steps add to keep the lines they have.
+      // Lines fields the caller sent no lines for keep the lines they have.
       const kept = Object.fromEntries(stepLines.map((field) => [field, (current[field] ?? []).map((line) => ({ id: line.id, values: {} }))]));
       prepared = this.prepareLinesFor(loaded, action.entity, { ...kept, ...check.lines }, { ...current, ...proposed }, current, false);
       beforeValues = recordValues(before);
@@ -1304,7 +1336,7 @@ export class AppRuntime {
       this.#blockedBy(permission, beforeValues);
     }
 
-    // The record as the action shapes it; then its steps, if it has any (design §6.2).
+    // The record as the action shapes it; then its flow before it saves, if it has one (design §6.2).
     let draft: Record<string, FieldValue> =
       action.operation === 'create'
         ? { ...check.values, ...prepared.rollups, id: newId!, owner: (check.values['owner'] as string | undefined) ?? run.writer.actorId }
@@ -1313,18 +1345,26 @@ export class AppRuntime {
     let stepFindings: readonly Finding[] = [];
     let stepSet: readonly string[] = [];
     let linesAdded: readonly string[] = [];
-    if (steps.length) {
-      const ran = runSteps({ definition: loaded.definition, entity: action.entity, steps, record: draft, lines: worked, principal: run.principal, now });
-      if (ran.failed) throw unprocessable('rule_failed', ran.failed.message, { findings: [ran.failed] });
-      if (ran.issues.length) throw unprocessable('invalid_values', 'A step works out a value that its field cannot hold', { issues: ran.issues });
-      draft = ran.record;
-      worked = ran.lines;
+    if (shaped) {
+      if (!this.#flows) throw new Error('The flow engine is not attached');
+      const ran = await this.#flows.beforeAction(tx, loaded, {
+        action: name,
+        entity: action.entity,
+        record: draft,
+        lines: worked,
+        writer: run.writer,
+        principal: run.principal,
+        auth: run.origin.kind === 'request' ? run.origin.auth : null,
+        now,
+      });
+      draft = { ...ran.record };
+      worked = Object.fromEntries(Object.entries(ran.lines).map(([field, list]) => [field, [...list]]));
       stepFindings = ran.findings;
       stepSet = ran.set;
       linesAdded = ran.linesAdded;
     }
-    if (action.operation === 'create' && steps.length) {
-      // What the steps were to give, they gave: a new record still has every required value.
+    if (action.operation === 'create' && shaped) {
+      // What the flow was to give, it gave: a new record still has every required value.
       const missing = entity.fields.flatMap((field): ValueIssue[] => {
         if (!field.required) return [];
         const empty = field.type === 'lines' ? !(worked[field.name]?.length) : draft[field.name] === undefined || draft[field.name] === null;
@@ -1344,9 +1384,9 @@ export class AppRuntime {
       values = Object.fromEntries(Object.entries(draft).filter(([field, value]) => JSON.stringify(beforeValues[field] ?? null) !== JSON.stringify(value)));
       after = { ...beforeValues, ...values };
     }
-    // What the steps set is the person's write too: an action never does more than its runner may.
-    if (steps.length && !writeGrant(permission.grants, { fields: [...written, ...delta.paths], ...(before ? { before: beforeValues } : {}), after })) {
-      throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a step sets a field or a value outside what your role allows`);
+    // What its flow sets is the person's write too: an action never does more than its runner may.
+    if (shaped && !writeGrant(permission.grants, { fields: [...written, ...delta.paths], ...(before ? { before: beforeValues } : {}), after })) {
+      throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: the flow before it saves sets a field or a value outside what your role allows`);
     }
     this.#blockedBy(permission, after);
     // A proposal gives new lines their IDs now, so the person's revisions can follow each line.
@@ -1388,7 +1428,7 @@ export class AppRuntime {
           input: sealedInput,
           values,
           ...(Object.keys(sealedLines).length ? { lines: sealedLines } : {}),
-          ...(newId && steps.length ? { id: newId } : {}),
+          ...(newId && shaped ? { id: newId } : {}),
           ...(stepSet.length ? { stepFields: [...stepSet] } : {}),
         },
         findings,

@@ -364,7 +364,7 @@ describe('planMigration', () => {
     const fields = next.entities.expense_claim.fields as Array<{ name: string; type: string; unique?: boolean }>;
     fields.find((f) => f.name === 'trip')!.name = 'journey';
     next.entities.expense_claim.fields = fields.filter((f) => f.name !== 'approver');
-    next.actions.approve_claim.steps = next.actions.approve_claim.steps.filter((step: { field?: string }) => step.field !== 'approver');
+    next.flows.check_approval.steps = next.flows.check_approval.steps.filter((step: { values?: object }) => !(step.values && 'approver' in step.values));
     next.roles.approver.entities.expense_claim.update.fields = { include: ['status'] };
     const iban = fields.find((f) => f.name === 'iban')!;
     iban.unique = true;

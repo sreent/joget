@@ -1,10 +1,24 @@
 import { uuidv7 } from '@platform/audit';
 import { CLOCK, evaluateCondition, partialEvaluate, type Condition } from '@platform/authz';
-import { evaluateExpression, flowWaits, recordLabel, roundTo, type AppFlow, type Expression, type FlowRun, type FlowStep, type FlowType, type RecordValues } from '@platform/app-model';
+import {
+  conditionRecord,
+  Draft,
+  evaluateExpression,
+  flowWaits,
+  recordLabel,
+  roundTo,
+  type AppFlow,
+  type Expression,
+  type ExpressionValue,
+  type FlowRun,
+  type FlowStep,
+  type FlowType,
+  type RecordValues,
+} from '@platform/app-model';
 import { roleHolders } from '../access/holders.js';
 import { requirePerson } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
-import type { AppRuntime, FlowHooks, Writer } from '../apps/runtime.js';
+import type { AppRuntime, BeforeResult, FlowHooks, Writer } from '../apps/runtime.js';
 import type { AppTransaction } from '../apps/transaction.js';
 import { recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
@@ -46,12 +60,28 @@ export interface FlowResult {
 
 /** The entity of a record that a flow holds. A symbol, so it never shows in what a flow gives back. */
 const ENTITY = Symbol('entity');
-type FlowRecord = RecordValues & { readonly [ENTITY]?: string };
+/** The mark of the record an action saves, in its flow before it saves: changes to it stay in memory. */
+const DRAFT = Symbol('draft');
+type FlowRecord = RecordValues & { readonly [ENTITY]?: string; readonly [DRAFT]?: true };
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 function tag(record: RecordValues, entity: string): FlowRecord {
   return Object.defineProperty({ ...record }, ENTITY, { value: entity, enumerable: false }) as FlowRecord;
+}
+
+/** The record an action saves, as its flow before it saves holds it. */
+function drafted(draft: Draft, entity: string): FlowRecord {
+  return Object.defineProperty(tag(draft.record, entity), DRAFT, { value: true, enumerable: false }) as FlowRecord;
+}
+
+const isDrafted = (held: unknown): boolean => isObject(held) && (held as FlowRecord)[DRAFT] === true;
+
+/** Variables as conditions read them: an empty value counts as missing, as it does in a rule. */
+function present(vars: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(vars).flatMap(([name, value]) => (value === null || value === undefined ? [] : [[name, isObject(value) ? conditionRecord(value as RecordValues) : value]])),
+  );
 }
 
 /** Errors a flow's error handler catches: a check or a write that failed. Refusals of access are not among them. */
@@ -102,10 +132,13 @@ interface State {
   steps: number;
   depth: number;
   savepoints: number;
-  readonly findings: Array<{ flow: string; message: string }>;
+  /** The warnings of checks: where each is, and the fields of the record an action saves that it is about. */
+  readonly findings: Array<{ flow: string; message: string; at?: string; fields?: readonly string[] }>;
   readonly writes: { created: number; changed: number; deleted: number };
   /** How many people the flow told, and how many it couldn't, because the app isn't shared with them. */
   readonly told: { people: number; left: number };
+  /** In a flow that runs before an action saves: the record it shapes, which is all it changes. */
+  readonly draft?: { readonly draft: Draft; readonly action: string; readonly entity: string } | undefined;
 }
 
 export class FlowEngine implements FlowHooks {
@@ -131,6 +164,40 @@ export class FlowEngine implements FlowHooks {
     await this.run(tx, loaded, run.flow, input, { writer: event.writer, principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action } });
   }
 
+  /**
+   * An action's flow before it saves, on the record as the action shapes it (design §6.2). Its
+   * changes to that record stay in memory: the action writes them, or shows them in a preview or a
+   * proposal. It writes nothing else, so it leaves no audit event of its own: the action's write does.
+   */
+  async beforeAction(...[tx, loaded, event]: Parameters<FlowHooks['beforeAction']>): Promise<BeforeResult> {
+    const action = loaded.definition.actions[event.action];
+    const run = action?.before;
+    if (!action || !run) throw notFound('Flow');
+    const draft = new Draft(loaded.definition, event.entity, event.record, event.lines);
+    const caller: FlowCaller = { writer: flowWriter(event.writer, run.flow), principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action } };
+    const state: State = {
+      tx,
+      loaded,
+      caller,
+      now: event.now,
+      steps: 0,
+      depth: 0,
+      savepoints: 0,
+      findings: [],
+      writes: { created: 0, changed: 0, deleted: 0 },
+      told: { people: 0, left: 0 },
+      draft: { draft, action: action.label, entity: event.entity },
+    };
+    await this.#flow(state, run.flow, this.inputFrom(loaded, run, event.entity, event.record, event.principal, () => drafted(draft, event.entity)));
+    return {
+      record: draft.record,
+      lines: draft.lines,
+      set: draft.set,
+      linesAdded: draft.linesAdded,
+      findings: state.findings.map((finding) => ({ rule: `flows.${finding.flow}${finding.at ? `.${finding.at}` : ''}`, severity: 'warning', message: finding.message, fields: [...(finding.fields ?? [])] })),
+    };
+  }
+
   /** Run a flow in the caller's transaction, with its input worked out already: values, records and lists. */
   async run(tx: AppTransaction, loaded: LoadedApp, name: string, input: Readonly<Record<string, unknown>>, caller: FlowCaller): Promise<FlowResult> {
     const named: FlowCaller = { ...caller, writer: flowWriter(caller.writer, name) };
@@ -153,12 +220,19 @@ export class FlowEngine implements FlowHooks {
     return { output, findings: state.findings, writes: state.writes };
   }
 
-  /** The input of a flow that an action or a process task runs, worked out from its record. */
-  inputFrom(loaded: LoadedApp, run: FlowRun, entity: string, record: RecordValues, principal: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  /** The input of a flow that an action or a process task runs, worked out from its record. `holder` gives the record itself. */
+  inputFrom(
+    loaded: LoadedApp,
+    run: FlowRun,
+    entity: string,
+    record: RecordValues,
+    principal: Readonly<Record<string, unknown>>,
+    holder: () => FlowRecord = () => tag(record, entity),
+  ): Record<string, unknown> {
     const now = this.#ctx.now();
     return Object.fromEntries(
       Object.entries(run.input).map(([name, expression]) => {
-        if (isObject(expression) && 'ref' in expression && expression.ref === 'record') return [name, tag(record, entity)];
+        if (isObject(expression) && 'ref' in expression && expression.ref === 'record') return [name, holder()];
         const worked = evaluateExpression(expression, { record, principal, now });
         if (!worked.ok) throw unprocessable('flow_failed', `${loaded.definition.flows?.[run.flow]?.label ?? run.flow}: ${name}: ${worked.message}`);
         return [name, worked.value];
@@ -219,16 +293,17 @@ export class FlowEngine implements FlowHooks {
     }
   }
 
-  async #block(state: State, flow: string, steps: readonly FlowStep[], outer: Frame): Promise<void> {
+  /** Run a list of steps. `base` is where the list is in the flow, so that a finding says which step it comes from. */
+  async #block(state: State, flow: string, steps: readonly FlowStep[], outer: Frame, base = 'steps'): Promise<void> {
     const frame = new Frame(outer);
-    for (const step of steps) await this.#step(state, flow, step, frame);
+    for (const [index, step] of steps.entries()) await this.#step(state, flow, step, frame, `${base}[${index}]`);
   }
 
-  async #step(state: State, flow: string, step: FlowStep, frame: Frame): Promise<void> {
+  async #step(state: State, flow: string, step: FlowStep, frame: Frame, at: string): Promise<void> {
     if (++state.steps > MAX_RUN_STEPS) throw unprocessable('flow_too_long', `A flow ran more than ${MAX_RUN_STEPS} steps: check its loops`);
     const { tx, loaded, caller } = state;
     const label = loaded.definition.flows![flow]!.label;
-    const value = (expression: Expression): unknown => {
+    const value = (expression: Expression): ExpressionValue => {
       const worked = evaluateExpression(expression, { record: {}, principal: caller.principal, now: state.now, vars: frame.all() });
       if (!worked.ok) throw unprocessable('flow_failed', `${label}: ${worked.message}`);
       return worked.value;
@@ -241,7 +316,11 @@ export class FlowEngine implements FlowHooks {
       }
       return value(expression);
     };
-    const holds = (condition: Condition) => evaluateCondition(condition, { ...frame.all(), principal: caller.principal, [CLOCK]: state.now });
+    const holds = (condition: Condition) => evaluateCondition(condition, { ...present(frame.all()), principal: caller.principal, [CLOCK]: state.now });
+    /** What a flow before its action saves may not do: anything but change the record that the action saves. */
+    const shaping = state.draft;
+    const refuse = (what: string) =>
+      unprocessable('flow_failed', `${label}: it runs before ${shaping?.action ?? 'its action'} saves, so it ${what}`);
     const values = (given: Readonly<Record<string, Expression>>) => Object.fromEntries(Object.entries(given).map(([field, expression]) => [field, value(expression)]));
     /** A value as words: for what a notice says, and where a call goes. */
     const words = (expression: Expression | undefined) => {
@@ -260,13 +339,14 @@ export class FlowEngine implements FlowHooks {
         return;
       case 'find': {
         // What the condition says of the flow's variables is known now; what it says of the records goes to the database.
-        const residual = step.where ? partialEvaluate(step.where, { ...frame.all(), principal: caller.principal, [CLOCK]: state.now }, ['record']) : true;
+        const residual = step.where ? partialEvaluate(step.where, { ...present(frame.all()), principal: caller.principal, [CLOCK]: state.now }, ['record']) : true;
         const found = residual === false ? [] : await this.#runtime.flowFind(tx, loaded, step.entity, residual === true ? undefined : residual, step.sort ?? [], step.first ? 1 : step.limit);
         const tagged = found.map((each) => tag(each, step.entity));
         frame.set(step.var, step.first ? (tagged[0] ?? null) : tagged);
         return;
       }
       case 'create': {
+        if (shaping) throw refuse('creates no records');
         const created = await this.#runtime.flowCreate(tx, loaded, caller.writer, caller.principal, step.entity, values(step.values));
         state.writes.created++;
         if (step.var) frame.set(step.var, tag(created, step.entity));
@@ -274,6 +354,14 @@ export class FlowEngine implements FlowHooks {
       }
       case 'change': {
         const held = record(step.record);
+        if (shaping) {
+          // Only the flow the action runs changes its record: a flow it calls doesn't see the change.
+          if (!isDrafted(held) || state.depth > 0) throw refuse('changes only the record it saves');
+          const issues = shaping.draft.change(values(step.values), label);
+          if (issues.length) throw unprocessable('invalid_values', 'A step works out a value that its field cannot hold', { issues });
+          frame.set(step.record, drafted(shaping.draft, held[ENTITY]));
+          return;
+        }
         const changed = await this.#runtime.flowChange(tx, loaded, caller.writer, caller.principal, held[ENTITY], String(held['id']), values(step.values));
         state.writes.changed++;
         frame.set(step.record, tag(changed, held[ENTITY]));
@@ -281,12 +369,20 @@ export class FlowEngine implements FlowHooks {
       }
       case 'add_line': {
         const held = record(step.record);
+        if (shaping) {
+          if (!isDrafted(held) || state.depth > 0) throw refuse('changes only the record it saves');
+          const issues = shaping.draft.addLine(step.field, values(step.values), label);
+          if (issues.length) throw unprocessable('invalid_values', 'A step works out a value that its field cannot hold', { issues });
+          frame.set(step.record, drafted(shaping.draft, held[ENTITY]));
+          return;
+        }
         const changed = await this.#runtime.flowChange(tx, loaded, caller.writer, caller.principal, held[ENTITY], String(held['id']), {}, { field: step.field, values: values(step.values) });
         state.writes.changed++;
         frame.set(step.record, tag(changed, held[ENTITY]));
         return;
       }
       case 'delete': {
+        if (shaping) throw refuse('deletes no records');
         const held = record(step.record);
         // A person, or a process with the app's authority, deletes; a token never does (design §5.7).
         if (caller.auth) requirePerson(caller.auth, 'data.delete');
@@ -299,14 +395,17 @@ export class FlowEngine implements FlowHooks {
         for (const entry of await this.#list(state, flow, step.in, frame)) {
           const inner = new Frame(frame);
           inner.define(step.as, entry);
-          await this.#block(state, flow, step.steps, inner);
+          await this.#block(state, flow, step.steps, inner, `${at}.steps`);
         }
         return;
       }
-      case 'if':
-        await this.#block(state, flow, holds(step.when) ? step.then : step.else, frame);
+      case 'if': {
+        const side = holds(step.when) ? 'then' : 'else';
+        await this.#block(state, flow, step[side], frame, `${at}.${side}`);
         return;
+      }
       case 'inform': {
+        if (shaping) throw refuse('tells nobody: tell people in a flow that runs after it saves');
         const people = new Set<string>();
         for (const recipient of step.to) {
           if ('role' in recipient) for (const holder of await roleHolders(tx.db, loaded.app.id, loaded.env.id, recipient.role, state.now)) people.add(holder);
@@ -342,6 +441,7 @@ export class FlowEngine implements FlowHooks {
       case 'call_service': {
         const connection = loaded.definition.connections?.[step.connection];
         if (connection?.kind !== 'service') throw unprocessable('flow_failed', `${label}: no service named ${step.connection}`);
+        if (shaping && step.method !== 'GET') throw refuse(`only reads from services, and a ${step.method} changes something there`);
         // What a call changes elsewhere can't be undone with a try: a try reads, and says what it didn't do.
         if (caller.dryRun && step.method !== 'GET') {
           state.findings.push({ flow, message: `Trying it didn't call ${connection.label}: a ${step.method} changes something there for real` });
@@ -359,15 +459,21 @@ export class FlowEngine implements FlowHooks {
       }
       case 'repeat':
         // Checked before each time, on the variables as the last time left them.
-        for (let times = 0; times < step.max && holds(step.while); times++) await this.#block(state, flow, step.steps, frame);
+        for (let times = 0; times < step.max && holds(step.while); times++) await this.#block(state, flow, step.steps, frame, `${at}.steps`);
         return;
-      case 'check':
+      case 'check': {
         if (holds(step.assert)) return;
+        // A form marks the fields of the record its action saves that the message is about.
+        const fields = (step.fields ?? []).flatMap((ref) => {
+          const [root, field] = ref.split('.');
+          return field && isDrafted(frame.get(root!)) ? [field] : [];
+        });
         if (step.severity === 'warning') {
-          state.findings.push({ flow, message: step.message });
+          state.findings.push({ flow, message: step.message, at, fields });
           return;
         }
-        throw unprocessable('rule_failed', step.message, { findings: [{ rule: `flows.${flow}`, severity: 'error', message: step.message, fields: [] }] });
+        throw unprocessable('rule_failed', step.message, { findings: [{ rule: `flows.${flow}.${at}`, severity: 'error', message: step.message, fields }] });
+      }
       case 'call': {
         const input = Object.fromEntries(Object.entries(step.input).map(([name, expression]) => [name, item(expression)]));
         if (state.depth >= MAX_CALL_DEPTH) throw unprocessable('flow_too_deep', `Flows call one another more than ${MAX_CALL_DEPTH} deep`);
@@ -384,20 +490,26 @@ export class FlowEngine implements FlowHooks {
         // A savepoint, so that a failure can undo the steps it covers without ending the transaction.
         const savepoint = `flow_try_${++state.savepoints}`;
         const writes = { ...state.writes };
+        // The record an action saves is undone in memory, as the database undoes the rest.
+        const shaped = shaping?.draft.snapshot();
         await tx.platformQuery(`savepoint ${savepoint}`);
         try {
-          await this.#block(state, flow, step.steps, frame);
+          await this.#block(state, flow, step.steps, frame, `${at}.steps`);
           await tx.platformQuery(`release savepoint ${savepoint}`);
         } catch (error) {
           if (!catchable(error)) throw error;
           if (step.rollback || DATABASE_ERRORS.has(error.code)) {
             await tx.platformQuery(`rollback to savepoint ${savepoint}`);
             Object.assign(state.writes, writes);
+            if (shaping && shaped) {
+              shaping.draft.restore(shaped);
+              for (const [name, held] of Object.entries(frame.all())) if (isDrafted(held)) frame.set(name, drafted(shaping.draft, shaping.entity));
+            }
           }
           await tx.platformQuery(`release savepoint ${savepoint}`);
           const handler = new Frame(frame);
           if (step.error) handler.define(step.error, error.message);
-          await this.#block(state, flow, step.catch, handler);
+          await this.#block(state, flow, step.catch, handler, `${at}.catch`);
         }
         return;
       }
@@ -437,6 +549,8 @@ export class FlowEngine implements FlowHooks {
     }
     const entity = isObject(held) ? (held as FlowRecord)[ENTITY] : undefined;
     if (!isObject(held) || !entity) throw unprocessable('flow_failed', `${state.loaded.definition.flows![flow]!.label}: ${root} holds no record`);
+    // The lines of the record an action saves are those it has now, with the lines added since.
+    if (isDrafted(held) && state.draft) return (state.draft.draft.lines[lines] ?? []).map((line) => ({ ...line.values, id: line.id }));
     return this.#runtime.flowLines(state.tx, state.loaded, entity, String(held['id']), lines);
   }
 }

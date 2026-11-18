@@ -41,7 +41,7 @@ function App() {
         ) : route.name === 'notices' ? (
           <Notices />
         ) : route.name === 'build' ? (
-          <Builder appId={route.appId} tab={route.tab} />
+          <Builder appId={route.appId} tab={route.tab} {...(route.item ? { item: route.item } : {})} />
         ) : route.name === 'change' ? (
           <ChangeRequestPage id={route.changeRequestId} me={me.data} />
         ) : (

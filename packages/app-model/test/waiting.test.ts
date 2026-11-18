@@ -241,7 +241,7 @@ describe('a flow that waits', () => {
       'flows.review.steps[0].input.team: Give a record of team: a variable that holds one',
     ]);
     const legacy = structuredClone(LEAVE_PROCESS_APP) as unknown as Record<string, any>;
-    legacy.flows = { later: { label: 'Later', input: { leave: { type: 'record', entity: 'leave_request' } }, steps: [{ type: 'wait', for: { duration: 'P1D' } }] } };
+    legacy.flows = { ...legacy.flows, later: { label: 'Later', input: { leave: { type: 'record', entity: 'leave_request' } }, steps: [{ type: 'wait', for: { duration: 'P1D' } }] } };
     legacy.processes.leave_approval.elements.noting = { type: 'serviceTask', name: 'Note it', flow: { flow: 'later', input: { leave: { ref: 'record' } } } };
     legacy.processes.leave_approval.flows.on_approve.to = 'noting';
     legacy.processes.leave_approval.flows.noted = { from: 'noting', to: 'approved' };

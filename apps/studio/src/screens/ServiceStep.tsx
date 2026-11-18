@@ -2,7 +2,7 @@ import type { Expression, FlowStep } from '@platform/app-model';
 import { useState } from 'react';
 import { Button, Field, Select, TextInput } from '../components/ui.js';
 import type { Definition } from '../types.js';
-import { ValueEditor, type ValueMode, type ValueSources } from './StepsEditor.js';
+import { ValueEditor, type ValueMode, type ValueSources } from './ValueEditor.js';
 
 /*
  * The step that calls a service (design §6.13): which connection, how and where, what it sends,

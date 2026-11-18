@@ -30,6 +30,7 @@ function withFlows(edit: (draft: Record<string, any>) => void = () => undefined)
   };
   draft.roles.approver.entities.budget = { read: true };
   draft.flows = {
+    ...draft.flows,
     record_spend: {
       label: 'Record the spend',
       description: "Adds each line of an approved claim to its category's budget.",
@@ -80,7 +81,7 @@ function withFlows(edit: (draft: Record<string, any>) => void = () => undefined)
 describe('flows', () => {
   it('pass the checks: loops over lines, finds, changes and creates related records, totals and returns', () => {
     const definition = valid(withFlows());
-    expect(Object.keys(definition.flows!)).toEqual(['record_spend', 'over_budget']);
+    expect(Object.keys(definition.flows!)).toEqual(['check_approval', 'record_spend', 'over_budget']);
     expect(definition.actions['approve_claim']!.flow).toEqual({ flow: 'record_spend', input: { claim: { ref: 'record' } } });
   });
 
@@ -177,6 +178,7 @@ describe('flows', () => {
 
     const leave = structuredClone(LEAVE_PROCESS_APP) as unknown as Record<string, any>;
     leave.flows = {
+      ...leave.flows,
       note: { label: 'Note', input: { days: { type: 'number' }, by: { type: 'text' } }, steps: [{ type: 'check', assert: { gt: [{ ref: 'days' }, 0] }, message: 'Days' }] },
     };
     leave.processes.leave_approval.elements.decide_note = { type: 'serviceTask', name: 'Note it', flow: { flow: 'note', input: { days: { ref: 'record.days' }, by: { ref: 'principal.id' } } } };

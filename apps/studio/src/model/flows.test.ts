@@ -3,6 +3,7 @@ import { EXPENSE_APP, LEAVE_APP, validateDefinition, type FlowStep } from '@plat
 import type { Definition } from '../types.js';
 import { normalize } from './edit.js';
 import {
+  addBeforeFlow,
   addFlow,
   describeFlowStep,
   insertStep,
@@ -59,7 +60,7 @@ function app(): Definition {
     ...definition,
     entities: { ...definition.entities, budget },
     roles: { ...definition.roles, approver: { ...definition.roles['approver']!, entities: { ...definition.roles['approver']!.entities, budget: { read: true } }, flows: ['record_spend'] } },
-    flows: { record_spend: { label: 'Record the spend', input: { claim: { type: 'record', entity: 'expense_claim' } }, output: { type: 'number' }, steps } },
+    flows: { ...definition.flows, record_spend: { label: 'Record the spend', input: { claim: { type: 'record', entity: 'expense_claim' } }, output: { type: 'number' }, steps } },
     actions: { ...definition.actions, approve_claim: { ...definition.actions['approve_claim']!, flow: { flow: 'record_spend', input: { claim: { ref: 'record' } } } } },
   };
 }
@@ -129,14 +130,14 @@ describe('editing flows', () => {
     expect(add('steps[3].then', 0, 'change')).toEqual({ type: 'change', record: 'claim', values: {} });
     expect(add('steps', 4, 'check')).toMatchObject({ type: 'check', severity: 'error' });
     expect(add('steps', 5, 'try')).toEqual({ type: 'try', steps: [], catch: [], rollback: true });
-    expect(add('steps', 6, 'call')).toEqual({ type: 'call', flow: 'record_spend', input: {} });
+    expect(add('steps', 6, 'call')).toEqual({ type: 'call', flow: 'check_approval', input: {} });
     // A second variable of a kind gets a name of its own.
     expect(add('steps', 7, 'find')).toMatchObject({ var: 'found_2' });
     // What a builder still has to say, the checks name in words.
     expect(issues(definition)).toEqual([
       `flows.${name}.steps[3].then[0].values: Say what changes`,
       `flows.${name}.steps[5].steps: Put the steps that the handler guards inside it`,
-      `flows.${name}.steps[6].input: Record the spend needs claim`,
+      `flows.${name}.steps[6].input: Check the approval needs claim`,
     ]);
     definition = replaceStep(definition, name, 'steps[3].then[0]', { type: 'change', record: 'claim', values: { title: { concat: [{ ref: 'claim.title' }, ' (checked)'] } } });
     // The loop's `value` is gone outside the loop, so the name is free again.
@@ -155,10 +156,20 @@ describe('editing flows', () => {
 
   it('removes a flow, and the roles and actions that named it', () => {
     const definition = removeFlow(app(), 'record_spend');
-    expect(definition.flows).toEqual({});
+    expect(Object.keys(definition.flows!)).toEqual(['check_approval']);
     expect(definition.roles['approver']!.flows).toEqual([]);
     expect(definition.actions['approve_claim']!.flow).toBeUndefined();
     expect(issues(definition)).toEqual([]);
+  });
+
+  it('writes a flow for an action to run before it saves, which takes the record', () => {
+    const made = addBeforeFlow(removeFlow(app(), 'check_approval'), 'approve_claim');
+    expect(made.name).toBe('approve_an_expense_claim_before_it_saves');
+    expect(made.definition.flows![made.name]).toEqual({ label: 'Approve an expense claim: before it saves', input: { expense_claim: { type: 'record', entity: 'expense_claim' } }, steps: [] });
+    expect(made.definition.actions['approve_claim']!.before).toEqual({ flow: made.name, input: { expense_claim: { ref: 'record' } } });
+    // A flow needs a step: the checks say so, on the flow, until the builder adds one.
+    expect(issues(made.definition)).toEqual([`flows.${made.name}.steps: A flow needs a step`]);
+    expect(removeFlow(made.definition, made.name).actions['approve_claim']).not.toHaveProperty('before');
   });
 
   it('starts what an action gives a flow: the record itself, and plain values', () => {

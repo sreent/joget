@@ -66,10 +66,7 @@ export const LEAVE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't decide on your own leave" },
-        { type: 'set', field: 'decided_on', value: { today: true } },
-      ],
+      before: { flow: 'note_the_decision', input: { leave: { ref: 'record' } } },
     },
     reject_leave: {
       label: 'Reject the leave',
@@ -80,10 +77,7 @@ export const LEAVE_APP = {
       set: { status: 'rejected' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't decide on your own leave" },
-        { type: 'set', field: 'decided_on', value: { today: true } },
-      ],
+      before: { flow: 'note_the_decision', input: { leave: { ref: 'record' } } },
     },
   },
   queries: {
@@ -228,6 +222,15 @@ export const LEAVE_APP = {
         },
       ],
     },
+    note_the_decision: {
+      label: 'Note the decision',
+      description: 'Before a decision on a leave saves: nobody decides on their own leave, and the day of the decision is noted.',
+      input: { leave: { type: 'record', entity: 'leave_request' } },
+      steps: [
+        { type: 'check', assert: { ne: [{ ref: 'leave.owner' }, me] }, message: "You can't decide on your own leave" },
+        { type: 'change', record: 'leave', values: { decided_on: { today: true } } },
+      ],
+    },
   },
 } as const satisfies AppDefinitionInput;
 
@@ -239,6 +242,7 @@ export const LEAVE_APP = {
 export const LEAVE_PROCESS_APP = {
   ...without(LEAVE_APP, 'flows'),
   actions: { ...LEAVE_APP.actions, request_leave: without(LEAVE_APP.actions.request_leave, 'flow') },
+  flows: { note_the_decision: LEAVE_APP.flows.note_the_decision },
   processes: {
     leave_approval: {
       label: 'Leave approval',
@@ -362,10 +366,7 @@ export const PURCHASE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't approve your own purchase" },
-        { type: 'set', field: 'approver', value: me },
-      ],
+      before: { flow: 'note_approver', input: { purchase: { ref: 'record' } } },
     },
     mark_ordered: {
       label: 'Mark as ordered',
@@ -376,7 +377,7 @@ export const PURCHASE_APP = {
       set: { status: 'ordered' },
       where: { eq: [status, 'approved'] },
       confirm: 'preview',
-      steps: [{ type: 'set', field: 'ordered_on', value: { today: true } }],
+      before: { flow: 'note_order', input: { purchase: { ref: 'record' } } },
     },
   },
   queries: {
@@ -450,6 +451,23 @@ export const PURCHASE_APP = {
       },
       actions: ['mark_ordered'],
       queries: ['spend_by_category'],
+    },
+  },
+  flows: {
+    note_approver: {
+      label: 'Note the approver',
+      description: 'Before an approval saves: nobody approves their own purchase, and the approver is noted.',
+      input: { purchase: { type: 'record', entity: 'purchase_request' } },
+      steps: [
+        { type: 'check', assert: { ne: [{ ref: 'purchase.owner' }, me] }, message: "You can't approve your own purchase" },
+        { type: 'change', record: 'purchase', values: { approver: me } },
+      ],
+    },
+    note_order: {
+      label: 'Note the day of the order',
+      description: 'Before an order saves, the day of the order is noted.',
+      input: { purchase: { type: 'record', entity: 'purchase_request' } },
+      steps: [{ type: 'change', record: 'purchase', values: { ordered_on: { today: true } } }],
     },
   },
   pages: {
