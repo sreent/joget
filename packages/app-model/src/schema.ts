@@ -33,6 +33,8 @@ const fieldCommon = {
   label: Label,
   description: Description.optional(),
   required: z.boolean().default(false),
+  /** Required only while this holds, of the record's own values: a rule the platform checks on every write. */
+  requiredWhen: ConditionSchema.optional(),
   /** `pii` fields are masked for app roles unless a role unmasks them. */
   classification: z.enum(['internal', 'confidential', 'pii']).default('internal'),
 };
@@ -89,8 +91,18 @@ const NumberField = z.strictObject({
 });
 
 const BooleanField = z.strictObject({ ...fieldCommon, type: z.literal('boolean'), default: z.boolean().optional() });
-const DateField = z.strictObject({ ...fieldCommon, type: z.literal('date') });
-const DateTimeField = z.strictObject({ ...fieldCommon, type: z.literal('datetime') });
+const DateField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('date'),
+  /** A fixed date; or a day so many days from the day a record is created, where `{ today: 0 }` is that day. */
+  default: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Give a date as YYYY-MM-DD'), z.strictObject({ today: z.int().min(-3660).max(3660) })]).optional(),
+});
+const DateTimeField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('datetime'),
+  /** The moment a record is created, or so many hours from it. */
+  default: z.strictObject({ now: z.int().min(-8784).max(8784) }).optional(),
+});
 
 const ChoiceField = z.strictObject({
   ...fieldCommon,
@@ -104,7 +116,12 @@ const ChoiceField = z.strictObject({
 const ReferenceField = z.strictObject({ ...fieldCommon, type: z.literal('reference'), entity: Name });
 
 /** A person in the directory, for example who a request is assigned to. */
-const UserField = z.strictObject({ ...fieldCommon, type: z.literal('user') });
+const UserField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('user'),
+  /** The person who creates the record. */
+  default: z.strictObject({ me: z.literal(true) }).optional(),
+});
 
 /** The kinds of file a file field can take. The platform reads each file's type from its content, not its name. */
 export const FILE_KINDS = ['image', 'pdf'] as const;
@@ -768,6 +785,8 @@ const FormField = z.strictObject({
   width: z.enum(['full', 'half']).default('full'),
   /** Shown but not editable here. */
   readOnly: z.boolean().default(false),
+  /** Shown only while this holds, of the values on the form. A field it hides sends no value. */
+  visibleWhen: ConditionSchema.optional(),
 });
 
 /**
@@ -779,6 +798,8 @@ export const Form = z.strictObject({
   entity: Name,
   /** Submit through this action, so its rules and confirmation apply. Without one, the form creates and edits records. */
   action: Name.optional(),
+  /** All its sections on one page; or in steps, a section at a time, each checked before the next. */
+  layout: z.enum(['page', 'steps']).default('page'),
   sections: z
     .array(z.strictObject({ title: Label.optional(), fields: z.array(FormField).max(MAX_FIELDS) }))
     .min(1)

@@ -1,4 +1,5 @@
-import { appRoleName, covers, fieldAccess, lineOwners, rollupOf, type ChartBlock, type FieldAccess, type StatBlock, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { appRoleName, covers, defaultValue, entityFields, fieldAccess, lineOwners, rollupOf, type ChartBlock, type FieldAccess, type FieldValue, type StatBlock, type StoredDefinition, type StoredField, type WriteContext } from '@platform/app-model';
+import type { Condition } from '@platform/authz';
 import type { PermissionGrant } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
 import type { AppContext, AuthContext } from '../context.js';
@@ -12,6 +13,10 @@ export interface UiField {
   readonly label: string;
   readonly type: StoredField['type'];
   readonly required: boolean;
+  /** Required only while this holds, of the record's values: screens show it, and the server checks it. */
+  readonly requiredWhen?: Condition;
+  /** What a new record starts with, worked out for the caller now: today, or the caller, for example. */
+  readonly default?: FieldValue;
   readonly description?: string;
   readonly options?: ReadonlyArray<{ value: string; label: string }>;
   readonly multiple?: boolean;
@@ -39,6 +44,7 @@ function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'u
     label: field.label,
     type: field.type,
     required: field.required,
+    ...(field.requiredWhen ? { requiredWhen: field.requiredWhen } : {}),
     ...(field.description ? { description: field.description } : {}),
     ...(field.type === 'choice' ? { options: field.options, multiple: field.multiple } : {}),
     ...(field.type === 'reference' || field.type === 'lines' ? { entity: field.entity } : {}),
@@ -55,7 +61,15 @@ type Grants = { readonly read: PermissionGrant[]; readonly create: PermissionGra
  * them. A field worked out from lines is never entered; a lines field carries its lines' fields,
  * which grants name as `lines.amount`.
  */
-function uiField(definition: StoredDefinition, field: StoredField, grants: Grants, path = field.name): UiField | null {
+function uiField(
+  definition: StoredDefinition,
+  field: StoredField,
+  grants: Grants,
+  at: WriteContext,
+  /** The entity the field is of, and whether that is lines of another. */
+  of: { readonly entity: string; readonly line: boolean },
+  path = field.name,
+): UiField | null {
   const access = fieldAccess(grants.read, path);
   const computed = Boolean(rollupOf(field));
   const canCreate = !computed && grants.create.some((grant) => covers(grant, path));
@@ -68,10 +82,13 @@ function uiField(definition: StoredDefinition, field: StoredField, grants: Grant
       max: field.max,
       label: lineEntity.label,
       titleField: lineEntity.titleField ?? null,
-      fields: lineEntity.fields.flatMap((f) => uiField(definition, f, grants, `${field.name}.${f.name}`) ?? []),
+      fields: lineEntity.fields.flatMap((f) => uiField(definition, f, grants, at, { entity: field.entity, line: true }, `${field.name}.${f.name}`) ?? []),
     };
   }
-  return { ...describeField(field), ...(lines ? { lines } : {}), read: access === 'hidden' ? null : access, create: canCreate, update: canUpdate };
+  const owner = definition.entities[of.entity];
+  const info = owner ? entityFields(owner, { line: of.line }).get(field.name) : undefined;
+  const given = info && canCreate ? defaultValue(info, at) : undefined;
+  return { ...describeField(field), ...(given !== undefined ? { default: given } : {}), ...(lines ? { lines } : {}), read: access === 'hidden' ? null : access, create: canCreate, update: canUpdate };
 }
 
 /**
@@ -85,6 +102,8 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
   const allowed = async (kind: 'action' | 'query', name: string) =>
     (await ctx.policy.authorize(auth.principal, `${kind}.run`, runtime.capability(loaded, kind, name), undefined, policy)).allowed;
 
+  // A new record's defaults, as this person would get them now.
+  const at: WriteContext = { now: ctx.now(), person: auth.actor.type === 'user' ? auth.actor.id : undefined };
   const entities: Record<string, unknown> = {};
   const visibleFields = new Map<string, Set<string>>();
   const owners = lineOwners(loaded.definition);
@@ -95,7 +114,7 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
     if (!read!.allowed && !create!.allowed) continue;
     const grantsOf = (decision: typeof read) => (decision!.allowed ? decision!.grants.map((g) => g.grant) : []);
     const grants = { read: grantsOf(read), create: grantsOf(create), update: grantsOf(update) };
-    const fields: UiField[] = entity.fields.flatMap((field) => uiField(loaded.definition, field, grants) ?? []);
+    const fields: UiField[] = entity.fields.flatMap((field) => uiField(loaded.definition, field, grants, at, { entity: name, line: false }) ?? []);
     visibleFields.set(name, new Set(fields.map((f) => f.name)));
     entities[name] = {
       label: entity.label,
@@ -126,6 +145,7 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
       label: form.label,
       entity: form.entity,
       ...(form.action ? { action: form.action } : {}),
+      layout: form.layout,
       sections: form.sections
         .map((section) => ({ ...section, fields: section.fields.filter((item) => visible.has(item.field) || ['id', 'owner', 'created_at', 'updated_at'].includes(item.field)) }))
         .filter((section) => section.fields.length),

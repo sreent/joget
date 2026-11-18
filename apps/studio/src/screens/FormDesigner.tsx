@@ -14,7 +14,9 @@ import {
 import { rectSortingStrategy, SortableContext, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useState } from 'react';
+import { ConditionEditor } from '../components/condition.js';
 import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
+import { recordChoices } from '../model/conditions.js';
 import {
   addForm,
   addSection,
@@ -146,6 +148,16 @@ function FormCanvas(props: { definition: Definition; name: string; slot: Slot | 
                   {action.label}
                 </option>
               ))}
+            </Select>
+          )}
+        </Field>
+        <Field label="Shows" hint={form.sections.length > 1 ? 'In steps, each section is a step, checked before the next.' : 'Add a section to show the form in steps.'}>
+          {(id) => (
+            <Select id={id} value={form.layout ?? 'page'} onChange={(e) => onChange(updateForm(definition, name, { layout: e.target.value === 'steps' ? 'steps' : 'page' }))}>
+              <option value="page">All on one page</option>
+              <option value="steps" disabled={form.sections.length < 2}>
+                In steps, a section at a time
+              </option>
             </Select>
           )}
         </Field>
@@ -298,6 +310,13 @@ function FormSide({ definition, name, slot, onSlot, onChange }: { definition: De
       ) : (
         <Checkbox label="Read-only on this form" checked={item.readOnly} onChange={(value) => set({ readOnly: value })} />
       )}
+      <ConditionEditor
+        label="Shows when"
+        value={item.visibleWhen}
+        onChange={(visibleWhen) => set({ visibleWhen })}
+        choices={recordChoices(definition, form.entity).filter((choice) => choice.ref !== `record.${item.field}`)}
+        empty="Always. A field it hides sends no value."
+      />
       <div className="border-t border-line pt-3">
         <Button size="sm" variant="danger" onClick={() => (onChange(removeFormField(definition, name, slot)), onSlot(null))}>
           Take off the form

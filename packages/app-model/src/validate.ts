@@ -148,7 +148,9 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       {
         ...entity,
         ...(entity.titleField ? { titleField: fieldName(name)(entity.titleField) } : {}),
-        fields: entity.fields.map((field) => {
+        fields: entity.fields.map((original) => {
+          // A field required when a condition holds reads the record's own fields, by their new names.
+          const field = original.requiredWhen ? { ...original, requiredWhen: condition(name, original.requiredWhen) } : original;
           if (field.type === 'reference' || field.type === 'lines') return { ...field, entity: entityName(field.entity) };
           if (field.type === 'number' && field.rollup) {
             const [op, path] = Object.entries(field.rollup)[0] as [string, string];
@@ -241,7 +243,10 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
     return {
       ...form,
       entity,
-      sections: form.sections.map((section) => ({ ...section, fields: section.fields.map((item) => ({ ...item, field: fieldName(entity)(item.field) })) })),
+      sections: form.sections.map((section) => ({
+        ...section,
+        fields: section.fields.map((item) => ({ ...item, field: fieldName(entity)(item.field), ...(item.visibleWhen ? { visibleWhen: condition(entity, item.visibleWhen) } : {}) })),
+      })),
     };
   });
   const roles = mapRecord(definition.roles, (role) => ({
@@ -751,9 +756,18 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       if (field.type === 'choice' && new Set(field.options.map((o) => o.value)).size !== field.options.length) {
         issues.push({ path: `${path}.options`, message: 'Option values must be unique' });
       }
-      if ('default' in field && field.default !== undefined) {
+      // A default that is worked out as a record is written, such as today, has its shape checked already.
+      const dynamic = 'default' in field && field.default !== null && typeof field.default === 'object' && !Array.isArray(field.default);
+      if ('default' in field && field.default !== undefined && !dynamic) {
         const result = canonicalValue(fieldsOf.get(name)!.get(field.name)!, field.default);
         if (!result.ok) issues.push({ path: `${path}.default`, message: result.issue.message });
+      }
+      if (field.requiredWhen) {
+        const at = `${path}.requiredWhen`;
+        if (field.type === 'lines') issues.push({ path: at, message: 'A lines field is required always, or not at all' });
+        else if (rollup) issues.push({ path: at, message: "A field worked out from lines always has its value: it can't be required" });
+        else if (field.required) issues.push({ path: at, message: `${field.label} is always required: leave out the condition, or make it not required` });
+        else checkCondition(field.requiredWhen, { record: fieldsOf.get(name)!, lines: linesOf.get(name)! }, at, issues);
       }
     });
     if (entity.titleField && !fieldsOf.get(name)!.has(entity.titleField)) {
@@ -884,8 +898,10 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         }
         if (placed.has(item.field)) issues.push({ path: at, message: `${item.field} is on the form twice` });
         placed.add(item.field);
+        if (item.visibleWhen) checkCondition(item.visibleWhen, { record: fields, lines }, `${at}.visibleWhen`, issues);
       });
     });
+    if (form.layout === 'steps' && form.sections.length < 2) issues.push({ path: `${path}.layout`, message: 'A form in steps has a step for each section: give it two sections or more' });
   }
 
   for (const [roleName, role] of Object.entries(definition.roles)) {

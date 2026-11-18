@@ -768,6 +768,75 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await hidden(page.getByText('Unsaved changes.'));
   });
 
+  it('builds a form that adapts: in steps, a field that shows and is required when a claim is large', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await page.getByLabel('Name').fill('Claims in steps');
+    await page.getByLabel('Start from').selectOption('expenses');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const stepsId = page.url().split('/apps/')[1]!.split('/')[0]!;
+
+    // The data model says when a bank account is required: every way of writing a claim checks it.
+    await page.getByRole('button', { name: /^Bank account/ }).click();
+    const required = page.getByRole('group', { name: 'Required when' });
+    await required.getByRole('button', { name: 'Add a condition' }).click();
+    await required.getByLabel('Field').selectOption('record.total');
+    await required.getByLabel('Test').selectOption('gt');
+    await required.getByLabel('Value').fill('1000');
+
+    // The form asks a step at a time, and shows the bank account only for a large claim. The draft goes along.
+    await page.getByRole('link', { name: 'Forms', exact: true }).click();
+    await page.getByLabel('Shows', { exact: true }).selectOption('steps');
+    await page.getByRole('button', { name: 'Bank account', exact: true }).click();
+    const shows = page.getByRole('group', { name: 'Shows when' });
+    await shows.getByRole('button', { name: 'Add a condition' }).click();
+    await shows.getByLabel('Field').selectOption('record.total');
+    await shows.getByLabel('Test').selectOption('gt');
+    await shows.getByLabel('Value').fill('1000');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${stepsId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'iban').requiredWhen).toEqual({ gt: [{ ref: 'record.total' }, 1000] });
+    expect(saved.forms.claim_form).toMatchObject({ layout: 'steps', sections: [{}, {}, { fields: [{ field: 'iban', visibleWhen: { gt: [{ ref: 'record.total' }, 1000] } }] }] });
+
+    // The person fills it in a step at a time, and each step is checked before the next.
+    await page.goto(`${BASE}/studio/apps/${stepsId}/new/claim_form`);
+    const path = page.getByRole('list', { name: 'The steps of Claim an expense' });
+    await visible(path.getByText('What it was', { exact: true }));
+    await page.getByRole('button', { name: 'Next: Receipts' }).click();
+    await visible(page.getByText('Title is required', { exact: true }));
+    await page.getByLabel('Title').fill('Summit in Tokyo');
+    await page.getByRole('button', { name: 'Next: Receipts' }).click();
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-02');
+    await page.getByLabel('Receipt 1, Merchant').fill('Hotel Okura');
+    await page.getByLabel('Receipt 1, Category').selectOption('hotel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('1500');
+    await page.getByRole('button', { name: 'Next: Paying you back' }).click();
+    // A large claim shows the bank account, and needs it.
+    await visible(page.getByLabel('Bank account'));
+    await shot(page, '28-form-in-steps');
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByText('Bank account is required', { exact: true }));
+    await page.getByLabel('Bank account').fill('SG99 ALICE');
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByRole('heading', { name: 'Summit in Tokyo' }));
+
+    // A small claim never sees the bank account.
+    await page.goto(`${BASE}/studio/apps/${stepsId}/new/claim_form`);
+    await page.getByLabel('Title').fill('Taxi');
+    await page.getByRole('button', { name: 'Next: Receipts' }).click();
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-03');
+    await page.getByLabel('Receipt 1, Merchant').fill('Comfort taxi');
+    await page.getByLabel('Receipt 1, Category').selectOption('travel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('25');
+    await page.getByRole('button', { name: 'Next: Paying you back' }).click();
+    await hidden(page.getByLabel('Bank account'));
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByRole('heading', { name: 'Taxi' }));
+  });
+
   it('builds by chat: the chat changes the draft, and the builder undoes it or reviews and saves it', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/data`);

@@ -4,7 +4,7 @@ import { mapExpressionRefs, roundTo, type Expression, type ExpressionValue } fro
 import { entityFields, isWritable, type FieldInfo, type StoredDefinition } from './fields.js';
 import { checkFlowRun, flowSteps, RESERVED_VARIABLES } from './flows.js';
 import type { Action, AppFlow, FlowRun, FlowStep, SimpleStep, Step } from './schema.js';
-import { canonicalValue, rollupValues, type FieldValue, type LineValues, type RecordLines, type RecordValues, type ValueIssue } from './values.js';
+import { canonicalValue, defaultValue, rollupValues, type FieldValue, type LineValues, type RecordLines, type RecordValues, type ValueIssue, type WriteContext } from './values.js';
 import { flowWaits } from './waiting.js';
 
 /*
@@ -65,10 +65,12 @@ export class Draft {
   readonly #lines: Record<string, LineValues[]>;
   readonly #set = new Set<string>();
   readonly #linesAdded = new Set<string>();
+  readonly #at: WriteContext;
 
-  constructor(definition: StoredDefinition, entity: string, record: RecordValues, lines: RecordLines) {
+  constructor(definition: StoredDefinition, entity: string, record: RecordValues, lines: RecordLines, at: WriteContext = {}) {
     this.#definition = definition;
     this.#entity = entity;
+    this.#at = at;
     this.#record = { ...record };
     this.#lines = Object.fromEntries(Object.entries(lines).map(([name, list]) => [name, [...list]]));
   }
@@ -139,10 +141,7 @@ export class Draft {
     for (const declared of lineEntity.fields) {
       let value: FieldValue | undefined = null;
       if (Object.hasOwn(values, declared.name)) value = assign(lineFields.get(declared.name), values[declared.name]!, `${position}.${declared.name}`, where, issues, declared.label);
-      else if ('default' in declared && declared.default !== undefined) {
-        const result = canonicalValue(lineFields.get(declared.name)!, declared.default);
-        value = result.ok ? result.value : null;
-      }
+      else value = defaultValue(lineFields.get(declared.name)!, this.#at) ?? null;
       if (value === undefined) continue;
       if (declared.required && value === null) issues.push({ field: `${position}.${declared.name}`, code: 'required', message: `${where}: ${declared.label} is required` });
       line[declared.name] = value;

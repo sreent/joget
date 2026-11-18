@@ -10,6 +10,13 @@ import {
 } from './fields.js';
 import { MAX_NUMBER_MAGNITUDE } from './schema.js';
 
+/** When a record is written, and by whom: what a default such as today or the person works out from. */
+export interface WriteContext {
+  readonly now?: Date | undefined;
+  /** The person who writes the record, if a person does. */
+  readonly person?: string | undefined;
+}
+
 /** A record value in its canonical JSON form (see ValueKind). `null` is an empty value. */
 export type FieldValue = string | number | boolean | readonly string[] | null;
 export type RecordValues = Readonly<Record<string, FieldValue>>;
@@ -76,6 +83,27 @@ function uuid(value: unknown): Result {
 }
 
 /** Check one value against its field, and return it in canonical form. */
+/**
+ * A field's default, as the field holds it: a fixed value; a day so many days from today; a time so
+ * many hours from now; or the person who writes the record. Undefined when it has none, or when no
+ * person writes it.
+ */
+export function defaultValue(info: FieldInfo, at: WriteContext = {}): FieldValue | undefined {
+  const field = info.field;
+  if (!field || !('default' in field) || field.default === undefined) return undefined;
+  const given: unknown = field.default;
+  let raw = given;
+  if (given !== null && typeof given === 'object' && !Array.isArray(given)) {
+    const now = (at.now ?? new Date()).getTime();
+    if ('today' in given && typeof given.today === 'number') raw = new Date(now + given.today * 86_400_000).toISOString().slice(0, 10);
+    else if ('now' in given && typeof given.now === 'number') raw = new Date(now + given.now * 3_600_000).toISOString();
+    else if ('me' in given) raw = at.person;
+  }
+  if (raw === undefined) return undefined;
+  const result = canonicalValue(info, raw);
+  return result.ok ? result.value : undefined;
+}
+
 export function canonicalValue(info: FieldInfo, value: unknown): Result {
   if (value === null || value === undefined) return ok(null);
   const field = info.field;
@@ -213,6 +241,7 @@ export function completeLines(
   field: StoredLinesField,
   input: readonly LineInput[],
   current: readonly LineValues[],
+  writing: WriteContext = {},
 ): { readonly lines: LineValues[]; readonly issues: ValueIssue[] } {
   const issues: ValueIssue[] = [];
   const fields = entityFields(lineEntity, { line: true });
@@ -229,10 +258,7 @@ export function completeLines(
     for (const declared of lineEntity.fields) {
       if (declared.name in line.values) values[declared.name] = line.values[declared.name]!;
       else if (base) values[declared.name] = base.values[declared.name] ?? null;
-      else if ('default' in declared && declared.default !== undefined) {
-        const result = canonicalValue(fields.get(declared.name)!, declared.default);
-        values[declared.name] = result.ok ? result.value : null;
-      } else values[declared.name] = null;
+      else values[declared.name] = defaultValue(fields.get(declared.name)!, writing) ?? null;
       if (declared.required && values[declared.name] === null) {
         issues.push({ field: `${at}.${declared.name}`, code: 'required', message: `${declared.label} is required` });
       }
@@ -304,8 +330,10 @@ export function checkInput(
     readonly allowed?: ReadonlySet<string>;
     /** Values set regardless of the input, for example by an action. They win over the input. */
     readonly fixed?: Readonly<Record<string, unknown>>;
-    /** Fields that get their value later, for example from an action's steps: no input is required for them. */
+    /** Fields that get their value later, for example from an action's flow before it saves: no input is required for them. */
     readonly given?: ReadonlySet<string>;
+    /** When, and by whom, for defaults such as today or the person. */
+    readonly at?: WriteContext;
   },
 ): InputCheck {
   const entity = definition.entities[entityName]!;
@@ -341,9 +369,9 @@ export function checkInput(
   for (const field of entity.fields) {
     // Lines are complete only once the record's current lines are known; rollups are worked out from them.
     if (field.type === 'lines' || rollupOf(field)) continue;
-    if (options.mode === 'create' && !(field.name in values) && 'default' in field && field.default !== undefined) {
-      const result = canonicalValue(fields.get(field.name)!, field.default);
-      if (result.ok) values[field.name] = result.value;
+    if (options.mode === 'create' && !(field.name in values)) {
+      const given = defaultValue(fields.get(field.name)!, options.at);
+      if (given !== undefined) values[field.name] = given;
     }
     const value = values[field.name];
     const emptied = field.name in values && value === null;

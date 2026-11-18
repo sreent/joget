@@ -2,7 +2,9 @@ import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useState } from 'react';
+import { ConditionEditor } from '../components/condition.js';
 import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
+import { recordChoices } from '../model/conditions.js';
 import {
   addEntity,
   addField,
@@ -340,8 +342,28 @@ function FieldPanel(props: {
         </Field>
       ) : null}
       {field.type === 'number' && field.rollup ? null : (
-        <Checkbox label={field.type === 'lines' ? 'Needs at least one line' : 'Required'} checked={field.required} onChange={(value) => set({ required: value })} />
+        <Checkbox
+          label={field.type === 'lines' ? 'Needs at least one line' : 'Required'}
+          checked={field.required}
+          onChange={(value) => set({ required: value, ...(value ? { requiredWhen: undefined } : {}) })}
+        />
       )}
+      {field.type === 'lines' || (field.type === 'number' && field.rollup) || field.required ? null : (
+        <ConditionEditor
+          label="Required when"
+          value={field.requiredWhen}
+          onChange={(requiredWhen) => set({ requiredWhen })}
+          choices={recordChoices(definition, entity).filter((choice) => choice.ref !== `record.${field.name}`)}
+          empty="Never: it may stay empty. Every way of writing a record checks it, not only forms."
+        />
+      )}
+      {field.type === 'date' ? <DateDefault value={field.default} onChange={(value) => set({ default: value })} /> : null}
+      {field.type === 'datetime' ? (
+        <Checkbox label="Starts as the moment the record is created" checked={field.default !== undefined} onChange={(on) => set({ default: on ? { now: 0 } : undefined })} />
+      ) : null}
+      {field.type === 'user' ? (
+        <Checkbox label="Starts as the person who creates the record" checked={field.default !== undefined} onChange={(on) => set({ default: on ? { me: true } : undefined })} />
+      ) : null}
       {field.type === 'lines' ? (
         <>
           <div className="grid gap-1">
@@ -446,6 +468,40 @@ function ChoiceOptions({ options, multiple, onChange }: { options: Array<{ value
         Add option
       </Button>
       <Checkbox label="Several can be chosen" checked={multiple} onChange={(value) => onChange({ multiple: value })} />
+    </div>
+  );
+}
+
+type DateDefaultValue = Extract<FieldDef, { type: 'date' }>['default'];
+
+/** What a date field starts as on a new record: nothing, the day it is created or some days from it, or a fixed date. */
+function DateDefault({ value, onChange }: { value: DateDefaultValue; onChange: (value: DateDefaultValue) => void }) {
+  const mode = value === undefined ? 'none' : typeof value === 'string' ? 'fixed' : value.today === 0 ? 'today' : 'days';
+  return (
+    <div className="grid gap-2">
+      <Field label="Starts as">
+        {(id) => (
+          <Select
+            id={id}
+            value={mode}
+            onChange={(e) => {
+              const next = e.target.value;
+              onChange(next === 'today' ? { today: 0 } : next === 'days' ? { today: 7 } : next === 'fixed' ? new Date().toISOString().slice(0, 10) : undefined);
+            }}
+          >
+            <option value="none">Empty</option>
+            <option value="today">The day the record is created</option>
+            <option value="days">Some days from the day it is created</option>
+            <option value="fixed">A fixed date</option>
+          </Select>
+        )}
+      </Field>
+      {value !== undefined && typeof value !== 'string' && mode === 'days' ? (
+        <Field label="Days from then" hint="Before it, give a number below 0.">
+          {(id) => <TextInput id={id} type="number" className="w-28" value={value.today} onChange={(e) => onChange({ today: Math.trunc(Number(e.target.value) || 0) })} />}
+        </Field>
+      ) : null}
+      {typeof value === 'string' ? <Field label="The date">{(id) => <TextInput id={id} type="date" className="w-auto" value={value} onChange={(e) => onChange(e.target.value || undefined)} />}</Field> : null}
     </div>
   );
 }

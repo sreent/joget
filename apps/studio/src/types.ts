@@ -193,6 +193,10 @@ export interface UiField {
   label: string;
   type: FieldType;
   required: boolean;
+  /** Required only while this holds, of the record's values. */
+  requiredWhen?: Definition['rules'][string]['assert'];
+  /** What a new record starts with, worked out for the person now. */
+  default?: Value;
   description?: string;
   options?: Array<{ value: string; label: string }>;
   multiple?: boolean;
@@ -225,7 +229,12 @@ export interface UiForm {
   label: string;
   entity: string;
   action?: string;
-  sections: Array<{ title?: string; fields: Array<{ field: string; label?: string; help?: string; width: 'full' | 'half'; readOnly: boolean }> }>;
+  /** All sections on one page, or a section at a time. */
+  layout: 'page' | 'steps';
+  sections: Array<{
+    title?: string;
+    fields: Array<{ field: string; label?: string; help?: string; width: 'full' | 'half'; readOnly: boolean; visibleWhen?: Definition['rules'][string]['assert'] }>;
+  }>;
 }
 
 export interface UiAction {

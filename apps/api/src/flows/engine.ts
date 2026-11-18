@@ -173,7 +173,8 @@ export class FlowEngine implements FlowHooks {
     const action = loaded.definition.actions[event.action];
     const run = action?.before;
     if (!action || !run) throw notFound('Flow');
-    const draft = new Draft(loaded.definition, event.entity, event.record, event.lines);
+    const person = event.principal['id'];
+    const draft = new Draft(loaded.definition, event.entity, event.record, event.lines, { now: event.now, person: typeof person === 'string' ? person : undefined });
     const caller: FlowCaller = { writer: flowWriter(event.writer, run.flow), principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action } };
     const state: State = {
       tx,

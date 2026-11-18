@@ -10,6 +10,8 @@ import { asLines, display, ValueInput, ValueView } from '../components/values.js
 import { atRoute, Link, navigate, type Route } from '../router.js';
 import { MovedNotice } from './BuilderPanels.js';
 import { ProcessCard } from './Tasks.js';
+import { holdsOn } from '@platform/app-model';
+import { Icon } from '../components/icon.js';
 import type { HistoryEntry, Line, RecordOut, RecordValue, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
 /** What the screen shows: one of the app's pages, a form, an entity's records, or one record. */
@@ -466,19 +468,54 @@ function problemsOf(error: unknown): { fields: Record<string, string>; message: 
   return { fields, message: details?.issues?.length ? 'Some values need fixing.' : error.message };
 }
 
+/** Whether a value is empty, as a required field can't be. */
+const isEmpty = (value: RecordValue | undefined) => value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0);
+
+/**
+ * A form, as the person fills it in (design §6.4). A field shows while its condition holds, and a
+ * field it hides sends no value. A field is required always, or while its condition holds. A form
+ * in steps shows a section at a time, as a path, and checks each before the next; the server
+ * checks everything again whatever the form does.
+ */
 function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManifest; name: string; form: UiForm }) {
   const client = useQueryClient();
   const entity = manifest.entities[form.entity]!;
-  // Each lines field on the form starts with one empty line to fill in.
+  const items = form.sections.flatMap((s) => s.fields);
+  const fieldOf = (field: string) => entity.fields.find((f) => f.name === field);
+  // Each lines field on the form starts with one empty line to fill in, and each field with its default.
   const [values, setValues] = useState<Record<string, RecordValue>>(() =>
-    Object.fromEntries(form.sections.flatMap((s) => s.fields).flatMap((item) => (entity.fields.find((f) => f.name === item.field)?.type === 'lines' && !item.readOnly ? [[item.field, [{}]]] : []))),
+    Object.fromEntries(
+      items.flatMap((item): Array<[string, RecordValue]> => {
+        const field = fieldOf(item.field);
+        if (!field || item.readOnly) return [];
+        if (field.type === 'lines') return [[item.field, [{}]]];
+        return field.default !== undefined ? [[item.field, field.default]] : [];
+      }),
+    ),
   );
+  const [step, setStep] = useState(0);
+  const [missing, setMissing] = useState<Record<string, string>>({});
+  // Conditions read the values as they will be saved: with the totals worked out from the lines.
+  const current = { ...values, ...Object.fromEntries(entity.fields.filter((f) => f.computed).map((f) => [f.name, rollupValue(f, values)])) };
+  const shown = (item: UiForm['sections'][number]['fields'][number]) => !item.visibleWhen || holdsOn(item.visibleWhen, current);
+  const required = (field: UiField) => field.required || Boolean(field.requiredWhen && holdsOn(field.requiredWhen, current));
+  /** The fields of a section that are required and still empty, as messages. */
+  const unfilled = (section: UiForm['sections'][number]) =>
+    Object.fromEntries(
+      section.fields.flatMap((item) => {
+        const field = fieldOf(item.field);
+        if (!field || item.readOnly || field.computed || !shown(item) || !required(field)) return [];
+        const value = values[field.name];
+        const empty = field.type === 'lines' ? !filledLines(asLines(value)).length : isEmpty(value);
+        return empty ? [[field.name, field.type === 'lines' ? `${field.label}: add at least one line` : `${item.label ?? field.label} is required`]] : [];
+      }),
+    );
   const submit = useMutation({
     mutationFn: async () => {
       const editable = Object.fromEntries(
         Object.entries(values)
-          .filter(([field]) => form.sections.some((s) => s.fields.some((f) => f.field === field && !f.readOnly)))
-          .map(([field, value]) => [field, Array.isArray(value) && entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]),
+          .filter(([field]) => items.some((f) => f.field === field && !f.readOnly && shown(f)))
+          .map(([field, value]) => [field, Array.isArray(value) && fieldOf(field)?.type === 'lines' ? filledLines(asLines(value)) : value]),
       );
       if (form.action) return api.runAction(at, form.action, { values: editable });
       return { status: 'done' as const, record: await api.createRecord(at, form.entity, editable) };
@@ -489,34 +526,78 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
       else if (result.status === 'done') navigate({ name: 'use', ...atRoute(at), page: form.entity });
       else window.location.assign(result.proposal.reviewUrl);
     },
+    onError: (error) => {
+      // In steps, go back to the first step with a value the server refused.
+      const refused = Object.keys(problemsOf(error).fields);
+      const first = form.sections.findIndex((section) => section.fields.some((item) => refused.some((field) => field === item.field || field.startsWith(`${item.field}[`))));
+      if (form.layout === 'steps' && first !== -1) setStep(first);
+    },
   });
   const problems = problemsOf(submit.error);
+  const inSteps = form.layout === 'steps' && form.sections.length > 1;
+  const sections = inSteps ? [form.sections[step]!] : form.sections;
+  const last = !inSteps || step === form.sections.length - 1;
+  const next = () => {
+    const found = unfilled(form.sections[step]!);
+    setMissing(found);
+    if (!Object.keys(found).length) setStep(step + 1);
+  };
   return (
     <Card className="grid max-w-3xl gap-5">
       <h2 className="m-0 text-2xl font-semibold tracking-tight">{form.label}</h2>
+      {inSteps ? (
+        <div className="journey-box">
+          <ol className="journey" aria-label={`The steps of ${form.label}`}>
+            {form.sections.map((section, index) => {
+              const state = index < step ? 'done' : index === step ? 'now' : 'later';
+              const about = section.fields
+                .filter((item) => !item.readOnly)
+                .map((item) => item.label ?? fieldOf(item.field)?.label ?? item.field)
+                .join(', ');
+              return (
+                <li key={index} className={state} {...(state === 'now' ? { 'aria-current': 'step' as const } : {})}>
+                  <span className="journey-mark" aria-hidden="true">
+                    {state === 'done' ? <Icon name="check" /> : index + 1}
+                  </span>
+                  <span>
+                    <strong>{section.title ?? `Step ${index + 1}`}</strong>
+                    <span className="sr-only">{state === 'done' ? ', done' : state === 'now' ? ', to do now' : ''}</span>
+                    {about ? <span className="journey-about">{about}</span> : null}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      ) : null}
       <form
         className="grid gap-6"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          submit.mutate();
+          if (!last) return next();
+          const found = Object.assign({}, ...form.sections.map(unfilled)) as Record<string, string>;
+          setMissing(found);
+          if (!Object.keys(found).length) submit.mutate();
         }}
         aria-describedby={problems.message ? 'form-problem' : undefined}
       >
-        {form.sections.map((section, s) => (
-          <fieldset key={s} className="m-0 grid gap-3 border-0 p-0">
-            {section.title ? <legend className="mb-2 font-semibold">{section.title}</legend> : null}
+        {sections.map((section) => (
+          <fieldset key={section.title ?? form.sections.indexOf(section)} className="m-0 grid gap-3 border-0 p-0">
+            {section.title && !inSteps ? <legend className="mb-2 font-semibold">{section.title}</legend> : null}
             <div className="grid gap-3 sm:grid-cols-2">
               {section.fields.map((item) => {
-                const field = entity.fields.find((f) => f.name === item.field);
-                if (!field) return null;
+                const field = fieldOf(item.field);
+                if (!field || !shown(item)) return null;
                 const id = `field-${item.field}`;
                 const lines = field.type === 'lines';
+                const problem = problems.fields[field.name] ?? missing[field.name];
                 return (
                   <div key={item.field} className={cx('grid content-start gap-1', (item.width === 'full' || lines) && 'sm:col-span-2')}>
                     {field.type !== 'boolean' ? (
                       <label htmlFor={id} className="text-sm text-muted">
                         {item.label ?? field.label}
-                        {field.required && !field.computed ? <span className="text-bad"> *</span> : null}
+                        {required(field) && !field.computed ? <span className="text-bad"> *</span> : null}
                       </label>
                     ) : null}
                     {field.computed ? (
@@ -524,7 +605,7 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
                         <ValueView field={field} value={rollupValue(field, values)} />
                       </p>
                     ) : lines && !item.readOnly ? (
-                      <LinesEditor id={id} field={field} value={asLines(values[field.name])} onChange={(next) => setValues({ ...values, [field.name]: next })} mode="create" problems={problems.fields} />
+                      <LinesEditor id={id} field={field} value={asLines(values[field.name])} onChange={(value) => setValues({ ...values, [field.name]: value })} mode="create" problems={problems.fields} />
                     ) : item.readOnly ? (
                       <p className="m-0">
                         <ValueView field={field} value={values[field.name]} />
@@ -533,7 +614,7 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
                       <ValueInput id={id} field={field} value={values[field.name] as Value | undefined} onChange={(value) => setValues({ ...values, [field.name]: value })} />
                     )}
                     {item.help ? <p className="m-0 text-xs text-faint">{item.help}</p> : null}
-                    {problems.fields[field.name] ? <p className="m-0 text-xs text-bad">{problems.fields[field.name]}</p> : null}
+                    {problem ? <p className="m-0 text-xs text-bad">{problem}</p> : null}
                   </div>
                 );
               })}
@@ -545,10 +626,26 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
             <Notice tone="bad">{problems.message}</Notice>
           </div>
         ) : null}
-        <div>
-          <Button type="submit" variant="primary" disabled={submit.isPending}>
-            {submit.isPending ? 'Submitting…' : form.action ? (manifest.actions[form.action]?.label ?? 'Submit') : 'Save'}
-          </Button>
+        <div className="flex flex-wrap gap-2">
+          {inSteps && step > 0 ? (
+            <Button
+              onClick={() => {
+                setMissing({});
+                setStep(step - 1);
+              }}
+            >
+              Back
+            </Button>
+          ) : null}
+          {last ? (
+            <Button type="submit" variant="primary" disabled={submit.isPending}>
+              {submit.isPending ? 'Submitting…' : form.action ? (manifest.actions[form.action]?.label ?? 'Submit') : 'Save'}
+            </Button>
+          ) : (
+            <Button type="submit" variant="primary">
+              Next: {form.sections[step + 1]?.title ?? `step ${step + 2}`}
+            </Button>
+          )}
         </div>
       </form>
     </Card>

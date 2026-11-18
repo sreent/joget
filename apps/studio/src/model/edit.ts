@@ -318,7 +318,7 @@ export function addForm(definition: Definition, entity: string): { definition: D
   return { definition: next, name };
 }
 
-export function updateForm(definition: Definition, form: string, patch: Partial<Pick<Form, 'label' | 'action'>>): Definition {
+export function updateForm(definition: Definition, form: string, patch: Partial<Pick<Form, 'label' | 'action' | 'layout'>>): Definition {
   const next = clone(definition);
   const target = next.forms[form]! as Record<string, unknown>;
   for (const [key, value] of Object.entries(patch)) {
@@ -354,7 +354,10 @@ export function removeSection(definition: Definition, form: string, section: num
   const sections = definition.forms[form]!.sections;
   if (sections.length <= 1) return definition;
   const next = clone(definition);
-  next.forms[form]!.sections.splice(section, 1);
+  const target = next.forms[form]!;
+  target.sections.splice(section, 1);
+  // A form in steps needs two sections or more.
+  if (target.sections.length < 2 && target.layout === 'steps') target.layout = 'page';
   return next;
 }
 

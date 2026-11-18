@@ -49,6 +49,7 @@ import {
   type StoredRecord,
   type ValueIssue,
   type ValueKind,
+  type WriteContext,
   type Action,
   type Step,
   rangeStart,
@@ -292,6 +293,8 @@ interface ActionRun {
   readonly needsConfirmation: boolean;
   /** Whether the action runs a flow before it saves. */
   readonly shaped: boolean;
+  /** When, and by whom, for defaults such as today or the person. */
+  readonly writing: WriteContext;
   readonly now: Date;
   readonly commit: boolean;
   readonly proposed: NonNullable<SealedEffect['lines']>;
@@ -606,6 +609,8 @@ export class AppRuntime {
     all: boolean,
     /** Lines fields that get their lines later, from an action's flow before it saves: none are required yet. */
     later: ReadonlySet<string> = new Set(),
+    /** When, and by whom: what the defaults of new lines work out from. */
+    at: WriteContext = { now: this.#ctx.now() },
   ): { lines: Record<string, LineValues[]>; rollups: Record<string, FieldValue>; paths: string[]; changed: string[] } {
     const entity = this.entity(loaded, entityName);
     const lines: Record<string, LineValues[]> = {};
@@ -615,7 +620,7 @@ export class AppRuntime {
     for (const field of linesFieldsOf(entity)) {
       if (!(field.name in input) && !all) continue;
       const lineEntity = loaded.definition.entities[field.entity]!;
-      const result = completeLines(lineEntity, field, input[field.name] ?? [], base[field.name] ?? []);
+      const result = completeLines(lineEntity, field, input[field.name] ?? [], base[field.name] ?? [], at);
       issues.push(...result.issues.filter((issue) => !(later.has(field.name) && issue.field === field.name && issue.code === 'required')));
       lines[field.name] = result.lines;
       const written = linesWritten(lineEntity, field.name, current[field.name] ?? [], result.lines);
@@ -802,10 +807,11 @@ export class AppRuntime {
     decision?: AllowedQuery,
   ): Promise<RecordOut | { id: string; version: number }> {
     const entity = this.entity(loaded, entityName);
-    const check = checkInput(loaded.definition, entityName, input.values, { mode: 'create' });
+    const at = this.#writing(auth);
+    const check = checkInput(loaded.definition, entityName, input.values, { mode: 'create', at });
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
     const provenance = this.#provenance(input.provenance, Object.keys(input.values), check.lines);
-    const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true);
+    const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true, new Set(), at);
     const permission = decision ?? (await this.decide(request, auth, loaded, 'record.create', entityName));
     const owner = (check.values['owner'] as string | undefined) ?? auth.actor.id;
     const values = { ...check.values, ...prepared.rollups };
@@ -848,7 +854,7 @@ export class AppRuntime {
       if (!before) throw notFound('Record');
       // Lines change only under their record's lock, so these are the lines as they are.
       const current = await this.#currentLines(tx, loaded, entity, before.id, Object.keys(check.lines));
-      const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false);
+      const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false, new Set(), this.#writing(auth));
       const beforeValues = recordValues(before);
       const changed = Object.fromEntries(
         Object.entries({ ...check.values, ...prepared.rollups }).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)),
@@ -1258,13 +1264,20 @@ export class AppRuntime {
     return only ? findings.filter((finding) => only.includes(finding.rule)) : findings;
   }
 
+  /** When a person writes, and who: what defaults such as today or the person work out from. */
+  #writing(auth: AuthContext): WriteContext {
+    return { now: this.#ctx.now(), person: auth.actor.type === 'user' ? auth.actor.id : undefined };
+  }
+
   /** Check an action's input and decide whether its caller may run it at all, before any transaction. */
   async #prepareAction(origin: ActionOrigin, loaded: LoadedApp, name: string, input: ActionInput, options: { readonly revises?: ProposalRow }): Promise<ActionRun> {
     const ctx = this.#ctx;
     const action = loaded.definition.actions[name];
     if (!action) throw notFound('Action');
     const entity = this.entity(loaded, action.entity);
-    const check = checkActionInput(loaded.definition, name, input.values);
+    // A process acts with no person, so a default of the person gives nothing there.
+    const writing: WriteContext = { now: ctx.now(), person: origin.kind === 'request' && origin.auth.actor.type === 'user' ? origin.auth.actor.id : undefined };
+    const check = checkActionInput(loaded.definition, name, input.values, writing);
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
     const provenance = this.#provenance(input.provenance, action.input, check.lines);
     if (action.operation === 'update' && !input.recordId) throw unprocessable('record_required', `${name} changes an existing record: give its ID`);
@@ -1290,13 +1303,13 @@ export class AppRuntime {
     const principal = origin.kind === 'request' ? principalEnv(origin.auth) : {};
     const onBehalfOf = origin.kind === 'request' ? (origin.auth.actor.type === 'user' ? origin.auth.actor.id : null) : origin.onBehalfOf;
     return {
-      origin, loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, now, commit, proposed, newId, stepLines, given, givenScalars, writer, principal, onBehalfOf,
+      origin, loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, writing, now, commit, proposed, newId, stepLines, given, givenScalars, writer, principal, onBehalfOf,
     };
   }
 
   /** An action's work, in a transaction: work out the change, then propose it, or write it and move the processes it touches. */
   async #runActionIn(tx: AppTransaction, run: ActionRun): Promise<ActionResult> {
-    const { loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, now, commit, proposed, newId, stepLines, given, givenScalars } = run;
+    const { loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, writing, now, commit, proposed, newId, stepLines, given, givenScalars } = run;
     const ctx = this.#ctx;
     this.#sameRevision(tx, loaded);
     let before: StoredRecord | null = null;
@@ -1304,7 +1317,7 @@ export class AppRuntime {
     let current: Record<string, StoredLine[]> = {};
     let prepared: ReturnType<AppRuntime['prepareLinesFor']>;
     if (action.operation === 'create') {
-      prepared = this.prepareLinesFor(loaded, action.entity, check.lines, proposed, {}, true, beforeGives(loaded.definition, action));
+      prepared = this.prepareLinesFor(loaded, action.entity, check.lines, proposed, {}, true, beforeGives(loaded.definition, action), writing);
       const after = { ...check.values, ...prepared.rollups, owner: (check.values['owner'] as string | undefined) ?? run.writer.actorId };
       if (!writeGrant(permission.grants, { fields: [...givenScalars, ...prepared.paths], after })) {
         throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: a field or a value is outside what your role allows`);
@@ -1315,7 +1328,7 @@ export class AppRuntime {
       current = await this.#currentLines(tx, loaded, entity, before.id, [...Object.keys(check.lines), ...stepLines]);
       // Lines fields the caller sent no lines for keep the lines they have.
       const kept = Object.fromEntries(stepLines.map((field) => [field, (current[field] ?? []).map((line) => ({ id: line.id, values: {} }))]));
-      prepared = this.prepareLinesFor(loaded, action.entity, { ...kept, ...check.lines }, { ...current, ...proposed }, current, false);
+      prepared = this.prepareLinesFor(loaded, action.entity, { ...kept, ...check.lines }, { ...current, ...proposed }, current, false, new Set(), writing);
       beforeValues = recordValues(before);
       const after = { ...beforeValues, ...check.values, ...prepared.rollups };
       if (!writeGrant(permission.grants, { fields: [...givenScalars, ...prepared.paths], before: beforeValues, after })) {
@@ -1523,9 +1536,10 @@ export class AppRuntime {
   async flowCreate(tx: AppTransaction, loaded: LoadedApp, writer: Writer, principal: Record<string, unknown>, entityName: string, input: Readonly<Record<string, unknown>>): Promise<RecordValues> {
     const entity = this.entity(loaded, entityName);
     this.#sameRevision(tx, loaded);
-    const check = checkInput(loaded.definition, entityName, input, { mode: 'create' });
+    const at: WriteContext = { now: this.#ctx.now(), person: typeof principal['id'] === 'string' ? principal['id'] : undefined };
+    const check = checkInput(loaded.definition, entityName, input, { mode: 'create', at });
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
-    const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true);
+    const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true, new Set(), at);
     const owner = (check.values['owner'] as string | undefined) ?? writer.actorId;
     const values = { ...check.values, ...prepared.rollups };
     this.#rules(loaded, entityName, principal, { ...values, owner }, prepared.lines);
