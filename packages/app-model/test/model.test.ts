@@ -1,5 +1,3 @@
-import { authorizeQuery, createPolicy, type Binding } from '@platform/authz';
-import { describe, expect, it } from 'vitest';
 import {
   buildCard,
   checkActionInput,
@@ -8,18 +6,20 @@ import {
   completeLines,
   covers,
   diffLines,
+  EXPENSE_APP,
   environmentNames,
   evaluateRules,
-  EXPENSE_APP,
   fieldAccess,
   planMigration,
   rollupValues,
+  type StoredDefinition,
+  type StoredLinesField,
   validateDefinition,
   writeGrant,
   writeLines,
-  type StoredDefinition,
-  type StoredLinesField,
 } from '@platform/app-model';
+import { authorizeQuery, type Binding, createPolicy } from '@platform/authz';
+import { describe, expect, it } from 'vitest';
 
 const ids = () => {
   let n = 0;
@@ -80,7 +80,10 @@ describe('validateDefinition', () => {
     const result = validateDefinition(input, first, ids());
     if (!result.ok) throw new Error(JSON.stringify(result.issues));
     const { definition } = result;
-    expect(definition.roles['approver']!.entities['claim']!.update).toEqual({ where: { eq: [{ ref: 'record.state' }, 'submitted'] }, fields: { include: ['state', 'approver'] } });
+    expect(definition.roles['approver']!.entities['claim']!.update).toEqual({
+      where: { eq: [{ ref: 'record.state' }, 'submitted'] },
+      fields: { include: ['state', 'approver'] },
+    });
     expect(definition.actions['approve_claim']).toMatchObject({ entity: 'claim', set: { state: 'approved' } });
     expect(planMigration(first, definition, names).statements.every((s) => s.startsWith('comment on'))).toBe(true);
   });
@@ -98,7 +101,7 @@ describe('validateDefinition', () => {
       'actions.submit_claim.input: No field named nonexistent',
       'actions.submit_claim.card: No card named missing_card',
       'queries.my_claims.sort[0]: No field named nope',
-      "roles.requester.actions: No action named reject_claim",
+      'roles.requester.actions: No action named reject_claim',
       "roles.approver.entities.expense_claim.read.unmask: title isn't classified as PII, so it is never masked",
     ]);
   });
@@ -112,7 +115,7 @@ describe('validateDefinition', () => {
     broken.rules.hotel_cap.assert = { lte: [{ ref: 'record.category' }, 250] };
     broken.roles.requester.entities.expense_claim.read.where = { eq: [{ ref: 'record.total' }, 'lots'] };
     expect(issuesOf(broken)).toEqual([
-      "rules.hotel_cap.assert: lte compares numbers, and category isn't one",
+      'rules.hotel_cap.assert: lte compares numbers, dates and times, and category is none of them',
       'actions.submit_claim.input: total is worked out from lines',
       'actions.submit_claim.input: lines needs at least one line, so the action must take it as input',
       'roles.requester.entities.expense_claim.read.where: total holds numbers, not strings',
@@ -198,7 +201,9 @@ describe('checkInput', () => {
     expect(issues).toEqual([]);
     expect(values).toEqual({ title: 'Taxi', trip: null, status: 'draft' });
     expect(lines).toEqual({ lines: [{ values: taxi }] });
-    expect(checkInput(expense(), 'expense_claim', { trip: 'Singapore' }, { mode: 'create' }).issues.map((i) => `${i.field}:${i.code}`)).toEqual(['title:required']);
+    expect(checkInput(expense(), 'expense_claim', { trip: 'Singapore' }, { mode: 'create' }).issues.map((i) => `${i.field}:${i.code}`)).toEqual([
+      'title:required',
+    ]);
   });
 
   it('checks every value against its field, in lines too', () => {
@@ -211,7 +216,13 @@ describe('checkInput', () => {
         colour: 'red',
         created_by: 'me',
         total: 5,
-        lines: [{ category: 'yacht', amount: 10.005, colour: 1 }, 'nope', { id: 'bad' }, { id: '0193A7C4-0000-7000-8000-000000000001' }, { id: '0193a7c4-0000-7000-8000-000000000001' }],
+        lines: [
+          { category: 'yacht', amount: 10.005, colour: 1 },
+          'nope',
+          { id: 'bad' },
+          { id: '0193A7C4-0000-7000-8000-000000000001' },
+          { id: '0193a7c4-0000-7000-8000-000000000001' },
+        ],
       },
       { mode: 'update' },
     );
@@ -250,11 +261,18 @@ describe('lines', () => {
   it('completes the lines a caller sends against the lines a record has', () => {
     const hotel = { date: '2026-11-02', merchant: 'Hilton', category: 'hotel', amount: 300 };
     expect(completeLines(lineEntity, field, [{ id: 'line-1', values: { amount: 15 } }, { values: hotel }], [grab])).toEqual({
-      lines: [{ id: 'line-1', values: { ...grab.values, amount: 15, receipt: null } }, { id: null, values: { ...hotel, receipt: null } }],
+      lines: [
+        { id: 'line-1', values: { ...grab.values, amount: 15, receipt: null } },
+        { id: null, values: { ...hotel, receipt: null } },
+      ],
       issues: [],
     });
     expect(completeLines(lineEntity, field, [{ id: 'line-9', values: {} }], [grab]).issues).toMatchObject([{ field: 'lines[0].id', code: 'invalid_uuid' }]);
-    expect(completeLines(lineEntity, field, [{ values: { merchant: 'Shop' } }], []).issues.map((i) => i.field)).toEqual(['lines[0].date', 'lines[0].category', 'lines[0].amount']);
+    expect(completeLines(lineEntity, field, [{ values: { merchant: 'Shop' } }], []).issues.map((i) => i.field)).toEqual([
+      'lines[0].date',
+      'lines[0].category',
+      'lines[0].amount',
+    ]);
     expect(completeLines(lineEntity, field, [], [grab]).issues).toMatchObject([{ field: 'lines', code: 'required' }]);
   });
 
@@ -280,9 +298,18 @@ describe('lines', () => {
     const [date, merchant, category, amount, receipt] = lineEntity.fields.map((f) => f.id);
     const taxi = { id: 'line-2', values: { date: '2026-11-03', merchant: 'Taxi', category: 'travel', amount: 20 } };
     const meal = { id: 'line-3', values: { date: '2026-11-03', merchant: 'Lau Pa Sat', category: 'meals', amount: 18 } };
-    const change = diffLines(lineEntity, [grab, taxi], [{ ...taxi, values: { ...taxi.values, amount: 22 } }, meal], { '0.amount': { source: 'person' }, '1.amount': { source: 'document' } });
+    const change = diffLines(lineEntity, [grab, taxi], [{ ...taxi, values: { ...taxi.values, amount: 22 } }, meal], {
+      '0.amount': { source: 'person' },
+      '1.amount': { source: 'document' },
+    });
     expect(change).toEqual({
-      added: [{ id: 'line-3', values: { [date!]: '2026-11-03', [merchant!]: 'Lau Pa Sat', [category!]: 'meals', [amount!]: 18, [receipt!]: null }, sources: { [amount!]: { source: 'document' } } }],
+      added: [
+        {
+          id: 'line-3',
+          values: { [date!]: '2026-11-03', [merchant!]: 'Lau Pa Sat', [category!]: 'meals', [amount!]: 18, [receipt!]: null },
+          sources: { [amount!]: { source: 'document' } },
+        },
+      ],
       removed: [{ id: 'line-1', values: { [date!]: '2026-11-01', [merchant!]: 'Grab', [category!]: 'travel', [amount!]: 12, [receipt!]: null } }],
       changed: [{ id: 'line-2', changes: { [amount!]: { before: 20, after: 22, source: { source: 'person' } } } }],
       reordered: false,
@@ -294,7 +321,13 @@ describe('lines', () => {
   it('writes only what differs, in order', () => {
     const taxi = { id: '0193a7c4-0000-7000-8000-000000000002', values: { date: '2026-11-03', merchant: 'Taxi', category: 'travel', amount: 20 } };
     const first = { ...grab, id: '0193a7c4-0000-7000-8000-000000000001' };
-    const statements = writeLines(names, lineEntity, '0193a7c4-0000-7000-8000-0000000000aa', [first, taxi], [taxi, { ...first, values: { ...first.values, amount: 13 } }]);
+    const statements = writeLines(
+      names,
+      lineEntity,
+      '0193a7c4-0000-7000-8000-0000000000aa',
+      [first, taxi],
+      [taxi, { ...first, values: { ...first.values, amount: 13 } }],
+    );
     expect(statements.map((s) => s.text.split(' ')[0])).toEqual(['update', 'update']);
     expect(statements[0]!.values).toEqual([0, taxi.id, '0193a7c4-0000-7000-8000-0000000000aa']);
     expect(writeLines(names, lineEntity, 'p', [first], []).map((s) => s.text.split(' ')[0])).toEqual(['delete']);
@@ -311,7 +344,9 @@ describe('planMigration', () => {
     expect(plan.statements[0]).toMatch(/^create table if not exists "app_\w+_sandbox"\.files /);
     const claimTable = plan.statements.findIndex((s) => s.startsWith(`create table "${names.schema}"."e_id0001" (id uuid primary key`));
     expect(claimTable).toBeGreaterThan(0);
-    expect(plan.statements).toContain(`alter table "${names.schema}"."e_id0009" add column "f_id0014" uuid references "${names.schema}".files (id) on delete restrict`);
+    expect(plan.statements).toContain(
+      `alter table "${names.schema}"."e_id0009" add column "f_id0014" uuid references "${names.schema}".files (id) on delete restrict`,
+    );
     expect(plan.statements).toContain(`grant select, insert, update, delete on "${names.schema}"."e_id0001" to "${names.role}"`);
     expect(plan.statements).toContain(`alter table "${names.schema}"."e_id0001" add column "f_id0005" numeric`);
     expect(plan.statements).toContain(`comment on column "${names.schema}"."e_id0001"."f_id0005" is 'total'`);
@@ -364,7 +399,7 @@ describe('planMigration', () => {
     const fields = next.entities.expense_claim.fields as Array<{ name: string; type: string; unique?: boolean }>;
     fields.find((f) => f.name === 'trip')!.name = 'journey';
     next.entities.expense_claim.fields = fields.filter((f) => f.name !== 'approver');
-    next.actions.approve_claim.steps = next.actions.approve_claim.steps.filter((step: { field?: string }) => step.field !== 'approver');
+    next.flows.check_approval.steps = next.flows.check_approval.steps.filter((step: { values?: object }) => !(step.values && 'approver' in step.values));
     next.roles.approver.entities.expense_claim.update.fields = { include: ['status'] };
     const iban = fields.find((f) => f.name === 'iban')!;
     iban.unique = true;
@@ -373,12 +408,7 @@ describe('planMigration', () => {
     delete title.maxLength;
     delete title.multiline;
     const plan = planMigration(first, valid(next, first), names);
-    expect(plan.steps.map((s) => `${s.kind}${s.destructive ? '!' : ''}`)).toEqual([
-      'drop_field!',
-      'retype_field!',
-      'rename_field',
-      'add_unique',
-    ]);
+    expect(plan.steps.map((s) => `${s.kind}${s.destructive ? '!' : ''}`)).toEqual(['drop_field!', 'retype_field!', 'rename_field', 'add_unique']);
     expect(plan.destructive).toBe(true);
     expect(plan.statements.some((s) => s.includes('rename'))).toBe(false);
     expect(plan.impact.map((i) => i.step)).toEqual([0, 1, 3]);
@@ -413,7 +443,12 @@ describe('compileAppPolicy', () => {
       { permission: 'app.run' },
       { permission: 'action.run', resource: 'approve_claim' },
       { permission: 'record.read', resource: 'expense_claim', condition: { in: [{ ref: 'record.status' }, ['submitted', 'approved']] }, mask: ['iban'] },
-      { permission: 'record.update', resource: 'expense_claim', condition: { eq: [{ ref: 'record.status' }, 'submitted'] }, fields: { include: ['status', 'approver'] } },
+      {
+        permission: 'record.update',
+        resource: 'expense_claim',
+        condition: { eq: [{ ref: 'record.status' }, 'submitted'] },
+        fields: { include: ['status', 'approver'] },
+      },
     ]);
   });
 
@@ -441,7 +476,11 @@ describe('compileAppPolicy', () => {
 });
 
 describe('access to lines', () => {
-  const grant = (fields?: { include: string[] } | { exclude: string[] }, mask?: string[]) => ({ permission: 'record.read', ...(fields ? { fields } : {}), ...(mask ? { mask } : {}) });
+  const grant = (fields?: { include: string[] } | { exclude: string[] }, mask?: string[]) => ({
+    permission: 'record.read',
+    ...(fields ? { fields } : {}),
+    ...(mask ? { mask } : {}),
+  });
 
   it('covers a field of lines only with its lines field', () => {
     expect(covers(grant({ include: ['lines'] }), 'lines.amount')).toBe(true);
@@ -480,10 +519,19 @@ describe('rules and review cards', () => {
 
   it('checks each line, and says which line a finding is about, errors first', () => {
     expect(evaluateRules(definition, 'expense_claim', values, { principal: {} }, lines)).toEqual([
-      { rule: 'hotel_cap', severity: 'warning', message: 'Hotel is above the SGD 250 nightly cap', fields: ['lines[1].amount'], line: { field: 'lines', index: 1 } },
+      {
+        rule: 'hotel_cap',
+        severity: 'warning',
+        message: 'Hotel is above the SGD 250 nightly cap',
+        fields: ['lines[1].amount'],
+        line: { field: 'lines', index: 1 },
+      },
     ]);
     const zero = { lines: [lines.lines[1]!, { id: null, values: { ...lines.lines[0]!.values, amount: 0 } }] };
-    expect(evaluateRules(definition, 'expense_claim', values, { principal: {} }, zero).map((f) => `${f.rule}@${f.line?.index}`)).toEqual(['positive_amount@1', 'hotel_cap@0']);
+    expect(evaluateRules(definition, 'expense_claim', values, { principal: {} }, zero).map((f) => `${f.rule}@${f.line?.index}`)).toEqual([
+      'positive_amount@1',
+      'hotel_cap@0',
+    ]);
   });
 
   it('builds a card from the exact values, findings first, with the lines as a table and every source', () => {
@@ -510,5 +558,26 @@ describe('rules and review cards', () => {
       ['2026-11-02', 'Marina Bay', 'Hotel', '270.00', '—'],
     ]);
     expect(table!.rows[1]!.cells[3]!.source).toEqual({ source: 'document', document: 'receipt.jpg' });
+  });
+});
+
+describe('problems in plain words', () => {
+  it('says what the schema finds wrong as a builder reads it, not as zod writes it', () => {
+    const draft = structuredClone(EXPENSE_APP) as unknown as Record<string, any>;
+    draft.entities.expense_claim.label = '';
+    draft.entities.expense_claim.colour = 'red';
+    draft.entities.expense_claim.fields[0].maxLength = 'long';
+    draft.actions.submit_claim.confirm = 'maybe';
+    const result = validateDefinition(draft);
+    expect(result.ok).toBe(false);
+    const messages = result.ok ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        "entities.expense_claim.label: This can't be empty",
+        'entities.expense_claim: Not a setting here: colour',
+        'entities.expense_claim.fields[0].maxLength: Expected a number',
+        'actions.submit_claim.confirm: Expected one of: none, preview, review',
+      ]),
+    );
   });
 });

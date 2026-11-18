@@ -5,8 +5,8 @@ import { once, requireAuth } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
 import { appResource } from '../apps/resources.js';
 import { envOf } from '../apps/routes.js';
-import { EnvQuery } from '../apps/schemas.js';
 import type { AppRuntime, RecordOut } from '../apps/runtime.js';
+import { EnvQuery } from '../apps/schemas.js';
 import { withAppTransaction } from '../apps/transaction.js';
 import type { AppContext } from '../context.js';
 import { HttpError, notFound } from '../errors.js';
@@ -41,7 +41,12 @@ function holds(loaded: LoadedApp, entityName: string, record: RecordOut, fileId:
  */
 export function fileRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginAsyncZod {
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
-  const appRule = { kind: 'permission' as const, action: 'app.run', resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theApp(request)), policy: async (request: FastifyRequest) => runtime.policy(await theApp(request)) };
+  const appRule = {
+    kind: 'permission' as const,
+    action: 'app.run',
+    resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theApp(request)),
+    policy: async (request: FastifyRequest) => runtime.policy(await theApp(request)),
+  };
   const files = ctx.files;
 
   return async (app) => {
@@ -62,8 +67,12 @@ export function fileRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPluginA
         },
       },
       async (request, reply) => {
-        if (!Buffer.isBuffer(request.body)) throw new HttpError(415, 'unsupported_file_type', 'Send the file itself as the body, with its type, such as image/jpeg');
-        const file = await files.upload(request, requireAuth(request), await theApp(request), { content: request.body, ...(request.query.name ? { name: request.query.name } : {}) });
+        if (!Buffer.isBuffer(request.body))
+          throw new HttpError(415, 'unsupported_file_type', 'Send the file itself as the body, with its type, such as image/jpeg');
+        const file = await files.upload(request, requireAuth(request), await theApp(request), {
+          content: request.body,
+          ...(request.query.name ? { name: request.query.name } : {}),
+        });
         return reply.status(201).send(file);
       },
     );

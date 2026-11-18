@@ -1,7 +1,7 @@
 import { uuidv7 } from '@platform/audit';
-import { bindings, groupMembers, groups, spaces, users, type Transaction } from '@platform/db';
+import { bindings, groupMembers, groups, spaces, type Transaction, users } from '@platform/db';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { recordAudit, SYSTEM_ACTOR, type AuditScope } from '../audit/writer.js';
+import { type AuditScope, recordAudit, SYSTEM_ACTOR } from '../audit/writer.js';
 import type { Config } from '../config.js';
 import { forbidden } from '../errors.js';
 import { closesLoop, personByEmail } from '../people/directory.js';
@@ -45,7 +45,10 @@ export async function provisionUser(
     throw forbidden('account_deprovisioned', 'This account has been deprovisioned');
   }
   if (existing && input.mode === 'exchange') {
-    const [personal] = await tx.select({ id: spaces.id }).from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, existing.id)));
+    const [personal] = await tx
+      .select({ id: spaces.id })
+      .from(spaces)
+      .where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, existing.id)));
     return { userId: existing.id, personalSpaceId: personal!.id, created: false };
   }
 
@@ -123,10 +126,7 @@ export async function provisionUser(
   return { userId, personalSpaceId, created: !existing };
 }
 
-async function syncIdpGroups(
-  tx: Transaction,
-  input: { orgId: string; userId: string; groupNames: readonly string[]; audit: AuditScope },
-): Promise<void> {
+async function syncIdpGroups(tx: Transaction, input: { orgId: string; userId: string; groupNames: readonly string[]; audit: AuditScope }): Promise<void> {
   const { orgId, userId, groupNames, audit } = input;
   const wanted = new Map<string, string>();
   for (const name of groupNames) {
@@ -147,9 +147,15 @@ async function syncIdpGroups(
   const added = [...wanted].filter(([groupId]) => !current.some((membership) => membership.groupId === groupId));
 
   if (removed.length > 0) {
-    await tx
-      .delete(groupMembers)
-      .where(and(eq(groupMembers.userId, userId), inArray(groupMembers.groupId, removed.map((m) => m.groupId))));
+    await tx.delete(groupMembers).where(
+      and(
+        eq(groupMembers.userId, userId),
+        inArray(
+          groupMembers.groupId,
+          removed.map((m) => m.groupId),
+        ),
+      ),
+    );
   }
   if (added.length > 0) {
     await tx.insert(groupMembers).values(added.map(([groupId]) => ({ groupId, userId, createdAt: audit.now })));
@@ -164,10 +170,7 @@ async function syncIdpGroups(
   }
 }
 
-async function ensurePersonalSpace(
-  tx: Transaction,
-  input: { orgId: string; userId: string; name: string | null; audit: AuditScope },
-): Promise<string> {
+async function ensurePersonalSpace(tx: Transaction, input: { orgId: string; userId: string; name: string | null; audit: AuditScope }): Promise<string> {
   const { orgId, userId, audit } = input;
   const [existing] = await tx
     .select({ id: spaces.id })

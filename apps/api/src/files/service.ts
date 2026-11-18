@@ -1,18 +1,18 @@
 import { createHash } from 'node:crypto';
+import { type FileInfo, type FileKind, ident, type StoredField } from '@platform/app-model';
 import { uuidv7 } from '@platform/audit';
-import { ident, type FileInfo, type FileKind, type StoredField } from '@platform/app-model';
+import type { Database } from '@platform/db';
 import { appEnvironments } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
-import type { LoadedApp } from '../apps/catalog.js';
-import { withAppTransaction, type AppTransaction } from '../apps/transaction.js';
-import { auditScopeFor, recordAudit } from '../audit/writer.js';
-import type { AuthContext } from '../context.js';
-import type { Config } from '../config.js';
-import type { Database } from '@platform/db';
 import type pg from 'pg';
+import type { LoadedApp } from '../apps/catalog.js';
+import { type AppTransaction, withAppTransaction } from '../apps/transaction.js';
+import { auditScopeFor, recordAudit } from '../audit/writer.js';
+import type { Config } from '../config.js';
+import type { AuthContext } from '../context.js';
 import { HttpError, unprocessable } from '../errors.js';
-import { ScannerUnavailableError, type Scanner } from './scan.js';
+import { type Scanner, ScannerUnavailableError, type ScanResult } from './scan.js';
 import { cleanName, sniff } from './sniff.js';
 import type { BlobStore } from './store.js';
 
@@ -97,18 +97,24 @@ export class FileService {
       throw new HttpError(503, 'scanning_unavailable', 'Uploads need a malware scanner, and none is set up here (FILE_SCANNER)');
     }
     const sha256 = createHash('sha256').update(input.content).digest('hex');
-    let scan;
+    let scan: ScanResult;
     try {
       scan = await this.scanner.scan(input.content);
     } catch (error) {
-      if (error instanceof ScannerUnavailableError) throw new HttpError(503, 'scanning_unavailable', 'The malware scanner could not check this file. Try again later.');
+      if (error instanceof ScannerUnavailableError)
+        throw new HttpError(503, 'scanning_unavailable', 'The malware scanner could not check this file. Try again later.');
       throw error;
     }
     const now = ctx.now();
     const scope = auditScopeFor(request, ctx.org.id, now);
     const where = { spaceId: loaded.space.id, appId: loaded.app.id, env: loaded.env.kind };
     if (!scan.clean) {
-      await recordAudit(ctx.db, scope, { action: 'file.upload', outcome: 'denied', ...where, reason: { threat: scan.threat, sha256, size: input.content.length } });
+      await recordAudit(ctx.db, scope, {
+        action: 'file.upload',
+        outcome: 'denied',
+        ...where,
+        reason: { threat: scan.threat, sha256, size: input.content.length },
+      });
       throw unprocessable('file_rejected', `This file was refused: the malware scanner found ${scan.threat}`);
     }
     const id = uuidv7(now.getTime());
@@ -126,7 +132,19 @@ export class FileService {
         `insert into ${this.#table(loaded)} (id, name, content_type, size, sha256, storage_key, scan, created_at, created_by, on_behalf_of, expires_at) ` +
           'values ($1::uuid, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::uuid, $10::uuid, $11::timestamptz) returning *',
         // An agent's upload is the person's, with the agent recorded as who did it.
-        [id, cleanName(input.name, type), type.contentType, input.content.length, sha256, 'pending', scan.scanned ? 'clean' : 'not_scanned', now.toISOString(), auth.agent?.id ?? auth.actor.id, auth.agent ? auth.actor.id : null, expires.toISOString()],
+        [
+          id,
+          cleanName(input.name, type),
+          type.contentType,
+          input.content.length,
+          sha256,
+          'pending',
+          scan.scanned ? 'clean' : 'not_scanned',
+          now.toISOString(),
+          auth.agent?.id ?? auth.actor.id,
+          auth.agent ? auth.actor.id : null,
+          expires.toISOString(),
+        ],
       );
       const key = await this.store.put(tx, loaded.env, id, input.content, type.contentType);
       await tx.platformQuery(`update ${this.#table(loaded)} set storage_key = $2 where id = $1::uuid`, [id, key]);
@@ -167,7 +185,13 @@ export class FileService {
    * Check that a write may use these files: each is in this environment, the caller's own upload,
    * not attached to another record, not expired, and of a kind its field takes.
    */
-  async checkUses(tx: AppTransaction, loaded: LoadedApp, auth: AuthContext, uses: readonly FileUse[], target: { readonly entityId: string; readonly recordId: string | null }): Promise<void> {
+  async checkUses(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    auth: AuthContext,
+    uses: readonly FileUse[],
+    target: { readonly entityId: string; readonly recordId: string | null },
+  ): Promise<void> {
     if (!uses.length) return;
     const rows = (await this.#hasTable(tx, loaded))
       ? (await tx.query<FileRow>(`select * from ${this.#table(loaded)} where id = any($1::uuid[])`, [[...new Set(uses.map((use) => use.fileId))]])).rows
@@ -185,7 +209,7 @@ export class FileService {
       if (!accept.includes(kindOf(row.content_type))) return problem(`${field.label} takes ${accept.map((kind) => KIND_LABEL[kind]).join(' or ')}`);
       return [];
     });
-    if (issues.length) throw unprocessable('invalid_values', 'Some files can\'t be used here', { issues });
+    if (issues.length) throw unprocessable('invalid_values', "Some files can't be used here", { issues });
   }
 
   /** Attach files to the record that now refers to them: they stop expiring, and others can see them through it. */
@@ -214,7 +238,10 @@ export class FileService {
         ).rows;
       });
       if (!rows.length) continue;
-      await this.store.remove(env, rows.map((row) => row.storage_key));
+      await this.store.remove(
+        env,
+        rows.map((row) => row.storage_key),
+      );
       removed += rows.length;
       log?.info({ appId: env.appId, env: env.kind, files: rows.length }, 'Removed expired uploads');
     }
@@ -228,7 +255,10 @@ export class FileService {
 }
 
 /** Run the sweeper now and then, until stopped. */
-export function startFileSweeper(files: FileService, options: { readonly intervalSeconds: number; readonly logger: { info(obj: object, message: string): void; error(obj: object, message: string): void } }): () => void {
+export function startFileSweeper(
+  files: FileService,
+  options: { readonly intervalSeconds: number; readonly logger: { info(obj: object, message: string): void; error(obj: object, message: string): void } },
+): () => void {
   let running = false;
   const timer = setInterval(() => {
     if (running) return;

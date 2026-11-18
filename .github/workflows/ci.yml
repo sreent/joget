@@ -38,6 +38,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm test:integration
@@ -59,7 +60,8 @@ jobs:
           helm template platform deploy/helm/platform \
             --set ingress.enabled=true --set autoscaling.enabled=false \
             --set telemetry.otlpEndpoint=http://otel-collector:4318 \
-            --set a7c.url=https://a7c.example.com --set a7c.tokenSecret=a7c-token > variant.yaml
+            --set ai.provider=anthropic --set ai.model=a-model --set ai.keySecret=ai-key \
+            --set ai.baseUrl=https://gateway.example.com > variant.yaml
           ./kubeconform -strict -summary -kubernetes-version 1.31.0 default.yaml variant.yaml
       - name: Refuse unsafe values
         run: |
@@ -67,8 +69,10 @@ jobs:
                       "--set config.DATABASE_URL=postgres://user:pass@db/platform" \
                       "--set existingSecret=" \
                       "--set config.MFA_EVIDENCE=assume" \
-                      "--set a7c.url=http://a7c.example.com --set a7c.tokenSecret=a7c-token" \
-                      "--set a7c.url=https://a7c.example.com"; do
+                      "--set ai.provider=anthropic --set ai.model=a-model" \
+                      "--set ai.provider=anthropic --set ai.keySecret=ai-key" \
+                      "--set ai.provider=anthropic --set ai.model=a-model --set ai.keySecret=ai-key --set ai.baseUrl=http://gateway.example.com" \
+                      "--set config.AI_PROVIDER=anthropic"; do
             if helm template platform deploy/helm/platform $args > /dev/null 2>&1; then
               echo "::error::The chart accepted unsafe values: $args"; exit 1
             fi

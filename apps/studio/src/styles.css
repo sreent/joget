@@ -1,5 +1,11 @@
+/* Ocean's pieces sit in a layer of their own, after Tailwind's reset and before its utilities: a
+   bare element takes Ocean's look, and a utility on it still wins. */
+@layer theme, base, xyflow, ocean, components, utilities;
 @import "tailwindcss";
 @import "@platform/design/ocean.css";
+/* React Flow's own look sits under Ocean's, so Ocean draws the canvas (its handles stay hidden). */
+@import "@xyflow/react/dist/style.css" layer(xyflow);
+@import "@platform/design/ocean-pieces.css" layer(ocean);
 
 /*
  * Tailwind, drawn in Ocean. Each colour is one of Ocean's meanings, so `bg-surface` or

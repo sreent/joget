@@ -1,6 +1,6 @@
-import { isCondition, type Condition } from '@platform/authz';
+import { type Condition, isCondition } from '@platform/authz';
 import { z } from 'zod';
-import { isExpression, type Expression } from './expressions.js';
+import { type Expression, isExpression } from './expressions.js';
 
 /**
  * The app definition format (design §6): entities hold data; rules check every write; actions
@@ -26,6 +26,7 @@ const Description = z.string().trim().min(1).max(2000);
 const OptionValue = z.string().trim().min(1).max(100);
 
 export const ConditionSchema = z.custom<Condition>((value) => isCondition(value), { message: 'Not a valid condition' });
+export const ExpressionSchema = z.custom<Expression>((value) => isExpression(value), { message: 'Not a valid expression' });
 
 const fieldCommon = {
   id: Id.optional(),
@@ -33,6 +34,8 @@ const fieldCommon = {
   label: Label,
   description: Description.optional(),
   required: z.boolean().default(false),
+  /** Required only while this holds, of the record's own values: a rule the platform checks on every write. */
+  requiredWhen: ConditionSchema.optional(),
   /** `pii` fields are masked for app roles unless a role unmasks them. */
   classification: z.enum(['internal', 'confidential', 'pii']).default('internal'),
 };
@@ -42,6 +45,13 @@ export const MAX_TEXT_LENGTH = 10_000;
 export const MAX_NUMBER_MAGNITUDE = 1e15;
 /** The most lines a record can have in one lines field. */
 export const MAX_LINES = 500;
+
+/**
+ * A value the platform works out from the record's own fields each time the record is written, and
+ * stores, so that lists, conditions and charts can use it: a total with tax, a full name, a due date.
+ * People and agents can't set it.
+ */
+const Formula = ExpressionSchema;
 
 /** A field of the lines in a lines field, such as `lines.amount`. */
 export const LINE_PATH_PATTERN = /^([a-z][a-z0-9_]{0,62})\.([a-z][a-z0-9_]{0,62})$/;
@@ -67,6 +77,7 @@ const TextField = z.strictObject({
   multiline: z.boolean().default(false),
   unique: z.boolean().default(false),
   default: z.string().max(MAX_TEXT_LENGTH).optional(),
+  formula: Formula.optional(),
 });
 
 const EmailField = z.strictObject({
@@ -86,25 +97,52 @@ const NumberField = z.strictObject({
   default: z.number().optional(),
   /** Work the value out from a lines field. People and agents can't set it. */
   rollup: Rollup.optional(),
+  formula: Formula.optional(),
 });
 
-const BooleanField = z.strictObject({ ...fieldCommon, type: z.literal('boolean'), default: z.boolean().optional() });
-const DateField = z.strictObject({ ...fieldCommon, type: z.literal('date') });
-const DateTimeField = z.strictObject({ ...fieldCommon, type: z.literal('datetime') });
+const BooleanField = z.strictObject({ ...fieldCommon, type: z.literal('boolean'), default: z.boolean().optional(), formula: Formula.optional() });
+const DateField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('date'),
+  /** A fixed date; or a day so many days from the day a record is created, where `{ today: 0 }` is that day. */
+  default: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Give a date as YYYY-MM-DD'), z.strictObject({ today: z.int().min(-3660).max(3660) })]).optional(),
+  formula: Formula.optional(),
+});
+const DateTimeField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('datetime'),
+  /** The moment a record is created, or so many hours from it. */
+  default: z.strictObject({ now: z.int().min(-8784).max(8784) }).optional(),
+  formula: Formula.optional(),
+});
 
 const ChoiceField = z.strictObject({
   ...fieldCommon,
   type: z.literal('choice'),
-  options: z.array(z.strictObject({ value: OptionValue, label: Label })).min(1).max(200),
+  options: z
+    .array(z.strictObject({ value: OptionValue, label: Label }))
+    .min(1)
+    .max(200),
   multiple: z.boolean().default(false),
   default: z.union([OptionValue, z.array(OptionValue).max(200)]).optional(),
 });
 
-/** A link to a record of another entity in the same app. */
-const ReferenceField = z.strictObject({ ...fieldCommon, type: z.literal('reference'), entity: Name });
+/** A link to a record of another entity in the same app, or to several. */
+const ReferenceField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('reference'),
+  entity: Name,
+  /** Several records, each once, in the order given, such as the people of a project's team: many to many. */
+  multiple: z.boolean().optional(),
+});
 
 /** A person in the directory, for example who a request is assigned to. */
-const UserField = z.strictObject({ ...fieldCommon, type: z.literal('user') });
+const UserField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('user'),
+  /** The person who creates the record. */
+  default: z.strictObject({ me: z.literal(true) }).optional(),
+});
 
 /** The kinds of file a file field can take. The platform reads each file's type from its content, not its name. */
 export const FILE_KINDS = ['image', 'pdf'] as const;
@@ -117,7 +155,11 @@ export type FileKind = (typeof FILE_KINDS)[number];
 const FileField = z.strictObject({
   ...fieldCommon,
   type: z.literal('file'),
-  accept: z.array(z.enum(FILE_KINDS)).min(1).max(FILE_KINDS.length).default([...FILE_KINDS]),
+  accept: z
+    .array(z.enum(FILE_KINDS))
+    .min(1)
+    .max(FILE_KINDS.length)
+    .default([...FILE_KINDS]),
 });
 
 /**
@@ -185,12 +227,6 @@ const Literal = z.union([z.string().max(MAX_TEXT_LENGTH), z.number(), z.boolean(
 export const CONFIRMATION_LEVELS = ['none', 'preview', 'review'] as const;
 export type ConfirmationLevel = (typeof CONFIRMATION_LEVELS)[number];
 
-export const ExpressionSchema = z.custom<Expression>((value) => isExpression(value), { message: 'Not a valid expression' });
-
-/** An a7c skill, as `<project>/<skill>`, for example `finance/pay-expense-claim`. */
-export const SKILL_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}\/[a-z0-9][a-z0-9-]{0,62}$/;
-const SkillInputName = z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,62}$/, 'Name an input with letters, digits and underscores, starting with a letter');
-
 /** Set a field of the record to a value that the step works out. */
 const SetStep = z.strictObject({ type: z.literal('set'), field: Name, value: ExpressionSchema });
 /** Add a line to a lines field of the record, such as a receipt to a claim. */
@@ -204,20 +240,8 @@ const CheckStep = z.strictObject({
   /** The fields the message points at, so screens can highlight them. */
   fields: z.array(Name).max(20).optional(),
 });
-/**
- * Start an a7c skill once the change is saved (design §6.2): automation across other systems
- * belongs to a7c. The call waits in an outbox, so it starts once, and only if the change commits.
- */
-const SkillStep = z.strictObject({
-  type: z.literal('skill'),
-  /** What the skill does, in the words a person reads on the review card. */
-  label: Label,
-  skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim'),
-  /** The skill's input, worked out from the record. */
-  input: z.record(SkillInputName, ExpressionSchema).default({}),
-});
 /** A step that a branch can hold. Branches go one level deep, so that an action's logic stays a short list. */
-export const SimpleStep = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, SkillStep]);
+export const SimpleStep = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep]);
 export type SimpleStep = z.infer<typeof SimpleStep>;
 /** Take one of two short lists of steps, depending on a condition. */
 const IfStep = z.strictObject({
@@ -226,9 +250,509 @@ const IfStep = z.strictObject({
   then: z.array(SimpleStep).max(10),
   else: z.array(SimpleStep).max(10).default([]),
 });
-export const Step = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, SkillStep, IfStep]);
+export const Step = z.discriminatedUnion('type', [SetStep, AddLineStep, CheckStep, IfStep]);
 export type Step = z.infer<typeof Step>;
 export const MAX_STEPS = 20;
+
+/*
+ * People and time: who a task waits for, and how long. A flow's tasks and waits use them, and so
+ * does the process engine that runs a flow that waits.
+ */
+
+/** An ISO 8601 duration, as BPMN 2.0's timers use: P3D is three days, PT4H four hours. */
+export const DURATION_PATTERN =
+  /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
+export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in ISO 8601, for example P3D for three days or PT4H for four hours');
+
+/**
+ * When a timer fires: after a duration, or on a date or time field of the record, such as the first
+ * day of a leave. A date can move: `before: 'P2D'` fires two days before it, `after` after it.
+ */
+export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name, before: Duration.optional(), after: Duration.optional() })]);
+export type Timer = z.infer<typeof Timer>;
+
+/**
+ * Who of a role's holders a task waits for. Routing narrows; the role grants: whoever it names
+ * still decides under the role's permissions.
+ */
+export const Routing = z.union([
+  /** Whoever a user field of the record names, such as the manager the requester chose. */
+  z.strictObject({ field: Name }),
+  /** The manager of whoever a user field names, from the directory, `levels` up the reporting line. */
+  z.strictObject({ managerOf: Name, levels: z.int().min(1).max(5).default(1) }),
+]);
+export type Routing = z.infer<typeof Routing>;
+
+/** Who votes, when several people decide a task. */
+export const Voters = z.union([
+  /** Everyone with the task's role, in its department where it has one. */
+  z.strictObject({ everyone: z.literal(true) }),
+  /** The people some user fields of the record name, such as two reviewers. */
+  z.strictObject({ fields: z.array(Name).min(2).max(10) }),
+  /** The reporting line up from whoever a user field names: their manager, that manager's, and so on. */
+  z.strictObject({ lineOf: Name, levels: z.int().min(2).max(5) }),
+]);
+export type Voters = z.infer<typeof Voters>;
+
+/**
+ * What decides a task that several people decide: the first vote; or a number of votes for one
+ * outcome, all of them, or a majority, and the other outcome once that can no longer happen.
+ */
+export const VoteRule = z.union([
+  z.strictObject({ first: z.literal(true) }),
+  z.strictObject({ count: z.union([z.int().min(1).max(50), z.enum(['all', 'majority'])]), outcome: Name, otherwise: Name }),
+]);
+export type VoteRule = z.infer<typeof VoteRule>;
+
+/** Several people decide a task, each with a vote in their own inbox: at once, or one after another. */
+export const Several = z.strictObject({ people: Voters, sequential: z.boolean().default(false), decide: VoteRule });
+export type Several = z.infer<typeof Several>;
+
+/*
+ * Integration (design §6.13): the systems an app talks to. A connection is a service that its
+ * flows call, at an address, or a Teams channel that notices go to. Each environment keeps the
+ * connection's secret, which the platform adds to each call: the definition holds none, and a flow
+ * never sees it. A webhook is a way in: another system's request, signed with the environment's
+ * secret, runs a flow.
+ */
+
+/** How a service knows the app: nothing, a bearer token, a user name and password, or a key in a header. */
+export const ConnectionAuth = z.union([
+  z.strictObject({ type: z.literal('none') }),
+  z.strictObject({ type: z.literal('bearer') }),
+  z.strictObject({ type: z.literal('basic'), user: z.string().min(1).max(200) }),
+  z.strictObject({ type: z.literal('header'), header: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,63}$/, 'Name a header, such as X-Api-Key') }),
+]);
+export type ConnectionAuth = z.infer<typeof ConnectionAuth>;
+export const Connection = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('service'),
+    label: Label,
+    description: Description.optional(),
+    /** Every call goes under this address, such as https://api.example.com/v1. */
+    url: z.url().max(500),
+    auth: ConnectionAuth.default({ type: 'none' }),
+    /** Whether flows may send it personal data. A change request shows it. */
+    personalData: z.boolean().default(false),
+  }),
+  /** A Teams channel: its incoming webhook's address is the secret. */
+  z.strictObject({ kind: z.literal('teams'), label: Label, description: Description.optional() }),
+]);
+export type Connection = z.infer<typeof Connection>;
+export const Webhook = z.strictObject({
+  label: Label,
+  description: Description.optional(),
+  /** The flow it runs, in one go, with the app's authority. */
+  flow: Name,
+  /** Each input of the flow, from a place in the request's JSON, such as order.id. */
+  input: z.record(Name, z.string().max(200)).default({}),
+});
+export type Webhook = z.infer<typeof Webhook>;
+/** A place in JSON: names and list positions, such as data.items.0.id. Empty: the whole of it. */
+export const JSON_PATH = /^$|^[A-Za-z0-9_$-]+(\.[A-Za-z0-9_$-]+){0,15}$/;
+
+/*
+ * Flows (design §6.2, §6.11): what happens in an app, as a Mendix microflow is. A flow finds,
+ * creates, changes and deletes records, loops, decides, calls other flows and handles errors. It
+ * runs in one go, in one transaction; or it waits for people and for time, and keeps its place on
+ * one record while it waits. A flow that waits runs on the process engine (§6.10), which it
+ * compiles to.
+ */
+
+/** The kind of value that a flow's input, variable or result holds. */
+export const FlowType = z.union([
+  z.strictObject({ type: z.enum(['text', 'number', 'boolean', 'date', 'datetime']) }),
+  z.strictObject({ type: z.literal('record'), entity: Name }),
+  z.strictObject({ type: z.literal('list'), entity: Name }),
+]);
+export type FlowType = z.infer<typeof FlowType>;
+
+/** Values for a record's fields, or for a flow's input, by name. */
+const FlowValues = z.record(Name, ExpressionSchema);
+/** A list variable, or a lines field of a record variable, as `claim.lines`. */
+const FlowList = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, "Name a list variable, or a record variable's lines field, as claim.lines");
+/** The most steps in one list of steps, and in a whole flow. */
+export const MAX_FLOW_BLOCK = 50;
+export const MAX_FLOW_STEPS = 200;
+/** How deep steps go: loops, branches and error handlers inside one another. */
+export const MAX_FLOW_DEPTH = 6;
+
+/** Give a variable a value. */
+const FlowSet = z.strictObject({ type: z.literal('set'), var: Name, value: ExpressionSchema });
+/** Find records of an entity: in its condition, `record.<field>` is a record it looks at. */
+const FlowFind = z.strictObject({
+  type: z.literal('find'),
+  var: Name,
+  entity: Name,
+  where: ConditionSchema.optional(),
+  sort: z
+    .array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') }))
+    .max(3)
+    .optional(),
+  limit: z.int().min(1).max(1000).default(100),
+  /** One record, or none, instead of a list. */
+  first: z.boolean().optional(),
+});
+/** Create a record, and keep it in a variable. */
+const FlowCreate = z.strictObject({ type: z.literal('create'), entity: Name, values: FlowValues.default({}), var: Name.optional() });
+/** Change a record that a variable holds. */
+const FlowChange = z.strictObject({ type: z.literal('change'), record: Name, values: FlowValues });
+/** Delete a record that a variable holds. */
+const FlowDelete = z.strictObject({ type: z.literal('delete'), record: Name });
+/** Add a line to a lines field of a record that a variable holds. */
+const FlowAddLine = z.strictObject({ type: z.literal('add_line'), record: Name, field: Name, values: FlowValues });
+/** Stop the flow with a message unless a condition holds; or, as a warning, note the message and go on. */
+const FlowCheck = z.strictObject({
+  type: z.literal('check'),
+  assert: ConditionSchema,
+  message: z.string().trim().min(1).max(500),
+  severity: z.enum(['error', 'warning']).default('error'),
+  /** The values the message is about, as claim.iban: a form marks those of the record its action saves. */
+  fields: z
+    .array(z.string().regex(/^[a-z][a-z0-9_]{0,62}\.[a-z][a-z0-9_]{0,62}$/, 'Name a field of a record variable, as claim.iban'))
+    .max(20)
+    .optional(),
+});
+/** Run another flow of the app, and keep its result. */
+const FlowCall = z.strictObject({ type: z.literal('call'), flow: Name, input: FlowValues.default({}), var: Name.optional() });
+/** Count the items of a list, or total, average or find the lowest or highest of a number field. */
+const FlowTotal = z.strictObject({
+  type: z.literal('total'),
+  var: Name,
+  of: FlowList,
+  op: z.enum(['count', 'sum', 'avg', 'min', 'max']),
+  field: Name.optional(),
+});
+/** End the flow, with its result. */
+const FlowReturn = z.strictObject({ type: z.literal('return'), value: ExpressionSchema.optional() });
+/**
+ * What a wait waits for: a time, a date or time field of the record, an update action committing
+ * on the record (such as the requester withdrawing), a condition on the record, or a signal.
+ */
+export const WaitFor = z.union([
+  z.strictObject({ duration: Duration }),
+  z.strictObject({ date: Name, before: Duration.optional(), after: Duration.optional() }),
+  z.strictObject({ action: Name }),
+  z.strictObject({ condition: ConditionSchema }),
+  z.strictObject({ signal: Name }),
+]);
+export type WaitFor = z.infer<typeof WaitFor>;
+/** Wait, then go on. */
+const FlowWait = z.strictObject({ type: z.literal('wait'), for: WaitFor });
+/**
+ * Call a service through a connection, and keep what its answer says in variables, each of a kind.
+ * An answer that isn't a success fails the step, which an error handler can catch.
+ */
+const FlowCallService = z.strictObject({
+  type: z.literal('call_service'),
+  connection: Name,
+  method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
+  /** Where under the connection's address, as text worked out from values, such as /customers/42. */
+  path: ExpressionSchema.default(''),
+  query: FlowValues.default({}),
+  /** The JSON it sends: values by name. */
+  body: FlowValues.optional(),
+  /** The variables its answer gives: each from a place in the answer's JSON. */
+  results: z
+    .record(
+      Name,
+      z.strictObject({
+        from: z.string().regex(JSON_PATH, 'Name a place in the answer, such as data.id'),
+        type: z.enum(['text', 'number', 'boolean', 'date', 'datetime']),
+      }),
+    )
+    .default({}),
+});
+/** Whom a notice goes to: a person a value names, such as a user field of a record, or everyone with a role of the app. */
+export const Recipient = z.union([z.strictObject({ person: ExpressionSchema }), z.strictObject({ role: Name })]);
+export type Recipient = z.infer<typeof Recipient>;
+/**
+ * Tell people: a notice in the app for each, and an email to each who takes email, in words worked
+ * out from the flow's values. It goes only to people the app is shared with.
+ */
+const FlowInform = z.strictObject({
+  type: z.literal('inform'),
+  to: z.array(Recipient).min(1).max(10),
+  /** What it says first: its title in the app, and the email's subject. */
+  title: ExpressionSchema,
+  /** What it says after its title. */
+  message: ExpressionSchema.optional(),
+  /** A record variable: the record the notice is about, which it links to. */
+  about: Name.optional(),
+  /** By email too, to each who takes email. */
+  email: z.boolean().default(true),
+  /** A Teams connection: the channel it posts to as well. */
+  teams: Name.optional(),
+});
+/**
+ * How a flow that waits starts by itself on a record of the entity it is about: when the record is
+ * created, or a time after; on a date or time field of the record, or a time before or after it;
+ * when a change makes a condition on the record hold, where it didn't before; or on a signal.
+ */
+export const FlowStart = z.union([
+  z.strictObject({ created: z.literal(true), after: Duration.optional() }),
+  z.strictObject({ date: Name, before: Duration.optional(), after: Duration.optional() }),
+  z.strictObject({ condition: ConditionSchema }),
+  z.strictObject({ signal: Name }),
+]);
+export type FlowStart = z.infer<typeof FlowStart>;
+export const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+/**
+ * When a flow that needs no input runs by itself: every hour, day, weekday, week or month, at a time
+ * of day in a time zone. Every hour, it runs at the minutes of `at`.
+ */
+export const Schedule = z.strictObject({
+  every: z.enum(['hour', 'day', 'weekday', 'week', 'month']),
+  at: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Give a time of day as HH:MM, for example 07:30')
+    .default('00:00'),
+  /** Every week: the day it runs. */
+  on: z.enum(WEEKDAYS).optional(),
+  /** Every month: the day of the month it runs, 1 to 28, or the last day. */
+  day: z.union([z.int().min(1).max(28), z.literal('last')]).optional(),
+  /** The time zone of the time of day, such as Europe/London. Without it, UTC. */
+  zone: z.string().min(1).max(64).optional(),
+});
+export type Schedule = z.infer<typeof Schedule>;
+/** A step of a flow. Written out, because a step can hold steps, and declarations keep only what is written. */
+export type FlowStep =
+  | { readonly type: 'set'; readonly var: string; readonly value: Expression }
+  | {
+      readonly type: 'find';
+      readonly var: string;
+      readonly entity: string;
+      readonly where?: Condition | undefined;
+      readonly sort?: Array<{ readonly field: string; readonly direction: 'asc' | 'desc' }> | undefined;
+      readonly limit: number;
+      readonly first?: boolean | undefined;
+    }
+  | { readonly type: 'create'; readonly entity: string; readonly values: Record<string, Expression>; readonly var?: string | undefined }
+  | { readonly type: 'change'; readonly record: string; readonly values: Record<string, Expression> }
+  | { readonly type: 'delete'; readonly record: string }
+  | { readonly type: 'add_line'; readonly record: string; readonly field: string; readonly values: Record<string, Expression> }
+  | { readonly type: 'each'; readonly in: string; readonly as: string; readonly steps: FlowStep[] }
+  | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStep[]; readonly else: FlowStep[] }
+  | {
+      readonly type: 'check';
+      readonly assert: Condition;
+      readonly message: string;
+      readonly severity: 'error' | 'warning';
+      readonly fields?: string[] | undefined;
+    }
+  | { readonly type: 'call'; readonly flow: string; readonly input: Record<string, Expression>; readonly var?: string | undefined }
+  | { readonly type: 'try'; readonly steps: FlowStep[]; readonly catch: FlowStep[]; readonly rollback: boolean; readonly error?: string | undefined }
+  | {
+      readonly type: 'total';
+      readonly var: string;
+      readonly of: string;
+      readonly op: 'count' | 'sum' | 'avg' | 'min' | 'max';
+      readonly field?: string | undefined;
+    }
+  | { readonly type: 'return'; readonly value?: Expression | undefined }
+  | {
+      readonly type: 'task';
+      readonly label: string;
+      readonly description?: string | undefined;
+      readonly role: string;
+      readonly assignee?: Routing | undefined;
+      readonly department?: { readonly of: string } | undefined;
+      readonly several?: Several | undefined;
+      readonly outcomes: Array<{ readonly name: string; readonly label: string; readonly action?: string | undefined; readonly steps: FlowStep[] }>;
+      readonly due?: string | undefined;
+      readonly card?: string | undefined;
+      readonly deadline?: { readonly after: string; readonly steps: FlowStep[] } | undefined;
+      readonly reminders?: Array<{ readonly after: string; readonly steps: FlowStep[] }> | undefined;
+    }
+  | { readonly type: 'repeat'; readonly while: Condition; readonly max: number; readonly steps: FlowStep[] }
+  | {
+      readonly type: 'inform';
+      readonly to: Array<{ readonly person: Expression } | { readonly role: string }>;
+      readonly title: Expression;
+      readonly message?: Expression | undefined;
+      readonly about?: string | undefined;
+      readonly email: boolean;
+      readonly teams?: string | undefined;
+    }
+  | {
+      readonly type: 'call_service';
+      readonly connection: string;
+      readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+      readonly path: Expression;
+      readonly query: Record<string, Expression>;
+      readonly body?: Record<string, Expression> | undefined;
+      readonly results: Record<string, { readonly from: string; readonly type: 'text' | 'number' | 'boolean' | 'date' | 'datetime' }>;
+    }
+  | { readonly type: 'wait'; readonly for: WaitFor }
+  | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps: FlowStep[] }> }
+  | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps: FlowStep[] }> };
+
+/** A step as it is written, before defaults fill in. */
+export type FlowStepInput =
+  | Extract<FlowStep, { type: 'set' | 'delete' | 'add_line' | 'change' | 'total' | 'return' }>
+  | (Omit<Extract<FlowStep, { type: 'find' }>, 'limit' | 'sort'> & {
+      readonly limit?: number | undefined;
+      readonly sort?: Array<{ readonly field: string; readonly direction?: 'asc' | 'desc' | undefined }> | undefined;
+    })
+  | (Omit<Extract<FlowStep, { type: 'create' }>, 'values'> & { readonly values?: Record<string, Expression> | undefined })
+  | { readonly type: 'each'; readonly in: string; readonly as: string; readonly steps: FlowStepInput[] }
+  | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStepInput[]; readonly else?: FlowStepInput[] | undefined }
+  | (Omit<Extract<FlowStep, { type: 'check' }>, 'severity'> & { readonly severity?: 'error' | 'warning' | undefined })
+  | (Omit<Extract<FlowStep, { type: 'call' }>, 'input'> & { readonly input?: Record<string, Expression> | undefined })
+  | {
+      readonly type: 'try';
+      readonly steps: FlowStepInput[];
+      readonly catch?: FlowStepInput[] | undefined;
+      readonly rollback?: boolean | undefined;
+      readonly error?: string | undefined;
+    }
+  | (Omit<Extract<FlowStep, { type: 'task' }>, 'assignee' | 'several' | 'outcomes' | 'deadline' | 'reminders'> & {
+      readonly assignee?: z.input<typeof Routing> | undefined;
+      readonly several?: z.input<typeof Several> | undefined;
+      readonly outcomes: Array<{
+        readonly name: string;
+        readonly label: string;
+        readonly action?: string | undefined;
+        readonly steps?: FlowStepInput[] | undefined;
+      }>;
+      readonly deadline?: { readonly after: string; readonly steps?: FlowStepInput[] | undefined } | undefined;
+      readonly reminders?: Array<{ readonly after: string; readonly steps?: FlowStepInput[] | undefined }> | undefined;
+    })
+  | { readonly type: 'repeat'; readonly while: Condition; readonly max?: number | undefined; readonly steps: FlowStepInput[] }
+  | (Omit<Extract<FlowStep, { type: 'inform' }>, 'email'> & { readonly email?: boolean | undefined })
+  | (Omit<Extract<FlowStep, { type: 'call_service' }>, 'method' | 'path' | 'query' | 'results'> & {
+      readonly method?: Extract<FlowStep, { type: 'call_service' }>['method'] | undefined;
+      readonly path?: Expression | undefined;
+      readonly query?: Record<string, Expression> | undefined;
+      readonly results?: Extract<FlowStep, { type: 'call_service' }>['results'] | undefined;
+    })
+  | Extract<FlowStep, { type: 'wait' }>
+  | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps?: FlowStepInput[] | undefined }> }
+  | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps?: FlowStepInput[] | undefined }> };
+
+/** A list of steps, which a loop, a branch or an error handler holds. */
+const flowSteps = (min = 0) =>
+  z
+    .array(z.lazy(() => FlowStep))
+    .min(min)
+    .max(MAX_FLOW_BLOCK);
+
+/** Run steps for each item of a list. */
+const FlowEach = z.strictObject({
+  type: z.literal('each'),
+  in: FlowList,
+  /** The variable that holds the item. */
+  as: Name,
+  steps: flowSteps(),
+});
+/** Take one of two lists of steps, depending on a condition. */
+const FlowIf = z.strictObject({ type: z.literal('if'), when: ConditionSchema, then: flowSteps(), else: flowSteps().default([]) });
+/**
+ * Run steps, and if one fails, run others instead. By default what the steps changed is undone
+ * first; `rollback: false` keeps it. `error` names the variable that holds the failure's message.
+ */
+const FlowTry = z.strictObject({
+  type: z.literal('try'),
+  steps: flowSteps(),
+  catch: flowSteps().default([]),
+  rollback: z.boolean().default(true),
+  error: Name.optional(),
+});
+/**
+ * Work a person does, such as deciding on a leave: the flow waits until they choose an outcome,
+ * and goes on by the way of that outcome. An outcome can run one of the app's update actions on
+ * the record, as the person who decides. A deadline ends the task once it waits too long, and
+ * goes on by its own way.
+ */
+const FlowTask = z.strictObject({
+  type: z.literal('task'),
+  /** What the inbox calls the task. */
+  label: Label,
+  description: Description.optional(),
+  /** The app role whose holders may do the task. A role grants; routing only narrows. */
+  role: Name,
+  assignee: Routing.optional(),
+  department: z.strictObject({ of: Name }).optional(),
+  several: Several.optional(),
+  outcomes: z
+    .array(z.strictObject({ name: Name, label: Label, action: Name.optional(), steps: flowSteps().default([]) }))
+    .min(1)
+    .max(10),
+  /** How long the task may stay open, from when it opens: its due date in the inbox. */
+  due: Duration.optional(),
+  /** The review card the task shows. */
+  card: Name.optional(),
+  deadline: z.strictObject({ after: Duration, steps: flowSteps().default([]) }).optional(),
+  /** Steps that run while the task still waits, a time after it opens, such as telling whoever has it. The task waits on. */
+  reminders: z
+    .array(z.strictObject({ after: Duration, steps: flowSteps().default([]) }))
+    .min(1)
+    .max(3)
+    .optional(),
+});
+/**
+ * Run steps again while a condition holds, checked before each time, up to `max` times in all. In a
+ * flow that waits, the steps can wait, and the condition reads the record.
+ */
+const FlowRepeat = z.strictObject({ type: z.literal('repeat'), while: ConditionSchema, max: z.int().min(1).max(100).default(10), steps: flowSteps() });
+/** Wait for the first of several things, and go on by its way: the others no longer wait. */
+const FlowFirstOf = z.strictObject({
+  type: z.literal('first_of'),
+  ways: z
+    .array(z.strictObject({ for: WaitFor, steps: flowSteps().default([]) }))
+    .min(1)
+    .max(10),
+});
+/** Run several ways at once, and go on once each has ended. */
+const FlowAllAtOnce = z.strictObject({
+  type: z.literal('all_at_once'),
+  ways: z
+    .array(z.strictObject({ steps: flowSteps().default([]) }))
+    .min(1)
+    .max(10),
+});
+export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion('type', [
+  FlowSet,
+  FlowFind,
+  FlowCreate,
+  FlowChange,
+  FlowDelete,
+  FlowAddLine,
+  FlowEach,
+  FlowIf,
+  FlowCheck,
+  FlowCall,
+  FlowTry,
+  FlowTotal,
+  FlowReturn,
+  FlowTask,
+  FlowRepeat,
+  FlowInform,
+  FlowCallService,
+  FlowWait,
+  FlowFirstOf,
+  FlowAllAtOnce,
+]);
+
+export const AppFlow = z.strictObject({
+  label: Label,
+  /** What the flow does, for builders and reviewers. */
+  description: Description.optional(),
+  input: z.record(Name, FlowType).default({}),
+  output: FlowType.optional(),
+  /** A flow that waits starts by itself on records of its entity, in each of these ways. */
+  starts: z.array(FlowStart).min(1).max(5).optional(),
+  /** A flow that needs no input runs by itself on a schedule, with the app's authority. */
+  schedule: Schedule.optional(),
+  steps: z.array(FlowStep).max(MAX_FLOW_BLOCK),
+});
+export type AppFlow = z.infer<typeof AppFlow>;
+
+/** A flow that an action or a service task runs, with its input worked out from the record. */
+export const FlowRun = z.strictObject({ flow: Name, input: FlowValues.default({}) });
+export type FlowRun = z.infer<typeof FlowRun>;
 
 export const Action = z.strictObject({
   label: Label,
@@ -247,9 +771,16 @@ export const Action = z.strictObject({
   /** The review card a person checks before confirming. */
   card: Name.optional(),
   /**
-   * What the action does after it takes its input and sets its values, step by step: set values,
-   * add lines, check, branch, and start a7c skills. The steps run when the change is worked out,
-   * so a preview and a proposal show their result, and a person approves exactly that.
+   * A flow that runs before the action saves, on the record as the action shapes it: it checks the
+   * record, and changes it and adds lines to it. It runs whenever the change is worked out, so a
+   * preview and a proposal show its result, and a person approves exactly that.
+   */
+  before: FlowRun.optional(),
+  /** A flow that runs once the action writes its record, in the same transaction. */
+  flow: FlowRun.optional(),
+  /**
+   * Steps, as an older definition gave them. Checking the definition moves them into a flow that
+   * runs before the action saves, which does the same.
    */
   steps: z.array(Step).max(MAX_STEPS).optional(),
 });
@@ -309,7 +840,10 @@ export const Query = z.strictObject({
   /** A fixed filter. May use `principal.*` (my claims) and `input.<parameter>`. */
   filter: ConditionSchema.optional(),
   parameters: z.record(Name, Parameter).default({}),
-  sort: z.array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') })).max(3).default([]),
+  sort: z
+    .array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') }))
+    .max(3)
+    .default([]),
   limit: z.int().min(1).max(200).default(50),
   /** Answer with numbers, worked out over the records the caller may read, instead of the records. */
   summary: QuerySummary.optional(),
@@ -335,6 +869,8 @@ const FormField = z.strictObject({
   width: z.enum(['full', 'half']).default('full'),
   /** Shown but not editable here. */
   readOnly: z.boolean().default(false),
+  /** Shown only while this holds, of the values on the form. A field it hides sends no value. */
+  visibleWhen: ConditionSchema.optional(),
 });
 
 /**
@@ -346,6 +882,8 @@ export const Form = z.strictObject({
   entity: Name,
   /** Submit through this action, so its rules and confirmation apply. Without one, the form creates and edits records. */
   action: Name.optional(),
+  /** All its sections on one page; or in steps, a section at a time, each checked before the next. */
+  layout: z.enum(['page', 'steps']).default('page'),
   sections: z
     .array(z.strictObject({ title: Label.optional(), fields: z.array(FormField).max(MAX_FIELDS) }))
     .min(1)
@@ -373,13 +911,31 @@ const ListBlock = z.strictObject({
   columns: z.array(Name).min(1).max(12),
   /** Which records. May use `principal.*`, as in "my claims". */
   filter: ConditionSchema.optional(),
-  sort: z.array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') })).max(3).default([]),
+  sort: z
+    .array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') }))
+    .max(3)
+    .default([]),
   /** How many records show at first; more come on request. */
   limit: z.int().min(1).max(100).default(20),
   /** Update actions that run on a row in one click, such as Approve. */
   actions: z.array(Name).max(5).default([]),
   /** What to say when there are no records. */
   empty: z.string().trim().min(1).max(200).optional(),
+  /**
+   * On a page about one record: only the records whose reference field of this name points at it,
+   * such as a customer's orders on the customer's page.
+   */
+  of: Name.optional(),
+  /** The page about one record that a row opens. Without one, a row opens the record's own screen. */
+  open: Name.optional(),
+});
+
+/** The fields of the record a page is about, and update actions that run on it in one click. */
+const FieldsBlock = z.strictObject({
+  type: z.literal('fields'),
+  title: Label.optional(),
+  fields: z.array(Name).min(1).max(40),
+  actions: z.array(Name).max(5).default([]),
 });
 
 /** Buttons that open a form, or another page. */
@@ -399,6 +955,8 @@ const StatBlock = z.strictObject({
   measure: Measure,
   filter: ConditionSchema.optional(),
   range: TimeRange.optional(),
+  /** On a page about one record: only the records whose reference field of this name points at it. */
+  of: Name.optional(),
 });
 
 /**
@@ -419,10 +977,26 @@ const ChartBlock = z.strictObject({
   /** At most this many bars or points: for periods, the latest; otherwise the largest, the rest as "Other". */
   limit: z.int().min(2).max(24).default(8),
   width: z.enum(['full', 'half']).default('half'),
+  /** On a page about one record: only the records whose reference field of this name points at it. */
+  of: Name.optional(),
 });
 
-export const PageBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock, StatBlock, ChartBlock]);
+/** A block that a tab holds: any but tabs, which go one level deep. */
+const TabBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock, StatBlock, ChartBlock, FieldsBlock]);
+/** Tabs, each holding blocks: one tab shows at a time, as a choice of views. */
+const TabsBlock = z.strictObject({
+  type: z.literal('tabs'),
+  tabs: z
+    .array(z.strictObject({ label: Label, blocks: z.array(TabBlock).min(1).max(20) }))
+    .min(2)
+    .max(8),
+});
+
+export const PageBlock = z.discriminatedUnion('type', [TextBlock, ListBlock, ButtonsBlock, StatBlock, ChartBlock, FieldsBlock, TabsBlock]);
 export type PageBlock = z.infer<typeof PageBlock>;
+export type TabBlock = z.infer<typeof TabBlock>;
+export type FieldsBlock = z.infer<typeof FieldsBlock>;
+export type TabsBlock = z.infer<typeof TabsBlock>;
 export type ListBlock = z.infer<typeof ListBlock>;
 export type StatBlock = z.infer<typeof StatBlock>;
 export type ChartBlock = z.infer<typeof ChartBlock>;
@@ -440,9 +1014,20 @@ export const Page = z.strictObject({
    * the app's roles, such as its builder, see every page.
    */
   roles: z.array(Name).max(20).optional(),
+  /**
+   * A page about one record of an entity: a list's row opens it, and its blocks show that record,
+   * its fields and the records that refer to it. The menu can't open it, as it needs its record.
+   */
+  record: z.strictObject({ entity: Name }).optional(),
   blocks: z.array(PageBlock).min(1).max(30),
 });
 export type Page = z.infer<typeof Page>;
+
+/**
+ * Where a block is on its page: its place, as "2"; or, inside tabs, the tabs' place, the tab and
+ * the block's place in it, as "2.1.0".
+ */
+export const BLOCK_PATH = /^(\d{1,2})(?:\.(\d)\.(\d{1,2}))?$/;
 
 /** One item of an app's menu: a page, a form, an entity's records, or a heading over the items below it. */
 export const NavItem = z.union([
@@ -475,13 +1060,20 @@ export type Navigation = z.infer<typeof Navigation>;
 export const ELEMENT_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/;
 export const ElementId = z.string().regex(ELEMENT_ID_PATTERN, 'Use letters, digits, hyphens and underscores, starting with a letter or an underscore');
 
-/** An ISO 8601 duration, as BPMN 2.0's timers use: P3D is three days, PT4H four hours. */
-export const DURATION_PATTERN = /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
-export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in ISO 8601, for example P3D for three days or PT4H for four hours');
+/**
+ * A message, as Ambit's processes hear one: one of the app's update actions committing on the
+ * record, such as the requester withdrawing. A process that sends one runs the action itself: on
+ * its own record, or on the record that a reference field names, whose processes then hear it.
+ */
+export const Message = z.strictObject({ action: Name, record: Name.optional() });
+export type Message = z.infer<typeof Message>;
 
-/** When a timer fires: after a duration, or on a date or time field of the record, such as the first day of a leave. */
-export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name })]);
-export type Timer = z.infer<typeof Timer>;
+/**
+ * An error or an escalation that an event throws or catches: any, or the one with a code. A catch
+ * with a code catches only the throws of that code; one without catches all of them.
+ */
+export const Raised = z.union([z.literal(true), z.strictObject({ code: Name })]);
+export type Raised = z.infer<typeof Raised>;
 
 /** The sub-process an element is in. Without it, the element is in the process itself. An event on a boundary is where its host is. */
 const In = ElementId.optional();
@@ -496,50 +1088,55 @@ const StartEvent = z.strictObject({
   in: In,
   /** Without actions, a person whose role may start the process starts it on a record, or another process calls it. */
   actions: z.array(Name).max(10).default([]),
+  /**
+   * Starts the process on each record by itself: on a date field of the record, at the start of
+   * that day; or a duration after the record is created.
+   */
+  timer: Timer.optional(),
+  /** Starts the process on a record when a change makes this condition on it hold, where it didn't before. */
+  condition: ConditionSchema.optional(),
+  /** Starts the process on a record when a process on that record throws this signal, or an operator throws it for the record. */
+  signal: Name.optional(),
+  /** In an event sub-process: an error that something beside it raises, which this catches. */
+  error: Raised.optional(),
+  /** In an event sub-process: an escalation from something beside it. */
+  escalation: Raised.optional(),
+  /** In an event sub-process: false lets what runs beside it go on. Otherwise, it ends all that runs beside it first. */
+  interrupting: z.boolean().optional(),
 });
-/** Where a path ends. A terminate end event ends the whole instance, other paths included; inside a sub-process, the sub-process. */
-const EndEvent = z.strictObject({ type: z.literal('endEvent'), name: Label.optional(), in: In, terminate: z.boolean().default(false) });
+/**
+ * Where a path ends. A terminate end event ends the whole instance, other paths included; inside a
+ * sub-process, the sub-process. One with a message sends it as the path ends.
+ */
+const EndEvent = z.strictObject({
+  type: z.literal('endEvent'),
+  name: Label.optional(),
+  in: In,
+  terminate: z.boolean().default(false),
+  message: Message.optional(),
+  /** Ends the path with an error, which the nearest sub-process or call around it with an error event catches. */
+  error: Raised.optional(),
+  /** Ends the path with an escalation, which the nearest sub-process or call around it with an escalation event hears. */
+  escalation: Raised.optional(),
+  /** Undoes what completed in its run first, newest first, with each task's undo action. */
+  compensate: z.literal(true).optional(),
+  /** In a transaction: undoes what completed in it, and leaves the transaction by its cancel event. */
+  cancel: z.literal(true).optional(),
+  /** Throws this signal as the path ends: every process of the app that waits for it hears it. */
+  signal: Name.optional(),
+});
 
 /** A choice that completes a user task, such as approve. It can run one of the app's actions on the record, as the person who decides. */
 const Outcome = z.strictObject({ name: Name, label: Label, action: Name.optional() });
 export type Outcome = z.infer<typeof Outcome>;
 
 /**
- * Who of a role's holders a task waits for. Routing narrows; the role grants: whoever it names
- * still decides under the role's permissions.
+ * An activity that repeats: once it ends, it runs again while this condition holds, on the record
+ * and the outcomes of the tasks, up to `max` times in all. With `before`, the condition is checked
+ * before each time instead, so the activity may not run at all.
  */
-export const Routing = z.union([
-  /** Whoever a user field of the record names, such as the manager the requester chose. */
-  z.strictObject({ field: Name }),
-  /** The manager of whoever a user field names, from the directory, `levels` up the reporting line. */
-  z.strictObject({ managerOf: Name, levels: z.int().min(1).max(5).default(1) }),
-]);
-export type Routing = z.infer<typeof Routing>;
-
-/** Who votes, when several people decide a task. */
-export const Voters = z.union([
-  /** Everyone with the task's role, in its department where it has one. */
-  z.strictObject({ everyone: z.literal(true) }),
-  /** The people some user fields of the record name, such as two reviewers. */
-  z.strictObject({ fields: z.array(Name).min(2).max(10) }),
-  /** The reporting line up from whoever a user field names: their manager, that manager's, and so on. */
-  z.strictObject({ lineOf: Name, levels: z.int().min(2).max(5) }),
-]);
-export type Voters = z.infer<typeof Voters>;
-
-/**
- * What decides a task that several people decide: the first vote; or a number of votes for one
- * outcome, all of them, or a majority, and the other outcome once that can no longer happen.
- */
-export const VoteRule = z.union([
-  z.strictObject({ first: z.literal(true) }),
-  z.strictObject({ count: z.union([z.int().min(1).max(50), z.enum(['all', 'majority'])]), outcome: Name, otherwise: Name }),
-]);
-export type VoteRule = z.infer<typeof VoteRule>;
-
-/** Several people decide a task, each with a vote in their own inbox: at once, or one after another. */
-export const Several = z.strictObject({ people: Voters, sequential: z.boolean().default(false), decide: VoteRule });
-export type Several = z.infer<typeof Several>;
+export const Repeat = z.strictObject({ while: ConditionSchema, max: z.int().min(1).max(100), before: z.literal(true).optional() });
+export type Repeat = z.infer<typeof Repeat>;
 
 /** Work a person does, such as deciding on a claim: it waits in their inbox until they choose an outcome. */
 const UserTask = z.strictObject({
@@ -564,40 +1161,145 @@ const UserTask = z.strictObject({
   due: Duration.optional(),
   /** The review card the task shows. */
   card: Name.optional(),
+  repeat: Repeat.optional(),
 });
-/** Work the process does by itself: run one of the app's actions on the record, with the app's authority, or start an a7c skill. */
+/** An update action that undoes what a task did, which a compensation runs on the same record. */
+const Undo = Name.optional();
+/** Work the process does by itself, with the app's authority: run one of the app's actions on the record, or a flow. */
 const ServiceTask = z.strictObject({
   type: z.literal('serviceTask'),
   name: Label,
   description: Description.optional(),
   in: In,
+  undo: Undo,
   action: Name.optional(),
-  skill: z.string().regex(SKILL_PATTERN, 'Name a skill as project/skill, for example finance/pay-expense-claim').optional(),
-  /** The skill's input, worked out from the record. */
-  input: z.record(SkillInputName, ExpressionSchema).optional(),
+  flow: FlowRun.optional(),
+  repeat: Repeat.optional(),
+});
+/**
+ * Changes the record by itself, with the app's authority: Ambit's steps, as an action's steps,
+ * not code. The record's checks and rules still apply, and a failed check stops the task.
+ */
+const ScriptTask = z.strictObject({
+  type: z.literal('scriptTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  undo: Undo,
+  steps: z.array(Step).max(MAX_STEPS).default([]),
+  repeat: Repeat.optional(),
+});
+/** What a rule check finds: every rule holds, only warnings fail, or an error fails. */
+export const RULE_OUTCOMES = ['passed', 'warned', 'failed'] as const;
+/**
+ * Checks the record against the app's rules for its entity, all or those it names. Its outcome,
+ * passed, warned or failed, chooses the flow out, as a user task's outcome does.
+ */
+const BusinessRuleTask = z.strictObject({
+  type: z.literal('businessRuleTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  rules: z.array(Name).max(50).optional(),
+  repeat: Repeat.optional(),
+});
+/** Sends a message: runs an update action, with the app's authority, on the record or on the one a reference field names. */
+const SendTask = z.strictObject({
+  type: z.literal('sendTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  message: Message,
+  undo: Undo,
+  repeat: Repeat.optional(),
+});
+/** Waits for a message, an action committing on the record, as a task: deadlines and other events can sit on its boundary. */
+const ReceiveTask = z.strictObject({
+  type: z.literal('receiveTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  message: Message,
+  repeat: Repeat.optional(),
 });
 /** A task with nothing to run, which passes straight on: work that is only drawn. */
-const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional(), in: In });
+const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional(), in: In, repeat: Repeat.optional() });
 /** Work done away from any system, such as posting a letter: the process passes straight on. */
-const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, description: Description.optional(), in: In });
+const ManualTask = z.strictObject({ type: z.literal('manualTask'), name: Label, description: Description.optional(), in: In, repeat: Repeat.optional() });
 /** Takes the first flow whose condition holds, in order, or its default flow. With several flows in, it lets each token through. */
 const ExclusiveGateway = z.strictObject({ type: z.literal('exclusiveGateway'), name: Label.optional(), in: In });
 /** Takes every flow out at once; with several flows in, waits for a token from each. */
 const ParallelGateway = z.strictObject({ type: z.literal('parallelGateway'), name: Label.optional(), in: In });
-/** A message, as Ambit's processes hear one: one of the app's actions committing on the record, such as the requester withdrawing. */
-export const Message = z.strictObject({ action: Name });
-export type Message = z.infer<typeof Message>;
 
+/**
+ * Waits for the first of the events after it: a timer, a message, a condition, or a receive task.
+ * The first that happens takes the path; the others no longer wait.
+ */
+const EventBasedGateway = z.strictObject({ type: z.literal('eventBasedGateway'), name: Label.optional(), in: In });
 /** Takes every flow out whose condition holds, or else its default; with several flows in, waits for every path that can still arrive. */
 const InclusiveGateway = z.strictObject({ type: z.literal('inclusiveGateway'), name: Label.optional(), in: In });
-/** Waits until a timer fires, or a message comes: one of the two. */
-const CatchEvent = z.strictObject({ type: z.literal('intermediateCatchEvent'), name: Label.optional(), in: In, timer: Timer.optional(), message: Message.optional() });
+/**
+ * Goes on once some of the paths into it have arrived: `waitFor` of them. It takes the flows out
+ * as an inclusive gateway does. A path that arrives after that ends there, until no path can still
+ * arrive; then it waits again.
+ */
+const ComplexGateway = z.strictObject({ type: z.literal('complexGateway'), name: Label.optional(), in: In, waitFor: z.int().min(1).max(20) });
+/** Waits until a timer fires or a message comes; or, as a link, takes over from the throw link of the same name. One of these. */
+const CatchEvent = z.strictObject({
+  type: z.literal('intermediateCatchEvent'),
+  name: Label.optional(),
+  in: In,
+  timer: Timer.optional(),
+  message: Message.optional(),
+  link: Name.optional(),
+  /** Waits until this condition on the record holds; if it holds already, the path goes straight on. */
+  condition: ConditionSchema.optional(),
+  /** Waits until a process of the app, or an operator, throws this signal. */
+  signal: Name.optional(),
+});
+/**
+ * A point that a path passes: a milestone that the history marks; a message that it sends on the
+ * way; or a link, which goes on at the catch link of the same name, to spare a long flow.
+ */
+const ThrowEvent = z.strictObject({
+  type: z.literal('intermediateThrowEvent'),
+  name: Label.optional(),
+  in: In,
+  message: Message.optional(),
+  link: Name.optional(),
+  /** Raises an escalation to the sub-process or call around it, and goes on unless that ends it. */
+  escalation: Raised.optional(),
+  /** Undoes what completed in its run, newest first, and goes on. */
+  compensate: z.literal(true).optional(),
+  /** Throws this signal to every process of the app that waits for it, and goes on. */
+  signal: Name.optional(),
+});
 /**
  * A part of the process with its own start and end, drawn open on the canvas: the elements in it
  * name it with `in`. It ends when no path is left inside it, and an event on its boundary acts on
  * it as a whole: a deadline for all of it, or an error that anything inside it raises.
  */
-const SubProcess = z.strictObject({ type: z.literal('subProcess'), name: Label, description: Description.optional(), in: In });
+const SubProcess = z.strictObject({
+  type: z.literal('subProcess'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  /** A transaction: a cancel end event inside it undoes what completed in it, and leaves by its cancel event. */
+  transaction: z.literal(true).optional(),
+  /**
+   * An event sub-process: the trigger of its start event starts it while the process, or the
+   * sub-process it is in, runs. No flow leads into it or out of it.
+   */
+  event: z.literal(true).optional(),
+  /**
+   * An ad hoc sub-process: it has no start or end event. What has no flow into it starts at once,
+   * so people do its tasks in any order, and a path inside it ends where no flow leads on.
+   */
+  adHoc: z.literal(true).optional(),
+  /** In an ad hoc sub-process: it ends once this holds, as a path inside it moves on, and what still runs inside it ends. */
+  completeWhen: ConditionSchema.optional(),
+  repeat: Repeat.optional(),
+});
 /**
  * Runs another process of the app and waits until it ends: on the same record, or, for a process
  * about another entity, on the record that a reference field of this one names.
@@ -611,6 +1313,13 @@ const CallActivity = z.strictObject({
   process: Name,
   /** A reference field of the record, for a process about the entity it refers to. */
   record: Name.optional(),
+  /**
+   * Runs the process once for each record of its entity whose reference field `field` names this
+   * record, such as each line of an expense claim: all at once, or one after another. The call ends
+   * once every run has ended.
+   */
+  each: z.strictObject({ field: Name, sequential: z.literal(true).optional() }).optional(),
+  repeat: Repeat.optional(),
 });
 /**
  * An event on a task's boundary: a timer or a message on a user task, a sub-process or a call
@@ -625,7 +1334,15 @@ const BoundaryEvent = z.strictObject({
   interrupting: z.boolean().default(true),
   timer: Timer.optional(),
   message: Message.optional(),
-  error: z.literal(true).optional(),
+  error: Raised.optional(),
+  /** On a sub-process or a call: an escalation from inside it, which may end it or not. */
+  escalation: Raised.optional(),
+  /** On a transaction: its cancel end event was reached, and what completed in it was undone. */
+  cancel: z.literal(true).optional(),
+  /** Happens when a change to the record makes this condition hold, where it didn't before. */
+  condition: ConditionSchema.optional(),
+  /** On a user task, a receive task, a sub-process or a call: a signal that a process of the app, or an operator, throws. */
+  signal: Name.optional(),
 });
 
 export const ProcessElement = z.discriminatedUnion('type', [
@@ -633,12 +1350,19 @@ export const ProcessElement = z.discriminatedUnion('type', [
   EndEvent,
   UserTask,
   ServiceTask,
+  ScriptTask,
+  BusinessRuleTask,
+  SendTask,
+  ReceiveTask,
   PlainTask,
   ManualTask,
   ExclusiveGateway,
   ParallelGateway,
   InclusiveGateway,
+  ComplexGateway,
+  EventBasedGateway,
   CatchEvent,
+  ThrowEvent,
   SubProcess,
   CallActivity,
   BoundaryEvent,
@@ -649,6 +1373,8 @@ export type UserTaskElement = Extract<ProcessElement, { type: 'userTask' }>;
 export type ServiceTaskElement = Extract<ProcessElement, { type: 'serviceTask' }>;
 export type BoundaryEventElement = Extract<ProcessElement, { type: 'boundaryEvent' }>;
 export type CatchEventElement = Extract<ProcessElement, { type: 'intermediateCatchEvent' }>;
+export type ScriptTaskElement = Extract<ProcessElement, { type: 'scriptTask' }>;
+export type BusinessRuleTaskElement = Extract<ProcessElement, { type: 'businessRuleTask' }>;
 export type SubProcessElement = Extract<ProcessElement, { type: 'subProcess' }>;
 export type CallActivityElement = Extract<ProcessElement, { type: 'callActivity' }>;
 
@@ -672,7 +1398,18 @@ const Bounds = z.strictObject({ x: Coordinate, y: Coordinate, width: z.number().
 /** Where each element and flow is drawn: BPMN 2.0's diagram interchange, so a model looks the same in every tool. */
 export const Diagram = z.strictObject({
   shapes: z.record(ElementId, z.strictObject({ ...Bounds.shape, label: Bounds.optional() })).default({}),
-  edges: z.record(ElementId, z.strictObject({ points: z.array(z.strictObject({ x: Coordinate, y: Coordinate })).min(2).max(50), label: Bounds.optional() })).default({}),
+  edges: z
+    .record(
+      ElementId,
+      z.strictObject({
+        points: z
+          .array(z.strictObject({ x: Coordinate, y: Coordinate }))
+          .min(2)
+          .max(50),
+        label: Bounds.optional(),
+      }),
+    )
+    .default({}),
 });
 export type Diagram = z.infer<typeof Diagram>;
 
@@ -699,9 +1436,15 @@ const ReadAccess = z.strictObject({
   where: ConditionSchema.optional(),
   fields: FieldSelection.optional(),
   /** Fields shown masked. */
-  mask: z.array(FieldPath).max(MAX_FIELDS * 2).optional(),
+  mask: z
+    .array(FieldPath)
+    .max(MAX_FIELDS * 2)
+    .optional(),
   /** `pii` fields this role may see unmasked. */
-  unmask: z.array(FieldPath).max(MAX_FIELDS * 2).optional(),
+  unmask: z
+    .array(FieldPath)
+    .max(MAX_FIELDS * 2)
+    .optional(),
 });
 const CreateAccess = z.strictObject({ check: ConditionSchema.optional(), fields: FieldSelection.optional() });
 const UpdateAccess = z.strictObject({
@@ -730,13 +1473,69 @@ export const AppRole = z.strictObject({
   queries: z.array(Name).max(100).default([]),
   /** The processes this role may start on a record by hand. */
   processes: z.array(Name).max(50).optional(),
+  /** The flows this role may run through the API. */
+  flows: z.array(Name).max(100).optional(),
 });
 export type AppRole = z.infer<typeof AppRole>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50 } as const;
+/**
+ * Values of a test's record, by field: as the field holds them, with `{ "given": "<name>" }` for
+ * the ID of a record the test made first, and a list of them for a reference to several.
+ */
+const TestValues = z.record(Name, z.unknown()).refine((values) => Object.keys(values).length <= 100, 'At most 100 values');
+
+/**
+ * A test of the app (design §6.7): the records there are first, an action that someone in one of
+ * the app's roles runs, and what must come of it: the record saved, with some of its values, or
+ * the action refused. It runs in a transaction that is undone. Every change request runs the tests,
+ * and a test that fails stops the merge.
+ */
+export const AppTest = z.strictObject({
+  label: Label,
+  description: Description.optional(),
+  /** The records there are before the action runs, by a name the test gives them. The app makes them, whatever the role. */
+  given: z
+    .record(Name, z.strictObject({ entity: Name, values: TestValues.default({}) }))
+    .refine((given) => Object.keys(given).length <= 20, 'At most 20 records')
+    .default({}),
+  when: z.strictObject({
+    action: Name,
+    /** The role of the person who runs it. */
+    as: Name,
+    /** For an action that changes a record: which of the given records. */
+    record: Name.optional(),
+    values: TestValues.default({}),
+  }),
+  then: z.discriminatedUnion('outcome', [
+    /** The action saves its record; each value here must be the record's. */
+    z.strictObject({ outcome: z.literal('saved'), values: TestValues.default({}) }),
+    /** The action is refused, with a message that holds this text, if given. */
+    z.strictObject({ outcome: z.literal('refused'), message: z.string().trim().min(1).max(500).optional() }),
+  ]),
+});
+export type AppTest = z.infer<typeof AppTest>;
+
+export const LIMITS = {
+  entities: 50,
+  rules: 200,
+  actions: 100,
+  queries: 100,
+  cards: 100,
+  forms: 100,
+  roles: 20,
+  pages: 50,
+  processes: 50,
+  flows: 100,
+  connections: 30,
+  webhooks: 30,
+  tests: 100,
+} as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
-  z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
+  z
+    .record(Name, value)
+    .default({} as never)
+    .refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
 
 export const AppDefinition = z.strictObject({
   formatVersion: z.literal(1).default(1),
@@ -756,6 +1555,26 @@ export const AppDefinition = z.strictObject({
   processes: z
     .record(Name, Process)
     .refine((map) => Object.keys(map).length <= LIMITS.processes, `At most ${LIMITS.processes} processes`)
+    .optional(),
+  /** Flows: the app's logic (design §6.2). Optional, as processes are, so earlier definitions keep their digests. */
+  flows: z
+    .record(Name, AppFlow)
+    .refine((map) => Object.keys(map).length <= LIMITS.flows, `At most ${LIMITS.flows} flows`)
+    .optional(),
+  /** The systems the app talks to. Optional, so that earlier definitions keep their digests. */
+  connections: z
+    .record(Name, Connection)
+    .refine((map) => Object.keys(map).length <= LIMITS.connections, `At most ${LIMITS.connections} connections`)
+    .optional(),
+  /** The ways in for other systems: each runs a flow. */
+  webhooks: z
+    .record(Name, Webhook)
+    .refine((map) => Object.keys(map).length <= LIMITS.webhooks, `At most ${LIMITS.webhooks} webhooks`)
+    .optional(),
+  /** What the app must do, as tests that every change request runs. */
+  tests: z
+    .record(Name, AppTest)
+    .refine((map) => Object.keys(map).length <= LIMITS.tests, `At most ${LIMITS.tests} tests`)
     .optional(),
 });
 export type AppDefinition = z.infer<typeof AppDefinition>;

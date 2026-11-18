@@ -17,11 +17,7 @@ describe('requireAccessRules', () => {
     const routes = requireAccessRules(app);
     app.get('/a', { config: { access: { kind: 'public' } } }, async () => 'a');
     app.post('/b', { config: { access: { kind: 'authenticated' } } }, async () => 'b');
-    app.get(
-      '/c',
-      { config: { access: { kind: 'permission', action: 'space.read', resource: async () => ({ type: 'org', scopes: [] }) } } },
-      async () => 'c',
-    );
+    app.get('/c', { config: { access: { kind: 'permission', action: 'space.read', resource: async () => ({ type: 'org', scopes: [] }) } } }, async () => 'c');
     await app.ready();
     expect(routes).toEqual([
       { method: 'GET', url: '/a', kind: 'public' },

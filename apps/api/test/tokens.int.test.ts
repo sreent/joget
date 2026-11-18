@@ -2,7 +2,7 @@ import { sha256Hex } from '@platform/audit';
 import { apiTokens, auditEvents, users } from '@platform/db';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 let t: TestApp;
 let alice: Session; // bootstrap org owner
@@ -198,18 +198,33 @@ describe('service accounts', () => {
       },
     });
     expect(granted.statusCode, granted.body).toBe(201);
-    const attempt = await t.app.inject({ method: 'POST', url: '/v1/spaces', ...bearer(accountToken), payload: { name: 'Robots', coOwnerUserIds: [alice.userId] } });
+    const attempt = await t.app.inject({
+      method: 'POST',
+      url: '/v1/spaces',
+      ...bearer(accountToken),
+      payload: { name: 'Robots', coOwnerUserIds: [alice.userId] },
+    });
     expect(attempt.statusCode).toBe(403);
     expect(attempt.json().error).toBe('person_required');
   });
 
   it('are disabled together with all of their tokens', async () => {
-    const disabled = await t.app.inject({ method: 'POST', url: `/v1/service-accounts/${accountId}/disable`, ...as(bob), payload: { reason: 'Rotating CI credentials' } });
+    const disabled = await t.app.inject({
+      method: 'POST',
+      url: `/v1/service-accounts/${accountId}/disable`,
+      ...as(bob),
+      payload: { reason: 'Rotating CI credentials' },
+    });
     expect(disabled.statusCode, disabled.body).toBe(200);
     expect(disabled.json().status).toBe('disabled');
     expect((await t.app.inject({ method: 'GET', url: '/v1/me', ...bearer(accountToken) })).statusCode).toBe(401);
 
-    const reissue = await t.app.inject({ method: 'POST', url: `/v1/service-accounts/${accountId}/tokens`, ...as(bob), payload: { name: 'again', scopes: ['space.read'] } });
+    const reissue = await t.app.inject({
+      method: 'POST',
+      url: `/v1/service-accounts/${accountId}/tokens`,
+      ...as(bob),
+      payload: { name: 'again', scopes: ['space.read'] },
+    });
     expect(reissue.json().error).toBe('service_account_disabled');
     const tokens = (await t.app.inject({ method: 'GET', url: `/v1/service-accounts/${accountId}/tokens`, ...as(bob) })).json().tokens;
     expect(tokens.every((token: { revokedAt: string | null }) => token.revokedAt !== null)).toBe(true);
@@ -238,7 +253,12 @@ describe('organization oversight', () => {
     expect(freeze!.actor).toMatchObject({ type: 'user', id: alice.userId, tokenId: id });
 
     const actions = new Set(
-      (await t.handle.db.select({ action: auditEvents.action }).from(auditEvents).where(sql`${auditEvents.action} like any (array['token.%', 'service_account.%'])`)).map((e) => e.action),
+      (
+        await t.handle.db
+          .select({ action: auditEvents.action })
+          .from(auditEvents)
+          .where(sql`${auditEvents.action} like any (array['token.%', 'service_account.%'])`)
+      ).map((e) => e.action),
     );
     expect([...actions].sort()).toEqual(['service_account.create', 'service_account.disable', 'token.create', 'token.revoke']);
   });

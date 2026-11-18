@@ -6,9 +6,9 @@ const me = { ref: 'principal.id' } as const;
 const status = { ref: 'record.status' } as const;
 
 /**
- * Leave requests: an employee asks for days off, and their manager approves or rejects them, in a
- * BPMN process that puts the decision in the manager's inbox. The manager's decision records the
- * day it was made; an overview counts the days taken.
+ * Leave requests: an employee asks for days off, and their manager approves or rejects them. The
+ * request runs a flow that waits for the manager's decision, in their inbox. The decision records
+ * the day it was made; an overview counts the days taken.
  */
 export const LEAVE_APP = {
   entities: {
@@ -17,21 +17,34 @@ export const LEAVE_APP = {
       pluralLabel: 'Leave requests',
       titleField: 'kind',
       fields: [
-        { name: 'kind', label: 'Kind of leave', type: 'choice', required: true, default: 'annual', options: [
-          { value: 'annual', label: 'Annual leave' },
-          { value: 'sick', label: 'Sick leave' },
-          { value: 'unpaid', label: 'Unpaid leave' },
-        ] },
+        {
+          name: 'kind',
+          label: 'Kind of leave',
+          type: 'choice',
+          required: true,
+          default: 'annual',
+          options: [
+            { value: 'annual', label: 'Annual leave' },
+            { value: 'sick', label: 'Sick leave' },
+            { value: 'unpaid', label: 'Unpaid leave' },
+          ],
+        },
         { name: 'starts', label: 'First day', type: 'date', required: true },
         { name: 'ends', label: 'Last day', type: 'date', required: true },
         { name: 'days', label: 'Working days', type: 'number', decimals: 1, min: 0.5, max: 60, required: true },
         { name: 'reason', label: 'Reason', type: 'text', maxLength: 500 },
         { name: 'manager', label: 'Manager', type: 'user', required: true },
-        { name: 'status', label: 'Status', type: 'choice', default: 'submitted', options: [
-          { value: 'submitted', label: 'Waiting for a decision' },
-          { value: 'approved', label: 'Approved' },
-          { value: 'rejected', label: 'Rejected' },
-        ] },
+        {
+          name: 'status',
+          label: 'Status',
+          type: 'choice',
+          default: 'submitted',
+          options: [
+            { value: 'submitted', label: 'Waiting for a decision' },
+            { value: 'approved', label: 'Approved' },
+            { value: 'rejected', label: 'Rejected' },
+          ],
+        },
         { name: 'decided_on', label: 'Decided on', type: 'date' },
       ],
     },
@@ -55,6 +68,7 @@ export const LEAVE_APP = {
       set: { status: 'submitted' },
       confirm: 'review',
       card: 'leave_review',
+      flow: { flow: 'leave_approval', input: { leave: { ref: 'record' } } },
     },
     approve_leave: {
       label: 'Approve the leave',
@@ -65,10 +79,7 @@ export const LEAVE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't decide on your own leave" },
-        { type: 'set', field: 'decided_on', value: { today: true } },
-      ],
+      before: { flow: 'note_the_decision', input: { leave: { ref: 'record' } } },
     },
     reject_leave: {
       label: 'Reject the leave',
@@ -79,10 +90,7 @@ export const LEAVE_APP = {
       set: { status: 'rejected' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't decide on your own leave" },
-        { type: 'set', field: 'decided_on', value: { today: true } },
-      ],
+      before: { flow: 'note_the_decision', input: { leave: { ref: 'record' } } },
     },
   },
   queries: {
@@ -115,7 +123,15 @@ export const LEAVE_APP = {
       entity: 'leave_request',
       action: 'request_leave',
       sections: [
-        { title: 'When', fields: [{ field: 'kind' }, { field: 'starts', width: 'half' }, { field: 'ends', width: 'half' }, { field: 'days', width: 'half', help: 'Leave out weekends and public holidays' }] },
+        {
+          title: 'When',
+          fields: [
+            { field: 'kind' },
+            { field: 'starts', width: 'half' },
+            { field: 'ends', width: 'half' },
+            { field: 'days', width: 'half', help: 'Leave out weekends and public holidays' },
+          ],
+        },
         { title: 'Why, and who decides', fields: [{ field: 'reason' }, { field: 'manager', width: 'half' }] },
       ],
     },
@@ -189,7 +205,14 @@ export const LEAVE_APP = {
           filter: { eq: [status, 'approved'] },
           range: { field: 'starts', within: 'this_year' },
         },
-        { type: 'chart', title: 'Days by kind of leave', entity: 'leave_request', measure: { op: 'sum', field: 'days' }, group: { field: 'kind' }, show: 'bar' },
+        {
+          type: 'chart',
+          title: 'Days by kind of leave',
+          entity: 'leave_request',
+          measure: { op: 'sum', field: 'days' },
+          group: { field: 'kind' },
+          show: 'bar',
+        },
         {
           type: 'chart',
           title: 'Days by month',
@@ -207,6 +230,47 @@ export const LEAVE_APP = {
     home: 'my_leave',
     items: [{ page: 'my_leave' }, { form: 'leave_form' }, { heading: 'Managers' }, { page: 'to_decide' }, { page: 'overview' }],
   },
+  flows: {
+    leave_approval: {
+      label: 'Leave approval',
+      description: 'The manager the employee names decides on the leave, within three days.',
+      input: { leave: { type: 'record', entity: 'leave_request' } },
+      steps: [
+        {
+          type: 'task',
+          label: 'Decide on the leave',
+          role: 'manager',
+          assignee: { field: 'manager' },
+          outcomes: [
+            { name: 'approve', label: 'Approve', action: 'approve_leave' },
+            { name: 'reject', label: 'Reject', action: 'reject_leave' },
+          ],
+          due: 'P3D',
+          card: 'leave_review',
+        },
+      ],
+    },
+    note_the_decision: {
+      label: 'Note the decision',
+      description: 'Before a decision on a leave saves: nobody decides on their own leave, and the day of the decision is noted.',
+      input: { leave: { type: 'record', entity: 'leave_request' } },
+      steps: [
+        { type: 'check', assert: { ne: [{ ref: 'leave.owner' }, me] }, message: "You can't decide on your own leave" },
+        { type: 'change', record: 'leave', values: { decided_on: { today: true } } },
+      ],
+    },
+  },
+} as const satisfies AppDefinitionInput;
+
+/**
+ * The leave app with its approval written out as a process for the engine (design §6.10), as an
+ * app built before flows could wait has it. The engine's tests build on it. The leave template
+ * builds the same approval as a flow that waits, which compiles to a process like this one.
+ */
+export const LEAVE_PROCESS_APP = {
+  ...without(LEAVE_APP, 'flows'),
+  actions: { ...LEAVE_APP.actions, request_leave: without(LEAVE_APP.actions.request_leave, 'flow') },
+  flows: { note_the_decision: LEAVE_APP.flows.note_the_decision },
   processes: {
     leave_approval: {
       label: 'Leave approval',
@@ -242,14 +306,37 @@ export const LEAVE_APP = {
           rejected: { x: 432, y: 162, width: 36, height: 36, label: { x: 408, y: 205, width: 84, height: 14 } },
         },
         edges: {
-          to_decide: { points: [{ x: 188, y: 120 }, { x: 250, y: 120 }] },
-          on_approve: { points: [{ x: 350, y: 105 }, { x: 390, y: 105 }, { x: 390, y: 60 }, { x: 432, y: 60 }] },
-          on_reject: { points: [{ x: 350, y: 135 }, { x: 390, y: 135 }, { x: 390, y: 180 }, { x: 432, y: 180 }] },
+          to_decide: {
+            points: [
+              { x: 188, y: 120 },
+              { x: 250, y: 120 },
+            ],
+          },
+          on_approve: {
+            points: [
+              { x: 350, y: 105 },
+              { x: 390, y: 105 },
+              { x: 390, y: 60 },
+              { x: 432, y: 60 },
+            ],
+          },
+          on_reject: {
+            points: [
+              { x: 350, y: 135 },
+              { x: 390, y: 135 },
+              { x: 390, y: 180 },
+              { x: 432, y: 180 },
+            ],
+          },
         },
       },
     },
   },
 } as const satisfies AppDefinitionInput;
+
+function without<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> {
+  return Object.fromEntries(Object.entries(value).filter(([name]) => name !== key)) as Omit<T, K>;
+}
 
 /**
  * Purchase requests: a requester asks to buy something, an approver approves it, and procurement
@@ -267,11 +354,17 @@ export const PURCHASE_APP = {
         { name: 'items', label: 'Items', type: 'lines', entity: 'purchase_item', required: true, max: 50 },
         { name: 'total', label: 'Total (SGD)', type: 'number', decimals: 2, rollup: { sum: 'items.amount' } },
         { name: 'needed_by', label: 'Needed by', type: 'date' },
-        { name: 'status', label: 'Status', type: 'choice', default: 'submitted', options: [
-          { value: 'submitted', label: 'Waiting for approval' },
-          { value: 'approved', label: 'Approved' },
-          { value: 'ordered', label: 'Ordered' },
-        ] },
+        {
+          name: 'status',
+          label: 'Status',
+          type: 'choice',
+          default: 'submitted',
+          options: [
+            { value: 'submitted', label: 'Waiting for approval' },
+            { value: 'approved', label: 'Approved' },
+            { value: 'ordered', label: 'Ordered' },
+          ],
+        },
         { name: 'approver', label: 'Approver', type: 'user' },
         { name: 'ordered_on', label: 'Ordered on', type: 'date' },
       ],
@@ -282,11 +375,17 @@ export const PURCHASE_APP = {
       titleField: 'description',
       fields: [
         { name: 'description', label: 'Description', type: 'text', required: true, maxLength: 200 },
-        { name: 'category', label: 'Category', type: 'choice', required: true, options: [
-          { value: 'goods', label: 'Goods' },
-          { value: 'services', label: 'Services' },
-          { value: 'software', label: 'Software' },
-        ] },
+        {
+          name: 'category',
+          label: 'Category',
+          type: 'choice',
+          required: true,
+          options: [
+            { value: 'goods', label: 'Goods' },
+            { value: 'services', label: 'Services' },
+            { value: 'software', label: 'Software' },
+          ],
+        },
         { name: 'amount', label: 'Amount (SGD)', type: 'number', decimals: 2, min: 0, required: true },
       ],
     },
@@ -326,10 +425,7 @@ export const PURCHASE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't approve your own purchase" },
-        { type: 'set', field: 'approver', value: me },
-      ],
+      before: { flow: 'note_approver', input: { purchase: { ref: 'record' } } },
     },
     mark_ordered: {
       label: 'Mark as ordered',
@@ -340,7 +436,7 @@ export const PURCHASE_APP = {
       set: { status: 'ordered' },
       where: { eq: [status, 'approved'] },
       confirm: 'preview',
-      steps: [{ type: 'set', field: 'ordered_on', value: { today: true } }],
+      before: { flow: 'note_order', input: { purchase: { ref: 'record' } } },
     },
   },
   queries: {
@@ -374,7 +470,13 @@ export const PURCHASE_APP = {
       action: 'request_purchase',
       sections: [
         { title: 'What', fields: [{ field: 'title' }, { field: 'supplier', width: 'half' }, { field: 'needed_by', width: 'half' }] },
-        { title: 'Items', fields: [{ field: 'items', help: 'One line per item' }, { field: 'total', width: 'half', readOnly: true }] },
+        {
+          title: 'Items',
+          fields: [
+            { field: 'items', help: 'One line per item' },
+            { field: 'total', width: 'half', readOnly: true },
+          ],
+        },
       ],
     },
   },
@@ -414,6 +516,23 @@ export const PURCHASE_APP = {
       },
       actions: ['mark_ordered'],
       queries: ['spend_by_category'],
+    },
+  },
+  flows: {
+    note_approver: {
+      label: 'Note the approver',
+      description: 'Before an approval saves: nobody approves their own purchase, and the approver is noted.',
+      input: { purchase: { type: 'record', entity: 'purchase_request' } },
+      steps: [
+        { type: 'check', assert: { ne: [{ ref: 'purchase.owner' }, me] }, message: "You can't approve your own purchase" },
+        { type: 'change', record: 'purchase', values: { approver: me } },
+      ],
+    },
+    note_order: {
+      label: 'Note the day of the order',
+      description: 'Before an order saves, the day of the order is noted.',
+      input: { purchase: { type: 'record', entity: 'purchase_request' } },
+      steps: [{ type: 'change', record: 'purchase', values: { ordered_on: { today: true } } }],
     },
   },
   pages: {
@@ -476,7 +595,14 @@ export const PURCHASE_APP = {
           filter: { in: [status, ['approved', 'ordered']] },
           range: { field: 'created_at', within: 'this_year' },
         },
-        { type: 'chart', title: 'Spending by category (SGD)', entity: 'purchase_request', measure: { op: 'sum', field: 'items.amount' }, group: { field: 'items.category' }, show: 'bar' },
+        {
+          type: 'chart',
+          title: 'Spending by category (SGD)',
+          entity: 'purchase_request',
+          measure: { op: 'sum', field: 'items.amount' },
+          group: { field: 'items.category' },
+          show: 'bar',
+        },
         {
           type: 'chart',
           title: 'Requests by month',
@@ -508,7 +634,8 @@ export const TEMPLATES: readonly AppTemplate[] = [
   {
     id: 'expenses',
     name: 'Expense claims',
-    description: 'Claims with one line per receipt and its file, a total worked out from them, approval by someone other than the claimant, and a spending dashboard.',
+    description:
+      'Claims with one line per receipt and its file, a total worked out from them, approval by someone other than the claimant, and a spending dashboard.',
     definition: EXPENSE_APP,
   },
   {

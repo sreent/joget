@@ -56,14 +56,44 @@ spec:
                 name: {{ include "platform.fullname" . }}
             - secretRef:
                 name: {{ required "existingSecret is required: a Secret with DATABASE_URL, COOKIE_SECRET and AUDIT_SIGNING_KEY_PEM" .Values.existingSecret }}
-          {{- if or .Values.extraEnv .Values.a7c.url }}
+          {{- if or .Values.extraEnv .Values.ai.provider .Values.mail.url .Values.appSecrets.keySecret }}
           env:
-            {{- if .Values.a7c.url }}
-            # a7c runs the skills that actions start. Its token is a file, so a renewed Secret needs no restart.
-            - name: A7C_URL
-              value: {{ .Values.a7c.url | quote }}
-            - name: A7C_TOKEN_FILE
-              value: /var/run/secrets/a7c/token
+            {{- if .Values.appSecrets.keySecret }}
+            # Seals the secrets of apps' connections and webhooks.
+            - name: SECRETS_KEY_FILE
+              value: /var/run/secrets/app-secrets/key
+            {{- end }}
+            {{- if .Values.mail.url }}
+            # Email for notices. The password is a file, so a renewed Secret needs no restart.
+            - name: SMTP_URL
+              value: {{ .Values.mail.url | quote }}
+            - name: MAIL_FROM
+              value: {{ .Values.mail.from | quote }}
+            {{- if .Values.mail.user }}
+            - name: SMTP_USER
+              value: {{ .Values.mail.user | quote }}
+            - name: SMTP_PASSWORD_FILE
+              value: /var/run/secrets/mail/password
+            {{- end }}
+            {{- end }}
+            {{- if .Values.ai.provider }}
+            # The model of the studio's chat. Its key is a file, so a renewed Secret needs no restart.
+            - name: AI_PROVIDER
+              value: {{ .Values.ai.provider | quote }}
+            - name: AI_MODEL
+              value: {{ required "ai.model is required with ai.provider: the model's ID at the provider" .Values.ai.model | quote }}
+            - name: AI_API_KEY_FILE
+              value: /var/run/secrets/ai/key
+            {{- with .Values.ai.baseUrl }}
+            - name: AI_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: AI_EFFORT
+              value: {{ .Values.ai.effort | default "high" | quote }}
+            - name: AI_FALLBACK
+              value: {{ .Values.ai.fallback | default "default" | quote }}
+            - name: AI_MAX_TURNS
+              value: {{ .Values.ai.maxTurns | default 12 | toString | quote }}
             {{- end }}
             {{- range .Values.extraEnv }}
             - name: {{ required "every extraEnv entry needs a name" .name }}
@@ -104,21 +134,47 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.a7c.url }}
-            - name: a7c-token
-              mountPath: /var/run/secrets/a7c
+            {{- if .Values.ai.provider }}
+            - name: ai-key
+              mountPath: /var/run/secrets/ai
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.mail.url .Values.mail.user }}
+            - name: mail-password
+              mountPath: /var/run/secrets/mail
+              readOnly: true
+            {{- end }}
+            {{- if .Values.appSecrets.keySecret }}
+            - name: app-secrets-key
+              mountPath: /var/run/secrets/app-secrets
               readOnly: true
             {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if .Values.a7c.url }}
-        - name: a7c-token
+        {{- if .Values.appSecrets.keySecret }}
+        - name: app-secrets-key
           secret:
-            secretName: {{ required "a7c.tokenSecret is required with a7c.url: a Secret with Ambit's a7c token under the key token" .Values.a7c.tokenSecret }}
+            secretName: {{ .Values.appSecrets.keySecret }}
             items:
-              - key: token
-                path: token
+              - key: key
+                path: key
+        {{- end }}
+        {{- if and .Values.mail.url .Values.mail.user }}
+        - name: mail-password
+          secret:
+            secretName: {{ required "mail.passwordSecret is required with mail.user: a Secret with the password under the key password" .Values.mail.passwordSecret }}
+            items:
+              - key: password
+                path: password
+        {{- end }}
+        {{- if .Values.ai.provider }}
+        - name: ai-key
+          secret:
+            secretName: {{ required "ai.keySecret is required with ai.provider: a Secret with the provider's API key under the key key" .Values.ai.keySecret }}
+            items:
+              - key: key
+                path: key
         {{- end }}
       {{- if .Values.topologySpread.enabled }}
       topologySpreadConstraints:

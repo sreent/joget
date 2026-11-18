@@ -2,7 +2,7 @@ import { auditEvents } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Templates, export and import: an app starts from a template or from a file, in a personal space
@@ -62,7 +62,10 @@ describe('templates', () => {
       },
       201,
     );
-    const decided = await json({ method: 'POST', url: `/v1/apps/${leaveId}/actions/approve_leave/run`, ...as(bob), payload: { recordId: asked.record.id } }, 200);
+    const decided = await json(
+      { method: 'POST', url: `/v1/apps/${leaveId}/actions/approve_leave/run`, ...as(bob), payload: { recordId: asked.record.id } },
+      200,
+    );
     expect(decided.record.values).toMatchObject({ status: 'approved', decided_on: new Date().toISOString().slice(0, 10) });
   });
 });
@@ -72,12 +75,20 @@ describe('export and import', () => {
     const response = await inject({ method: 'GET', url: `/v1/apps/${leaveId}/export`, ...as(alice) }, 200);
     expect(response.headers['content-disposition']).toBe('attachment; filename="leave_requests.ambit.json"');
     bundle = response.json();
-    expect(bundle).toMatchObject({ format: 'ambit.app/v1', app: { name: 'Leave requests', handle: 'leave_requests' }, revision: 1, digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(bundle).toMatchObject({
+      format: 'ambit.app/v1',
+      app: { name: 'Leave requests', handle: 'leave_requests' },
+      revision: 1,
+      digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(Object.keys(bundle['definition'].entities)).toEqual(['leave_request']);
     expect(JSON.stringify(bundle)).not.toContain('2026-12-21');
     // Bob uses the app; he doesn't build it.
     await inject({ method: 'GET', url: `/v1/apps/${leaveId}/export`, ...as(bob) }, 403);
-    const exported = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'app.export'), eq(auditEvents.appId, leaveId)));
+    const exported = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'app.export'), eq(auditEvents.appId, leaveId)));
     expect(exported).toHaveLength(1);
   });
 
@@ -106,13 +117,20 @@ describe('export and import', () => {
     const spaceId = (await json({ method: 'POST', url: '/v1/spaces', ...as(alice), payload: { name: 'Operations', coOwnerUserIds: [bob.userId] } }, 201)).id;
     await importInto(carol, spaceId, { template: 'purchasing' }, 403);
     await inject(
-      { method: 'POST', url: '/v1/bindings', ...as(alice), payload: { principal: { type: 'user', id: carol.userId }, roleId: 'space.builder', scope: { type: 'space', id: spaceId } } },
+      {
+        method: 'POST',
+        url: '/v1/bindings',
+        ...as(alice),
+        payload: { principal: { type: 'user', id: carol.userId }, roleId: 'space.builder', scope: { type: 'space', id: spaceId } },
+      },
       201,
     );
     const started = (await importInto(carol, spaceId, { template: 'purchasing' })).json();
     expect(started).toMatchObject({ app: { kind: 'team', name: 'Purchase requests', environments: [] }, plan: null, changeRequest: { number: 1 } });
     const cr = await json({ method: 'GET', url: `/v1/change-requests/${started.changeRequest.id}`, ...as(carol) }, 200);
     expect(cr).toMatchObject({ title: 'Start Purchase requests from a template', status: 'open' });
-    expect(cr.checks.capabilities.map((c: { text: string }) => c.text)).toContain('New tool approve_purchase: updates Purchase request, and asks the person to confirm a preview');
+    expect(cr.checks.capabilities.map((c: { text: string }) => c.text)).toContain(
+      'New tool approve_purchase: updates Purchase request, and asks the person to confirm a preview',
+    );
   });
 });

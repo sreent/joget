@@ -84,20 +84,17 @@ Usage: ambit <command> [options]
                                             Start an app from a file or a template. In a
                                             team space, it arrives as a change request
   check <file>                              Check a definition file, offline
-  bpmn export <app> <process> [--out <file>]
-                                            Save one of an app's processes as a BPMN 2.0
-                                            file, with its diagram
-  bpmn import <app> <file> [--entity <entity>] [--as <name>]
-                                            Add the processes of a BPMN 2.0 file to a
-                                            personal app, or a working copy of a team app
   release <app> [--revision <n>] [--notes <text>]
                                             Cut a release of a team app
   releases <app>                            A team app's releases
   deploy <app> --release <n> --env <staging|prod> [--confirm-destructive] [--wait]
                                             Deploy a release. Staging deploys at once;
-                                            Prod waits for approvals
+                                            Prod waits for approvals, and a person
+                                            signed in to Ambit makes it live
   deployments <app>                         A team app's deployments
-  rollback <app> --env <staging|prod>       Make the previous release live again
+  rollback <app> --env <staging|prod>       Make the previous release live again.
+                                            Only a person signed in to Ambit rolls
+                                            Prod back
 
 <app> is an app's ID or handle. <space> is a space's ID or name, or "mine".
 Add --json for machine-readable output.
@@ -127,21 +124,6 @@ class Api {
     return parsed as T;
   }
 
-  /** A document that isn't JSON, such as a BPMN file. */
-  async text(path: string, accept: string): Promise<string> {
-    const { response, text } = await this.#fetch('GET', path, undefined, accept);
-    if (!response.ok) {
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = null;
-      }
-      this.#refuse(response, parsed);
-    }
-    return text;
-  }
-
   async #fetch(method: 'GET' | 'POST', path: string, body: unknown, accept: string): Promise<{ response: Response; text: string }> {
     let response: Response;
     try {
@@ -165,7 +147,7 @@ class Api {
 
 function connect(io: Io): Api {
   const token = io.env['AMBIT_TOKEN'];
-  if (!token) throw new CliError('Set AMBIT_TOKEN to an API token. Create one in Ambit, or use a service account\'s in CI.', 2);
+  if (!token) throw new CliError("Set AMBIT_TOKEN to an API token. Create one in Ambit, or use a service account's in CI.", 2);
   return new Api(io, io.env['AMBIT_URL'] ?? 'http://localhost:3000', token);
 }
 
@@ -217,7 +199,9 @@ function describeDeployment(deployment: DeploymentInfo): string {
     case 'awaiting_approval':
       return `Deploying ${release} to ${where} waits for ${deployment.approvals.required - deployment.approvals.by.length} approval(s) in Ambit.`;
     case 'approved':
-      return `Deploying ${release} to ${where} is approved, and waits to be executed.`;
+      return deployment.environment === 'prod'
+        ? `Deploying ${release} to Prod is approved. A person signed in to Ambit makes it live.`
+        : `Deploying ${release} to ${where} is approved, and waits to be executed.`;
     case 'failed':
       return `Deploying ${release} to ${where} failed: ${deployment.error ?? 'no reason given'}`;
     default:
@@ -252,8 +236,6 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
             'confirm-destructive': { type: 'boolean', default: false },
             wait: { type: 'boolean', default: false },
             timeout: { type: 'string', default: '600' },
-            entity: { type: 'string' },
-            as: { type: 'string' },
           },
         });
       } catch (error) {
@@ -284,37 +266,11 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const definition = isObject(raw) && 'format' in raw && 'definition' in raw ? raw['definition'] : raw;
         const result = validateDefinition(definition);
         print(result.ok ? { ok: true, notes: result.notes } : { ok: false, issues: result.issues }, () =>
-          result.ok ? `${file}: no problems.` : `${file} has ${result.issues.length} problem(s):\n${result.issues.map((issue) => `  ${issue.path}: ${issue.message}`).join('\n')}`,
+          result.ok
+            ? `${file}: no problems.`
+            : `${file} has ${result.issues.length} problem(s):\n${result.issues.map((issue) => `  ${issue.path}: ${issue.message}`).join('\n')}`,
         );
         return result.ok ? 0 : 1;
-      }
-      case 'bpmn': {
-        const [action, app, target, ...extra] = positionals;
-        if ((action !== 'export' && action !== 'import') || !app || !target || extra.length) {
-          throw new CliError('Use ambit bpmn export <app> <process>, or ambit bpmn import <app> <file>. See ambit help.', 2);
-        }
-        const api = connect(io);
-        const id = await appId(api, app);
-        if (action === 'export') {
-          const xml = await api.text(`/v1/apps/${id}/processes/${encodeURIComponent(target)}/bpmn`, 'application/xml');
-          const out = values.out ?? `${target}.bpmn`;
-          await io.writeFile(out, xml);
-          print({ file: out }, () => `Saved the process ${target} to ${out}, with its diagram.`);
-          return 0;
-        }
-        let xml: string;
-        try {
-          xml = await io.readFile(target);
-        } catch (error) {
-          throw new CliError(`Can't read ${target}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        const result = await api.call<{ processes: string[]; notes: string[] }>('POST', `/v1/apps/${id}/processes/import`, {
-          xml,
-          ...(values.entity ? { entity: values.entity } : {}),
-          ...(values.as ? { as: values.as } : {}),
-        });
-        print(result, () => [`Added the process${result.processes.length > 1 ? 'es' : ''} ${result.processes.join(', ')} to ${app}.`, ...result.notes.map((note) => `  ${note}`)].join('\n'));
-        return 0;
       }
       case 'templates': {
         const { templates } = await connect(io).call<{ templates: Array<{ id: string; name: string; description: string }> }>('GET', '/v1/templates');
@@ -324,7 +280,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
       case 'apps': {
         const { apps } = await connect(io).call<{ apps: AppInfo[] }>('GET', '/v1/apps');
         print(apps, () =>
-          table([['HANDLE', 'NAME', 'KIND', 'REVISION', 'ID'], ...apps.map((app) => [app.handle, app.name, app.workingCopyOf ? 'working copy' : app.kind, String(app.revision), app.id])]),
+          table([
+            ['HANDLE', 'NAME', 'KIND', 'REVISION', 'ID'],
+            ...apps.map((app) => [app.handle, app.name, app.workingCopyOf ? 'working copy' : app.kind, String(app.revision), app.id]),
+          ]),
         );
         return 0;
       }
@@ -334,7 +293,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const bundle = await api.call<Bundle>('GET', `/v1/apps/${id}/export`);
         const out = values.out ?? `${bundle.app.handle}.ambit.json`;
         await io.writeFile(out, `${JSON.stringify(bundle, null, 2)}\n`);
-        print({ file: out, revision: bundle.revision, digest: bundle.digest }, () => `Saved revision ${bundle.revision} of ${bundle.app.name} to ${out}. It holds no data.`);
+        print(
+          { file: out, revision: bundle.revision, digest: bundle.digest },
+          () => `Saved revision ${bundle.revision} of ${bundle.app.name} to ${out}. It holds no data.`,
+        );
         return 0;
       }
       case 'import': {
@@ -365,8 +327,14 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const id = await appId(api, one('the app'));
         const revision = values.revision === undefined ? undefined : Number(values.revision);
         if (revision !== undefined && (!Number.isInteger(revision) || revision < 1)) throw new CliError('--revision is a revision number', 2);
-        const release = await api.call<ReleaseInfo>('POST', `/v1/apps/${id}/releases`, { ...(revision ? { revision } : {}), ...(values.notes ? { notes: values.notes } : {}) });
-        print(release, () => `Cut release ${release.number}, of revision ${release.revision}${release.destructive ? '. It deletes data, so it deploys on its own' : ''}.`);
+        const release = await api.call<ReleaseInfo>('POST', `/v1/apps/${id}/releases`, {
+          ...(revision ? { revision } : {}),
+          ...(values.notes ? { notes: values.notes } : {}),
+        });
+        print(
+          release,
+          () => `Cut release ${release.number}, of revision ${release.revision}${release.destructive ? '. It deletes data, so it deploys on its own' : ''}.`,
+        );
         return 0;
       }
       case 'releases': {
@@ -387,10 +355,17 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const api = connect(io);
         const id = await appId(api, one('the app'));
         const release = await releaseOf(api, id, values.release);
-        let deployment = await api.call<DeploymentInfo>('POST', `/v1/apps/${id}/deployments`, { releaseId: release.id, env: target, confirmDestructive: values['confirm-destructive'], execute: true });
+        let deployment = await api.call<DeploymentInfo>('POST', `/v1/apps/${id}/deployments`, {
+          releaseId: release.id,
+          env: target,
+          confirmDestructive: values['confirm-destructive'],
+          execute: true,
+        });
         const deadline = io.now() + Number(values.timeout) * 1000;
-        // Waiting follows the deployment until it ends: approvals come from people, in Ambit.
-        while (values.wait && !FINAL.has(deployment.status) && io.now() < deadline) {
+        // Waiting follows the deployment until it ends: approvals come from people, in Ambit. Prod
+        // goes live only by a person's hand, so for Prod the wait ends once it is approved.
+        const handedOver = (d: DeploymentInfo) => d.environment === 'prod' && d.status === 'approved';
+        while (values.wait && !FINAL.has(deployment.status) && !handedOver(deployment) && io.now() < deadline) {
           if (deployment.status === 'approved') {
             deployment = await api.call<DeploymentInfo>('POST', `/v1/deployments/${deployment.id}/execute`);
             continue;
@@ -403,7 +378,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const ended: DeploymentInfo = deployment;
         print(ended, () => describeDeployment(ended));
         if (ended.status === 'failed' || ended.status === 'cancelled') return 1;
-        if (values.wait && !FINAL.has(ended.status)) {
+        if (values.wait && !FINAL.has(ended.status) && !handedOver(ended)) {
           io.err('Stopped waiting: the deployment has not ended.');
           return 1;
         }
@@ -414,7 +389,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const id = await appId(api, one('the app'));
         const { deployments } = await api.call<{ deployments: DeploymentInfo[] }>('GET', `/v1/apps/${id}/deployments`);
         print(deployments, () =>
-          table([['ENV', 'KIND', 'RELEASE', 'STATUS', 'REQUESTED'], ...deployments.map((d) => [d.environment, d.kind, String(d.release.number), d.status, d.requestedAt])]),
+          table([
+            ['ENV', 'KIND', 'RELEASE', 'STATUS', 'REQUESTED'],
+            ...deployments.map((d) => [d.environment, d.kind, String(d.release.number), d.status, d.requestedAt]),
+          ]),
         );
         return 0;
       }

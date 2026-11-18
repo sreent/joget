@@ -1,5 +1,5 @@
+import { EXPENSE_APP, rangeStart, type StoredDefinition, validateDefinition } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { EXPENSE_APP, rangeStart, validateDefinition, type StoredDefinition } from '@platform/app-model';
 
 const ids = () => {
   let n = 0;
@@ -17,7 +17,14 @@ const withBlocks = (blocks: unknown[]) => {
   definition.pages.spending.blocks = blocks;
   return definition;
 };
-const chart = (patch: Record<string, unknown>) => ({ type: 'chart', title: 'A chart', entity: 'expense_claim', measure: { op: 'count' }, group: { field: 'status' }, ...patch });
+const chart = (patch: Record<string, unknown>) => ({
+  type: 'chart',
+  title: 'A chart',
+  entity: 'expense_claim',
+  measure: { op: 'count' },
+  group: { field: 'status' },
+  ...patch,
+});
 
 describe('numbers and charts', () => {
   it('accept the example dashboard: numbers over claims and their lines, charts by category and by month', () => {
@@ -69,7 +76,9 @@ describe('numbers and charts', () => {
   });
 
   it('accept a count of records grouped by a field of their lines, and people as groups', () => {
-    expect(issuesOf(withBlocks([chart({ group: { field: 'lines.category' } }), chart({ group: { field: 'owner' } }), chart({ group: { field: 'approver' } })]))).toEqual([]);
+    expect(
+      issuesOf(withBlocks([chart({ group: { field: 'lines.category' } }), chart({ group: { field: 'owner' } }), chart({ group: { field: 'approver' } })])),
+    ).toEqual([]);
   });
 
   it('follow renames of the fields they work over', () => {

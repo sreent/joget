@@ -1,12 +1,12 @@
 import {
-  createSeal,
-  verifySeals,
   type AuditEvent,
+  createSeal,
   type Seal,
   type SignatureVerifier,
   type Signer,
   type StoredEvent,
   type VerificationReport,
+  verifySeals,
 } from '@platform/audit';
 import { auditEvents, auditSeals, type Database } from '@platform/db';
 import { and, asc, between, desc, gt, gte, lt, max, sql } from 'drizzle-orm';
@@ -56,11 +56,7 @@ function toStoredEvent(row: EventRow): StoredEvent {
  * in-flight transaction can still add an event inside the sealed range. Returns null when there is
  * nothing to seal, or when another sealer holds the lock.
  */
-export async function sealNextBatch(
-  db: Database,
-  signer: Signer,
-  options: { safetyWindowSeconds: number; maxEvents?: number },
-): Promise<Seal | null> {
+export async function sealNextBatch(db: Database, signer: Signer, options: { safetyWindowSeconds: number; maxEvents?: number }): Promise<Seal | null> {
   return db.transaction(async (tx) => {
     const lock = await tx.execute<{ locked: boolean }>(sql`select pg_try_advisory_xact_lock(${SEALER_LOCK_KEY}) as locked`);
     if (!lock.rows[0]?.locked) return null;
@@ -118,10 +114,7 @@ export function startAuditSealer(
 }
 
 /** Verify every seal from the first one, and count the events not sealed yet. */
-export async function verifyAuditLog(
-  db: Database,
-  verifier: SignatureVerifier,
-): Promise<VerificationReport & { unsealedEvents: number }> {
+export async function verifyAuditLog(db: Database, verifier: SignatureVerifier): Promise<VerificationReport & { unsealedEvents: number }> {
   const seals = (await db.select().from(auditSeals).orderBy(asc(auditSeals.fromSeq))).map(toSeal);
   const report = await verifySeals(
     seals,

@@ -1,9 +1,9 @@
 import { EXPENSE_APP } from '@platform/app-model';
-import { appEnvironments, auditEvents, changeRequests, skillCalls } from '@platform/db';
+import { appEnvironments, auditEvents, changeRequests } from '@platform/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Phase 2's exit criterion, end to end: a change goes from a builder's personal space, through a
@@ -42,16 +42,22 @@ const json = async (options: InjectOptions, expected: number): Promise<Json> => 
 async function editCopy(session: Session, appId: string, edit: (definition: Json) => void, query = '') {
   const current = await json({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(session) }, 200);
   edit(current.definition);
-  return json({ method: 'PUT', url: `/v1/apps/${appId}/definition${query}`, ...as(session), payload: { definition: current.definition, baseRevision: current.revision } }, 200);
+  return json(
+    { method: 'PUT', url: `/v1/apps/${appId}/definition${query}`, ...as(session), payload: { definition: current.definition, baseRevision: current.revision } },
+    200,
+  );
 }
 
 const submit = (session: Session, appId: string, title: string, expected = 201) =>
   json({ method: 'POST', url: `/v1/apps/${appId}/submit`, ...as(session), payload: { title } }, expected);
 const review = (session: Session, crId: string, verdict: string, comment?: string, expected = 200) =>
   inject({ method: 'POST', url: `/v1/change-requests/${crId}/reviews`, ...as(session), payload: { verdict, ...(comment ? { comment } : {}) } }, expected);
-const merge = (session: Session, crId: string, expected = 200) => inject({ method: 'POST', url: `/v1/change-requests/${crId}/merge`, ...as(session) }, expected);
-const cut = (session: Session, payload: Json = {}, expected = 201) => inject({ method: 'POST', url: `/v1/apps/${teamId}/releases`, ...as(session), payload }, expected);
-const deploy = (session: Session, payload: Json, expected = 201) => inject({ method: 'POST', url: `/v1/apps/${teamId}/deployments`, ...as(session), payload }, expected);
+const merge = (session: Session, crId: string, expected = 200) =>
+  inject({ method: 'POST', url: `/v1/change-requests/${crId}/merge`, ...as(session) }, expected);
+const cut = (session: Session, payload: Json = {}, expected = 201) =>
+  inject({ method: 'POST', url: `/v1/apps/${teamId}/releases`, ...as(session), payload }, expected);
+const deploy = (session: Session, payload: Json, expected = 201) =>
+  inject({ method: 'POST', url: `/v1/apps/${teamId}/deployments`, ...as(session), payload }, expected);
 const prodRecords = (query = '') => `/v1/apps/${teamId}/entities/expense_claim/records${query}`;
 
 /** Approve, merge and release a change, as reviewer and release manager. */
@@ -68,8 +74,7 @@ async function deployToProd(releaseId: string, confirmDestructive = false): Prom
 }
 
 beforeAll(async () => {
-  // This installation connects a7c, so the team app's approval can start a skill: in the tier of its environment.
-  t = await startTestApp({ A7C_URL: 'https://a7c.test', A7C_TOKEN_FILE: '/run/secrets/a7c-token' });
+  t = await startTestApp();
   [alice, olivia, carol, gina, dave, erin, frank] = await Promise.all([
     t.login('alice'),
     t.login('olivia'),
@@ -81,7 +86,15 @@ beforeAll(async () => {
   ]);
   spaceId = (await json({ method: 'POST', url: '/v1/spaces', ...as(alice), payload: { name: 'Finance', coOwnerUserIds: [olivia.userId] } }, 201)).id;
   const grant = (session: Session, roleId: string) =>
-    inject({ method: 'POST', url: '/v1/bindings', ...as(alice), payload: { principal: { type: 'user', id: session.userId }, roleId, scope: { type: 'space', id: spaceId } } }, 201);
+    inject(
+      {
+        method: 'POST',
+        url: '/v1/bindings',
+        ...as(alice),
+        payload: { principal: { type: 'user', id: session.userId }, roleId, scope: { type: 'space', id: spaceId } },
+      },
+      201,
+    );
   await grant(carol, 'space.builder');
   await grant(carol, 'space.reviewer');
   await grant(gina, 'space.builder');
@@ -97,7 +110,13 @@ describe('team apps and working copies', () => {
   it('starts a team app empty, with no environment, and refuses changes made directly to it', async () => {
     const created = await json({ method: 'POST', url: `/v1/spaces/${spaceId}/apps`, ...as(carol), payload: { name: 'Expenses' } }, 201);
     teamId = created.app.id;
-    expect(created.app).toMatchObject({ kind: 'team', environment: null, environments: [], myWorkingCopyId: null, access: { build: true, edit: true, run: false } });
+    expect(created.app).toMatchObject({
+      kind: 'team',
+      environment: null,
+      environments: [],
+      myWorkingCopyId: null,
+      access: { build: true, edit: true, run: false },
+    });
     expect(created.app.access.delivery).toMatchObject({ review: true, approve: true, merge: false, release: false, deploy: false });
 
     const refused = await inject({ method: 'PUT', url: `/v1/apps/${teamId}/definition`, ...as(carol), payload: { definition: EXPENSE_APP } }, 409);
@@ -106,11 +125,15 @@ describe('team apps and working copies', () => {
     expect(notLive.json().error).toBe('not_live');
   });
 
-  it('makes a working copy in the builder\'s personal space, once, with the main line\'s stable IDs', async () => {
+  it("makes a working copy in the builder's personal space, once, with the main line's stable IDs", async () => {
     const made = await json({ method: 'POST', url: `/v1/apps/${teamId}/working-copy`, ...as(carol) }, 200);
     expect(made).toMatchObject({ created: true, sampleRecords: 0 });
     copyId = made.app.id;
-    expect(made.app).toMatchObject({ kind: 'personal', spaceId: carol.personalSpaceId, workingCopyOf: { appId: teamId, baseRevision: 1, behind: false, changeRequest: null } });
+    expect(made.app).toMatchObject({
+      kind: 'personal',
+      spaceId: carol.personalSpaceId,
+      workingCopyOf: { appId: teamId, baseRevision: 1, behind: false, changeRequest: null },
+    });
     const again = await json({ method: 'POST', url: `/v1/apps/${teamId}/working-copy`, ...as(carol) }, 200);
     expect(again).toMatchObject({ created: false, app: { id: copyId } });
     expect((await json({ method: 'GET', url: `/v1/apps/${teamId}`, ...as(carol) }, 200)).myWorkingCopyId).toBe(copyId);
@@ -122,10 +145,14 @@ describe('team apps and working copies', () => {
   it('lets the builder change the copy at once, with test data that stays in their space', async () => {
     await editCopy(carol, copyId, (definition) => {
       Object.assign(definition, structuredClone(EXPENSE_APP));
-      definition.actions.approve_claim.steps.push({ type: 'skill', label: 'Pay the claim', skill: 'finance/pay-expense-claim', input: { claim: { ref: 'record.id' }, amount: { ref: 'record.total' } } });
     });
     await inject(
-      { method: 'POST', url: `/v1/apps/${copyId}/entities/expense_claim/records`, ...as(carol), payload: { values: { title: 'Test claim', lines: [line('Cafe', 12)] } } },
+      {
+        method: 'POST',
+        url: `/v1/apps/${copyId}/entities/expense_claim/records`,
+        ...as(carol),
+        payload: { values: { title: 'Test claim', lines: [line('Cafe', 12)] } },
+      },
       201,
     );
     const nothing = await inject({ method: 'POST', url: `/v1/apps/${teamId}/submit`, ...as(carol), payload: { title: 'Wrong place' } }, 422);
@@ -159,14 +186,22 @@ describe('change requests', () => {
     const ui = await json({ method: 'GET', url: `/v1/apps/${teamId}/ui${preview}`, ...as(dave) }, 200);
     expect(ui.app.environment).toMatchObject({ kind: 'preview', changeRequest: { id: firstCr.id, number: 1 } });
     expect(Object.keys(ui.entities)).toContain('expense_claim');
-    await inject({ method: 'POST', url: prodRecords(preview), ...as(dave), payload: { values: { title: 'Preview claim', status: 'submitted', lines: [line('Taxi', 30)] } } }, 201);
+    await inject(
+      {
+        method: 'POST',
+        url: prodRecords(preview),
+        ...as(dave),
+        payload: { values: { title: 'Preview claim', status: 'submitted', lines: [line('Taxi', 30)] } },
+      },
+      201,
+    );
     const listed = await json({ method: 'GET', url: prodRecords(preview), ...as(dave) }, 200);
     expect(listed.records.map((r: Json) => r.values.title)).toEqual(['Preview claim']);
-    // Trying a change starts its skills in a7c's team tier, never in production.
-    await inject({ method: 'POST', url: `/v1/apps/${teamId}/actions/approve_claim/run${preview}`, ...as(carol), payload: { recordId: listed.records[0].id } }, 200);
-    expect(await t.ctx.db.select().from(skillCalls).where(eq(skillCalls.recordId, listed.records[0].id))).toEqual([
-      expect.objectContaining({ tier: 'team', environmentId: firstCr.preview.environmentId, skill: 'finance/pay-expense-claim' }),
-    ]);
+    // Reviewers try the change's actions on the preview's own data.
+    await inject(
+      { method: 'POST', url: `/v1/apps/${teamId}/actions/approve_claim/run${preview}`, ...as(carol), payload: { recordId: listed.records[0].id } },
+      200,
+    );
 
     // Frank has no role in the space: no preview for him.
     await inject({ method: 'GET', url: `/v1/apps/${teamId}/ui${preview}`, ...as(frank) }, 403);
@@ -202,7 +237,7 @@ describe('change requests', () => {
     expect(approved.approvals).toMatchObject({ approvedBy: [{ id: dave.userId }], ready: true });
   });
 
-  it('merges into the main line, removes the preview, and brings the author\'s copy in step', async () => {
+  it("merges into the main line, removes the preview, and brings the author's copy in step", async () => {
     const merged = (await merge(erin, firstCr.id)).json();
     expect(merged).toMatchObject({ status: 'merged', preview: null });
     const team = await json({ method: 'GET', url: `/v1/apps/${teamId}`, ...as(carol) }, 200);
@@ -234,8 +269,14 @@ describe('releases and deployments', () => {
   it('deploys to Staging at once, for testers the space admins name', async () => {
     const staged = (await deploy(erin, { releaseId: release1.id, env: 'staging', execute: true })).json();
     expect(staged).toMatchObject({ environment: 'staging', status: 'succeeded', approvals: { required: 0 }, release: { number: 1 } });
-    await inject({ method: 'POST', url: `/v1/apps/${teamId}/shares?env=staging`, ...as(carol), payload: { email: 'frank@example.com', role: 'requester' } }, 403);
-    await inject({ method: 'POST', url: `/v1/apps/${teamId}/shares?env=staging`, ...as(alice), payload: { email: 'frank@example.com', role: 'requester' } }, 201);
+    await inject(
+      { method: 'POST', url: `/v1/apps/${teamId}/shares?env=staging`, ...as(carol), payload: { email: 'frank@example.com', role: 'requester' } },
+      403,
+    );
+    await inject(
+      { method: 'POST', url: `/v1/apps/${teamId}/shares?env=staging`, ...as(alice), payload: { email: 'frank@example.com', role: 'requester' } },
+      201,
+    );
     await inject({ method: 'POST', url: prodRecords('?env=staging'), ...as(frank), payload: claim('Staging claim') }, 201);
     const listed = await json({ method: 'GET', url: '/v1/apps', ...as(frank) }, 200);
     expect(listed.apps).toEqual([expect.objectContaining({ id: teamId, access: expect.objectContaining({ build: false, run: true }) })]);
@@ -247,7 +288,7 @@ describe('releases and deployments', () => {
   it('needs an approval for Prod from someone who wrote none of its changes, and fresh MFA', async () => {
     const requested = (await deploy(erin, { releaseId: release1.id, env: 'prod' })).json();
     expect(requested).toMatchObject({ status: 'awaiting_approval', approvals: { required: 1, by: [] }, authors: [{ id: carol.userId }] });
-    expect(requested.plan.notes).toContain('Creates Prod: the app\'s first deployment there');
+    expect(requested.plan.notes).toContain("Creates Prod: the app's first deployment there");
     expect((await deploy(erin, { releaseId: release1.id, env: 'prod' }, 409)).json().error).toBe('deployment_open');
 
     const author = await inject({ method: 'POST', url: `/v1/deployments/${requested.id}/approve`, ...as(carol) }, 403);
@@ -266,7 +307,10 @@ describe('releases and deployments', () => {
     expect(done).toMatchObject({ status: 'succeeded', executedBy: { id: erin.userId } });
 
     const team = await json({ method: 'GET', url: `/v1/apps/${teamId}`, ...as(erin) }, 200);
-    expect(team.environments.map((e: Json) => [e.kind, e.release?.number])).toEqual([['prod', 1], ['staging', 1]]);
+    expect(team.environments.map((e: Json) => [e.kind, e.release?.number])).toEqual([
+      ['prod', 1],
+      ['staging', 1],
+    ]);
   });
 
   it('serves Prod to the people given a role there, with Prod data only', async () => {
@@ -277,11 +321,11 @@ describe('releases and deployments', () => {
     // Builders and reviewers build the app; they don't see its Prod data.
     await inject({ method: 'GET', url: prodRecords(), ...as(carol) }, 403);
     await inject({ method: 'GET', url: prodRecords(), ...as(dave) }, 403);
-    // In Prod, the skills an action starts run in a7c's production tier.
+    // An approver in Prod approves a claim there.
     await inject({ method: 'POST', url: `/v1/apps/${teamId}/shares?env=prod`, ...as(olivia), payload: { email: 'gina@example.com', role: 'approver' } }, 201);
     const prodClaim = listed.records[0];
-    await inject({ method: 'POST', url: `/v1/apps/${teamId}/actions/approve_claim/run`, ...as(gina), payload: { recordId: prodClaim.id } }, 200);
-    expect(await t.ctx.db.select().from(skillCalls).where(eq(skillCalls.recordId, prodClaim.id))).toEqual([expect.objectContaining({ tier: 'production', onBehalfOf: gina.userId })]);
+    const approved = await json({ method: 'POST', url: `/v1/apps/${teamId}/actions/approve_claim/run`, ...as(gina), payload: { recordId: prodClaim.id } }, 200);
+    expect(approved.record.values.status).toBe('approved');
   });
 
   it('goes to Prod with a second change, then rolls back in under a minute, keeping the data', async () => {
@@ -360,7 +404,10 @@ describe('releases and deployments', () => {
 
     expect((await deploy(erin, { releaseId: release4.id, env: 'prod' }, 409)).json().error).toBe('deploy_in_order');
     const unconfirmed = await deploy(erin, { releaseId: release3.id, env: 'prod' }, 409);
-    expect(unconfirmed.json()).toMatchObject({ error: 'destructive_change', details: { plan: { destructive: true, steps: [{ kind: 'drop_field', records: 1 }] } } });
+    expect(unconfirmed.json()).toMatchObject({
+      error: 'destructive_change',
+      details: { plan: { destructive: true, steps: [{ kind: 'drop_field', records: 1 }] } },
+    });
     await deployToProd(release3.id, true);
     const refused = await inject({ method: 'POST', url: `/v1/apps/${teamId}/environments/prod/rollback`, ...as(erin) }, 409);
     expect(refused.json().error).toBe('cannot_roll_back');
@@ -371,9 +418,34 @@ describe('releases and deployments', () => {
     const rows = await t.ctx.db
       .select({ action: auditEvents.action })
       .from(auditEvents)
-      .where(and(eq(auditEvents.appId, teamId), inArray(auditEvents.action, ['change.open', 'change.update', 'change.approve', 'change.merge', 'release.create', 'deploy.request', 'deploy.approve', 'deploy.execute', 'deploy.rollback'])));
+      .where(
+        and(
+          eq(auditEvents.appId, teamId),
+          inArray(auditEvents.action, [
+            'change.open',
+            'change.update',
+            'change.approve',
+            'change.merge',
+            'release.create',
+            'deploy.request',
+            'deploy.approve',
+            'deploy.execute',
+            'deploy.rollback',
+          ]),
+        ),
+      );
     expect(new Set(rows.map((row) => row.action))).toEqual(
-      new Set(['change.open', 'change.update', 'change.approve', 'change.merge', 'release.create', 'deploy.request', 'deploy.approve', 'deploy.execute', 'deploy.rollback']),
+      new Set([
+        'change.open',
+        'change.update',
+        'change.approve',
+        'change.merge',
+        'release.create',
+        'deploy.request',
+        'deploy.approve',
+        'deploy.execute',
+        'deploy.rollback',
+      ]),
     );
   });
 });
@@ -429,7 +501,10 @@ describe('builders working at the same time', () => {
     expect((await inject({ method: 'POST', url: `/v1/apps/${copyId}/sync`, ...as(carol) }, 409)).json().error).toBe('merge_conflict');
     const closed = await json({ method: 'POST', url: `/v1/change-requests/${second.id}/close`, ...as(carol) }, 200);
     expect(closed.status).toBe('closed');
-    const environments = await t.ctx.db.select().from(appEnvironments).where(and(eq(appEnvironments.appId, teamId), eq(appEnvironments.kind, 'preview'), eq(appEnvironments.status, 'active')));
+    const environments = await t.ctx.db
+      .select()
+      .from(appEnvironments)
+      .where(and(eq(appEnvironments.appId, teamId), eq(appEnvironments.kind, 'preview'), eq(appEnvironments.status, 'active')));
     expect(environments).toEqual([]);
   });
 });
@@ -440,12 +515,16 @@ describe('promotion from a personal space', () => {
   const sourceRecords = () => `/v1/apps/${sourceId}/entities/expense_claim/records`;
 
   it('moves a personal app into a team space through a change request, and leaves its data where it is', async () => {
-    sourceId = (await json({ method: 'POST', url: `/v1/spaces/${gina.personalSpaceId}/apps`, ...as(gina), payload: { name: 'Trips', definition: EXPENSE_APP } }, 201)).app.id;
+    sourceId = (
+      await json({ method: 'POST', url: `/v1/spaces/${gina.personalSpaceId}/apps`, ...as(gina), payload: { name: 'Trips', definition: EXPENSE_APP } }, 201)
+    ).app.id;
     await inject({ method: 'POST', url: `/v1/apps/${sourceId}/shares`, ...as(gina), payload: { email: 'frank@example.com', role: 'requester' } }, 201);
     await inject({ method: 'POST', url: sourceRecords(), ...as(frank), payload: claim('Before the move') }, 201);
 
     // Frank builds nothing in Finance, so he can't move an app there.
-    const franks = (await json({ method: 'POST', url: `/v1/spaces/${frank.personalSpaceId}/apps`, ...as(frank), payload: { name: 'Mine', definition: EXPENSE_APP } }, 201)).app.id;
+    const franks = (
+      await json({ method: 'POST', url: `/v1/spaces/${frank.personalSpaceId}/apps`, ...as(frank), payload: { name: 'Mine', definition: EXPENSE_APP } }, 201)
+    ).app.id;
     await inject({ method: 'POST', url: `/v1/apps/${franks}/promote`, ...as(frank), payload: { spaceId } }, 403);
     // Only the owner moves an app.
     await inject({ method: 'POST', url: `/v1/apps/${sourceId}/promote`, ...as(frank), payload: { spaceId } }, 403);
@@ -468,7 +547,9 @@ describe('promotion from a personal space', () => {
     await review(dave, cr!.id, 'approve');
     await merge(erin, cr!.id);
     const release = (await inject({ method: 'POST', url: `/v1/apps/${promotedId}/releases`, ...as(erin), payload: {} }, 201)).json();
-    const requested = (await inject({ method: 'POST', url: `/v1/apps/${promotedId}/deployments`, ...as(erin), payload: { releaseId: release.id, env: 'prod' } }, 201)).json();
+    const requested = (
+      await inject({ method: 'POST', url: `/v1/apps/${promotedId}/deployments`, ...as(erin), payload: { releaseId: release.id, env: 'prod' } }, 201)
+    ).json();
     await inject({ method: 'POST', url: `/v1/deployments/${requested.id}/approve`, ...as(dave) }, 200);
     await inject({ method: 'POST', url: `/v1/deployments/${requested.id}/execute`, ...as(erin) }, 200);
 
@@ -479,9 +560,15 @@ describe('promotion from a personal space', () => {
     const kept = await json({ method: 'GET', url: sourceRecords(), ...as(frank) }, 200);
     expect(kept.records.map((r: Json) => r.values.title).sort()).toEqual(['Before the move', 'Still here']);
     const current = await json({ method: 'GET', url: `/v1/apps/${sourceId}/definition`, ...as(gina) }, 200);
-    await inject({ method: 'PUT', url: `/v1/apps/${sourceId}/definition`, ...as(gina), payload: { definition: current.definition, baseRevision: current.revision } }, 403);
+    await inject(
+      { method: 'PUT', url: `/v1/apps/${sourceId}/definition`, ...as(gina), payload: { definition: current.definition, baseRevision: current.revision } },
+      403,
+    );
     await inject({ method: 'POST', url: `/v1/apps/${sourceId}/promote`, ...as(gina), payload: { spaceId } }, 403);
-    const moved = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'app.moved'), eq(auditEvents.appId, sourceId)));
+    const moved = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'app.moved'), eq(auditEvents.appId, sourceId)));
     expect(moved).toHaveLength(1);
   });
 });

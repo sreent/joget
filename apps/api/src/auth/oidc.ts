@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
+import { createRemoteJWKSet, type JWTVerifyGetKey, jwtVerify } from 'jose';
 import * as client from 'openid-client';
 import type { Config } from '../config.js';
 
@@ -29,13 +29,7 @@ export interface LoginStart {
 /** The port the API depends on. Any OIDC-compliant IdP can sit behind it. */
 export interface OidcProvider {
   startLogin(options: { redirectUri: string; forceReauthentication?: boolean; acrValues?: readonly string[] }): Promise<LoginStart>;
-  completeLogin(options: {
-    callbackUrl: URL;
-    redirectUri: string;
-    state: string;
-    nonce: string;
-    codeVerifier: string;
-  }): Promise<OidcIdentity>;
+  completeLogin(options: { callbackUrl: URL; redirectUri: string; state: string; nonce: string; codeVerifier: string }): Promise<OidcIdentity>;
   /**
    * Check a token the IdP issued for a person, such as the ID token an agent received when the
    * person signed in to it, and return who it names. Used for token exchange (RFC 8693).
@@ -78,7 +72,12 @@ export function identityFromClaims(
 }
 
 /** A directory value from a claim the installation names: a text, or empty; nothing when the token doesn't carry it. */
-function directoryClaim<K extends string>(key: K, claim: string | undefined, claims: Record<string, unknown>, clean: (value: string) => string): Partial<Record<K, string | null>> {
+function directoryClaim<K extends string>(
+  key: K,
+  claim: string | undefined,
+  claims: Record<string, unknown>,
+  clean: (value: string) => string,
+): Partial<Record<K, string | null>> {
   if (!claim || !(claim in claims)) return {};
   const value = claims[claim];
   const text = typeof value === 'string' ? clean(value) : '';
@@ -111,10 +110,7 @@ export class IdpUnavailableError extends Error {
  * startup therefore doesn't crash-loop the platform: health checks and API tokens keep working,
  * and sign-in answers 503 until the IdP is reachable.
  */
-export function createResilientOidcProvider(
-  config: Config,
-  onError: (error: unknown) => void = () => {},
-): OidcProvider & { warmUp(): Promise<boolean> } {
+export function createResilientOidcProvider(config: Config, onError: (error: unknown) => void = () => {}): OidcProvider & { warmUp(): Promise<boolean> } {
   let discovered: Promise<OidcProvider> | undefined;
   const provider = () => {
     discovered ??= createOpenIdProvider(config).catch((error: unknown) => {
@@ -125,7 +121,11 @@ export function createResilientOidcProvider(
     return discovered;
   };
   return {
-    warmUp: () => provider().then(() => true, () => false),
+    warmUp: () =>
+      provider().then(
+        () => true,
+        () => false,
+      ),
     startLogin: async (options) => (await provider()).startLogin(options),
     completeLogin: async (options) => (await provider()).completeLogin(options),
     verifyToken: async (token) => (await provider()).verifyToken(token),

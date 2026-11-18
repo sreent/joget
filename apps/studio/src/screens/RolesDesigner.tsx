@@ -3,7 +3,7 @@ import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
 import { recordChoices } from '../model/conditions.js';
 import { addItem, recordEntities, removeItem, setRoleEntity, summarizeAccess, updateItem } from '../model/logic.js';
-import type { Definition } from '../types.js';
+import { type Definition, isWorkedOut } from '../types.js';
 import { Checklist, Choice } from './LogicDesigners.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
@@ -55,12 +55,20 @@ export function RolesDesigner({ definition, onChange }: Props) {
                   </th>
                   {entities.map((e) => (
                     <td key={e} className="px-4 py-2">
-                      <button type="button" className="text-left hover:underline" onClick={() => (setSelected(name), setEntity(e))} aria-label={`${r.label}: ${definition.entities[e]!.label}`}>
+                      <button
+                        type="button"
+                        className="text-left hover:underline"
+                        onClick={() => {
+                          setSelected(name);
+                          setEntity(e);
+                        }}
+                        aria-label={`${r.label}: ${definition.entities[e]!.label}`}
+                      >
                         {summarizeAccess(r.entities?.[e])}
                       </button>
                     </td>
                   ))}
-                  <td className="px-4 py-2 text-muted">{[...(r.actions ?? []), ...(r.queries ?? [])].join(', ') || '—'}</td>
+                  <td className="px-4 py-2 text-muted">{[...(r.actions ?? []), ...(r.queries ?? []), ...(r.flows ?? [])].join(', ') || '—'}</td>
                 </tr>
               );
             })}
@@ -84,7 +92,18 @@ export function RolesDesigner({ definition, onChange }: Props) {
         </form>
       </Card>
       {role ? (
-        <RolePanel key={role} definition={definition} onChange={onChange} name={role} entity={shown} onEntity={setEntity} onRemove={() => (onChange(removeItem(definition, 'roles', role)), setSelected(null))} />
+        <RolePanel
+          key={role}
+          definition={definition}
+          onChange={onChange}
+          name={role}
+          entity={shown}
+          onEntity={setEntity}
+          onRemove={() => {
+            onChange(removeItem(definition, 'roles', role));
+            setSelected(null);
+          }}
+        />
       ) : (
         <EmptyState title="No roles yet">A role says what the people you share the app with may do. Add one above.</EmptyState>
       )}
@@ -92,7 +111,14 @@ export function RolesDesigner({ definition, onChange }: Props) {
   );
 }
 
-function RolePanel({ definition, onChange, name, entity, onEntity, onRemove }: Props & { name: string; entity: string | null; onEntity: (entity: string) => void; onRemove: () => void }) {
+function RolePanel({
+  definition,
+  onChange,
+  name,
+  entity,
+  onEntity,
+  onRemove,
+}: Props & { name: string; entity: string | null; onEntity: (entity: string) => void; onRemove: () => void }) {
   const role = definition.roles[name]!;
   const set = (patch: Partial<typeof role>) => onChange(updateItem(definition, 'roles', name, patch));
   const entities = recordEntities(definition);
@@ -102,7 +128,9 @@ function RolePanel({ definition, onChange, name, entity, onEntity, onRemove }: P
         <Field label="Label" hint={`People are shared with this role by its name, ${name}, so it can't be renamed.`}>
           {(id) => <TextInput id={id} value={role.label} onChange={(e) => set({ label: e.target.value })} />}
         </Field>
-        <Field label="Description">{(id) => <TextInput id={id} value={role.description ?? ''} onChange={(e) => set({ description: e.target.value || undefined })} />}</Field>
+        <Field label="Description">
+          {(id) => <TextInput id={id} value={role.description ?? ''} onChange={(e) => set({ description: e.target.value || undefined })} />}
+        </Field>
       </div>
       {entities.length ? (
         <div className="grid gap-3">
@@ -113,7 +141,10 @@ function RolePanel({ definition, onChange, name, entity, onEntity, onRemove }: P
                 type="button"
                 aria-current={e === entity ? 'true' : undefined}
                 onClick={() => onEntity(e)}
-                className={cx('-mb-px border-b-2 px-3 py-2 text-sm font-medium', e === entity ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text')}
+                className={cx(
+                  '-mb-px border-b-2 px-3 py-2 text-sm font-medium',
+                  e === entity ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text',
+                )}
               >
                 {definition.entities[e]!.pluralLabel ?? definition.entities[e]!.label}
               </button>
@@ -129,7 +160,21 @@ function RolePanel({ definition, onChange, name, entity, onEntity, onRemove }: P
         onChange={(actions) => set({ actions })}
         hint="An action still runs under the role's access to records."
       />
-      <Checklist label="Queries it may run" options={Object.entries(definition.queries).map(([query, q]) => ({ value: query, label: q.label }))} selected={role.queries ?? []} onChange={(queries) => set({ queries })} />
+      <Checklist
+        label="Queries it may run"
+        options={Object.entries(definition.queries).map(([query, q]) => ({ value: query, label: q.label }))}
+        selected={role.queries ?? []}
+        onChange={(queries) => set({ queries })}
+      />
+      {Object.keys(definition.flows ?? {}).length ? (
+        <Checklist
+          label="Flows it may run through the API"
+          options={Object.entries(definition.flows ?? {}).map(([flow, f]) => ({ value: flow, label: f.label }))}
+          selected={role.flows ?? []}
+          onChange={(flows) => set({ flows: flows.length ? flows : undefined })}
+          hint="Actions and processes run their flows whatever the role. A flow runs with the app's authority, so name it only for roles that may do all it does."
+        />
+      ) : null}
       <div className="border-t border-line pt-3">
         <Button variant="danger" size="sm" onClick={onRemove}>
           Delete this role
@@ -149,13 +194,18 @@ function EntityAccess({ definition, onChange, role, entity }: Props & { role: st
   // Fields, and the fields of lines as `lines.amount`.
   const paths = fields.flatMap((f) =>
     f.type === 'lines'
-      ? [{ value: f.name, label: `${f.label} (all their fields)` }, ...(definition.entities[f.entity]?.fields ?? []).map((lf) => ({ value: `${f.name}.${lf.name}`, label: `${f.label}: ${lf.label}` }))]
+      ? [
+          { value: f.name, label: `${f.label} (all their fields)` },
+          ...(definition.entities[f.entity]?.fields ?? []).map((lf) => ({ value: `${f.name}.${lf.name}`, label: `${f.label}: ${lf.label}` })),
+        ]
       : [{ value: f.name, label: f.label }],
   );
-  const writable = paths.filter((p) => !fields.some((f) => f.name === p.value && f.type === 'number' && f.rollup));
+  const writable = paths.filter((p) => !fields.some((f) => f.name === p.value && isWorkedOut(f)));
   const pii = fields.flatMap((f) =>
     f.type === 'lines'
-      ? (definition.entities[f.entity]?.fields ?? []).filter((lf) => lf.classification === 'pii').map((lf) => ({ value: `${f.name}.${lf.name}`, label: `${f.label}: ${lf.label}` }))
+      ? (definition.entities[f.entity]?.fields ?? [])
+          .filter((lf) => lf.classification === 'pii')
+          .map((lf) => ({ value: `${f.name}.${lf.name}`, label: `${f.label}: ${lf.label}` }))
       : f.classification === 'pii'
         ? [{ value: f.name, label: f.label }]
         : [],
@@ -178,13 +228,39 @@ function EntityAccess({ definition, onChange, role, entity }: Props & { role: st
         <ScopeChoice
           label="Reads"
           scope={!read ? 'none' : read.where ? 'some' : 'all'}
-          onChange={(scope) => save({ ...access, read: scope === 'none' ? undefined : tidy({ ...read, where: scope === 'some' ? (read?.where ?? { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }) : undefined }) })}
+          onChange={(scope) =>
+            save({
+              ...access,
+              read:
+                scope === 'none'
+                  ? undefined
+                  : tidy({ ...read, where: scope === 'some' ? (read?.where ?? { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }) : undefined }),
+            })
+          }
         />
-        {read?.where ? <ConditionEditor label="Reads records where" value={read.where} onChange={(where) => save({ ...access, read: tidy({ ...read, where }) })} choices={choices} compareWith={[THE_PERSON]} /> : null}
+        {read?.where ? (
+          <ConditionEditor
+            label="Reads records where"
+            value={read.where}
+            onChange={(where) => save({ ...access, read: tidy({ ...read, where }) })}
+            choices={choices}
+            compareWith={[THE_PERSON]}
+          />
+        ) : null}
         {read ? (
           <>
-            <FieldSelection label="Sees" value={read.fields} options={paths} onChange={(selection) => save({ ...access, read: tidy({ ...read, fields: selection }) })} />
-            <Checklist label="Shows masked" options={paths} selected={read.mask ?? []} onChange={(mask) => save({ ...access, read: tidy({ ...read, mask }) })} />
+            <FieldSelection
+              label="Sees"
+              value={read.fields}
+              options={paths}
+              onChange={(selection) => save({ ...access, read: tidy({ ...read, fields: selection }) })}
+            />
+            <Checklist
+              label="Shows masked"
+              options={paths}
+              selected={read.mask ?? []}
+              onChange={(mask) => save({ ...access, read: tidy({ ...read, mask }) })}
+            />
             {pii.length ? (
               <Checklist
                 label="Personal data it may see unmasked"
@@ -210,7 +286,12 @@ function EntityAccess({ definition, onChange, role, entity }: Props & { role: st
               compareWith={[THE_PERSON]}
               empty="Any record it can fill in."
             />
-            <FieldSelection label="Fills in" value={create.fields} options={writable} onChange={(selection) => save({ ...access, create: tidy({ ...create, fields: selection }) })} />
+            <FieldSelection
+              label="Fills in"
+              value={create.fields}
+              options={writable}
+              onChange={(selection) => save({ ...access, create: tidy({ ...create, fields: selection }) })}
+            />
           </>
         ) : null}
       </section>
@@ -219,9 +300,25 @@ function EntityAccess({ definition, onChange, role, entity }: Props & { role: st
         <ScopeChoice
           label="Changes"
           scope={!update ? 'none' : update.where ? 'some' : 'all'}
-          onChange={(scope) => save({ ...access, update: scope === 'none' ? undefined : tidy({ ...update, where: scope === 'some' ? (update?.where ?? { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }) : undefined }) })}
+          onChange={(scope) =>
+            save({
+              ...access,
+              update:
+                scope === 'none'
+                  ? undefined
+                  : tidy({ ...update, where: scope === 'some' ? (update?.where ?? { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }) : undefined }),
+            })
+          }
         />
-        {update?.where ? <ConditionEditor label="Changes records where" value={update.where} onChange={(where) => save({ ...access, update: tidy({ ...update, where }) })} choices={choices} compareWith={[THE_PERSON]} /> : null}
+        {update?.where ? (
+          <ConditionEditor
+            label="Changes records where"
+            value={update.where}
+            onChange={(where) => save({ ...access, update: tidy({ ...update, where }) })}
+            choices={choices}
+            compareWith={[THE_PERSON]}
+          />
+        ) : null}
         {update ? (
           <>
             <ConditionEditor
@@ -232,7 +329,12 @@ function EntityAccess({ definition, onChange, role, entity }: Props & { role: st
               compareWith={[THE_PERSON]}
               empty="Any change it can make."
             />
-            <FieldSelection label="Changes the fields" value={update.fields} options={writable} onChange={(selection) => save({ ...access, update: tidy({ ...update, fields: selection }) })} />
+            <FieldSelection
+              label="Changes the fields"
+              value={update.fields}
+              options={writable}
+              onChange={(selection) => save({ ...access, update: tidy({ ...update, fields: selection }) })}
+            />
           </>
         ) : null}
       </section>
@@ -241,9 +343,25 @@ function EntityAccess({ definition, onChange, role, entity }: Props & { role: st
         <ScopeChoice
           label="Deletes"
           scope={!remove ? 'none' : remove.where ? 'some' : 'all'}
-          onChange={(scope) => save({ ...access, delete: scope === 'none' ? undefined : tidy({ where: scope === 'some' ? (remove?.where ?? { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }) : undefined }) })}
+          onChange={(scope) =>
+            save({
+              ...access,
+              delete:
+                scope === 'none'
+                  ? undefined
+                  : tidy({ where: scope === 'some' ? (remove?.where ?? { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }) : undefined }),
+            })
+          }
         />
-        {remove?.where ? <ConditionEditor label="Deletes records where" value={remove.where} onChange={(where) => save({ ...access, delete: tidy({ where }) })} choices={choices} compareWith={[THE_PERSON]} /> : null}
+        {remove?.where ? (
+          <ConditionEditor
+            label="Deletes records where"
+            value={remove.where}
+            onChange={(where) => save({ ...access, delete: tidy({ where }) })}
+            choices={choices}
+            compareWith={[THE_PERSON]}
+          />
+        ) : null}
         <Checkbox label="Exports records" checked={Boolean(access.export)} onChange={(on) => save({ ...access, export: on || undefined })} />
       </section>
     </div>
@@ -264,7 +382,17 @@ function ScopeChoice({ label, scope, onChange }: { label: string; scope: Scope; 
 }
 
 /** Which fields a permission covers: all, only some, or all but some. */
-function FieldSelection({ label, value, options, onChange }: { label: string; value: Selection; options: ReadonlyArray<{ value: string; label: string }>; onChange: (selection: Selection) => void }) {
+function FieldSelection({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: Selection;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  onChange: (selection: Selection) => void;
+}) {
   const mode = !value ? 'all' : 'include' in value ? 'include' : 'exclude';
   const names = !value ? [] : 'include' in value ? value.include : value.exclude;
   return (
@@ -279,7 +407,14 @@ function FieldSelection({ label, value, options, onChange }: { label: string; va
           { value: 'exclude', label: 'Every field but these' },
         ]}
       />
-      {value ? <Checklist label="Fields" options={options} selected={names} onChange={(next) => onChange(mode === 'include' ? { include: next } : { exclude: next })} /> : null}
+      {value ? (
+        <Checklist
+          label="Fields"
+          options={options}
+          selected={names}
+          onChange={(next) => onChange(mode === 'include' ? { include: next } : { exclude: next })}
+        />
+      ) : null}
     </div>
   );
 }

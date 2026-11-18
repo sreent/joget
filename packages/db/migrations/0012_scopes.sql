@@ -1,0 +1,1 @@
+ALTER TABLE "process_tokens" ADD COLUMN "scope" uuid;

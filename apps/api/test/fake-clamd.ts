@@ -27,7 +27,12 @@ export async function startFakeClamd(): Promise<{ port: number; mode: 'scan' | '
         if (length === 0) {
           state.scans += 1;
           const content = Buffer.concat(chunks).toString('latin1');
-          const reply = state.mode === 'error' ? 'INSTREAM size limit exceeded. ERROR' : content.includes(MALWARE_MARKER) ? 'stream: Ambit.Test.Marker FOUND' : 'stream: OK';
+          const reply =
+            state.mode === 'error'
+              ? 'INSTREAM size limit exceeded. ERROR'
+              : content.includes(MALWARE_MARKER)
+                ? 'stream: Ambit.Test.Marker FOUND'
+                : 'stream: OK';
           socket.end(`${reply}\0`);
           return;
         }

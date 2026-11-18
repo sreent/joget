@@ -10,7 +10,7 @@ export const EnvQuery = z.object({
   env: z
     .union([z.enum(['prod', 'staging']), z.uuid()])
     .optional()
-    .describe('A team app\'s environment: prod (the default), staging, or a preview\'s environment ID'),
+    .describe("A team app's environment: prod (the default), staging, or a preview's environment ID"),
 });
 export const EntityParams = AppParams.extend({ entity: z.string().min(1).max(63) });
 export const RecordParams = EntityParams.extend({ recordId: z.uuid() });
@@ -62,7 +62,11 @@ export const AppOut = z.object({
   movedTo: z.object({ appId: z.uuid(), name: z.string() }).nullable().optional(),
   /** On a personal app on its way to a team space: the team app, and the change request that brings it in. */
   promotion: z
-    .object({ appId: z.uuid(), name: z.string(), changeRequest: z.object({ id: z.uuid(), number: z.number().int(), status: z.enum(['open', 'merged', 'closed']) }).nullable() })
+    .object({
+      appId: z.uuid(),
+      name: z.string(),
+      changeRequest: z.object({ id: z.uuid(), number: z.number().int(), status: z.enum(['open', 'merged', 'closed']) }).nullable(),
+    })
     .nullable()
     .optional(),
   /** On a team app made by promotion: the personal app it came from. */
@@ -74,6 +78,8 @@ export const AppOut = z.object({
     share: z.boolean(),
     /** Change the definition: for a team app, make a working copy and submit changes. */
     edit: z.boolean(),
+    /** Change the definition by chat, on the installation's model (design §6.5). */
+    compose: z.boolean(),
     roles: z.array(z.string()),
     /** On a team app: the delivery steps the caller's roles allow. Separation of duties is checked when they act. */
     delivery: z
@@ -115,9 +121,19 @@ export const RecordOut = z.object({
   masked: z.array(z.string()).optional(),
   /** The files the values name, by ID. */
   files: z.record(z.string(), z.object({ name: z.string(), contentType: z.string(), size: z.number().int() })).optional(),
+  /** The titles of the records the values refer to, by ID, of those the caller may read. */
+  titles: z.record(z.string(), z.string()).optional(),
 });
 
 export const PageOut = z.object({ records: z.array(RecordOut), nextCursor: z.string().nullable() });
+
+/** What an import of CSV found: which field each column fills, each line's problems, and how many records it made. */
+export const ImportOut = z.object({
+  columns: z.array(z.object({ header: z.string(), field: z.string().nullable(), note: z.string().optional() })),
+  rows: z.number().int(),
+  issues: z.array(z.object({ row: z.number().int(), field: z.string().optional(), message: z.string() })),
+  created: z.number().int(),
+});
 
 export const FindingOut = z.object({
   rule: z.string(),
@@ -153,25 +169,6 @@ export const CardOut = z.object({
     )
     .optional(),
   responses: z.array(z.string()),
-  /** The a7c skills the change starts once it is saved. */
-  then: z.array(z.object({ label: z.string(), skill: z.string() })).optional(),
-});
-
-/** A call an action made to an a7c skill. Its input is never shown: it may hold values the reader can't see. */
-export const SkillCallOut = z.object({
-  id: z.uuid(),
-  action: z.string(),
-  recordId: z.uuid(),
-  step: z.string(),
-  skill: z.string(),
-  label: z.string(),
-  tier: z.enum(['personal', 'team', 'production']),
-  status: z.enum(['pending', 'started', 'failed']),
-  attempts: z.number().int(),
-  lastError: z.string().nullable(),
-  runId: z.string().nullable(),
-  createdAt: z.string(),
-  startedAt: z.string().nullable(),
 });
 
 export const ProposalOut = z.object({
@@ -199,3 +196,19 @@ export const ProvenanceIn = z
   .record(z.string(), z.record(z.string(), z.unknown()))
   .optional()
   .describe('Where each value came from: { field: { source: "document" | "agent" | "person" | "platform", ... } }');
+
+/** What the app's tests found: how many passed and failed, and each test's result. */
+export const TestsOut = z.object({
+  passed: z.number().int(),
+  failed: z.number().int(),
+  results: z.array(
+    z.object({
+      name: z.string(),
+      label: z.string(),
+      passed: z.boolean(),
+      outcome: z.enum(['saved', 'refused', 'error']),
+      message: z.string().optional(),
+      mismatches: z.array(z.object({ field: z.string(), expected: z.unknown(), actual: z.unknown() })).optional(),
+    }),
+  ),
+});

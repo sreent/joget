@@ -1,20 +1,22 @@
 import {
   closestCenter,
   DndContext,
+  type DragEndEvent,
   DragOverlay,
+  type DragStartEvent,
   KeyboardSensor,
   PointerSensor,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
 } from '@dnd-kit/core';
 import { rectSortingStrategy, SortableContext, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useState } from 'react';
+import { ConditionEditor } from '../components/condition.js';
 import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
+import { recordChoices } from '../model/conditions.js';
 import {
   addForm,
   addSection,
@@ -22,14 +24,14 @@ import {
   removeForm,
   removeFormField,
   removeSection,
+  type Slot,
   typeLabel,
   unplaced,
   updateForm,
   updateFormField,
   updateSection,
-  type Slot,
 } from '../model/edit.js';
-import type { Definition, FormField } from '../types.js';
+import { type Definition, type FormField, isWorkedOut } from '../types.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
@@ -47,7 +49,7 @@ export function FormDesigner({ definition, onChange }: Props) {
   const formName = selected && definition.forms[selected] ? selected : (forms[0] ?? null);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)_19rem]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[15rem_minmax(0,1fr)_19rem]">
       <Card className="grid content-start gap-3 p-4">
         <h2 className="m-0 text-sm font-semibold text-muted">Forms</h2>
         <ul className="m-0 grid list-none gap-1 p-0">
@@ -95,7 +97,17 @@ export function FormDesigner({ definition, onChange }: Props) {
       </Card>
 
       {formName ? (
-        <FormCanvas definition={definition} name={formName} slot={slot} onSlot={setSlot} onChange={onChange} onRemove={() => (onChange(removeForm(definition, formName)), setSelected(null))} />
+        <FormCanvas
+          definition={definition}
+          name={formName}
+          slot={slot}
+          onSlot={setSlot}
+          onChange={onChange}
+          onRemove={() => {
+            onChange(removeForm(definition, formName));
+            setSelected(null);
+          }}
+        />
       ) : (
         <EmptyState title="No forms yet">A form lays out an entity's fields for people who work in screens. Agents don't need one.</EmptyState>
       )}
@@ -105,12 +117,22 @@ export function FormDesigner({ definition, onChange }: Props) {
   );
 }
 
-function FormCanvas(props: { definition: Definition; name: string; slot: Slot | null; onSlot: (slot: Slot | null) => void; onChange: (d: Definition) => void; onRemove: () => void }) {
+function FormCanvas(props: {
+  definition: Definition;
+  name: string;
+  slot: Slot | null;
+  onSlot: (slot: Slot | null) => void;
+  onChange: (d: Definition) => void;
+  onRemove: () => void;
+}) {
   const { definition, name, onChange } = props;
   const form = definition.forms[name]!;
   const entity = definition.entities[form.entity];
   const actions = Object.entries(definition.actions).filter(([, action]) => action.entity === form.entity);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const [dragging, setDragging] = useState<string | null>(null);
   const label = (field: string) => entity?.fields.find((f) => f.name === field)?.label ?? field;
 
@@ -136,7 +158,9 @@ function FormCanvas(props: { definition: Definition; name: string; slot: Slot | 
   return (
     <Card className="grid content-start gap-4">
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Title">{(id) => <TextInput id={id} value={form.label} onChange={(e) => onChange(updateForm(definition, name, { label: e.target.value }))} />}</Field>
+        <Field label="Title">
+          {(id) => <TextInput id={id} value={form.label} onChange={(e) => onChange(updateForm(definition, name, { label: e.target.value }))} />}
+        </Field>
         <Field label="Submits through" hint="An action's rules and confirmation apply. Without one, the form creates and edits records.">
           {(id) => (
             <Select id={id} value={form.action ?? ''} onChange={(e) => onChange(updateForm(definition, name, { action: e.target.value || undefined }))}>
@@ -146,6 +170,23 @@ function FormCanvas(props: { definition: Definition; name: string; slot: Slot | 
                   {action.label}
                 </option>
               ))}
+            </Select>
+          )}
+        </Field>
+        <Field
+          label="Shows"
+          hint={form.sections.length > 1 ? 'In steps, each section is a step, checked before the next.' : 'Add a section to show the form in steps.'}
+        >
+          {(id) => (
+            <Select
+              id={id}
+              value={form.layout ?? 'page'}
+              onChange={(e) => onChange(updateForm(definition, name, { layout: e.target.value === 'steps' ? 'steps' : 'page' }))}
+            >
+              <option value="page">All on one page</option>
+              <option value="steps" disabled={form.sections.length < 2}>
+                In steps, a section at a time
+              </option>
             </Select>
           )}
         </Field>
@@ -163,12 +204,25 @@ function FormCanvas(props: { definition: Definition; name: string; slot: Slot | 
               selected={props.slot?.section === s ? props.slot.index : null}
               onSelect={(index) => props.onSlot({ section: s, index })}
               onTitle={(title) => onChange(updateSection(definition, name, s, title))}
-              onRemove={form.sections.length > 1 ? () => (onChange(removeSection(definition, name, s)), props.onSlot(null)) : undefined}
+              onRemove={
+                form.sections.length > 1
+                  ? () => {
+                      onChange(removeSection(definition, name, s));
+                      props.onSlot(null);
+                    }
+                  : undefined
+              }
             />
           ))}
         </div>
-        <Palette fields={unplaced(definition, name)} label={label} onAdd={(field) => onChange(placeField(definition, name, field, { section: form.sections.length - 1, index: Number.MAX_SAFE_INTEGER }))} />
-        <DragOverlay>{dragging ? <div className="rounded-md border border-accent bg-surface px-3 py-2 shadow-raised">{label(dragging)}</div> : null}</DragOverlay>
+        <Palette
+          fields={unplaced(definition, name)}
+          label={label}
+          onAdd={(field) => onChange(placeField(definition, name, field, { section: form.sections.length - 1, index: Number.MAX_SAFE_INTEGER }))}
+        />
+        <DragOverlay>
+          {dragging ? <div className="rounded-md border border-accent bg-surface px-3 py-2 shadow-raised">{label(dragging)}</div> : null}
+        </DragOverlay>
       </DndContext>
       <div className="flex gap-2 border-t border-line pt-3">
         <Button size="sm" onClick={() => onChange(addSection(definition, name))}>
@@ -196,9 +250,18 @@ function SectionBox(props: {
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: sectionId(props.index) });
   return (
-    <section ref={setNodeRef} className={cx('grid gap-3 rounded-md border border-dashed p-3', isOver ? 'border-accent bg-accent-soft/40' : 'border-line-strong')}>
+    <section
+      ref={setNodeRef}
+      className={cx('grid gap-3 rounded-md border border-dashed p-3', isOver ? 'border-accent bg-accent-soft/40' : 'border-line-strong')}
+    >
       <div className="flex items-center gap-2">
-        <TextInput aria-label={`Section ${props.index + 1} title`} placeholder="Untitled section" value={props.title} onChange={(e) => props.onTitle(e.target.value)} className="font-semibold" />
+        <TextInput
+          aria-label={`Section ${props.index + 1} title`}
+          placeholder="Untitled section"
+          value={props.title}
+          onChange={(e) => props.onTitle(e.target.value)}
+          className="font-semibold"
+        />
         {props.onRemove ? (
           <Button size="sm" variant="ghost" onClick={props.onRemove} aria-label={`Remove section ${props.index + 1}`}>
             Remove
@@ -208,7 +271,14 @@ function SectionBox(props: {
       <SortableContext items={props.fields.map((f) => itemId(f.field))} strategy={rectSortingStrategy}>
         <div className="grid min-h-12 grid-cols-2 gap-2">
           {props.fields.map((item, index) => (
-            <FormItem key={item.field} item={item} label={item.label ?? props.label(item.field)} isLines={props.isLines(item.field)} selected={props.selected === index} onSelect={() => props.onSelect(index)} />
+            <FormItem
+              key={item.field}
+              item={item}
+              label={item.label ?? props.label(item.field)}
+              isLines={props.isLines(item.field)}
+              selected={props.selected === index}
+              onSelect={() => props.onSelect(index)}
+            />
           ))}
           {props.fields.length === 0 ? <p className="col-span-2 m-0 self-center text-center text-sm text-faint">Drag fields here</p> : null}
         </div>
@@ -223,7 +293,12 @@ function FormItem({ item, label, isLines, selected, onSelect }: { item: FormFiel
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cx('flex items-center gap-2 rounded-md border bg-surface px-2 py-2', item.width === 'full' || isLines ? 'col-span-2' : 'col-span-1', selected ? 'border-accent' : 'border-line', isDragging && 'opacity-40')}
+      className={cx(
+        'flex items-center gap-2 rounded-md border bg-surface px-2 py-2',
+        item.width === 'full' || isLines ? 'col-span-2' : 'col-span-1',
+        selected ? 'border-accent' : 'border-line',
+        isDragging && 'opacity-40',
+      )}
     >
       <button type="button" aria-label={`Move ${label}`} className="cursor-grab rounded px-1 text-faint hover:text-text" {...attributes} {...listeners}>
         ⠿
@@ -254,7 +329,10 @@ function Palette({ fields, label, onAdd }: { fields: string[]; label: (field: st
 function PaletteItem({ field, label, onAdd }: { field: string; label: string; onAdd: () => void }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: paletteId(field) });
   return (
-    <div ref={setNodeRef} className={cx('flex items-center gap-1 rounded-full border border-line-strong bg-sunken py-0.5 pr-1 pl-3 text-sm', isDragging && 'opacity-40')}>
+    <div
+      ref={setNodeRef}
+      className={cx('flex items-center gap-1 rounded-full border border-line-strong bg-sunken py-0.5 pr-1 pl-3 text-sm', isDragging && 'opacity-40')}
+    >
       <span className="cursor-grab" {...attributes} {...listeners}>
         {label}
       </span>
@@ -265,7 +343,19 @@ function PaletteItem({ field, label, onAdd }: { field: string; label: string; on
   );
 }
 
-function FormSide({ definition, name, slot, onSlot, onChange }: { definition: Definition; name: string; slot: Slot | null; onSlot: (s: Slot | null) => void; onChange: (d: Definition) => void }) {
+function FormSide({
+  definition,
+  name,
+  slot,
+  onSlot,
+  onChange,
+}: {
+  definition: Definition;
+  name: string;
+  slot: Slot | null;
+  onSlot: (s: Slot | null) => void;
+  onChange: (d: Definition) => void;
+}) {
   const form = definition.forms[name]!;
   const item = slot ? form.sections[slot.section]?.fields[slot.index] : undefined;
   if (!slot || !item) return <Card className="text-sm text-muted">Select a field on the form to change how it shows.</Card>;
@@ -293,13 +383,29 @@ function FormSide({ definition, name, slot, onSlot, onChange }: { definition: De
           )}
         </Field>
       )}
-      {field?.type === 'number' && field.rollup ? (
-        <p className="m-0 text-sm text-muted">Worked out from lines, so it's shown, never filled in.</p>
+      {field && isWorkedOut(field) ? (
+        <p className="m-0 text-sm text-muted">
+          {field.type === 'number' && field.rollup ? 'Worked out from lines' : 'Worked out by a formula'}, so it's shown, never filled in.
+        </p>
       ) : (
         <Checkbox label="Read-only on this form" checked={item.readOnly} onChange={(value) => set({ readOnly: value })} />
       )}
+      <ConditionEditor
+        label="Shows when"
+        value={item.visibleWhen}
+        onChange={(visibleWhen) => set({ visibleWhen })}
+        choices={recordChoices(definition, form.entity).filter((choice) => choice.ref !== `record.${item.field}`)}
+        empty="Always. A field it hides sends no value."
+      />
       <div className="border-t border-line pt-3">
-        <Button size="sm" variant="danger" onClick={() => (onChange(removeFormField(definition, name, slot)), onSlot(null))}>
+        <Button
+          size="sm"
+          variant="danger"
+          onClick={() => {
+            onChange(removeFormField(definition, name, slot));
+            onSlot(null);
+          }}
+        >
           Take off the form
         </Button>
       </div>

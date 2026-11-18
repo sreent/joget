@@ -1,7 +1,7 @@
-import { evaluateCondition, type Condition, type Operand } from '@platform/authz';
+import { afterCursor, compileCondition, type FieldInfo, orderBy, type SortKey, SqlBuilder } from '@platform/app-model';
+import { type Condition, evaluateCondition, type Operand } from '@platform/authz';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { afterCursor, compileCondition, orderBy, SqlBuilder, type FieldInfo, type SortKey } from '@platform/app-model';
 import { conditionRecord, type FieldValue } from '../src/values.js';
 
 /**
@@ -20,6 +20,7 @@ const FIELDS: FieldInfo[] = [
   { name: 'n2', kind: 'number', column: 'n2', system: false },
   { name: 'b1', kind: 'boolean', column: 'b1', system: false },
   { name: 'm1', kind: 'text[]', column: 'm1', system: false },
+  { name: 'r1', kind: 'uuid[]', column: 'r1', system: false },
 ];
 const fieldMap = new Map(FIELDS.map((field) => [field.name, field]));
 
@@ -31,6 +32,7 @@ const VALUES: Record<string, FieldValue[]> = {
   n2: [0, 1, null],
   b1: [true, false, null],
   m1: [['a'], ['a', 'b'], ['b'], null],
+  r1: [[U1], [U1, U2], [U2], null],
 };
 const LITERALS: Operand[] = ['a', 'b', 'A', U1, U1.toUpperCase(), 'not-a-uuid', 'a\u0000', 0, 1, 2.5, -1, true, false, null];
 
@@ -73,16 +75,14 @@ beforeAll(async () => {
   if (!url) throw new Error('Integration tests need TEST_DATABASE_URL');
   client = new pg.Client({ connectionString: url });
   await client.connect();
-  await client.query(
-    'create temp table r (id int primary key, t1 text, t2 text, u1 uuid, n1 numeric, n2 numeric, b1 boolean, m1 text[])',
-  );
+  await client.query('create temp table r (id int primary key, t1 text, t2 text, u1 uuid, n1 numeric, n2 numeric, b1 boolean, m1 text[], r1 uuid[])');
   // Every combination would be too many: take a deterministic sample with every value of every field.
   const { pick } = random(42);
   for (let id = 1; id <= 160; id++) {
     const values: Record<string, FieldValue> = {};
     for (const field of FIELDS) values[field.name] = pick(VALUES[field.name]!);
     records.push({ id, values });
-    await client.query('insert into r values ($1, $2, $3, $4::uuid, $5::numeric, $6::numeric, $7, $8::text[])', [
+    await client.query('insert into r values ($1, $2, $3, $4::uuid, $5::numeric, $6::numeric, $7, $8::text[], $9::uuid[])', [
       id,
       values['t1'],
       values['t2'],
@@ -91,6 +91,7 @@ beforeAll(async () => {
       values['n2'],
       values['b1'],
       values['m1'],
+      values['r1'],
     ]);
   }
 });

@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from 'react';
-import { ApiError, envParams, uploadFile, type AppAt } from '../api.js';
+import { createContext, type ReactNode, useContext, useState } from 'react';
+import { ApiError, type AppAt, envParams, uploadFile } from '../api.js';
 import type { FileInfo } from '../types.js';
 import { Button } from './ui.js';
 
@@ -45,7 +45,19 @@ export function FileLink({ id, link = true }: { id: string; link?: boolean }) {
 const ACCEPT: Record<string, string> = { image: 'image/jpeg,image/png,image/gif,image/webp,image/heic', pdf: 'application/pdf' };
 
 /** Pick a file: it uploads straight away, and the field holds its ID. */
-export function FileInput({ id, value, accept, onChange, label }: { id: string; value: string | null; accept: readonly string[]; onChange: (value: string | null) => void; label?: string }) {
+export function FileInput({
+  id,
+  value,
+  accept,
+  onChange,
+  label,
+}: {
+  id: string;
+  value: string | null;
+  accept: readonly string[];
+  onChange: (value: string | null) => void;
+  label?: string;
+}) {
   const files = useContext(FilesContext);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -1,27 +1,27 @@
-import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
 import {
+  type AccessChange,
   accessChanges,
   appRoleId,
   appRoleName,
+  type CapabilityChange,
   capabilityChanges,
+  type DefinitionChange,
   diffDefinitions,
   dropEnvironment,
+  type EnvironmentNames,
   environmentNames,
   ident,
   lintDefinition,
+  type MergeConflict,
   mergeDefinitions,
   planMigration,
   provisionEnvironment,
   recomputeRollups,
+  type StoredDefinition,
   tableName,
   validateDefinition,
-  type AccessChange,
-  type CapabilityChange,
-  type DefinitionChange,
-  type EnvironmentNames,
-  type MergeConflict,
-  type StoredDefinition,
 } from '@platform/app-model';
+import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
 import {
   appEnvironments,
   appRevisions,
@@ -29,26 +29,28 @@ import {
   bindings,
   changeRequests,
   changeReviews,
+  type Database,
   deploymentApprovals,
   deployments,
   releases,
   spaces,
   users,
-  type Database,
 } from '@platform/db';
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, max, ne } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import type pg from 'pg';
 import { checkPermission } from '../access/check.js';
 import { spaceResource } from '../access/resources.js';
-import { digestOf, insertRevision, refuseSkillsWithoutA7c, type AppBuilder, type PlannedStep } from '../apps/builder.js';
-import { isTeamApp, type AppRef, type EnvironmentRow, type LoadedApp, type SpaceRow } from '../apps/catalog.js';
-import type { AppRuntime } from '../apps/runtime.js';
+import { requirePerson } from '../access/rules.js';
+import { type AppBuilder, digestOf, insertRevision, type PlannedStep } from '../apps/builder.js';
+import { type AppRef, type EnvironmentRow, isTeamApp, type LoadedApp, type SpaceRow } from '../apps/catalog.js';
 import { pgError } from '../apps/pg-errors.js';
+import type { AppRuntime, TestResult } from '../apps/runtime.js';
 import { lockEnvironment, withTransaction } from '../apps/transaction.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
+import { planSchedules } from '../flows/schedules.js';
 import { addSampleRecords } from './samples.js';
 
 export type ChangeRequestRow = typeof changeRequests.$inferSelect;
@@ -65,6 +67,8 @@ export interface ChangeChecks {
   readonly access: ReadonlyArray<AccessChange & { readonly holders: number }>;
   readonly capabilities: readonly CapabilityChange[];
   readonly lint: readonly string[];
+  /** The head's tests, run on its preview: a test that fails stops the merge. */
+  readonly tests?: { readonly passed: number; readonly failed: number; readonly results: readonly TestResult[] };
 }
 
 /** Where review stands: approvals on the current head, and who asked for changes. */
@@ -129,7 +133,10 @@ export class Delivery {
       .from(apps)
       .where(and(eq(apps.workingCopyOf, team.app.id), eq(apps.ownerUserId, auth.actor.id), eq(apps.status, 'active')));
     if (existing) return { appId: existing.id, created: false, samples: 0 };
-    const [personal] = await ctx.db.select().from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
+    const [personal] = await ctx.db
+      .select()
+      .from(spaces)
+      .where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
     if (!personal) throw notFound('Personal space');
     await checkPermission(ctx, request, auth, 'app.create', spaceResource(ctx.org.id, personal));
     const appId = await this.#builder.createWorkingCopy(request, auth, team, personal, await ctx.apps.mainDefinition(team));
@@ -169,17 +176,28 @@ export class Delivery {
    * definition from the owner's working copy. The target space reviews it like any change. Data
    * stays where it is. The personal app keeps working until the team app first runs in Prod.
    */
-  async promote(request: FastifyRequest, auth: AuthContext, source: LoadedApp, input: { readonly spaceId: string; readonly name?: string }): Promise<{ appId: string; copyId: string; changeRequest: ChangeRequestRow }> {
+  async promote(
+    request: FastifyRequest,
+    auth: AuthContext,
+    source: LoadedApp,
+    input: { readonly spaceId: string; readonly name?: string },
+  ): Promise<{ appId: string; copyId: string; changeRequest: ChangeRequestRow }> {
     const ctx = this.#ctx;
     if (source.space.kind !== 'personal' || source.app.workingCopyOf) {
       throw unprocessable('not_promotable', 'Only an app of your own, in your personal space, moves to a team space');
     }
     if (source.app.ownerUserId !== auth.actor.id) throw forbidden('not_your_app', 'Only its owner moves an app to a team space');
     if (source.app.movedTo) throw conflict('already_moved', 'This app moved to a team space already');
-    const [open] = await ctx.db.select({ id: apps.id }).from(apps).where(and(eq(apps.promotedFrom, source.app.id), eq(apps.status, 'active')));
+    const [open] = await ctx.db
+      .select({ id: apps.id })
+      .from(apps)
+      .where(and(eq(apps.promotedFrom, source.app.id), eq(apps.status, 'active')));
     if (open) throw conflict('promotion_open', 'This app is moving to a team space already', { appId: open.id });
-    const [space] = await ctx.db.select().from(spaces).where(and(eq(spaces.id, input.spaceId), eq(spaces.orgId, ctx.org.id)));
-    if (!space || space.kind !== 'team') throw notFound('Team space');
+    const [space] = await ctx.db
+      .select()
+      .from(spaces)
+      .where(and(eq(spaces.id, input.spaceId), eq(spaces.orgId, ctx.org.id)));
+    if (space?.kind !== 'team') throw notFound('Team space');
     const name = input.name?.trim() || source.app.name;
     const result = await this.bringIn(request, auth, space, {
       name,
@@ -208,7 +226,14 @@ export class Delivery {
     request: FastifyRequest,
     auth: AuthContext,
     space: SpaceRow,
-    input: { readonly name: string; readonly description: string | null; readonly definition: unknown; readonly promotedFrom?: AppRef; readonly title: string; readonly body: string },
+    input: {
+      readonly name: string;
+      readonly description: string | null;
+      readonly definition: unknown;
+      readonly promotedFrom?: AppRef;
+      readonly title: string;
+      readonly body: string;
+    },
   ): Promise<{ appId: string; copyId: string; changeRequest: ChangeRequestRow }> {
     const ctx = this.#ctx;
     if (space.kind !== 'team') throw unprocessable('not_a_team_space', 'Choose a team space');
@@ -217,8 +242,10 @@ export class Delivery {
     await checkPermission(ctx, request, auth, 'change.open', target);
     const validated = validateDefinition(input.definition);
     if (!validated.ok) throw unprocessable('invalid_definition', 'The definition has problems', { issues: validated.issues });
-    refuseSkillsWithoutA7c(ctx, validated.definition);
-    const [personal] = await ctx.db.select().from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
+    const [personal] = await ctx.db
+      .select()
+      .from(spaces)
+      .where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
     if (!personal) throw notFound('Personal space');
 
     const appId = await this.#builder.createEmptyTeamApp(request, auth, space, {
@@ -240,7 +267,45 @@ export class Delivery {
    * Submit a working copy's changes: open a change request in the team space, or bring the open
    * one up to date. The head becomes a revision off the main line, and a preview runs it.
    */
-  async submit(request: FastifyRequest, auth: AuthContext, copy: LoadedApp, input: { readonly title?: string; readonly description?: string }): Promise<ChangeRequestRow> {
+  async submit(
+    request: FastifyRequest,
+    auth: AuthContext,
+    copy: LoadedApp,
+    input: { readonly title?: string; readonly description?: string },
+  ): Promise<ChangeRequestRow> {
+    const row = await this.#submit(request, auth, copy, input);
+    return this.#runTests(request, row);
+  }
+
+  /**
+   * Run a change request's tests on its preview, which runs its head, and keep their results with
+   * its checks. A test that fails stops the merge, as reviewers see.
+   */
+  async #runTests(request: FastifyRequest, row: ChangeRequestRow): Promise<ChangeRequestRow> {
+    const ctx = this.#ctx;
+    const [preview] = await ctx.db
+      .select({ id: appEnvironments.id })
+      .from(appEnvironments)
+      .where(and(eq(appEnvironments.changeRequestId, row.id), eq(appEnvironments.status, 'active')));
+    if (!preview) return row;
+    const loaded = await ctx.apps.load(row.appId, { id: preview.id });
+    if (!Object.keys(loaded.definition.tests ?? {}).length) return row;
+    const results = await this.#runtime.runTests(request, loaded);
+    const tests = { passed: results.filter((result) => result.passed).length, failed: results.filter((result) => !result.passed).length, results };
+    const [updated] = await ctx.db
+      .update(changeRequests)
+      .set({ checks: { ...(row.checks as Record<string, unknown>), tests } as unknown as Record<string, unknown> })
+      .where(and(eq(changeRequests.id, row.id), eq(changeRequests.headDigest, row.headDigest)))
+      .returning();
+    return updated ?? row;
+  }
+
+  async #submit(
+    request: FastifyRequest,
+    auth: AuthContext,
+    copy: LoadedApp,
+    input: { readonly title?: string; readonly description?: string },
+  ): Promise<ChangeRequestRow> {
     const ctx = this.#ctx;
     if (!copy.app.workingCopyOf) throw unprocessable('not_a_working_copy', 'Submit changes from a working copy of a team app');
     if (copy.app.ownerUserId !== auth.actor.id) throw forbidden('not_your_working_copy', 'Only the builder whose working copy this is can submit it');
@@ -331,7 +396,8 @@ export class Delivery {
         return row;
       });
     } catch (error) {
-      if (pgError(error).constraint === 'change_requests_one_open_per_copy_uq') throw conflict('change_request_open', 'This working copy already has an open change request');
+      if (pgError(error).constraint === 'change_requests_one_open_per_copy_uq')
+        throw conflict('change_request_open', 'This working copy already has an open change request');
       throw error;
     }
   }
@@ -363,7 +429,15 @@ export class Delivery {
   }
 
   /** A preview: a temporary environment that runs the change, for reviewers to click through (design §3). */
-  async #createPreview(client: pg.PoolClient, db: Database, team: AppRef, cr: ChangeRequestRow, head: StoredDefinition, revision: number, now: Date): Promise<void> {
+  async #createPreview(
+    client: pg.PoolClient,
+    db: Database,
+    team: AppRef,
+    cr: ChangeRequestRow,
+    head: StoredDefinition,
+    revision: number,
+    now: Date,
+  ): Promise<void> {
     const names = environmentNames(team.app.id, 'preview', cr.number);
     const envId = uuidv7(now.getTime());
     await db.insert(appEnvironments).values({
@@ -381,8 +455,19 @@ export class Delivery {
   }
 
   /** Bring a preview up to a new head. Its data is for trying things out, so a change that deletes some may. */
-  async #updatePreview(client: pg.PoolClient, db: Database, team: AppRef, cr: ChangeRequestRow, previous: StoredDefinition, head: StoredDefinition, revision: number): Promise<void> {
-    const [env] = await db.select().from(appEnvironments).where(and(eq(appEnvironments.changeRequestId, cr.id), eq(appEnvironments.status, 'active')));
+  async #updatePreview(
+    client: pg.PoolClient,
+    db: Database,
+    team: AppRef,
+    cr: ChangeRequestRow,
+    previous: StoredDefinition,
+    head: StoredDefinition,
+    revision: number,
+  ): Promise<void> {
+    const [env] = await db
+      .select()
+      .from(appEnvironments)
+      .where(and(eq(appEnvironments.changeRequestId, cr.id), eq(appEnvironments.status, 'active')));
     if (!env) {
       await this.#createPreview(client, db, team, cr, head, revision, this.#ctx.now());
       return;
@@ -404,7 +489,10 @@ export class Delivery {
   }
 
   async #dropPreview(client: pg.PoolClient, db: Database, cr: ChangeRequestRow): Promise<void> {
-    const [env] = await db.select().from(appEnvironments).where(and(eq(appEnvironments.changeRequestId, cr.id), eq(appEnvironments.status, 'active')));
+    const [env] = await db
+      .select()
+      .from(appEnvironments)
+      .where(and(eq(appEnvironments.changeRequestId, cr.id), eq(appEnvironments.status, 'active')));
     if (!env) return;
     await lockEnvironment(client, env.id);
     for (const statement of dropEnvironment({ schema: env.schemaName, role: env.dbRole })) await client.query(statement);
@@ -416,13 +504,20 @@ export class Delivery {
   }
 
   async changeRequest(id: string): Promise<ChangeRequestRow> {
-    const [row] = await this.#ctx.db.select().from(changeRequests).where(and(eq(changeRequests.id, id), eq(changeRequests.orgId, this.#ctx.org.id)));
+    const [row] = await this.#ctx.db
+      .select()
+      .from(changeRequests)
+      .where(and(eq(changeRequests.id, id), eq(changeRequests.orgId, this.#ctx.org.id)));
     if (!row) throw notFound('Change request');
     return row;
   }
 
   async reviewsOf(cr: ChangeRequestRow) {
-    return this.#ctx.db.select().from(changeReviews).where(eq(changeReviews.changeRequestId, cr.id)).orderBy(asc(changeReviews.createdAt), asc(changeReviews.id));
+    return this.#ctx.db
+      .select()
+      .from(changeReviews)
+      .where(eq(changeReviews.changeRequestId, cr.id))
+      .orderBy(asc(changeReviews.createdAt), asc(changeReviews.id));
   }
 
   /** Approvals count only for the head they reviewed; a reviewer's latest verdict on it stands. */
@@ -457,9 +552,11 @@ export class Delivery {
     input: { readonly verdict: 'approve' | 'request_changes' | 'comment'; readonly comment?: string },
   ): Promise<void> {
     const ctx = this.#ctx;
+    if (input.verdict === 'approve') requirePerson(auth, 'change.approve');
     if (cr.status !== 'open') throw conflict('not_open', `Change request #${cr.number} is ${cr.status}`);
     // The guardrail has said so already; this keeps the rule even if it is disabled.
-    if (input.verdict === 'approve' && cr.authorId === auth.actor.id) throw forbidden('author_cannot_approve', 'Someone other than the author must approve a change');
+    if (input.verdict === 'approve' && cr.authorId === auth.actor.id)
+      throw forbidden('author_cannot_approve', 'Someone other than the author must approve a change');
     if (input.verdict !== 'approve' && !input.comment?.trim()) throw unprocessable('comment_required', 'Say what should change, or what you noticed');
     const now = ctx.now();
     await ctx.db.transaction(async (tx) => {
@@ -500,12 +597,23 @@ export class Delivery {
         { approvals: state },
       );
     }
+    // The head's tests ran on its preview: a change that breaks what the app must do doesn't merge.
+    const tests = (cr.checks as unknown as ChangeChecks).tests;
+    if (tests && tests.failed > 0) {
+      const failing = tests.results.filter((result) => !result.passed).map((result) => result.label);
+      throw conflict(
+        'tests_failing',
+        `${tests.failed === 1 ? 'A test fails' : `${tests.failed} tests fail`}: ${failing.join('; ')}. The author puts the change right and submits it again.`,
+        { tests },
+      );
+    }
     const team = await ctx.apps.ref(cr.appId);
     const now = ctx.now();
     return withTransaction(ctx.pool, async (client, db) => {
       const [locked] = await db.select().from(apps).where(eq(apps.id, team.app.id)).for('update');
       const [current] = await db.select().from(changeRequests).where(eq(changeRequests.id, cr.id)).for('update');
-      if (current!.status !== 'open' || current!.headDigest !== cr.headDigest) throw conflict('changed', 'The change request changed meanwhile. Look at it again.');
+      if (current!.status !== 'open' || current!.headDigest !== cr.headDigest)
+        throw conflict('changed', 'The change request changed meanwhile. Look at it again.');
       const main = await ctx.apps.definition(team.app.id, locked!.currentRevision, db);
       const head = await ctx.apps.definition(team.app.id, cr.headRevision, db);
       const fastForward = locked!.currentRevision === cr.baseRevision;
@@ -513,21 +621,37 @@ export class Delivery {
       if (!fastForward) {
         const result = mergeDefinitions(await ctx.apps.definition(team.app.id, cr.baseRevision, db), head, main);
         if (!result.ok) {
-          throw conflict('merge_conflict', 'The team app changed the same parts since this change began. The author updates their working copy and submits again.', {
-            conflicts: result.conflicts,
-          });
+          throw conflict(
+            'merge_conflict',
+            'The team app changed the same parts since this change began. The author updates their working copy and submits again.',
+            {
+              conflicts: result.conflicts,
+            },
+          );
         }
         const valid = validateDefinition(result.definition, main);
         if (!valid.ok) {
-          throw conflict('merge_invalid', 'Together with the newer changes of the team app, this change breaks something. The author updates their working copy and submits again.', {
-            issues: valid.issues,
-          });
+          throw conflict(
+            'merge_invalid',
+            'Together with the newer changes of the team app, this change breaks something. The author updates their working copy and submits again.',
+            {
+              issues: valid.issues,
+            },
+          );
         }
         merged = valid.definition;
       }
       const revision = await this.#nextRevision(db, team.app.id);
       const plan = planMigration(main, merged, environmentNames(team.app.id, 'prod'));
-      await insertRevision(db, { appId: team.app.id, revision, definition: merged, steps: plan.steps, notes: [`Change request #${cr.number}: ${cr.title}`], auth, now });
+      await insertRevision(db, {
+        appId: team.app.id,
+        revision,
+        definition: merged,
+        steps: plan.steps,
+        notes: [`Change request #${cr.number}: ${cr.title}`],
+        auth,
+        now,
+      });
       await db.update(apps).set({ currentRevision: revision, updatedAt: now }).where(eq(apps.id, team.app.id));
       const [row] = (await db
         .update(changeRequests)
@@ -581,12 +705,18 @@ export class Delivery {
   }
 
   async #nextRevision(db: Database, appId: string): Promise<number> {
-    const [row] = await db.select({ n: max(appRevisions.revision) }).from(appRevisions).where(eq(appRevisions.appId, appId));
+    const [row] = await db
+      .select({ n: max(appRevisions.revision) })
+      .from(appRevisions)
+      .where(eq(appRevisions.appId, appId));
     return (row?.n ?? 0) + 1;
   }
 
   async #nextNumber(db: Database, appId: string): Promise<number> {
-    const [row] = await db.select({ n: max(changeRequests.number) }).from(changeRequests).where(eq(changeRequests.appId, appId));
+    const [row] = await db
+      .select({ n: max(changeRequests.number) })
+      .from(changeRequests)
+      .where(eq(changeRequests.appId, appId));
     return (row?.n ?? 0) + 1;
   }
 
@@ -596,7 +726,12 @@ export class Delivery {
    * Cut a release: one main-line revision, hashed and signed, which never changes. A change that
    * deletes data goes in a release of its own, because a rollback can't bring data back.
    */
-  async cutRelease(request: FastifyRequest, auth: AuthContext, team: AppRef, input: { readonly revision?: number; readonly notes?: string }): Promise<ReleaseRow> {
+  async cutRelease(
+    request: FastifyRequest,
+    auth: AuthContext,
+    team: AppRef,
+    input: { readonly revision?: number; readonly notes?: string },
+  ): Promise<ReleaseRow> {
     const ctx = this.#ctx;
     const now = ctx.now();
     const names = environmentNames(team.app.id, 'prod');
@@ -616,7 +751,13 @@ export class Delivery {
       const before = previous ? await ctx.apps.definition(team.app.id, previous.revision, db) : undefined;
       const plan = planMigration(before, definition, names);
       const changes = await db
-        .select({ id: changeRequests.id, number: changeRequests.number, title: changeRequests.title, authorId: changeRequests.authorId, revision: changeRequests.mergedRevision })
+        .select({
+          id: changeRequests.id,
+          number: changeRequests.number,
+          title: changeRequests.title,
+          authorId: changeRequests.authorId,
+          revision: changeRequests.mergedRevision,
+        })
         .from(changeRequests)
         .where(
           and(
@@ -652,7 +793,15 @@ export class Delivery {
         steps: stepsOf(plan.steps),
         changes: changes.map(({ id, number: n, title, authorId, revision: r }) => ({ id, number: n, title, authorId, revision: r })),
       };
-      const fields = { appId: team.app.id, number, revision, digest: digestOf(definition), previousReleaseId: previous?.id ?? null, destructive: plan.destructive, contents };
+      const fields = {
+        appId: team.app.id,
+        number,
+        revision,
+        digest: digestOf(definition),
+        previousReleaseId: previous?.id ?? null,
+        destructive: plan.destructive,
+        contents,
+      };
       const manifestDigest = sha256Hex(canonicalJson(releaseManifest(fields)));
       const signature = (await ctx.auditSigner.sign(Buffer.from(manifestDigest, 'hex'))).toString('base64');
       const [row] = (await db
@@ -676,7 +825,9 @@ export class Delivery {
         target: { type: 'release', id: row.id, name: `${team.app.name} release ${number}` },
         spaceId: team.space.id,
         appId: team.app.id,
-        changes: { after: { number, revision, digest: row.digest, manifestDigest, destructive: plan.destructive, changes: contents.changes.map((c) => c.number) } },
+        changes: {
+          after: { number, revision, digest: row.digest, manifestDigest, destructive: plan.destructive, changes: contents.changes.map((c) => c.number) },
+        },
       });
       return row;
     });
@@ -692,7 +843,10 @@ export class Delivery {
   }
 
   async release(appId: string, id: string): Promise<ReleaseRow> {
-    const [row] = await this.#ctx.db.select().from(releases).where(and(eq(releases.id, id), eq(releases.appId, appId)));
+    const [row] = await this.#ctx.db
+      .select()
+      .from(releases)
+      .where(and(eq(releases.id, id), eq(releases.appId, appId)));
     if (!row) throw notFound('Release');
     return row;
   }
@@ -762,7 +916,9 @@ export class Delivery {
     if (live && live.number >= release.number) {
       throw conflict(
         live.id === release.id ? 'already_live' : 'older_release',
-        live.id === release.id ? `Release ${release.number} is already live in ${envName(input.env)}` : `${envName(input.env)} runs release ${live.number}, which is newer. To go back, roll back.`,
+        live.id === release.id
+          ? `Release ${release.number} is already live in ${envName(input.env)}`
+          : `${envName(input.env)} runs release ${live.number}, which is newer. To go back, roll back.`,
       );
     }
     const [skipped] = await ctx.db
@@ -774,14 +930,14 @@ export class Delivery {
     if (skipped) {
       throw conflict('deploy_in_order', `Release ${skipped.number} deletes data, so it goes on its own: deploy it to ${envName(input.env)} first.`);
     }
-    if (!(await this.verify(release))) throw conflict('release_not_verified', `Release ${release.number} does not match its signature. Do not deploy it; tell a Security admin.`);
+    if (!(await this.verify(release)))
+      throw conflict('release_not_verified', `Release ${release.number} does not match its signature. Do not deploy it; tell a Security admin.`);
     const plan = await this.#plan(ctx.db, team, input.env, env, release);
     const shown = { steps: plan.steps, notes: plan.notes, destructive: plan.destructive };
     if (plan.destructive) {
-      if (!input.confirmDestructive) throw conflict('destructive_change', `This deployment deletes data in ${envName(input.env)}. Check the plan, then confirm it.`, { plan: shown });
-      if (auth.credential.kind !== 'session') {
-        throw forbidden('session_required', 'A deployment that deletes data must be confirmed by a person in an interactive session.', { plan: shown });
-      }
+      if (!input.confirmDestructive)
+        throw conflict('destructive_change', `This deployment deletes data in ${envName(input.env)}. Check the plan, then confirm it.`, { plan: shown });
+      requirePerson(auth, 'data.delete', { plan: shown });
     }
     const approvalsRequired = input.env === 'prod' ? ctx.config.DEPLOY_PROD_APPROVALS : 0;
     const now = ctx.now();
@@ -827,7 +983,10 @@ export class Delivery {
   }
 
   async deployment(id: string): Promise<DeploymentRow> {
-    const [row] = await this.#ctx.db.select().from(deployments).where(and(eq(deployments.id, id), eq(deployments.orgId, this.#ctx.org.id)));
+    const [row] = await this.#ctx.db
+      .select()
+      .from(deployments)
+      .where(and(eq(deployments.id, id), eq(deployments.orgId, this.#ctx.org.id)));
     if (!row) throw notFound('Deployment');
     return row;
   }
@@ -852,17 +1011,24 @@ export class Delivery {
   }
 
   async approvalsOf(deployment: DeploymentRow) {
-    return this.#ctx.db.select().from(deploymentApprovals).where(eq(deploymentApprovals.deploymentId, deployment.id)).orderBy(asc(deploymentApprovals.createdAt));
+    return this.#ctx.db
+      .select()
+      .from(deploymentApprovals)
+      .where(eq(deploymentApprovals.deploymentId, deployment.id))
+      .orderBy(asc(deploymentApprovals.createdAt));
   }
 
   async approveDeployment(request: FastifyRequest, auth: AuthContext, deployment: DeploymentRow): Promise<DeploymentRow> {
+    requirePerson(auth, 'deploy.approve');
     const ctx = this.#ctx;
     if (deployment.status !== 'awaiting_approval') throw conflict('not_awaiting_approval', `This deployment is ${deployment.status.replace('_', ' ')}`);
     const now = ctx.now();
     try {
       return await ctx.db.transaction(async (tx) => {
         await tx.insert(deploymentApprovals).values({ deploymentId: deployment.id, approverId: auth.actor.id, createdAt: now });
-        const [{ n }] = (await tx.select({ n: count() }).from(deploymentApprovals).where(eq(deploymentApprovals.deploymentId, deployment.id))) as [{ n: number }];
+        const [{ n }] = (await tx.select({ n: count() }).from(deploymentApprovals).where(eq(deploymentApprovals.deploymentId, deployment.id))) as [
+          { n: number },
+        ];
         const ready = Number(n) >= deployment.approvalsRequired;
         const [row] = (await tx
           .update(deployments)
@@ -891,6 +1057,8 @@ export class Delivery {
    * the environment's own role, and make the release live, all in one transaction (design §7.1).
    */
   async execute(request: FastifyRequest, auth: AuthContext, deployment: DeploymentRow): Promise<DeploymentRow> {
+    // Staging can go out from a pipeline; Prod goes out only by a person's hand.
+    if (deployment.environmentKind === 'prod') requirePerson(auth, 'deploy.prod');
     const ctx = this.#ctx;
     if (deployment.status === 'awaiting_approval') {
       throw conflict('not_approved', `This deployment needs ${deployment.approvalsRequired} approval(s) from people who authored none of its changes`);
@@ -911,12 +1079,17 @@ export class Delivery {
           .where(and(eq(appEnvironments.appId, team.app.id), eq(appEnvironments.kind, kind), eq(appEnvironments.status, 'active')))
           .for('update');
         const plannedOn = (deployment.plan as { appliedRevision?: number | null }).appliedRevision ?? null;
-        if ((env?.id ?? null) !== deployment.environmentId || (env?.appliedRevision ?? null) !== plannedOn || (env?.activeReleaseId ?? null) !== deployment.fromReleaseId) {
+        if (
+          (env?.id ?? null) !== deployment.environmentId ||
+          (env?.appliedRevision ?? null) !== plannedOn ||
+          (env?.activeReleaseId ?? null) !== deployment.fromReleaseId
+        ) {
           throw conflict('environment_changed', `${envName(kind)} changed since this deployment was planned. Ask for it again.`);
         }
         if (env) await lockEnvironment(client, env.id);
         const plan = await this.#plan(db, team, kind, env ?? null, release);
-        if (plan.destructive !== deployment.destructive) throw conflict('environment_changed', `${envName(kind)} changed since this deployment was planned. Ask for it again.`);
+        if (plan.destructive !== deployment.destructive)
+          throw conflict('environment_changed', `${envName(kind)} changed since this deployment was planned. Ask for it again.`);
         if (!env) {
           const names = environmentNames(team.app.id, kind);
           [env] = (await db
@@ -947,14 +1120,25 @@ export class Delivery {
           .update(appEnvironments)
           .set({ appliedRevision: release.revision, activeRevision: release.revision, activeReleaseId: release.id })
           .where(eq(appEnvironments.id, env!.id));
+        await planSchedules(db, ctx.org.id, { id: env!.id, appId: team.app.id, kind }, definition, started);
         if (plan.revokes.length) {
-          await db.update(bindings).set({ revokedAt: started, revokedByType: auth.actor.type, revokedBy: auth.actor.id }).where(inArray(bindings.id, plan.revokes));
+          await db
+            .update(bindings)
+            .set({ revokedAt: started, revokedByType: auth.actor.type, revokedBy: auth.actor.id })
+            .where(inArray(bindings.id, plan.revokes));
         }
         if (kind === 'prod' && team.app.promotedFrom) await this.#moved(db, audit, team);
         const finished = ctx.now();
         const [row] = (await db
           .update(deployments)
-          .set({ status: 'succeeded', environmentId: env!.id, executedByType: auth.actor.type, executedBy: auth.actor.id, startedAt: started, finishedAt: finished })
+          .set({
+            status: 'succeeded',
+            environmentId: env!.id,
+            executedByType: auth.actor.type,
+            executedBy: auth.actor.id,
+            startedAt: started,
+            finishedAt: finished,
+          })
           .where(eq(deployments.id, deployment.id))
           .returning()) as [DeploymentRow];
         await recordAudit(db, audit, {
@@ -979,7 +1163,14 @@ export class Delivery {
       await ctx.db.transaction(async (tx) => {
         await tx
           .update(deployments)
-          .set({ status: 'failed', error: message.slice(0, 2000), executedByType: auth.actor.type, executedBy: auth.actor.id, startedAt: started, finishedAt: now })
+          .set({
+            status: 'failed',
+            error: message.slice(0, 2000),
+            executedByType: auth.actor.type,
+            executedBy: auth.actor.id,
+            startedAt: started,
+            finishedAt: now,
+          })
           .where(and(eq(deployments.id, deployment.id), eq(deployments.status, 'approved')));
         await recordAudit(tx, auditScopeFor(request, ctx.org.id, now), {
           action: 'deploy.execute',
@@ -1042,6 +1233,7 @@ export class Delivery {
    * Refused across a deployment that deleted data, which a rollback can't bring back.
    */
   async rollback(request: FastifyRequest, auth: AuthContext, team: AppRef, kind: EnvKind): Promise<DeploymentRow> {
+    if (kind === 'prod') requirePerson(auth, 'rollback.prod');
     const ctx = this.#ctx;
     const started = ctx.now();
     const env = await ctx.apps.environment(team, kind);
@@ -1065,8 +1257,10 @@ export class Delivery {
     return withTransaction(ctx.pool, async (client, db) => {
       await lockEnvironment(client, env.id);
       const [locked] = await db.select().from(appEnvironments).where(eq(appEnvironments.id, env.id)).for('update');
-      if (locked!.activeReleaseId !== current.id || locked!.status !== 'active') throw conflict('environment_changed', `${envName(kind)} changed meanwhile. Look again.`);
+      if (locked!.activeReleaseId !== current.id || locked!.status !== 'active')
+        throw conflict('environment_changed', `${envName(kind)} changed meanwhile. Look again.`);
       await db.update(appEnvironments).set({ activeRevision: target.revision, activeReleaseId: target.id }).where(eq(appEnvironments.id, env.id));
+      await planSchedules(db, ctx.org.id, { id: env.id, appId: team.app.id, kind }, await ctx.apps.definition(team.app.id, target.revision, db), started);
       // A deployment planned against the release that is no longer live would go wrong.
       await db
         .update(deployments)
@@ -1088,7 +1282,9 @@ export class Delivery {
           status: 'succeeded',
           plan: {
             steps: [],
-            notes: [`Release ${target.number} runs again. The data stays in the shape of release ${current.number}: release ${target.number} ignores what that added.`],
+            notes: [
+              `Release ${target.number} runs again. The data stays in the shape of release ${current.number}: release ${target.number} ignores what that added.`,
+            ],
             destructive: false,
             appliedRevision: env.appliedRevision,
           },
@@ -1109,7 +1305,11 @@ export class Delivery {
         spaceId: team.space.id,
         appId: team.app.id,
         env: kind,
-        changes: { before: { release: current.number, revision: current.revision }, after: { release: target.number, revision: target.revision }, durationMs: finished.getTime() - started.getTime() },
+        changes: {
+          before: { release: current.number, revision: current.revision },
+          after: { release: target.number, revision: target.revision },
+          durationMs: finished.getTime() - started.getTime(),
+        },
       });
       return row;
     });

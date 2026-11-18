@@ -1,3 +1,4 @@
+import { evaluateExpression, isExpression, roundTo } from '@platform/app-model';
 import type { Line, LinesChange, RecordValue, UiField, Value } from '../types.js';
 import { Button, cx } from './ui.js';
 import { asLines, display, ValueInput, ValueView } from './values.js';
@@ -15,7 +16,11 @@ export function LinesTable({ field, value, masked = [] }: { field: UiField; valu
         <thead>
           <tr>
             {columns.map((c) => (
-              <th key={c.name} scope="col" className={cx('border-b border-line-strong px-2 py-1 text-left font-medium text-muted', c.type === 'number' && 'text-right')}>
+              <th
+                key={c.name}
+                scope="col"
+                className={cx('border-b border-line-strong px-2 py-1 text-left font-medium text-muted', c.type === 'number' && 'text-right')}
+              >
                 {c.label}
               </th>
             ))}
@@ -26,7 +31,13 @@ export function LinesTable({ field, value, masked = [] }: { field: UiField; valu
             <tr key={line.id ?? index}>
               {columns.map((c) => (
                 <td key={c.name} className={cx(cell, c.type === 'number' && 'text-right tabular-nums')}>
-                  {masked.includes(`${field.name}.${c.name}`) ? <span className="text-faint" title="Masked for your role">••••</span> : <ValueView field={c} value={line[c.name] ?? null} />}
+                  {masked.includes(`${field.name}.${c.name}`) ? (
+                    <span className="text-faint" title="Masked for your role">
+                      ••••
+                    </span>
+                  ) : (
+                    <ValueView field={c} value={line[c.name] ?? null} />
+                  )}
                 </td>
               ))}
             </tr>
@@ -53,7 +64,8 @@ export function LinesEditor(props: {
   const spec = field.lines!;
   const editable = (f: UiField) => (mode === 'create' ? f.create : f.update);
   const columns = spec.fields.filter((f) => editable(f) || f.read);
-  const whole = spec.fields.every(editable);
+  // What the platform works out, nobody enters: it doesn't stop people adding lines.
+  const whole = spec.fields.every((f) => editable(f) || f.computed);
   const set = (index: number, name: string, v: Value) => onChange(value.map((line, i) => (i === index ? { ...line, [name]: v } : line)));
   const problem = (key: string) => props.problems?.[key];
   return (
@@ -78,12 +90,24 @@ export function LinesEditor(props: {
                 <tr key={line.id ?? `new-${index}`}>
                   {columns.map((c) => (
                     <td key={c.name} className={cx(cell, 'min-w-32')}>
-                      {editable(c) ? (
-                        <ValueInput id={`${id}-${index}-${c.name}`} field={c} value={line[c.name] ?? null} onChange={(v) => set(index, c.name, v)} label={`${what}, ${c.label}`} />
+                      {c.formula ? (
+                        <span className="tabular-nums">
+                          <ValueView field={c} value={formulaValue(c, line)} />
+                        </span>
+                      ) : editable(c) ? (
+                        <ValueInput
+                          id={`${id}-${index}-${c.name}`}
+                          field={c}
+                          value={line[c.name] ?? null}
+                          onChange={(v) => set(index, c.name, v)}
+                          label={`${what}, ${c.label}`}
+                        />
                       ) : (
                         <ValueView field={c} value={line[c.name] ?? null} />
                       )}
-                      {problem(`${field.name}[${index}].${c.name}`) ? <span className="mt-0.5 block text-xs text-bad">{problem(`${field.name}[${index}].${c.name}`)}</span> : null}
+                      {problem(`${field.name}[${index}].${c.name}`) ? (
+                        <span className="mt-0.5 block text-xs text-bad">{problem(`${field.name}[${index}].${c.name}`)}</span>
+                      ) : null}
                     </td>
                   ))}
                   {whole ? (
@@ -113,7 +137,51 @@ export function LinesEditor(props: {
 
 /** Lines with something in them: an empty row someone added and left isn't a line. */
 export function filledLines(lines: readonly Line[]): Line[] {
-  return lines.filter((line) => line.id || Object.entries(line).some(([key, v]) => key !== 'id' && v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)));
+  return lines.filter(
+    (line) => line.id || Object.entries(line).some(([key, v]) => key !== 'id' && v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)),
+  );
+}
+
+/** A formula's value, worked out as the platform will, to show while people type. */
+export function formulaValue(field: UiField, values: Readonly<Record<string, RecordValue | undefined>>): Value {
+  if (!isExpression(field.formula)) return null;
+  // A formula reads the record's own values, never its lines one by one.
+  const record = Object.fromEntries(
+    Object.entries(values).filter(
+      (entry): entry is [string, Value] => entry[1] !== undefined && (!Array.isArray(entry[1]) || entry[1].every((each) => typeof each === 'string')),
+    ),
+  );
+  const worked = evaluateExpression(field.formula, { record, principal: {}, now: new Date(0) });
+  if (!worked.ok || worked.value === null) return null;
+  const value = worked.value;
+  if (typeof value === 'number') return roundTo(Number(value.toFixed(10)), field.decimals ?? 0);
+  if (field.type === 'date' && typeof value === 'string') return value.slice(0, 10);
+  return value as Value;
+}
+
+/** Lines with their formulas worked out, as the platform will. */
+function linesWorkedOut(field: UiField | undefined, lines: readonly Line[]): Line[] {
+  const formulas = field?.lines?.fields.filter((f) => f.formula) ?? [];
+  if (!formulas.length) return [...lines];
+  return lines.map((line) => {
+    const next: Line = { ...line };
+    for (let pass = 0; pass < formulas.length; pass++) for (const f of formulas) next[f.name] = formulaValue(f, next);
+    return next;
+  });
+}
+
+/**
+ * What the platform works out for a record, as it will: the lines' formulas, then the totals of the
+ * lines, then the record's formulas, each after those it reads. To show while people type.
+ */
+export function workedOut(fields: readonly UiField[], values: Readonly<Record<string, RecordValue | undefined>>): Record<string, RecordValue | undefined> {
+  const out: Record<string, RecordValue | undefined> = { ...values };
+  for (const field of fields) if (field.type === 'lines' && Array.isArray(out[field.name])) out[field.name] = linesWorkedOut(field, asLines(out[field.name]));
+  for (const field of fields) if (field.rollup) out[field.name] = rollupValue(field, out);
+  const formulas = fields.filter((field) => field.formula);
+  // As many passes as there are formulas settle those that read others.
+  for (let pass = 0; pass < formulas.length; pass++) for (const field of formulas) out[field.name] = formulaValue(field, out);
+  return out;
 }
 
 /** A number worked out from lines, as the platform will work it out, to show while people type. */
@@ -155,7 +223,9 @@ export function LinesChangeView({ field, change, current }: { field: UiField; ch
         <li key={`a-${line.id}`}>
           Added <strong className="font-medium">{title(line.values, line.id)}</strong>
           {summary(line.values) ? <span className="text-muted"> ({summary(line.values)})</span> : null}
-          {line.sources && Object.values(line.sources).some((s) => s.source === 'document') ? <span className="ml-1 text-outside">read from a document</span> : null}
+          {line.sources && Object.values(line.sources).some((s) => s.source === 'document') ? (
+            <span className="ml-1 text-outside">read from a document</span>
+          ) : null}
         </li>
       ))}
       {change.changed.map((line) => (
@@ -164,7 +234,8 @@ export function LinesChangeView({ field, change, current }: { field: UiField; ch
           {line.changes.map((c, i) => (
             <span key={c.field}>
               {i ? '; ' : ''}
-              {fieldOf(c.field)?.label ?? c.field} {c.masked ? 'changed' : `${display(fieldOf(c.field), c.before ?? null)} → ${display(fieldOf(c.field), c.after ?? null)}`}
+              {fieldOf(c.field)?.label ?? c.field}{' '}
+              {c.masked ? 'changed' : `${display(fieldOf(c.field), c.before ?? null)} → ${display(fieldOf(c.field), c.after ?? null)}`}
             </span>
           ))}
         </li>

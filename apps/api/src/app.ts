@@ -1,15 +1,15 @@
 import { createEd25519Signer, createEd25519Verifier, publicKeyPemFor } from '@platform/audit';
-import { ensureSingleOrg, seedManagedPolicy, type Database } from '@platform/db';
+import { type Database, ensureSingleOrg, seedManagedPolicy } from '@platform/db';
 import type pg from 'pg';
-import { AppCatalog } from './apps/catalog.js';
 import { PolicyService } from './access/policy-service.js';
+import { AppCatalog } from './apps/catalog.js';
 import type { OidcProvider } from './auth/oidc.js';
 import { SessionService } from './auth/sessions.js';
 import type { Config } from './config.js';
 import type { AppContext } from './context.js';
 import { clamdScanner, noScanner, type Scanner } from './files/scan.js';
 import { FileService } from './files/service.js';
-import { createBlobStore, type BlobStore } from './files/store.js';
+import { type BlobStore, createBlobStore } from './files/store.js';
 import { TokenService } from './tokens/service.js';
 
 /** Seed the managed policy, find (or create) the organization, and wire the services together. */

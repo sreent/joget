@@ -1,15 +1,7 @@
-import {
-  auditEventDigest,
-  canonicalJson,
-  uuidv7,
-  type AuditActor,
-  type AuditEvent,
-  type AuditOutcome,
-  type AuditTarget,
-} from '@platform/audit';
+import { trace } from '@opentelemetry/api';
+import { type AuditActor, type AuditEvent, type AuditOutcome, type AuditTarget, auditEventDigest, canonicalJson, uuidv7 } from '@platform/audit';
 import type { Resource } from '@platform/authz';
 import { auditEvents, type Executor } from '@platform/db';
-import { trace } from '@opentelemetry/api';
 import type { FastifyRequest } from 'fastify';
 
 export interface AuditEntry {

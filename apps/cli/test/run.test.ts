@@ -1,13 +1,16 @@
-import { describe, expect, it } from 'vitest';
 import { EXPENSE_APP } from '@platform/app-model';
-import { run, type Io } from '../src/run.js';
+import { describe, expect, it } from 'vitest';
+import { type Io, run } from '../src/run.js';
 
 const APP = '0193a7c4-0000-7000-8000-0000000000a1';
 const RELEASE = '0193a7c4-0000-7000-8000-0000000000b1';
 const DEPLOYMENT = '0193a7c4-0000-7000-8000-0000000000c1';
 
 /** A stand-in for Ambit: answers by method and path, and keeps every request. */
-function fake(routes: Record<string, (body: unknown) => { status?: number; body: unknown; raw?: boolean }>, env: Record<string, string> = { AMBIT_TOKEN: 'a-test-token', AMBIT_URL: 'https://ambit.test' }) {
+function fake(
+  routes: Record<string, (body: unknown) => { status?: number; body: unknown }>,
+  env: Record<string, string> = { AMBIT_TOKEN: 'a-test-token', AMBIT_URL: 'https://ambit.test' },
+) {
   const requests: Array<{ method: string; path: string; body: unknown; authorization: string | null }> = [];
   const out: string[] = [];
   const err: string[] = [];
@@ -21,7 +24,6 @@ function fake(routes: Record<string, (body: unknown) => { status?: number; body:
       requests.push({ method: init?.method ?? 'GET', path: url.pathname, body, authorization: new Headers(init?.headers).get('authorization') });
       const route = routes[`${init?.method ?? 'GET'} ${url.pathname}`];
       const answer = route ? route(body) : { status: 404, body: { error: 'not_found', message: 'Not found' } };
-      if ('raw' in answer && answer.raw) return new Response(String(answer.body), { status: answer.status ?? 200, headers: { 'content-type': 'application/xml' } });
       return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200, headers: { 'content-type': 'application/json' } });
     },
     out: (text) => out.push(text),
@@ -32,7 +34,9 @@ function fake(routes: Record<string, (body: unknown) => { status?: number; body:
       return text;
     },
     writeFile: async (path, text) => void files.set(path, text),
-    sleep: async (ms) => void (clock += ms),
+    sleep: async (ms) => {
+      clock += ms;
+    },
     now: () => clock,
   };
   return { io, requests, out, err, files };
@@ -106,7 +110,9 @@ describe('ambit', () => {
   });
 
   it('deploys to Staging at once, and waits for Prod until people approve it', async () => {
-    const releases = { releases: [{ id: RELEASE, number: 2, revision: 5, liveIn: [], verified: true, destructive: false, createdAt: '2026-11-17T07:00:00.000Z' }] };
+    const releases = {
+      releases: [{ id: RELEASE, number: 2, revision: 5, liveIn: [], verified: true, destructive: false, createdAt: '2026-11-17T07:00:00.000Z' }],
+    };
     const staging = fake({
       'GET /v1/apps': () => ({ body: apps }),
       [`GET /v1/apps/${APP}/releases`]: () => ({ body: releases }),
@@ -116,18 +122,17 @@ describe('ambit', () => {
     expect(staging.requests.at(-1)!.body).toEqual({ releaseId: RELEASE, env: 'staging', confirmDestructive: false, execute: true });
     expect(staging.out).toEqual(['Staging runs release 2.']);
 
-    // Prod: one look finds it waiting, the next approved; then the command executes it.
+    // Prod: one look finds it waiting, the next approved. A person makes it live, not the command.
     let looks = 0;
     const prod = fake({
       'GET /v1/apps': () => ({ body: apps }),
       [`GET /v1/apps/${APP}/releases`]: () => ({ body: releases }),
       [`POST /v1/apps/${APP}/deployments`]: () => ({ status: 201, body: deployment('awaiting_approval', 'prod') }),
       [`GET /v1/apps/${APP}/deployments`]: () => ({ body: { deployments: [deployment(++looks > 1 ? 'approved' : 'awaiting_approval', 'prod')] } }),
-      [`POST /v1/deployments/${DEPLOYMENT}/execute`]: () => ({ body: deployment('succeeded', 'prod') }),
     });
     expect(await run(['deploy', 'expenses', '--release', '2', '--env', 'prod', '--wait'], prod.io)).toBe(0);
-    expect(prod.out).toEqual(['Prod runs release 2.']);
-    expect(prod.requests.filter((r) => r.path.endsWith('/execute'))).toHaveLength(1);
+    expect(prod.out).toEqual(['Deploying release 2 to Prod is approved. A person signed in to Ambit makes it live.']);
+    expect(prod.requests.filter((r) => r.path.endsWith('/execute'))).toHaveLength(0);
 
     const waiting = fake({
       'GET /v1/apps': () => ({ body: apps }),
@@ -136,23 +141,6 @@ describe('ambit', () => {
     });
     expect(await run(['deploy', 'expenses', '--release', '2', '--env', 'prod'], waiting.io)).toBe(0);
     expect(waiting.out).toEqual(['Deploying release 2 to Prod waits for 1 approval(s) in Ambit.']);
-  });
-
-  it('saves a process as a BPMN file, and adds the processes of one to an app', async () => {
-    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<bpmn:definitions />\n';
-    const world = fake({
-      'GET /v1/apps': () => ({ body: apps }),
-      [`GET /v1/apps/${APP}/processes/approval/bpmn`]: () => ({ body: xml, raw: true }),
-      [`POST /v1/apps/${APP}/processes/import`]: () => ({ body: { plan: {}, processes: ['approval'], notes: ['Left out the lanes'] } }),
-    });
-    expect(await run(['bpmn', 'export', 'expenses', 'approval'], world.io)).toBe(0);
-    expect(world.files.get('approval.bpmn')).toBe(xml);
-    expect(world.out.at(-1)).toBe('Saved the process approval to approval.bpmn, with its diagram.');
-    world.files.set('from-camunda.bpmn', '<definitions />');
-    expect(await run(['bpmn', 'import', 'expenses', 'from-camunda.bpmn', '--as', 'approval'], world.io)).toBe(0);
-    expect(world.requests.at(-1)).toMatchObject({ method: 'POST', body: { xml: '<definitions />', as: 'approval' } });
-    expect(world.out.at(-1)).toBe('Added the process approval to expenses.\n  Left out the lanes');
-    expect(await run(['bpmn', 'publish', 'expenses', 'approval'], world.io)).toBe(2);
   });
 
   it('passes on what Ambit says when it refuses', async () => {

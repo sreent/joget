@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { api, ApiError, type AppAt } from '../api.js';
+import { ApiError, type AppAt, api } from '../api.js';
 import { Badge, Button, Card, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
 import { Link, navigate } from '../router.js';
@@ -19,17 +19,27 @@ export function SharePanel({ at, definition, team = false }: { at: AppAt; defini
   const [email, setEmail] = useState('');
   const [role, setRole] = useState(roles[0]?.[0] ?? '');
   const refresh = () => client.invalidateQueries({ queryKey: ['shares', at.id] });
-  const share = useMutation({ mutationFn: () => api.envShare(at, email.trim(), role), onSuccess: () => (setEmail(''), refresh()) });
+  const share = useMutation({
+    mutationFn: () => api.envShare(at, email.trim(), role),
+    onSuccess: () => {
+      setEmail('');
+      refresh();
+    },
+  });
   const unshare = useMutation({ mutationFn: (id: string) => api.envUnshare(at, id), onSuccess: refresh });
 
   if (roles.length === 0) {
-    return <EmptyState title="This app has no roles yet">A role says what the people you share with may do. Add roles on the Roles tab, then share.</EmptyState>;
+    return (
+      <EmptyState title="This app has no roles yet">A role says what the people you share with may do. Add roles on the Roles tab, then share.</EmptyState>
+    );
   }
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+    <div className="grid gap-4 @min-[62rem]:grid-cols-[minmax(0,1fr)_22rem]">
       <Card className="grid content-start gap-3">
         <h2 className="m-0 text-lg font-semibold">{team ? 'Who may use it here' : 'Shared with'}</h2>
-        {shares.data?.shares.length === 0 ? <p className="m-0 text-muted">{team ? 'Nobody holds a role here yet.' : 'Only you can use this app so far.'}</p> : null}
+        {shares.data?.shares.length === 0 ? (
+          <p className="m-0 text-muted">{team ? 'Nobody holds a role here yet.' : 'Only you can use this app so far.'}</p>
+        ) : null}
         <ul className="m-0 grid list-none gap-2 p-0">
           {shares.data?.shares.map((s) => (
             <li key={s.id} className="flex items-center gap-3 rounded-md border border-line px-3 py-2">
@@ -77,7 +87,8 @@ export function SharePanel({ at, definition, team = false }: { at: AppAt; defini
 export function MovedNotice({ movedTo }: { movedTo: { appId: string; name: string } }) {
   return (
     <Notice tone="warn">
-      This app moved to a team space, as <Link to={{ name: 'use', appId: movedTo.appId }}>{movedTo.name}</Link>. It is read-only here: what was done here stays, and work goes on there.
+      This app moved to a team space, as <Link to={{ name: 'use', appId: movedTo.appId }}>{movedTo.name}</Link>. It is read-only here: what was done here stays,
+      and work goes on there.
     </Notice>
   );
 }
@@ -133,7 +144,8 @@ export function MovePanel({ app }: { app: AppSummary }) {
     <Card className="grid content-start gap-3">
       <h2 className="m-0 text-lg font-semibold">Move to a team space</h2>
       <p className="m-0 text-sm text-muted">
-        When an app outgrows you and a few colleagues, a team space gives it owners, reviews, Prod and rollback. The space's reviewers check it like any change. Its records stay here.
+        When an app outgrows you and a few colleagues, a team space gives it owners, reviews, Prod and rollback. The space's reviewers check it like any change.
+        Its records stay here.
       </p>
       {teams.length === 0 ? (
         <p className="m-0 text-sm text-faint">You are in no team space where you build apps yet.</p>
@@ -176,7 +188,8 @@ export function AdvancedPanel({ definition, onChange }: { definition: Definition
   return (
     <Card className="grid gap-3">
       <p className="m-0 text-sm text-muted">
-        The whole definition, as JSON: for what the designers don't show yet, or to paste a definition in. Applying puts it into your draft; saving checks it, as for any change.
+        The whole definition, as JSON: for what the designers don't show yet, or to paste a definition in. Applying puts it into your draft; saving checks it,
+        as for any change.
       </p>
       <textarea
         aria-label="The app definition, as JSON"
@@ -201,7 +214,13 @@ export function AdvancedPanel({ definition, onChange }: { definition: Definition
         >
           Apply to the draft
         </Button>
-        <Button disabled={value === text} onClick={() => (setValue(text), setError(null))}>
+        <Button
+          disabled={value === text}
+          onClick={() => {
+            setValue(text);
+            setError(null);
+          }}
+        >
           Reset
         </Button>
       </div>

@@ -1,19 +1,19 @@
-import { bpmnToProcesses, NAME_PATTERN, processToBpmn } from '@platform/app-model';
+import { NAME_PATTERN } from '@platform/app-model';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { checkAnyPermission, checkPermission } from '../access/check.js';
+import { checkPermission } from '../access/check.js';
 import { once, requireAuth } from '../access/rules.js';
-import { auditScopeFor, recordAudit } from '../audit/writer.js';
-import { changeRequestRequired, type AppBuilder } from '../apps/builder.js';
-import { isTeamApp, type LoadedApp } from '../apps/catalog.js';
-import { appResource, processResource } from '../apps/resources.js';
+import type { LoadedApp } from '../apps/catalog.js';
+import { processResource } from '../apps/resources.js';
 import { envOf } from '../apps/routes.js';
 import type { AppRuntime } from '../apps/runtime.js';
-import { ActionResultOut, AppParams, EnvQuery, PlanOut } from '../apps/schemas.js';
+import { ActionResultOut, AppParams, EnvQuery } from '../apps/schemas.js';
 import type { AppContext } from '../context.js';
-import { notFound, unprocessable } from '../errors.js';
+import { unprocessable } from '../errors.js';
+import { plannedRun } from '../flows/schedules.js';
 import type { ProcessEngine } from './engine.js';
+import { type Operation, reassignTask, requireOperator } from './operators.js';
 
 const TaskOut = z.object({
   id: z.uuid(),
@@ -60,94 +60,35 @@ const InstanceOut = z.object({
 
 const InstanceDetailOut = InstanceOut.extend({
   tasks: z.array(TaskOut),
-  events: z.array(z.object({ at: z.string(), kind: z.string(), element: z.string().nullable(), name: z.string().nullable(), by: z.uuid().nullable(), detail: z.unknown() })),
+  events: z.array(
+    z.object({ at: z.string(), kind: z.string(), element: z.string().nullable(), name: z.string().nullable(), by: z.uuid().nullable(), detail: z.unknown() }),
+  ),
 });
 
 const InstanceParams = AppParams.extend({ instanceId: z.uuid() });
 
+const SignalOut = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  status: z.enum(['waiting', 'delivered']),
+  /** How many instances heard it, and how many processes it started, once it went out. */
+  heard: z.int().nullable(),
+  started: z.int().nullable(),
+});
+
 /**
- * Business processes (design §6.10): people's tasks across apps, starting a process by hand,
- * and the instances of an app for whoever runs it: its owner in a personal space, operators in a
- * team space, who see where each instance waits and try a stuck one again.
+ * Business processes (design §6.10), which flows that wait run as (§6.11): people's tasks across
+ * apps, starting one on a record by hand, and the instances of an app for whoever runs it: its
+ * owner in a personal space, operators in a team space, who see where each instance waits and try
+ * a stuck one again.
  */
-export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: ProcessEngine, builder: AppBuilder): FastifyPluginAsyncZod {
+export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: ProcessEngine): FastifyPluginAsyncZod {
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
   // The check needs the space's kind, so the handler makes it, with the same audited refusal an access rule gives.
-  const operate = async (request: FastifyRequest, loaded: LoadedApp, operation: 'ops.monitor.read' | 'ops.job.retry' | 'process.admin') => {
-    const actions = loaded.space.kind === 'personal' && operation !== 'process.admin' ? ['app.edit'] : [operation];
-    await checkAnyPermission(ctx, request, requireAuth(request), actions, appResource(ctx.org.id, loaded), { policy: await runtime.policy(loaded) });
-  };
-
-  const appRule = (action: string) => ({
-    kind: 'permission' as const,
-    action,
-    resource: async (request: FastifyRequest) => appResource(ctx.org.id, await ctx.apps.ref((request.params as { appId: string }).appId)),
-  });
+  const operate = (request: FastifyRequest, loaded: LoadedApp, operation: Operation) =>
+    requireOperator(ctx, runtime, request, requireAuth(request), loaded, operation);
 
   return async (app) => {
-    app.get(
-      '/v1/apps/:appId/processes/:process/bpmn',
-      {
-        config: { access: appRule('app.export') },
-        schema: {
-          tags: ['processes'],
-          summary: "Download one of an app's processes as a BPMN 2.0 file, with its diagram: from the app's main line",
-          params: AppParams.extend({ process: z.string().min(1).max(63) }),
-        },
-      },
-      async (request, reply) => {
-        const ref = await ctx.apps.ref(request.params.appId);
-        const definition = await ctx.apps.mainDefinition(ref);
-        if (!definition.processes?.[request.params.process]) throw notFound('Process');
-        await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
-          action: 'app.export',
-          target: { type: 'app', id: ref.app.id, name: ref.app.name },
-          spaceId: ref.space.id,
-          appId: ref.app.id,
-          reason: { revision: ref.app.currentRevision, process: request.params.process, format: 'bpmn' },
-        });
-        return reply
-          .type('application/xml; charset=utf-8')
-          .header('content-disposition', `attachment; filename="${request.params.process}.bpmn"`)
-          .send(processToBpmn(definition, request.params.process));
-      },
-    );
-
-    app.post(
-      '/v1/apps/:appId/processes/import',
-      {
-        config: { access: appRule('app.edit') },
-        schema: {
-          tags: ['processes'],
-          summary: "Add the processes of a BPMN 2.0 file to a personal app, or a working copy of a team app. Anything Ambit can't run is refused, by name",
-          params: AppParams,
-          body: z.object({
-            xml: z.string().min(1).max(5_000_000),
-            entity: z.string().regex(NAME_PATTERN).optional().describe("The entity whose records the processes are about, unless the file names it or the app has one"),
-            as: z.string().regex(NAME_PATTERN).optional().describe('The name for the one process of the file: it replaces a process of that name'),
-          }),
-          response: { 200: z.object({ plan: PlanOut, processes: z.array(z.string()), notes: z.array(z.string()) }) },
-        },
-      },
-      async (request) => {
-        const ref = await ctx.apps.ref(request.params.appId);
-        if (isTeamApp(ref)) throw changeRequestRequired(ref);
-        const loaded = await ctx.apps.load(ref.app.id);
-        const current = loaded.definition;
-        const { as, entity, xml } = request.body;
-        const others = Object.fromEntries(Object.entries(current.processes ?? {}).filter(([name]) => name !== as));
-        const read = bpmnToProcesses(xml, { ...current, processes: others }, entity ? { entity } : {});
-        if (!read.ok) {
-          throw unprocessable('invalid_bpmn', "The file has parts Ambit can't run", { issues: read.issues.map((issue) => ({ path: issue.element ? `bpmn.${issue.element}` : 'bpmn', message: issue.message })) });
-        }
-        const found = Object.values(read.processes);
-        if (as && found.length !== 1) throw unprocessable('one_process', `The file holds ${found.length} processes: give a name only for a file with one`);
-        const imported = as ? { [as]: found[0]! } : read.processes;
-        const plan = await builder.save(request, requireAuth(request), loaded, { ...current, processes: { ...others, ...imported } }, { confirmDestructive: false });
-        return { plan, processes: Object.keys(imported), notes: [...read.notes] };
-      },
-    );
-
     app.get(
       '/v1/me/tasks',
       {
@@ -168,14 +109,18 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         config: { access: { kind: 'authenticated' } },
         schema: {
           tags: ['processes'],
-          summary: "Complete a task with one of its outcomes. An outcome that runs an action runs it as you; from an API token it may become a proposal to approve first",
+          summary:
+            'Complete a task with one of its outcomes. An outcome that runs an action runs it as you; from an API token it may become a proposal to approve first',
           params: z.object({ taskId: z.uuid() }),
           body: z.object({
             outcome: z.string().min(1).max(63),
             values: z.record(z.string(), z.unknown()).optional().describe("The action's input, when the outcome's action takes some"),
             provenance: z.unknown().optional(),
           }),
-          response: { 200: z.object({ task: TaskOut, result: ActionResultOut.nullable() }), 202: z.object({ task: TaskOut, result: ActionResultOut.nullable() }) },
+          response: {
+            200: z.object({ task: TaskOut, result: ActionResultOut.nullable() }),
+            202: z.object({ task: TaskOut, result: ActionResultOut.nullable() }),
+          },
         },
       },
       async (request, reply) => {
@@ -184,16 +129,7 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
       },
     );
 
-    const reassign = async (request: FastifyRequest, taskId: string, to: string) => {
-      const auth = requireAuth(request);
-      const place = await engine.taskPlace(taskId);
-      if (!place) throw notFound('Task');
-      const loaded = await ctx.apps.load(place.appId, { id: place.environmentId });
-      // Operators move any task of the app: its owner in a personal space, ops.task.reassign in a team space.
-      const action = loaded.space.kind === 'personal' ? 'app.edit' : 'ops.task.reassign';
-      const operator = (await ctx.policy.authorize(auth.principal, action, appResource(ctx.org.id, loaded), undefined, await runtime.policy(loaded))).allowed;
-      return engine.reassign(request, auth, taskId, to, { operator });
-    };
+    const reassign = (request: FastifyRequest, taskId: string, to: string) => reassignTask(ctx, runtime, engine, request, requireAuth(request), taskId, to);
 
     app.post(
       '/v1/tasks/:taskId/reassign',
@@ -201,7 +137,7 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         config: { access: { kind: 'authenticated' } },
         schema: {
           tags: ['processes'],
-          summary: "Give a task to someone else who holds its role: yours to a colleague, or any task of an app you operate",
+          summary: 'Give a task to someone else who holds its role: yours to a colleague, or any task of an app you operate',
           params: z.object({ taskId: z.uuid() }),
           body: z.object({ userId: z.uuid() }),
           response: { 200: TaskOut },
@@ -240,7 +176,9 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
       async (request, reply) => {
         const loaded = await theApp(request);
         const auth = requireAuth(request);
-        await checkPermission(ctx, request, auth, 'process.start', processResource(ctx.org.id, loaded, request.params.process), { policy: await runtime.policy(loaded) });
+        await checkPermission(ctx, request, auth, 'process.start', processResource(ctx.org.id, loaded, request.params.process), {
+          policy: await runtime.policy(loaded),
+        });
         return reply.status(201).send(await engine.start(request, auth, loaded, request.params.process, request.body.recordId));
       },
     );
@@ -287,7 +225,62 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         const loaded = await theApp(request);
         await operate(request, loaded, 'ops.monitor.read');
         const { status, stuck, recordId, limit } = request.query;
-        return { instances: await engine.instances(loaded, { limit, ...(status ? { status } : {}), ...(stuck ? { stuck } : {}), ...(recordId ? { recordId } : {}) }) };
+        return {
+          instances: await engine.instances(loaded, { limit, ...(status ? { status } : {}), ...(stuck ? { stuck } : {}), ...(recordId ? { recordId } : {}) }),
+        };
+      },
+    );
+
+    app.get(
+      '/v1/apps/:appId/flows/:flow/live',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary:
+            'Where the cases of a flow that waits are now: how many wait at each step, how many are stuck there, and since when the first of them has waited. For a flow on a schedule, when it runs next',
+          params: AppParams.extend({ flow: z.string().regex(NAME_PATTERN) }),
+          querystring: EnvQuery,
+          response: {
+            200: z.object({
+              running: z.int(),
+              steps: z.array(z.object({ path: z.string(), waiting: z.int(), stuck: z.int(), since: z.string() })),
+              schedule: z.object({ nextRunAt: z.string(), lastRunAt: z.string().nullable(), lastError: z.string().nullable() }).optional(),
+            }),
+          },
+        },
+      },
+      async (request) => {
+        const loaded = await theApp(request);
+        await operate(request, loaded, 'ops.monitor.read');
+        const schedule = await plannedRun(ctx.db, loaded.env.id, request.params.flow);
+        return { ...(await engine.live(loaded, request.params.flow)), ...(schedule ? { schedule } : {}) };
+      },
+    );
+
+    app.get(
+      '/v1/apps/:appId/flows/:flow/live/cases',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary: 'The cases that wait at one step of a flow now, the longest waiting first: what its live count opens',
+          params: AppParams.extend({ flow: z.string().regex(NAME_PATTERN) }),
+          querystring: EnvQuery.extend({
+            path: z.string().min(1).max(500).describe('The step, as steps[2].then[0]'),
+            limit: z.coerce.number().int().min(1).max(200).default(50),
+          }),
+          response: {
+            200: z.object({
+              cases: z.array(z.object({ instanceId: z.uuid(), recordId: z.uuid(), since: z.string(), stuck: z.boolean(), error: z.string().optional() })),
+            }),
+          },
+        },
+      },
+      async (request) => {
+        const loaded = await theApp(request);
+        await operate(request, loaded, 'ops.monitor.read');
+        return { cases: await engine.casesAt(loaded, request.params.flow, request.query.path, request.query.limit) };
       },
     );
 
@@ -326,6 +319,34 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         const loaded = await theApp(request);
         await operate(request, loaded, 'ops.job.retry');
         return engine.retry(request, loaded, request.params.instanceId);
+      },
+    );
+
+    app.post(
+      '/v1/apps/:appId/signals',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary: 'Throw a signal to every process of the app that waits for it. For a record, the processes that it starts start on that record',
+          params: AppParams,
+          querystring: EnvQuery,
+          body: z.strictObject({
+            name: z.string().regex(NAME_PATTERN, 'Use lowercase letters, digits and underscores, starting with a letter'),
+            entity: z.string().regex(NAME_PATTERN).optional(),
+            recordId: z.uuid().optional(),
+          }),
+          response: { 201: SignalOut },
+        },
+      },
+      async (request, reply) => {
+        const loaded = await theApp(request);
+        await operate(request, loaded, 'process.admin');
+        const { name, entity, recordId } = request.body;
+        if ((entity === undefined) !== (recordId === undefined)) throw unprocessable('record_incomplete', 'Name both the entity and the record, or neither');
+        const signal = await engine.throwSignal(request, loaded, name, entity && recordId ? { entity, id: recordId } : null);
+        reply.code(201);
+        return { id: signal.id, name: signal.name, status: signal.status, heard: signal.heard, started: signal.started };
       },
     );
 

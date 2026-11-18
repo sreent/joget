@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useId, useState, type KeyboardEvent } from 'react';
+import { type KeyboardEvent, useId, useState } from 'react';
 import { api } from '../api.js';
 import type { Person } from '../types.js';
 import { cx, TextInput } from './ui.js';
@@ -78,12 +78,21 @@ export function PersonPicker({ id, value, onChange, label }: { id: string; value
         onKeyDown={onKeyDown}
         onBlur={() => setText(null)}
       />
-      <ul id={listId} role="listbox" aria-label="People" className={cx('absolute z-10 mt-1 w-full list-none overflow-auto rounded-md border border-line bg-surface p-1 shadow-raised', options.length ? 'grid max-h-64 gap-0.5' : 'hidden')}>
+      <div
+        id={listId}
+        role="listbox"
+        aria-label="People"
+        className={cx(
+          'absolute z-10 mt-1 w-full list-none overflow-auto rounded-md border border-line bg-surface p-1 shadow-raised',
+          options.length ? 'grid max-h-64 gap-0.5' : 'hidden',
+        )}
+      >
         {options.map((person, i) => (
-          <li
+          <div
             key={person.id}
             id={`${listId}-${i}`}
             role="option"
+            tabIndex={-1}
             aria-selected={i === active}
             className={cx('cursor-pointer rounded-sm px-2 py-1.5', i === active && 'bg-accent-soft')}
             onMouseDown={(event) => {
@@ -94,9 +103,9 @@ export function PersonPicker({ id, value, onChange, label }: { id: string; value
           >
             <span className="font-medium">{person.name}</span>
             {person.email ? <span className="ml-2 text-sm text-muted">{person.email}</span> : null}
-          </li>
+          </div>
         ))}
-      </ul>
+      </div>
       {open && !options.length ? (
         <p className="absolute z-10 m-0 mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-muted shadow-raised" role="status">
           {results.isFetching ? 'Searching…' : 'Nobody matches'}

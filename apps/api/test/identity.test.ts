@@ -4,8 +4,8 @@ import {
   createResilientOidcProvider,
   createTokenVerifier,
   IdpUnavailableError,
-  identityFromClaims,
   InvalidSubjectTokenError,
+  identityFromClaims,
   mfaTimestamp,
 } from '../src/auth/oidc.js';
 import { loadConfig } from '../src/config.js';
@@ -47,7 +47,10 @@ describe('identityFromClaims works with any OIDC provider', () => {
 
   it('reads the department and the manager from the claims an installation names, and leaves them alone otherwise', () => {
     const claims = { iss: 'https://idp.example.com', sub: 'u1', department: ' Sales ', mgr: 'Bob@Example.com' };
-    expect(identityFromClaims(claims, 'groups', 'sub', { departmentClaim: 'department', managerClaim: 'mgr' })).toMatchObject({ department: 'Sales', managerEmail: 'bob@example.com' });
+    expect(identityFromClaims(claims, 'groups', 'sub', { departmentClaim: 'department', managerClaim: 'mgr' })).toMatchObject({
+      department: 'Sales',
+      managerEmail: 'bob@example.com',
+    });
     expect(identityFromClaims({ ...claims, department: '' }, 'groups', 'sub', { departmentClaim: 'department' })).toMatchObject({ department: null });
     const unnamed = identityFromClaims(claims, 'groups');
     expect(unnamed).not.toHaveProperty('department');
@@ -105,7 +108,13 @@ describe('createTokenVerifier, for token exchange', () => {
     const { publicKey, privateKey } = await generateKeyPair('RS256');
     const other = await generateKeyPair('RS256');
     const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' };
-    const verify = createTokenVerifier({ issuer, audiences: ['ambit', 'agentos'], keys: createLocalJWKSet({ keys: [jwk] }), groupsClaim: 'groups', subjectClaim: 'oid' });
+    const verify = createTokenVerifier({
+      issuer,
+      audiences: ['ambit', 'agentos'],
+      keys: createLocalJWKSet({ keys: [jwk] }),
+      groupsClaim: 'groups',
+      subjectClaim: 'oid',
+    });
     const sign = (claims: Record<string, unknown>, options: { audience?: string; expires?: string; key?: Parameters<SignJWT['sign']>[0] } = {}) =>
       new SignJWT({ oid: 'person-1', email: 'Bob@Example.com', groups: ['finance'], ...claims })
         .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
@@ -139,7 +148,14 @@ describe('loadConfig', () => {
   });
 
   it('refuses unsafe settings in production', () => {
-    const unsafe = { ...base, NODE_ENV: 'production', PUBLIC_BASE_URL: 'http://platform.example.com', MFA_EVIDENCE: 'assume', COOKIE_SECURE: 'false', OIDC_ALLOW_HTTP: 'true' };
+    const unsafe = {
+      ...base,
+      NODE_ENV: 'production',
+      PUBLIC_BASE_URL: 'http://platform.example.com',
+      MFA_EVIDENCE: 'assume',
+      COOKIE_SECURE: 'false',
+      OIDC_ALLOW_HTTP: 'true',
+    };
     for (const setting of ['MFA_EVIDENCE=assume', 'COOKIE_SECURE', 'OIDC_ALLOW_HTTP', 'AUDIT_SIGNING_KEY_PEM', 'https']) {
       expect(() => loadConfig(unsafe)).toThrow(new RegExp(setting));
     }

@@ -85,6 +85,69 @@
       "when": 1794914432891,
       "tag": "0011_calls",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794919415426,
+      "tag": "0012_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794920736154,
+      "tag": "0013_start_timers",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794923169337,
+      "tag": "0014_signals",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1794923911957,
+      "tag": "0015_instance_timers",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1794925392756,
+      "tag": "0016_loops",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794930537561,
+      "tag": "0017_drop_skill_calls",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794964061616,
+      "tag": "0018_flow_schedules",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794966155646,
+      "tag": "0019_notices",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794966887009,
+      "tag": "0020_integration",
+      "breakpoints": true
     }
   ]
 }

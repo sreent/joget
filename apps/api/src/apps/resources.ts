@@ -1,5 +1,5 @@
 import type { Resource, ScopeRef } from '@platform/authz';
-import { isLoaded, type AppRef, type EnvironmentRow, type LoadedApp } from './catalog.js';
+import { type AppRef, type EnvironmentRow, isLoaded, type LoadedApp } from './catalog.js';
 
 type EnvKind = EnvironmentRow['kind'];
 
@@ -53,6 +53,14 @@ export const capabilityResource = (orgId: string, loaded: LoadedApp, kind: 'acti
 /** A process of the app, for starting it by hand: roles name the processes their holders may start. */
 export const processResource = (orgId: string, loaded: LoadedApp, name: string): Resource => ({
   type: 'process',
+  selector: name,
+  scopes: appScopes(orgId, loaded, loaded.env),
+  attributes: attributes(loaded, loaded.env.kind),
+});
+
+/** A flow of the app, for running it through the API: roles name the flows their holders may run. */
+export const flowResource = (orgId: string, loaded: LoadedApp, name: string): Resource => ({
+  type: 'flow',
   selector: name,
   scopes: appScopes(orgId, loaded, loaded.env),
   attributes: attributes(loaded, loaded.env.kind),

@@ -23,12 +23,20 @@ export function designRoutes(): FastifyPluginAsyncZod {
     app.get(
       '/assets/:file',
       { config: { access: { kind: 'authenticated' } }, schema: { hide: true, params: z.object({ file: z.enum(STYLESHEETS) }) } },
-      async (request, reply) => reply.type('text/css; charset=utf-8').header('cache-control', 'private, max-age=3600').send(await load(request.params.file)),
+      async (request, reply) =>
+        reply
+          .type('text/css; charset=utf-8')
+          .header('cache-control', 'private, max-age=3600')
+          .send(await load(request.params.file)),
     );
     app.get(
       '/assets/fonts/:file',
       { config: { access: { kind: 'authenticated' } }, schema: { hide: true, params: z.object({ file: z.enum(FONTS) }) } },
-      async (request, reply) => reply.type('font/woff2').header('cache-control', 'private, max-age=86400').send(await load(`fonts/${request.params.file}`)),
+      async (request, reply) =>
+        reply
+          .type('font/woff2')
+          .header('cache-control', 'private, max-age=86400')
+          .send(await load(`fonts/${request.params.file}`)),
     );
   };
 }

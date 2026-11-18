@@ -38,6 +38,7 @@ export const PLATFORM_PERMISSIONS = {
   'app.create': 'Create apps',
   'app.read': 'Read app definitions',
   'app.edit': 'Edit app definitions in a working copy',
+  'app.compose': "Build apps by chat with the installation's AI model, which drafts changes for review",
   'app.share': 'Share a personal app with named users',
   'app.export': 'Export app definitions',
   'app.delete': 'Delete apps',
@@ -79,6 +80,7 @@ export const PLATFORM_PERMISSIONS = {
   'record.export': 'Export records of an entity',
 
   'process.start': 'Start a process',
+  'flow.run': "Run one of an app's flows through the API",
   'process.admin': 'Administer running process instances',
   'task.claim': 'Claim a workflow task',
   'task.complete': 'Complete a workflow task',
@@ -96,10 +98,7 @@ export function isValidPermissionPattern(pattern: string): boolean {
 
 /** True if a pattern matches at least one permission in the platform catalog. */
 export function isKnownPermissionPattern(pattern: string): boolean {
-  return (
-    isValidPermissionPattern(pattern) &&
-    Object.keys(PLATFORM_PERMISSIONS).some((permission) => matchesPermission(pattern, permission))
-  );
+  return isValidPermissionPattern(pattern) && Object.keys(PLATFORM_PERMISSIONS).some((permission) => matchesPermission(pattern, permission));
 }
 
 /** True if `pattern` grants `permission`. */

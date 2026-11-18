@@ -1,10 +1,11 @@
-/* Ocean: the design system of agentos (a5s), shared by its owner with Ambit. Ambit's pages and
-   the studio load this one file, so nothing is defined twice (docs/02-platform-design.md).
+/* Ocean's css/tokens.css, from sreent/ocean at f7ec2af16aaada4471593a5b71325a37ed398d6c, taken by scripts/sync-ocean.mjs.
+   Change it in Ocean, not here. */
+/* Ocean's tokens: the look a5s, a7c and a3t share (docs/design.md), in two layers.
 
-   Tokens in two layers. The primitives are Ocean's palette, type, spacing and radii: a brand
-   changes these alone. The meanings say what each colour is for, in light and dark, and are
-   all that the rest of Ambit's styles name. test/contrast.test.ts holds every text colour to
-   WCAG AA in both themes. */
+   The primitives are Ocean's palette, type, spacing and radii: a brand changes these alone. The
+   meanings say what each colour is for, in light and dark, and are all any page's styles name.
+   Pulled from a5s (src/a5s/core/webchat/app.css), where they began; the family's additions are
+   marked. scripts/check.mjs holds them to WCAG's contrast in light and dark. */
 
 @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap;
              src: url(fonts/plex-sans-400.woff2) format("woff2"); }
@@ -14,10 +15,44 @@
              src: url(fonts/plex-sans-600.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 700; font-display: swap;
              src: url(fonts/plex-sans-700.woff2) format("woff2"); }
+/* Vietnamese: the letters it adds to Latin (ơ, ư, đ and the tone marks), from the same Plex Sans,
+   defined after Latin so they win for their range alone; a page loads them only where it has some */
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap;
+             src: url(fonts/plex-sans-vietnamese-400.woff2) format("woff2");
+             unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap;
+             src: url(fonts/plex-sans-vietnamese-500.woff2) format("woff2");
+             unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap;
+             src: url(fonts/plex-sans-vietnamese-600.woff2) format("woff2");
+             unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 700; font-display: swap;
+             src: url(fonts/plex-sans-vietnamese-700.woff2) format("woff2");
+             unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+/* Thai, drawn to match Plex Sans: for Thai letters alone, so it loads only where a page has them */
+@font-face { font-family: "IBM Plex Sans Thai"; font-style: normal; font-weight: 400; font-display: swap;
+             src: url(fonts/plex-sans-thai-400.woff2) format("woff2");
+             unicode-range: U+0E01-0E5B, U+200C-200D, U+25CC; }
+@font-face { font-family: "IBM Plex Sans Thai"; font-style: normal; font-weight: 500; font-display: swap;
+             src: url(fonts/plex-sans-thai-500.woff2) format("woff2");
+             unicode-range: U+0E01-0E5B, U+200C-200D, U+25CC; }
+@font-face { font-family: "IBM Plex Sans Thai"; font-style: normal; font-weight: 600; font-display: swap;
+             src: url(fonts/plex-sans-thai-600.woff2) format("woff2");
+             unicode-range: U+0E01-0E5B, U+200C-200D, U+25CC; }
+@font-face { font-family: "IBM Plex Sans Thai"; font-style: normal; font-weight: 700; font-display: swap;
+             src: url(fonts/plex-sans-thai-700.woff2) format("woff2");
+             unicode-range: U+0E01-0E5B, U+200C-200D, U+25CC; }
 @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap;
              src: url(fonts/plex-mono-400.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap;
              src: url(fonts/plex-mono-500.woff2) format("woff2"); }
+/* Vietnamese in Plex Mono, as in Plex Sans */
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap;
+             src: url(fonts/plex-mono-vietnamese-400.woff2) format("woff2");
+             unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap;
+             src: url(fonts/plex-mono-vietnamese-500.woff2) format("woff2");
+             unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
 
 /* Primitives: Ocean */
 :root {
@@ -28,16 +63,17 @@
   --coral-100: #fde7e3;  --coral-300: #ff9b8c;  --coral-700: #b83a2e;  --coral-900: #3d1d1a;
   --kelp-100: #e0f2e7;   --kelp-300: #79d8a0;   --kelp-700: #1c7547;   --kelp-900: #12301f;
   --amber-100: #fdf0d5;  --amber-300: #f0c36a;  --amber-700: #8f5a00;  --amber-900: #33290f;
-  --violet-100: #efe9fb; --violet-300: #c3aaff; --violet-700: #6741b8; --violet-900: #2a2147;
+  --violet-100: #efe9fb; --violet-200: #dccdff; --violet-300: #c3aaff; --violet-700: #6741b8;
+  --violet-800: #4a2690; --violet-900: #2a2147;
   --sand-100: #fdf5e2;   --sand-900: #3a3220;
   /* the mist and the deep: Ocean's neutrals, from page to ink */
   --mist-0: #ffffff;   --mist-50: #f3f6f9;  --mist-100: #ecf1f5; --mist-200: #dbe3ea;
-  --mist-300: #c3cfda; --mist-500: #5f7387; --mist-600: #4a5d72; --mist-900: #0f2236;
-  --deep-50: #e4edf6;  --deep-200: #a9bdd2; --deep-300: #8aa0b6; --deep-500: #2a4560;
+  --mist-300: #c3cfda; --mist-400: #7d8ca0; --mist-500: #5f7387; --mist-600: #4a5d72; --mist-900: #0f2236;
+  --deep-50: #e4edf6;  --deep-200: #a9bdd2; --deep-300: #8aa0b6; --deep-400: #5a7590; --deep-500: #2a4560;
   --deep-600: #1e3449; --deep-700: #1a2d40; --deep-800: #0f2133; --deep-850: #0c1b2a;
   --deep-900: #0a1724;
 
-  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "IBM Plex Sans", "IBM Plex Sans Thai", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --text-xs: 0.75rem; --text-sm: 0.85rem; --text-md: 0.94rem; --text-base: 15px;
   --text-lg: 1.05rem; --text-xl: 1.45rem; --text-2xl: 1.9rem;
@@ -53,6 +89,7 @@
   --faint: var(--mist-500);
   --line: var(--mist-200);
   --line-strong: var(--mist-300);
+  --line-control: var(--mist-400);  /* a field's edge: 3 to 1 on what it sits on, so a person sees where to type */
   --page: var(--mist-50);
   --surface: var(--mist-0);
   --sunken: var(--mist-100);
@@ -63,14 +100,22 @@
   --focus: var(--ocean-500);
   --you: var(--ocean-100);   /* your own messages */
   --agent: var(--mist-0);    /* an agent's messages */
-  --a5s: var(--sand-100);    /* a5s's own messages */
+  --own-message: var(--sand-100);  /* the product's own word in a conversation */
   --agent-tone: var(--lagoon-700);       /* what marks an agent apart from a person */
   --agent-tone-soft: var(--lagoon-100);
+  --service-tone: var(--mist-600);       /* a service identity's mark: neutral (family addition) */
+  --service-tone-soft: var(--mist-100);
+  --viewfinder: var(--deep-900);         /* a camera's view: its own dark, the same in either theme */
+  --viewfinder-line: var(--deep-700);
+  --viewfinder-text: var(--deep-50);
+  --viewfinder-mark: var(--ocean-400);   /* the frame that finds a document, on the camera's view */
+  --paper: var(--mist-0);                /* a document as photographed: white, the same in either theme */
+  --paper-ink: var(--mist-900);
   /* what a tool does, and how something stands */
   --reads: var(--mist-600);      --reads-bg: var(--mist-100);
   --writes: var(--amber-700);    --writes-bg: var(--amber-100);
   --changes: var(--coral-700);   --changes-bg: var(--coral-100);
-  --outside: var(--violet-700);  --outside-bg: var(--violet-100);
+  --outside: var(--violet-800);  --outside-bg: var(--violet-100);  /* apart from the accent by lightness too */
   --own: var(--lagoon-700);      --own-bg: var(--lagoon-100);
   --good: var(--kelp-700);       --good-bg: var(--kelp-100);
   --warn: var(--amber-700);      --warn-bg: var(--amber-100);
@@ -83,6 +128,10 @@
   font: var(--text-base)/1.5 var(--font-sans);
 }
 
+/* A page in Thai: its vowels and tones stack above and below each line's letters, so its lines
+   have more room, and they never touch the line's above or below */
+:root:lang(th) { line-height: 1.7; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     --text: var(--deep-50);
@@ -90,6 +139,7 @@
     --faint: var(--deep-300);
     --line: var(--deep-600);
     --line-strong: var(--deep-500);
+    --line-control: var(--deep-400);
     --page: var(--deep-900);
     --surface: var(--deep-800);
     --sunken: var(--deep-850);
@@ -100,13 +150,15 @@
     --focus: var(--ocean-400);
     --you: var(--ocean-800);
     --agent: var(--deep-800);
-    --a5s: var(--sand-900);
+    --own-message: var(--sand-900);
     --agent-tone: var(--lagoon-300);
     --agent-tone-soft: var(--lagoon-900);
+    --service-tone: var(--deep-200);
+    --service-tone-soft: var(--deep-700);
     --reads: var(--deep-200);      --reads-bg: var(--deep-700);
     --writes: var(--amber-300);    --writes-bg: var(--amber-900);
     --changes: var(--coral-300);   --changes-bg: var(--coral-900);
-    --outside: var(--violet-300);  --outside-bg: var(--violet-900);
+    --outside: var(--violet-200);  --outside-bg: var(--violet-900);
     --own: var(--lagoon-300);      --own-bg: var(--lagoon-900);
     --good: var(--kelp-300);       --good-bg: var(--kelp-900);
     --warn: var(--amber-300);      --warn-bg: var(--amber-900);

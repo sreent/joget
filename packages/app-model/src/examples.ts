@@ -20,11 +20,17 @@ export const EXPENSE_APP = {
         { name: 'trip', label: 'Trip', type: 'text' },
         { name: 'lines', label: 'Receipts', type: 'lines', entity: 'expense_line', required: true, max: 50 },
         { name: 'total', label: 'Total (SGD)', type: 'number', decimals: 2, rollup: { sum: 'lines.amount' } },
-        { name: 'status', label: 'Status', type: 'choice', default: 'draft', options: [
-          { value: 'draft', label: 'Draft' },
-          { value: 'submitted', label: 'Submitted' },
-          { value: 'approved', label: 'Approved' },
-        ] },
+        {
+          name: 'status',
+          label: 'Status',
+          type: 'choice',
+          default: 'draft',
+          options: [
+            { value: 'draft', label: 'Draft' },
+            { value: 'submitted', label: 'Submitted' },
+            { value: 'approved', label: 'Approved' },
+          ],
+        },
         { name: 'iban', label: 'Bank account', type: 'text', classification: 'pii' },
         { name: 'approver', label: 'Approver', type: 'user' },
       ],
@@ -36,11 +42,17 @@ export const EXPENSE_APP = {
       fields: [
         { name: 'date', label: 'Date', type: 'date', required: true },
         { name: 'merchant', label: 'Merchant', type: 'text', required: true, maxLength: 200 },
-        { name: 'category', label: 'Category', type: 'choice', required: true, options: [
-          { value: 'travel', label: 'Travel' },
-          { value: 'hotel', label: 'Hotel' },
-          { value: 'meals', label: 'Meals' },
-        ] },
+        {
+          name: 'category',
+          label: 'Category',
+          type: 'choice',
+          required: true,
+          options: [
+            { value: 'travel', label: 'Travel' },
+            { value: 'hotel', label: 'Hotel' },
+            { value: 'meals', label: 'Meals' },
+          ],
+        },
         { name: 'amount', label: 'Amount (SGD)', type: 'number', decimals: 2, min: 0, required: true },
         { name: 'receipt', label: 'Receipt', type: 'file', accept: ['image', 'pdf'] },
       ],
@@ -82,11 +94,7 @@ export const EXPENSE_APP = {
       set: { status: 'approved' },
       where: { eq: [status, 'submitted'] },
       confirm: 'preview',
-      steps: [
-        { type: 'check', assert: { ne: [owner, me] }, message: "You can't approve your own claim" },
-        { type: 'set', field: 'approver', value: me },
-        { type: 'check', assert: { lte: [{ ref: 'record.total' }, 1000] }, severity: 'warning', message: 'A claim over SGD 1,000: check that a director agreed to it', fields: ['total'] },
-      ],
+      before: { flow: 'check_approval', input: { claim: { ref: 'record' } } },
     },
   },
   queries: {
@@ -100,7 +108,8 @@ export const EXPENSE_APP = {
     },
     my_spending: {
       label: 'My spending by category',
-      description: 'How much the person you act for has claimed this year, in SGD, for each category of receipt. Use it for questions such as "how much did I spend on hotels this year?"',
+      description:
+        'How much the person you act for has claimed this year, in SGD, for each category of receipt. Use it for questions such as "how much did I spend on hotels this year?"',
       entity: 'expense_claim',
       filter: { eq: [owner, me] },
       summary: { measure: { op: 'sum', field: 'lines.amount' }, group: { field: 'lines.category' }, range: { field: 'lines.date', within: 'this_year' } },
@@ -121,7 +130,13 @@ export const EXPENSE_APP = {
       action: 'submit_claim',
       sections: [
         { title: 'What it was', fields: [{ field: 'title' }, { field: 'trip' }] },
-        { title: 'Receipts', fields: [{ field: 'lines', help: 'One line per receipt' }, { field: 'total', width: 'half', readOnly: true }] },
+        {
+          title: 'Receipts',
+          fields: [
+            { field: 'lines', help: 'One line per receipt' },
+            { field: 'total', width: 'half', readOnly: true },
+          ],
+        },
         { title: 'Paying you back', fields: [{ field: 'iban', width: 'half', help: 'Where we send the money' }] },
       ],
     },
@@ -215,6 +230,24 @@ export const EXPENSE_APP = {
           range: { field: 'lines.date', within: 'last_12_months' },
           show: 'column',
           limit: 12,
+        },
+      ],
+    },
+  },
+  flows: {
+    check_approval: {
+      label: 'Check the approval',
+      description: 'Before an approval saves: nobody approves their own claim, the approver is noted, and a large claim is flagged.',
+      input: { claim: { type: 'record', entity: 'expense_claim' } },
+      steps: [
+        { type: 'check', assert: { ne: [{ ref: 'claim.owner' }, me] }, message: "You can't approve your own claim" },
+        { type: 'change', record: 'claim', values: { approver: me } },
+        {
+          type: 'check',
+          assert: { lte: [{ ref: 'claim.total' }, 1000] },
+          severity: 'warning',
+          message: 'A claim over SGD 1,000: check that a director agreed to it',
+          fields: ['claim.total'],
         },
       ],
     },

@@ -19,12 +19,34 @@
       }
     },
     "replicaCount": { "type": "integer", "minimum": 1 },
-    "a7c": {
+    "ai": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "url": { "type": "string", "pattern": "^(https://.+)?$", "description": "a7c's control plane. Empty: skill calls wait in the outbox." },
-        "tokenSecret": { "type": "string", "description": "A Secret with Ambit's a7c token under the key token." }
+        "provider": { "enum": ["", "anthropic"], "description": "The model provider of the studio's chat. Empty: the chat is off." },
+        "model": { "type": "string", "description": "The model's ID at the provider." },
+        "keySecret": { "type": "string", "description": "A Secret with the provider's API key under the key key." },
+        "baseUrl": { "type": "string", "pattern": "^(https://.+)?$", "description": "A gateway in front of the provider. Empty: the provider's own address." },
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max", "off"] },
+        "fallback": { "enum": ["default", "off"] },
+        "maxTurns": { "type": "integer", "minimum": 1, "maximum": 30 }
+      }
+    },
+    "appSecrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keySecret": { "type": "string", "description": "A Secret with the key that seals apps' secrets: 32 random bytes in base64, under the key key." }
+      }
+    },
+    "mail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "pattern": "^(smtps?://.+)?$", "description": "The mail server for notices: smtp:// with STARTTLS, or smtps://. Empty: no email." },
+        "user": { "type": "string" },
+        "passwordSecret": { "type": "string", "description": "A Secret with the mail server's password under the key password." },
+        "from": { "type": "string", "minLength": 3 }
       }
     },
     "config": {
@@ -40,8 +62,6 @@
         "S3_ENDPOINT": { "type": "string", "pattern": "^https://" },
         "CHANGE_APPROVALS": { "type": "string", "pattern": "^[1-5]$" },
         "DEPLOY_PROD_APPROVALS": { "type": "string", "pattern": "^[1-5]$" },
-        "SKILL_DISPATCH_INTERVAL_SECONDS": { "type": "string", "pattern": "^[0-9]+$" },
-        "SKILL_CALL_MAX_ATTEMPTS": { "type": "string", "pattern": "^([1-9]|[1-4][0-9]|50)$" },
         "PROCESS_TIMER_INTERVAL_SECONDS": { "type": "string", "pattern": "^[0-9]+$" }
       },
       "not": {
@@ -52,8 +72,11 @@
           { "required": ["OIDC_CLIENT_SECRET"] },
           { "required": ["S3_ACCESS_KEY_ID"] },
           { "required": ["S3_SECRET_ACCESS_KEY"] },
-          { "required": ["A7C_URL"], "description": "Set a7c.url instead, so the token Secret is mounted with it." },
-          { "required": ["A7C_TOKEN_FILE"] }
+          { "required": ["AI_PROVIDER"], "description": "Set ai.provider instead, so the key Secret is mounted with it." },
+          { "required": ["AI_API_KEY_FILE"] },
+          { "required": ["SMTP_URL"], "description": "Set mail.url instead, so the password Secret is mounted with it." },
+          { "required": ["SMTP_PASSWORD_FILE"] },
+          { "required": ["SECRETS_KEY_FILE"], "description": "Set appSecrets.keySecret instead, so the key Secret is mounted with it." }
         ]
       },
       "additionalProperties": { "type": ["string", "number", "boolean"] }

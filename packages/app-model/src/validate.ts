@@ -1,29 +1,27 @@
-import { randomBytes } from 'node:crypto';
-import { COMPARISON_OPERATORS, isRef, type Condition, type Operand } from '@platform/authz';
+import { beforeGives, checkBeforeFlows, moveSteps } from './before.js';
+import { checkCondition, checkFormula, checkSteps, type Issue, stepPathOf } from './checks.js';
+import { expressionRefs } from './expressions.js';
 import {
   entityFields,
-  isConditionKind,
+  type FieldInfo,
+  formulaOf,
   isSortableKind,
   isWritable,
-  jsTypeOf,
   lineOwners,
   rollupOf,
-  type FieldInfo,
   type StoredDefinition,
   type StoredEntity,
   type StoredField,
+  workedOutBy,
 } from './fields.js';
-import { expressionRefs, mapExpressionRefs, operatorOf, roundTo, type Expression } from './expressions.js';
-import { elementName, insideOf, plainStartOf, processGraph, processWork, scopeOf, scopesOf, startEventsOf } from './processes.js';
-import { AppDefinition, LINE_PATH_PATTERN, SYSTEM_FIELDS, type Action, type Entity, type ProcessElement, type SimpleStep, type Step, type Timer } from './schema.js';
-import { alwaysGiven, readsPrincipal } from './steps.js';
+import { checkFlows } from './flows.js';
+import { blockPlace, pageBlocks } from './pages.js';
+import { checkProcess, checkProcesses } from './process-checks.js';
+import { propagateRenames } from './renames.js';
+import { AppDefinition, type Entity, LINE_PATH_PATTERN, SYSTEM_FIELDS } from './schema.js';
+import { givenRefs } from './tests.js';
 import { canonicalValue } from './values.js';
-
-export interface Issue {
-  /** Where in the definition, for example `entities.expense_claim.fields[2].name`. */
-  readonly path: string;
-  readonly message: string;
-}
+import { compileFlows } from './waiting.js';
 
 export type ValidationResult =
   | {
@@ -37,8 +35,53 @@ export type ValidationResult =
 const ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 /** A new random ID for an entity or field: 10 lowercase letters and digits. */
+export { mapRefs } from './condition-refs.js';
+
 export function newId(): string {
-  return [...randomBytes(10)].map((byte) => ID_ALPHABET[byte % ID_ALPHABET.length]).join('');
+  // Web Crypto, so that the studio can check a draft in the browser as the server does.
+  return [...globalThis.crypto.getRandomValues(new Uint8Array(10))].map((byte) => ID_ALPHABET[byte % ID_ALPHABET.length]).join('');
+}
+
+const TYPE_WORDS: Readonly<Record<string, string>> = {
+  string: 'text',
+  number: 'a number',
+  int: 'a whole number',
+  boolean: 'yes or no',
+  object: 'a group of settings',
+  array: 'a list',
+};
+
+/** What the schema finds wrong, in plain words: its own messages are for programmers. A message a rule of the schema gives itself stays as it is. */
+export function plainMessage(issue: { readonly code: string; readonly message: string }): string {
+  const { code } = issue;
+  // What else each kind of issue carries, such as a minimum, without a cast.
+  const fields = new Map<string, unknown>(Object.entries(issue));
+  const origin = typeof fields.get('origin') === 'string' ? String(fields.get('origin')) : '';
+  const unit = origin === 'string' ? ' characters' : '';
+  if (code === 'too_small') {
+    const minimum = Number(fields.get('minimum'));
+    if (origin === 'string' && minimum === 1) return "This can't be empty";
+    if (origin === 'array' && minimum === 1) return 'This needs at least one';
+    return fields.get('inclusive') === false ? `More than ${minimum}${unit}` : `At least ${minimum}${unit}`;
+  }
+  if (code === 'too_big') {
+    const maximum = Number(fields.get('maximum'));
+    return fields.get('inclusive') === false ? `Less than ${maximum}${unit}` : `At most ${maximum}${unit}`;
+  }
+  if (code === 'invalid_type') {
+    // A value that is missing altogether is one that is required.
+    if (/received undefined$/.test(issue.message)) return 'This is required';
+    const expected = String(fields.get('expected') ?? '');
+    return TYPE_WORDS[expected] ? `Expected ${TYPE_WORDS[expected]}` : issue.message;
+  }
+  const values = fields.get('values');
+  if (code === 'invalid_value' && Array.isArray(values)) {
+    const words = values.map((value: unknown) => String(value));
+    return words.length === 1 ? `Expected ${words[0]}` : `Expected one of: ${words.join(', ')}`;
+  }
+  const keys = fields.get('keys');
+  if (code === 'unrecognized_keys' && Array.isArray(keys)) return `Not a setting here: ${keys.join(', ')}`;
+  return issue.message;
 }
 
 function formatPath(path: readonly PropertyKey[]): string {
@@ -54,310 +97,26 @@ function formatPath(path: readonly PropertyKey[]): string {
 export function validateDefinition(input: unknown, previous?: StoredDefinition, generateId: () => string = newId): ValidationResult {
   const parsed = AppDefinition.safeParse(input);
   if (!parsed.success) {
-    return { ok: false, issues: parsed.error.issues.map((issue) => ({ path: formatPath(issue.path), message: issue.message })) };
+    return { ok: false, issues: parsed.error.issues.map((issue) => ({ path: formatPath(issue.path), message: plainMessage(issue) })) };
   }
   const issues: Issue[] = [];
   const notes: string[] = [];
   let definition = assignIds(parsed.data, previous, generateId, issues);
   if (issues.length === 0 && previous) definition = propagateRenames(definition, previous, notes);
+  // An older definition's action steps become flows that run before their actions save.
+  if (issues.length === 0) definition = moveSteps(definition, notes);
   if (issues.length === 0) {
     checkReferences(definition, issues);
     checkProcesses(definition, issues);
+    checkFlows(definition, issues);
+    checkBeforeFlows(definition, issues);
+    checkWaitingFlows(definition, issues);
+    checkTests(definition, issues);
   }
   return issues.length ? { ok: false, issues } : { ok: true, definition, notes };
 }
 
-/** A condition with its references renamed. */
-export function mapRefs(condition: Condition, rename: (ref: string) => string): Condition {
-  const operand = (o: Operand): Operand => (isRef(o) ? { ref: rename(o.ref) } : o);
-  if ('all' in condition) return { all: condition.all.map((c) => mapRefs(c, rename)) };
-  if ('any' in condition) return { any: condition.any.map((c) => mapRefs(c, rename)) };
-  if ('not' in condition) return { not: mapRefs(condition.not, rename) };
-  if ('exists' in condition) return { exists: rename(condition.exists) };
-  if ('in' in condition) {
-    const [needle, haystack] = condition.in;
-    return { in: [operand(needle), Array.isArray(haystack) ? (haystack as readonly Operand[]).map(operand) : operand(haystack as Operand)] };
-  }
-  const [op, args] = Object.entries(condition)[0] as [string, readonly [Operand, Operand]];
-  return { [op]: [operand(args[0]), operand(args[1])] } as unknown as Condition;
-}
-
-/**
- * Carry renames through. When an entity or field keeps its ID under a new name, references to
- * the old name are updated everywhere, unless something else now has the old name.
- */
-function propagateRenames(definition: StoredDefinition, previous: StoredDefinition, notes: string[]): StoredDefinition {
-  const previousById = new Map(Object.entries(previous.entities).map(([name, entity]) => [entity.id, { name, entity }]));
-  const entityRenames = new Map<string, string>();
-  const fieldRenames = new Map<string, Map<string, string>>();
-  for (const [name, entity] of Object.entries(definition.entities)) {
-    const before = previousById.get(entity.id);
-    if (!before) continue;
-    if (before.name !== name && !(before.name in definition.entities)) entityRenames.set(before.name, name);
-    const oldNames = new Map(before.entity.fields.map((field) => [field.id, field.name]));
-    const current = new Set(entity.fields.map((field) => field.name));
-    const renames = new Map<string, string>();
-    for (const field of entity.fields) {
-      const old = oldNames.get(field.id);
-      if (old && old !== field.name && !current.has(old)) renames.set(old, field.name);
-    }
-    if (renames.size) fieldRenames.set(name, renames);
-  }
-  if (entityRenames.size === 0 && fieldRenames.size === 0) return definition;
-
-  const touched = new Set<string>();
-  const entityName = (name: string) => {
-    const renamed = entityRenames.get(name);
-    if (renamed) touched.add(`entity ${name} → ${renamed}`);
-    return renamed ?? name;
-  };
-  const fieldName = (entity: string) => (name: string) => {
-    const renamed = fieldRenames.get(entity)?.get(name);
-    if (renamed) touched.add(`${entity}.${name} → ${renamed}`);
-    return renamed ?? name;
-  };
-  /** The line entity of an entity's lines field, by their new names. */
-  const lineEntityOf = (entity: string, lines: string) => {
-    const field = definition.entities[entity]?.fields.find((f) => f.name === lines);
-    return field?.type === 'lines' ? entityName(field.entity) : undefined;
-  };
-  /** A field name, or a path into lines such as `lines.amount`, after renames. */
-  const pathName = (entity: string) => (name: string) => {
-    const match = LINE_PATH_PATTERN.exec(name);
-    if (!match) return fieldName(entity)(name);
-    const lines = fieldName(entity)(match[1]!);
-    const lineEntity = lineEntityOf(entity, lines);
-    return `${lines}.${lineEntity ? fieldName(lineEntity)(match[2]!) : match[2]}`;
-  };
-  const refs = (entity: string) => (ref: string) => (ref.startsWith('record.') ? `record.${fieldName(entity)(ref.slice('record.'.length))}` : ref);
-  const condition = <T extends Condition | undefined>(entity: string, c: T): T => (c ? (mapRefs(c, refs(entity)) as T) : c);
-  const mapRecord = <T>(record: Readonly<Record<string, T>>, map: (value: T) => T) =>
-    Object.fromEntries(Object.entries(record).map(([key, value]) => [key, map(value)]));
-
-  const entities = Object.fromEntries(
-    Object.entries(definition.entities).map(([name, entity]) => [
-      name,
-      {
-        ...entity,
-        ...(entity.titleField ? { titleField: fieldName(name)(entity.titleField) } : {}),
-        fields: entity.fields.map((field) => {
-          if (field.type === 'reference' || field.type === 'lines') return { ...field, entity: entityName(field.entity) };
-          if (field.type === 'number' && field.rollup) {
-            const [op, path] = Object.entries(field.rollup)[0] as [string, string];
-            return { ...field, rollup: { [op]: op === 'count' ? fieldName(name)(path) : pathName(name)(path) } as typeof field.rollup };
-          }
-          return field;
-        }),
-      },
-    ]),
-  );
-  const rules = mapRecord(definition.rules, (rule) => {
-    const entity = entityName(rule.entity);
-    return {
-      ...rule,
-      entity,
-      ...(rule.when ? { when: condition(entity, rule.when) } : {}),
-      assert: condition(entity, rule.assert),
-      ...(rule.fields ? { fields: rule.fields.map(fieldName(entity)) } : {}),
-    };
-  });
-  const simpleStep = (entity: string, step: SimpleStep): SimpleStep => {
-    const value = (expression: Expression) => mapExpressionRefs(expression, refs(entity));
-    switch (step.type) {
-      case 'set':
-        return { ...step, field: fieldName(entity)(step.field), value: value(step.value) };
-      case 'add_line': {
-        const lines = fieldName(entity)(step.field);
-        const lineEntity = lineEntityOf(entity, lines);
-        return { ...step, field: lines, values: Object.fromEntries(Object.entries(step.values).map(([name, v]) => [lineEntity ? fieldName(lineEntity)(name) : name, value(v)])) };
-      }
-      case 'check':
-        return { ...step, assert: condition(entity, step.assert), ...(step.fields ? { fields: step.fields.map(fieldName(entity)) } : {}) };
-      case 'skill':
-        return { ...step, input: Object.fromEntries(Object.entries(step.input).map(([name, v]) => [name, value(v)])) };
-    }
-  };
-  const step = (entity: string, s: Step): Step =>
-    s.type === 'if'
-      ? { ...s, when: condition(entity, s.when), then: s.then.map((inner) => simpleStep(entity, inner)), else: s.else.map((inner) => simpleStep(entity, inner)) }
-      : simpleStep(entity, s);
-  const actions = mapRecord(definition.actions, (action) => {
-    const entity = entityName(action.entity);
-    return {
-      ...action,
-      entity,
-      input: action.input.map(fieldName(entity)),
-      set: Object.fromEntries(Object.entries(action.set).map(([field, value]) => [fieldName(entity)(field), value])),
-      ...(action.where ? { where: condition(entity, action.where) } : {}),
-      ...(action.steps ? { steps: action.steps.map((s) => step(entity, s)) } : {}),
-    };
-  });
-  const queries = mapRecord(definition.queries, (query) => {
-    const entity = entityName(query.entity);
-    return {
-      ...query,
-      entity,
-      fields: query.fields.map(fieldName(entity)),
-      ...(query.filter ? { filter: condition(entity, query.filter) } : {}),
-      sort: query.sort.map((sort) => ({ ...sort, field: fieldName(entity)(sort.field) })),
-      ...(query.summary
-        ? {
-            summary: {
-              ...query.summary,
-              measure: { ...query.summary.measure, ...(query.summary.measure.field ? { field: pathName(entity)(query.summary.measure.field) } : {}) },
-              ...(query.summary.group ? { group: { ...query.summary.group, field: pathName(entity)(query.summary.group.field) } } : {}),
-              ...(query.summary.range ? { range: { ...query.summary.range, field: pathName(entity)(query.summary.range.field) } } : {}),
-            },
-          }
-        : {}),
-    };
-  });
-  const cards = mapRecord(definition.cards, (card) => {
-    const entity = entityName(card.entity);
-    return {
-      ...card,
-      entity,
-      show: card.show.map(fieldName(entity)),
-      ...(card.table
-        ? (() => {
-            const of = fieldName(entity)(card.table.of);
-            const lineEntity = lineEntityOf(entity, of);
-            return { table: { of, columns: card.table.columns.map((column) => (lineEntity ? fieldName(lineEntity)(column) : column)) } };
-          })()
-        : {}),
-      title: card.title.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g, (_, name: string) => `{{${fieldName(entity)(name)}}}`),
-    };
-  });
-  const forms = mapRecord(definition.forms, (form) => {
-    const entity = entityName(form.entity);
-    return {
-      ...form,
-      entity,
-      sections: form.sections.map((section) => ({ ...section, fields: section.fields.map((item) => ({ ...item, field: fieldName(entity)(item.field) })) })),
-    };
-  });
-  const roles = mapRecord(definition.roles, (role) => ({
-    ...role,
-    entities: Object.fromEntries(
-      Object.entries(role.entities).map(([oldEntity, permissions]) => {
-        const entity = entityName(oldEntity);
-        const rename = pathName(entity);
-        const access = <T>(value: T): T => {
-          if (typeof value !== 'object' || value === null) return value;
-          const a = value as Record<string, unknown>;
-          return {
-            ...a,
-            ...(a['where'] ? { where: condition(entity, a['where'] as Condition) } : {}),
-            ...(a['check'] ? { check: condition(entity, a['check'] as Condition) } : {}),
-            ...(a['fields']
-              ? { fields: 'include' in (a['fields'] as object)
-                  ? { include: (a['fields'] as { include: string[] }).include.map(rename) }
-                  : { exclude: (a['fields'] as { exclude: string[] }).exclude.map(rename) } }
-              : {}),
-            ...(a['mask'] ? { mask: (a['mask'] as string[]).map(rename) } : {}),
-            ...(a['unmask'] ? { unmask: (a['unmask'] as string[]).map(rename) } : {}),
-          } as T;
-        };
-        return [entity, mapRecord(permissions as Record<string, unknown>, access)];
-      }),
-    ),
-  }));
-  const pages = mapRecord(definition.pages ?? {}, (page) => ({
-    ...page,
-    blocks: page.blocks.map((block) => {
-      if (block.type === 'stat' || block.type === 'chart') {
-        const entity = entityName(block.entity);
-        const path = pathName(entity);
-        return {
-          ...block,
-          entity,
-          measure: { ...block.measure, ...(block.measure.field ? { field: path(block.measure.field) } : {}) },
-          ...(block.type === 'chart' ? { group: { ...block.group, field: path(block.group.field) } } : {}),
-          ...(block.range ? { range: { ...block.range, field: path(block.range.field) } } : {}),
-          ...(block.filter ? { filter: condition(entity, block.filter) } : {}),
-        };
-      }
-      if (block.type !== 'list') return block;
-      const entity = entityName(block.entity);
-      return {
-        ...block,
-        entity,
-        columns: block.columns.map(fieldName(entity)),
-        ...(block.filter ? { filter: condition(entity, block.filter) } : {}),
-        sort: block.sort.map((sort) => ({ ...sort, field: fieldName(entity)(sort.field) })),
-      };
-    }),
-  }));
-  const navigation = definition.navigation
-    ? { ...definition.navigation, items: definition.navigation.items.map((item) => ('entity' in item ? { ...item, entity: entityName(item.entity) } : item)) }
-    : undefined;
-  const processes = definition.processes
-    ? mapRecord(definition.processes, (process) => {
-        const entity = entityName(process.entity);
-        const field = fieldName(entity);
-        return {
-          ...process,
-          entity,
-          elements: mapRecord(process.elements, (element): ProcessElement => {
-            switch (element.type) {
-              case 'userTask':
-                return {
-                  ...element,
-                  ...(element.assignee
-                    ? { assignee: 'field' in element.assignee ? { field: field(element.assignee.field) } : { ...element.assignee, managerOf: field(element.assignee.managerOf) } }
-                    : {}),
-                  ...(element.department ? { department: { of: field(element.department.of) } } : {}),
-                  ...(element.several
-                    ? {
-                        several: {
-                          ...element.several,
-                          people:
-                            'fields' in element.several.people
-                              ? { fields: element.several.people.fields.map(field) }
-                              : 'lineOf' in element.several.people
-                                ? { ...element.several.people, lineOf: field(element.several.people.lineOf) }
-                                : element.several.people,
-                        },
-                      }
-                    : {}),
-                };
-              case 'serviceTask':
-                return element.input ? { ...element, input: mapRecord(element.input, (value) => mapExpressionRefs(value, refs(entity))) } : element;
-              case 'intermediateCatchEvent':
-              case 'boundaryEvent':
-                return element.timer && 'date' in element.timer ? { ...element, timer: { date: field(element.timer.date) } } : element;
-              case 'callActivity':
-                return element.record ? { ...element, record: field(element.record) } : element;
-              default:
-                return element;
-            }
-          }),
-          flows: mapRecord(process.flows, (flow) => (flow.when ? { ...flow, when: condition(entity, flow.when) } : flow)),
-        };
-      })
-    : undefined;
-  for (const change of touched) notes.push(`Updated references for the rename ${change}`);
-  return {
-    ...definition,
-    entities,
-    rules,
-    actions,
-    queries,
-    cards,
-    forms,
-    roles,
-    pages,
-    ...(navigation ? { navigation } : {}),
-    ...(processes ? { processes } : {}),
-  } as StoredDefinition;
-}
-
-function assignIds(
-  data: AppDefinition,
-  previous: StoredDefinition | undefined,
-  generateId: () => string,
-  issues: Issue[],
-): StoredDefinition {
+function assignIds(data: AppDefinition, previous: StoredDefinition | undefined, generateId: () => string, issues: Issue[]): StoredDefinition {
   const unique = (taken: ReadonlySet<string>) => {
     for (;;) {
       const id = generateId();
@@ -403,245 +162,58 @@ function assignFieldIds(
   });
 }
 
-interface ConditionScope {
-  readonly record?: ReadonlyMap<string, FieldInfo>;
-  /** The record's lines fields, which conditions can't test directly. */
-  readonly lines?: ReadonlySet<string>;
-  readonly input?: ReadonlyMap<string, 'text' | 'number' | 'boolean'>;
-  /**
-   * In a process: its user tasks and their outcomes, which conditions read as `tasks.<task>.outcome`.
-   * A timer can move a process when nobody is there, so its conditions can't use `principal`.
-   */
-  readonly tasks?: ReadonlyMap<string, readonly string[]>;
-}
-
-/** Check a condition's references and, where a record field meets a literal, their types. */
-export function checkCondition(condition: Condition, scope: ConditionScope, path: string, issues: Issue[]): void {
-  const fieldOf = (operand: Operand): FieldInfo | undefined =>
-    isRef(operand) && operand.ref.startsWith('record.') ? scope.record?.get(operand.ref.slice('record.'.length)) : undefined;
-
-  const checkRef = (ref: string, presenceOnly = false): void => {
-    const [root, name, ...rest] = ref.split('.');
-    if (root === 'record') {
-      if (!scope.record) issues.push({ path, message: `${ref}: there is no record here` });
-      else if (!name || rest.length) issues.push({ path, message: `${ref}: refer to a record field as record.<field>` });
-      else {
-        const info = scope.record.get(name);
-        if (!info && scope.lines?.has(name)) {
-          issues.push({ path, message: `${ref}: conditions can't test lines one by one. Add a rollup, such as a total, and test that` });
-        } else if (!info) issues.push({ path, message: `${ref}: no such field` });
-        else if (!presenceOnly && !isConditionKind(info.kind)) {
-          issues.push({ path, message: `${ref}: dates and times can't be compared in conditions yet, only tested with "exists"` });
-        }
-      }
-    } else if (root === 'tasks' && scope.tasks) {
-      if (!name || rest.length !== 1 || rest[0] !== 'outcome') issues.push({ path, message: `${ref}: refer to a task's outcome as tasks.<task>.outcome` });
-      else if (!scope.tasks.has(name)) issues.push({ path, message: `${ref}: the process has no user task ${name}` });
-    } else if (scope.tasks) {
-      issues.push({ path, message: `${ref}: a process's conditions can refer to the record and to its tasks' outcomes` });
-    } else if (root === 'input') {
-      if (!name || rest.length || !scope.input?.has(name)) issues.push({ path, message: `${ref}: no such parameter` });
-    } else if (root === 'principal' || root === 'context') {
-      if (!name) issues.push({ path, message: `${ref}: name a property, for example principal.id` });
-    } else {
-      issues.push({ path, message: `${ref}: conditions can refer to record, principal, context and input` });
-    }
-  };
-  /** The outcomes a task reference can take, for `tasks.<task>.outcome`. */
-  const outcomesOf = (operand: Operand): readonly string[] | undefined => {
-    if (!isRef(operand) || !scope.tasks) return undefined;
-    const [root, task, prop] = operand.ref.split('.');
-    return root === 'tasks' && prop === 'outcome' && task ? scope.tasks.get(task) : undefined;
-  };
-
-  const literalMatches = (info: FieldInfo, literal: Operand): string | null => {
-    if (isRef(literal)) return null;
-    if (literal === null) return `${info.name}: test for an empty field with "exists" rather than null`;
-    const expected = jsTypeOf(info.kind);
-    if (expected === 'array') return `${info.name} is a multiple choice: test it with "in"`;
-    if (typeof literal !== expected) return `${info.name} holds ${expected === 'string' ? 'text' : expected}s, not ${typeof literal}s`;
-    return null;
-  };
-
-  const visit = (c: Condition): void => {
-    if ('all' in c) return c.all.forEach(visit);
-    if ('any' in c) return c.any.forEach(visit);
-    if ('not' in c) return visit(c.not);
-    if ('exists' in c) return checkRef(c.exists, true);
-    if ('in' in c) {
-      const [needle, haystack] = c.in;
-      const list = Array.isArray(haystack) ? (haystack as readonly Operand[]) : [haystack as Operand];
-      for (const operand of [needle, ...list]) if (isRef(operand)) checkRef(operand.ref);
-      const needleField = fieldOf(needle);
-      if (needleField && Array.isArray(haystack)) {
-        for (const item of haystack as readonly Operand[]) {
-          const problem = literalMatches(needleField, item);
-          if (problem) issues.push({ path, message: problem });
-        }
-      }
-      const haystackField = Array.isArray(haystack) ? undefined : fieldOf(haystack as Operand);
-      if (haystackField && haystackField.kind !== 'text[]') {
-        issues.push({ path, message: `${haystackField.name} isn't a multiple choice, so nothing can be "in" it` });
-      }
-      return;
-    }
-    const op = (['eq', 'ne', ...COMPARISON_OPERATORS] as const).find((key) => key in c)!;
-    const [left, right] = (c as Record<string, readonly [Operand, Operand]>)[op]!;
-    for (const operand of [left, right]) if (isRef(operand)) checkRef(operand.ref);
-    for (const [a, b] of [[left, right], [right, left]] as const) {
-      const outcomes = outcomesOf(a);
-      if (outcomes && !isRef(b) && (op === 'eq' || op === 'ne') && (typeof b !== 'string' || !outcomes.includes(b))) {
-        issues.push({ path, message: `${(a as { ref: string }).ref} is ${outcomes.join(' or ')}, never ${JSON.stringify(b)}` });
-      }
-      const info = fieldOf(a);
-      if (!info) continue;
-      if (op === 'eq' || op === 'ne') {
-        const problem = literalMatches(info, b);
-        if (problem) issues.push({ path, message: problem });
-      } else if (info.kind !== 'number' || (!isRef(b) && typeof b !== 'number')) {
-        issues.push({ path, message: `${op} compares numbers, and ${info.name} isn't one` });
-      }
-    }
-  };
-  visit(condition);
-}
-
-type ExpressionKind = FieldInfo['kind'] | 'null' | 'any';
-
-const KIND_WORDS: Readonly<Record<ExpressionKind, string>> = {
-  text: 'text',
-  uuid: 'an ID of a person or a record',
-  number: 'a number',
-  boolean: 'yes or no',
-  date: 'a date',
-  datetime: 'a time',
-  'text[]': 'a list of options',
-  null: 'nothing',
-  any: 'any value',
-};
-
 /**
- * Check an action's steps: what each sets or adds exists and can be set by a step; each value
- * fits its field; conditions and references are sound. A step's values refer to the record and to
- * the person, never to lines one by one.
+ * Check the app's tests: the action and the role each names, the records it makes first, and the
+ * fields its values are for. The values themselves are checked as the test runs, as any input is.
  */
-function checkSteps(
-  definition: StoredDefinition,
-  action: Action,
-  path: string,
-  fields: ReadonlyMap<string, FieldInfo>,
-  lines: ReadonlySet<string>,
-  issues: Issue[],
-): void {
-  const entity = definition.entities[action.entity]!;
-  const kindOf = (expression: Expression, at: string): ExpressionKind => {
-    if (expression === null) return 'null';
-    if (typeof expression === 'string') return 'text';
-    if (typeof expression === 'number') return 'number';
-    if (typeof expression === 'boolean') return 'boolean';
-    if (Array.isArray(expression)) return 'text[]';
-    if (typeof expression !== 'object') return 'any';
-    if ('ref' in expression) {
-      const [root, name] = expression.ref.split('.') as [string, string];
-      if (root === 'principal') return name === 'id' ? 'uuid' : 'any';
-      if (root !== 'record') {
-        issues.push({ path: at, message: `${expression.ref}: a step can refer to record and principal` });
-        return 'any';
+function checkTests(definition: StoredDefinition, issues: Issue[]): void {
+  const lines = lineOwners(definition);
+  for (const [name, test] of Object.entries(definition.tests ?? {})) {
+    const path = `tests.${name}`;
+    const values = (entity: string, given: Readonly<Record<string, unknown>>, at: string, inputs?: readonly string[]) => {
+      const known = definition.entities[entity];
+      for (const [field, value] of Object.entries(given)) {
+        if (known && field !== 'owner' && !known.fields.some((f) => f.name === field))
+          issues.push({ path: `${at}.${field}`, message: `${known.label} has no field ${field}` });
+        else if (inputs && !inputs.includes(field)) issues.push({ path: `${at}.${field}`, message: `${field} isn't one of the action's inputs` });
+        for (const ref of givenRefs(value)) if (!(ref in test.given)) issues.push({ path: `${at}.${field}`, message: `The test makes no record named ${ref}` });
       }
-      const info = fields.get(name);
-      if (info) return info.kind;
+    };
+    for (const [given, record] of Object.entries(test.given)) {
+      const at = `${path}.given.${given}`;
+      if (!definition.entities[record.entity]) issues.push({ path: `${at}.entity`, message: `No entity named ${record.entity}` });
+      else if (lines.has(record.entity))
+        issues.push({ path: `${at}.entity`, message: `${record.entity} is the lines of another entity: make that record, with its lines` });
+      else values(record.entity, record.values, `${at}.values`);
+    }
+    if (!definition.roles[test.when.as]) issues.push({ path: `${path}.when.as`, message: `No role named ${test.when.as}` });
+    const action = definition.actions[test.when.action];
+    if (!action) {
+      issues.push({ path: `${path}.when.action`, message: `No action named ${test.when.action}` });
+      continue;
+    }
+    const record = test.when.record ? test.given[test.when.record] : undefined;
+    if (action.operation === 'update' && !test.when.record)
+      issues.push({ path: `${path}.when.record`, message: `${action.label} changes a record: name one that the test makes` });
+    else if (action.operation === 'create' && test.when.record)
+      issues.push({ path: `${path}.when.record`, message: `${action.label} makes its own record: it changes none` });
+    else if (test.when.record && !record) issues.push({ path: `${path}.when.record`, message: `The test makes no record named ${test.when.record}` });
+    else if (record && record.entity !== action.entity)
       issues.push({
-        path: at,
-        message: lines.has(name) ? `${expression.ref}: a step can't use lines one by one. Add a rollup, such as a total, and use that` : `${expression.ref}: no such field`,
+        path: `${path}.when.record`,
+        message: `${test.when.record} is a record of ${record.entity}, and ${action.label} changes one of ${action.entity}`,
       });
-      return 'any';
-    }
-    if ('today' in expression) return 'date';
-    if ('now' in expression) return 'datetime';
-    const op = operatorOf(expression);
-    if (!op) return 'any';
-    const operands = op === 'round' ? [(expression as { round: readonly [Expression, number] }).round[0]] : (expression as Record<string, readonly Expression[]>)[op]!;
-    const kinds = operands.map((operand) => kindOf(operand, at));
-    if (op === 'concat') return 'text';
-    for (const kind of kinds) {
-      if (kind !== 'number' && kind !== 'null' && kind !== 'any') issues.push({ path: at, message: `${op} works on numbers, not on ${KIND_WORDS[kind]}` });
-    }
-    return 'number';
-  };
-  /** Check that a value fits the field it goes into. Literals are checked as the field would check them. */
-  const fits = (info: FieldInfo, expression: Expression, at: string, label: string): void => {
-    const kind = kindOf(expression, at);
-    const literal = expression === null || typeof expression !== 'object' || Array.isArray(expression);
-    if (literal) {
-      if (expression === null) {
-        if (info.field?.required) issues.push({ path: at, message: `${label} is required, so a step can't empty it` });
-        return;
-      }
-      const value = info.field?.type === 'number' && typeof expression === 'number' ? roundTo(expression, info.field.decimals) : expression;
-      const result = canonicalValue(info, value);
-      if (!result.ok) issues.push({ path: at, message: `${label}: ${result.issue.message}` });
-      return;
-    }
-    const fitsKind = kind === 'any' || kind === 'null' || kind === info.kind || (info.kind === 'date' && kind === 'datetime');
-    if (!fitsKind) issues.push({ path: at, message: `${label} holds ${KIND_WORDS[info.kind]}, and this gives ${KIND_WORDS[kind]}` });
-  };
-  const condition = (c: Condition, at: string) => checkCondition(c, { record: fields, lines }, at, issues);
-
-  const visit = (list: readonly (Step | SimpleStep)[], base: string): void =>
-    list.forEach((step, index) => {
-      const at = `${base}[${index}]`;
-      switch (step.type) {
-        case 'set': {
-          const info = fields.get(step.field);
-          if (lines.has(step.field)) issues.push({ path: `${at}.field`, message: `${step.field} holds lines: add one with an "add a line" step` });
-          else if (!info) issues.push({ path: `${at}.field`, message: `No field named ${step.field}` });
-          else if (!isWritable(info)) issues.push({ path: `${at}.field`, message: info.system ? `${step.field} is set by the platform` : `${step.field} is worked out from lines` });
-          else if (info.field?.type === 'file') issues.push({ path: `${at}.field`, message: 'A step can\'t set a file: take it as input' });
-          else fits(info, step.value, `${at}.value`, info.field?.label ?? step.field);
-          return;
-        }
-        case 'add_line': {
-          const linesField = entity.fields.find((f) => f.name === step.field);
-          const lineEntity = linesField?.type === 'lines' ? definition.entities[linesField.entity] : undefined;
-          if (!lineEntity) {
-            issues.push({ path: `${at}.field`, message: `${step.field} isn't a lines field of ${action.entity}` });
-            return;
-          }
-          const lineFields = entityFields(lineEntity, { line: true });
-          for (const [name, expression] of Object.entries(step.values)) {
-            const info = lineFields.get(name);
-            if (!info || info.system) issues.push({ path: `${at}.values.${name}`, message: `${lineEntity.label} has no field ${name}` });
-            else if (info.field?.type === 'file') issues.push({ path: `${at}.values.${name}`, message: 'A step can\'t set a file: take it as input' });
-            else fits(info, expression, `${at}.values.${name}`, info.field?.label ?? name);
-          }
-          for (const declared of lineEntity.fields) {
-            const defaulted = 'default' in declared && declared.default !== undefined;
-            if (declared.required && !(declared.name in step.values) && !defaulted) issues.push({ path: `${at}.values`, message: `Each line needs ${declared.label}: give it a value` });
-          }
-          return;
-        }
-        case 'check':
-          condition(step.assert, `${at}.assert`);
-          for (const field of step.fields ?? []) if (!fields.has(field)) issues.push({ path: `${at}.fields`, message: `No field named ${field}` });
-          return;
-        case 'skill':
-          for (const [name, expression] of Object.entries(step.input)) kindOf(expression, `${at}.input.${name}`);
-          return;
-        case 'if':
-          condition(step.when, `${at}.when`);
-          if (!step.then.length && !step.else.length) issues.push({ path: at, message: 'A branch needs at least one step' });
-          visit(step.then, `${at}.then`);
-          visit(step.else, `${at}.else`);
-          return;
-      }
-    });
-  visit(action.steps ?? [], `${path}.steps`);
+    values(action.entity, test.when.values, `${path}.when.values`, [...action.input]);
+    if (test.then.outcome === 'saved') values(action.entity, test.then.values, `${path}.then.values`);
+  }
 }
 
 function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   const owners = lineOwners(definition);
   const fieldsOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, entityFields(entity, { line: owners.has(name) })]));
-  const linesOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, new Set(entity.fields.filter((f) => f.type === 'lines').map((f) => f.name))]));
+  const linesOf = new Map(
+    Object.entries(definition.entities).map(([name, entity]) => [name, new Set(entity.fields.filter((f) => f.type === 'lines').map((f) => f.name))]),
+  );
   const entityAt = (name: string, path: string) => {
     const fields = fieldsOf.get(name);
     if (!fields) issues.push({ path, message: `No entity named ${name}` });
@@ -664,7 +236,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   /** A field of an entity's records, or a field of its lines named as `lines.amount`. */
   const fieldAt = (entity: string, name: string): { info?: FieldInfo; lines?: boolean } | undefined => {
     const match = LINE_PATH_PATTERN.exec(name);
-    if (!match) return linesOf.get(entity)?.has(name) ? { lines: true } : fieldsOf.get(entity)?.has(name) ? { info: fieldsOf.get(entity)!.get(name)! } : undefined;
+    if (!match)
+      return linesOf.get(entity)?.has(name) ? { lines: true } : fieldsOf.get(entity)?.has(name) ? { info: fieldsOf.get(entity)!.get(name)! } : undefined;
     const lineEntity = lineEntityOf(entity, match[1]!);
     const info = lineEntity ? entityFields(lineEntity, { line: true }).get(match[2]!) : undefined;
     return info && !info.system ? { info } : undefined;
@@ -687,7 +260,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         const target = definition.entities[field.entity];
         const owner = owners.get(field.entity);
         if (!target) issues.push({ path: `${path}.entity`, message: `No entity named ${field.entity}` });
-        else if (field.entity === name) issues.push({ path: `${path}.entity`, message: 'An entity can\'t be lines of itself' });
+        else if (field.entity === name) issues.push({ path: `${path}.entity`, message: "An entity can't be lines of itself" });
         else if (owner && (owner.parent !== name || owner.field !== field.name)) {
           issues.push({ path: `${path}.entity`, message: `${field.entity} is already the lines of ${owner.parent}.${owner.field}` });
         } else if (target.fields.some((f) => f.type === 'lines')) {
@@ -697,7 +270,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         if (field.classification === 'pii') issues.push({ path: `${path}.classification`, message: `Classify the fields of ${field.entity} instead` });
       }
       if (owners.has(name) && 'unique' in field && field.unique) {
-        issues.push({ path: `${path}.unique`, message: 'Fields of lines can\'t be unique yet' });
+        issues.push({ path: `${path}.unique`, message: "Fields of lines can't be unique yet" });
       }
       const rollup = rollupOf(field);
       if (rollup) {
@@ -712,9 +285,11 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
             issues.push({ path: `${path}.decimals`, message: `${sub} has ${source.decimals} decimal places, so the ${op} needs at least as many` });
           }
         }
-        if (field.required) issues.push({ path: `${path}.required`, message: 'A field worked out from lines always has its value: it can\'t be required' });
-        if ('default' in field && field.default !== undefined) issues.push({ path: `${path}.default`, message: 'A field worked out from lines can\'t have a default' });
-        if ('unique' in field && field.unique) issues.push({ path: `${path}.unique`, message: 'A field worked out from lines can\'t be unique' });
+        if (field.required) issues.push({ path: `${path}.required`, message: "A field worked out from lines always has its value: it can't be required" });
+        if ('default' in field && field.default !== undefined)
+          issues.push({ path: `${path}.default`, message: "A field worked out from lines can't have a default" });
+        if (formulaOf(field)) issues.push({ path: `${path}.formula`, message: 'A field is worked out from lines or by a formula, not both' });
+        if ('unique' in field && field.unique) issues.push({ path: `${path}.unique`, message: "A field worked out from lines can't be unique" });
       }
       if (field.type === 'number' && field.min !== undefined && field.max !== undefined && field.min > field.max) {
         issues.push({ path, message: 'min is greater than max' });
@@ -722,14 +297,56 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       if (field.type === 'choice' && new Set(field.options.map((o) => o.value)).size !== field.options.length) {
         issues.push({ path: `${path}.options`, message: 'Option values must be unique' });
       }
-      if ('default' in field && field.default !== undefined) {
+      // A default that is worked out as a record is written, such as today, has its shape checked already.
+      const dynamic = 'default' in field && field.default !== null && typeof field.default === 'object' && !Array.isArray(field.default);
+      if ('default' in field && field.default !== undefined && !dynamic) {
         const result = canonicalValue(fieldsOf.get(name)!.get(field.name)!, field.default);
         if (!result.ok) issues.push({ path: `${path}.default`, message: result.issue.message });
+      }
+      const formula = formulaOf(field);
+      if (formula && !rollup) {
+        checkFormula(field, formula, fieldsOf.get(name)!, linesOf.get(name)!, path, issues);
+        if (field.required || field.requiredWhen)
+          issues.push({ path: `${path}.required`, message: 'The platform works this field out, so nobody can be asked to fill it in' });
+        if ('default' in field && field.default !== undefined)
+          issues.push({ path: `${path}.default`, message: 'A field worked out by a formula has no default' });
+      }
+      if (field.requiredWhen) {
+        const at = `${path}.requiredWhen`;
+        if (field.type === 'lines') issues.push({ path: at, message: 'A lines field is required always, or not at all' });
+        else if (rollup) issues.push({ path: at, message: "A field worked out from lines always has its value: it can't be required" });
+        else if (field.required) issues.push({ path: at, message: `${field.label} is always required: leave out the condition, or make it not required` });
+        else checkCondition(field.requiredWhen, { record: fieldsOf.get(name)!, lines: linesOf.get(name)! }, at, issues);
       }
     });
     if (entity.titleField && !fieldsOf.get(name)!.has(entity.titleField)) {
       issues.push({ path: `${base}.titleField`, message: `No field named ${entity.titleField}` });
+    } else if (entity.titleField && fieldsOf.get(name)!.get(entity.titleField)?.kind === 'uuid[]') {
+      // Other records show a record by its title: a list of other records names none.
+      issues.push({ path: `${base}.titleField`, message: `${entity.titleField} holds several records, so it can't name a record` });
     }
+    // Formulas work each other out in order: a loop of them would never end.
+    const reads = new Map(
+      entity.fields.flatMap((field) => {
+        const formula = formulaOf(field);
+        return formula
+          ? [[field.name, expressionRefs(formula).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : []))] as const]
+          : [];
+      }),
+    );
+    const looping = new Set<string>();
+    const walk = (field: string, trail: readonly string[]): void => {
+      if (trail.includes(field)) {
+        if (field === trail[0]) looping.add(field);
+        return;
+      }
+      for (const next of reads.get(field) ?? []) if (reads.has(next)) walk(next, [...trail, field]);
+    };
+    for (const field of reads.keys()) walk(field, []);
+    entity.fields.forEach((field, index) => {
+      if (looping.has(field.name))
+        issues.push({ path: `${base}.fields[${index}].formula`, message: `${field.label}'s formula reads itself, through other formulas: break the loop` });
+    });
   }
 
   for (const [name, rule] of Object.entries(definition.rules)) {
@@ -751,7 +368,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     for (const field of action.input) {
       const info = fields.get(field);
       if (!info && !lines.has(field)) issues.push({ path: `${path}.input`, message: `No field named ${field}` });
-      else if (info && !isWritable(info)) issues.push({ path: `${path}.input`, message: info.system ? `${field} is set by the platform` : `${field} is worked out from lines` });
+      else if (info && !isWritable(info))
+        issues.push({ path: `${path}.input`, message: info.system ? `${field} is set by the platform` : `${field} is ${workedOutBy(info)}` });
       if (input.has(field)) issues.push({ path: `${path}.input`, message: `${field} is listed twice` });
       input.add(field);
     }
@@ -772,9 +390,15 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     checkSteps(definition, action, path, fields, lines, issues);
     if (action.operation === 'create') {
       if (action.where) issues.push({ path: `${path}.where`, message: 'Only updates apply to existing records' });
-      const stepsGive = alwaysGiven(action.steps ?? []);
+      const stepsGive = beforeGives(definition, action);
       for (const field of entity.fields) {
-        const provided = input.has(field.name) || field.name in action.set || stepsGive.has(field.name) || ('default' in field && field.default !== undefined);
+        // The platform works out a formula's value: its own check says it can't be required.
+        const provided =
+          input.has(field.name) ||
+          field.name in action.set ||
+          stepsGive.has(field.name) ||
+          ('default' in field && field.default !== undefined) ||
+          Boolean(formulaOf(field));
         if (field.required && !provided) {
           issues.push({
             path: `${path}.input`,
@@ -803,7 +427,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     for (const field of query.fields) if (!fields.has(field) && !lines.has(field)) issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
     if (query.summary) {
       if (query.fields.length) issues.push({ path: `${path}.fields`, message: 'A query that answers with numbers returns no fields' });
-      if (query.sort.length) issues.push({ path: `${path}.sort`, message: 'A query that answers with numbers is in its own order: largest first, or latest first' });
+      if (query.sort.length)
+        issues.push({ path: `${path}.sort`, message: 'A query that answers with numbers is in its own order: largest first, or latest first' });
     } else if (!query.fields.length) {
       issues.push({ path: `${path}.fields`, message: 'Name at least one field each record carries, or let the query answer with numbers' });
     }
@@ -811,7 +436,11 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     if (query.filter) checkCondition(query.filter, { record: fields, lines, input }, `${path}.filter`, issues);
     query.sort.forEach((sort, index) => {
       const info = fields.get(sort.field);
-      if (!info) issues.push({ path: `${path}.sort[${index}]`, message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}` });
+      if (!info)
+        issues.push({
+          path: `${path}.sort[${index}]`,
+          message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}`,
+        });
       else if (!isSortableKind(info.kind)) issues.push({ path: `${path}.sort[${index}]`, message: `${sort.field} can't be sorted` });
     });
   }
@@ -822,14 +451,19 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     const lines = linesOf.get(card.entity)!;
     for (const field of card.show) if (!fields.has(field) && !lines.has(field)) issues.push({ path: `cards.${name}.show`, message: `No field named ${field}` });
     for (const [, field] of card.title.matchAll(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g)) {
-      if (!fields.has(field!)) issues.push({ path: `cards.${name}.title`, message: lines.has(field!) ? `${field} holds lines: put a rollup, such as a total, in the title` : `No field named ${field}` });
+      if (!fields.has(field!))
+        issues.push({
+          path: `cards.${name}.title`,
+          message: lines.has(field!) ? `${field} holds lines: put a rollup, such as a total, in the title` : `No field named ${field}`,
+        });
     }
     if (card.table) {
       const lineEntity = lineEntityOf(card.entity, card.table.of);
       if (!lineEntity) issues.push({ path: `cards.${name}.table.of`, message: `${card.entity} has no lines field named ${card.table.of}` });
       else {
         for (const column of card.table.columns) {
-          if (!lineEntity.fields.some((f) => f.name === column)) issues.push({ path: `cards.${name}.table.columns`, message: `${card.table.of} has no field named ${column}` });
+          if (!lineEntity.fields.some((f) => f.name === column))
+            issues.push({ path: `cards.${name}.table.columns`, message: `${card.table.of} has no field named ${column}` });
         }
       }
     }
@@ -842,21 +476,26 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     const lines = linesOf.get(form.entity)!;
     const action = form.action ? definition.actions[form.action] : undefined;
     if (form.action && !action) issues.push({ path: `${path}.action`, message: `No action named ${form.action}` });
-    else if (action && action.entity !== form.entity) issues.push({ path: `${path}.action`, message: `${form.action} works on ${action.entity}, not ${form.entity}` });
+    else if (action && action.entity !== form.entity)
+      issues.push({ path: `${path}.action`, message: `${form.action} works on ${action.entity}, not ${form.entity}` });
     const placed = new Set<string>();
     form.sections.forEach((section, s) => {
       section.fields.forEach((item, f) => {
         const at = `${path}.sections[${s}].fields[${f}]`;
         const info = fields.get(item.field);
         if (!info && !lines.has(item.field)) issues.push({ path: at, message: `No field named ${item.field}` });
-        else if (info && !item.readOnly && !isWritable(info)) issues.push({ path: at, message: `${item.field} is ${info.system ? 'set by the platform' : 'worked out from lines'}: show it read-only` });
+        else if (info && !item.readOnly && !isWritable(info))
+          issues.push({ path: at, message: `${item.field} is ${info.system ? 'set by the platform' : workedOutBy(info)}: show it read-only` });
         else if (action && !item.readOnly && !action.input.includes(item.field)) {
           issues.push({ path: at, message: `${item.field} isn't an input of ${form.action}: show it read-only, or add it to the action's inputs` });
         }
         if (placed.has(item.field)) issues.push({ path: at, message: `${item.field} is on the form twice` });
         placed.add(item.field);
+        if (item.visibleWhen) checkCondition(item.visibleWhen, { record: fields, lines }, `${at}.visibleWhen`, issues);
       });
     });
+    if (form.layout === 'steps' && form.sections.length < 2)
+      issues.push({ path: `${path}.layout`, message: 'A form in steps has a step for each section: give it two sections or more' });
   }
 
   for (const [roleName, role] of Object.entries(definition.roles)) {
@@ -876,7 +515,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
             const found = fieldAt(entityName, field);
             if (!found) issues.push({ path: `${path}.${verb}.fields`, message: `No field named ${field}` });
             else if (verb !== 'read' && found.info && !isWritable(found.info)) {
-              issues.push({ path: `${path}.${verb}.fields`, message: `${field} is ${found.info.system ? 'set by the platform' : 'worked out from lines'}` });
+              issues.push({ path: `${path}.${verb}.fields`, message: `${field} is ${found.info.system ? 'set by the platform' : workedOutBy(found.info)}` });
             }
           }
         }
@@ -910,7 +549,9 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   const isDated = (info: FieldInfo) => info.kind === 'date' || info.kind === 'datetime';
   /** Fields whose values make sensible groups: choices, text, yes or no, and people. */
   const groupable = (info: FieldInfo) =>
-    info.kind === 'text' || info.kind === 'boolean' || (info.kind === 'uuid' && info.name !== 'id' && info.field?.type !== 'reference' && info.field?.type !== 'file');
+    info.kind === 'text' ||
+    info.kind === 'boolean' ||
+    (info.kind === 'uuid' && info.name !== 'id' && info.field?.type !== 'reference' && info.field?.type !== 'file');
   const OPS = { sum: 'total', avg: 'average', min: 'find the smallest of', max: 'find the largest of' } as const;
 
   /** A number or a chart: what it works out, over what, grouped how, and over which lines. */
@@ -937,7 +578,10 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       const { field, period } = block.group;
       const found = summaryField(block.entity, field);
       if (!found) {
-        issues.push({ path: `${path}.group.field`, message: lines.has(field) ? `${field} holds lines: group by a field of them, such as ${field}.category` : `No field named ${field}` });
+        issues.push({
+          path: `${path}.group.field`,
+          message: lines.has(field) ? `${field} holds lines: group by a field of them, such as ${field}.category` : `No field named ${field}`,
+        });
       } else {
         if (found.lines) over.add(found.lines);
         if (isDated(found.info) && !period) issues.push({ path: `${path}.group.period`, message: `${field} is a date: group it by periods, such as month` });
@@ -945,7 +589,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         else if (!isDated(found.info) && !groupable(found.info)) {
           issues.push({ path: `${path}.group.field`, message: `${field} can't group records: group by a choice, text, a yes or no, a person or a date` });
         }
-        if (block.show === 'line' && !period) issues.push({ path: `${path}.show`, message: 'A line shows change over time: group by periods of a date, or show bars' });
+        if (block.show === 'line' && !period)
+          issues.push({ path: `${path}.show`, message: 'A line shows change over time: group by periods of a date, or show bars' });
       }
     }
     if (block.range) {
@@ -974,23 +619,59 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     );
   }
 
+  /** The pages about one record: a link can't open one, since it needs its record. */
+  const recordPage = (name: string) => definition.pages[name]?.record !== undefined;
   for (const [name, page] of Object.entries(definition.pages ?? {})) {
     for (const role of page.roles ?? []) if (!definition.roles[role]) issues.push({ path: `pages.${name}.roles`, message: `No role named ${role}` });
-    page.blocks.forEach((block, index) => {
-      const path = `pages.${name}.blocks[${index}]`;
+    const about = page.record ? recordEntityAt(page.record.entity, `pages.${name}.record.entity`) && page.record.entity : undefined;
+    /** An update action that runs on a record in one click. */
+    const oneClick = (actionName: string, entity: string, at: string, where: string) => {
+      const action = definition.actions[actionName];
+      if (!action) issues.push({ path: at, message: `No action named ${actionName}` });
+      else if (action.entity !== entity || action.operation !== 'update')
+        issues.push({ path: at, message: `${actionName} doesn't change a ${entity} record, so it can't run on ${where}` });
+      else if (action.input.length) issues.push({ path: at, message: `${actionName} takes input, so it can't run in one click: open it from a form instead` });
+    };
+    /** `of`: a reference field of the block's entity that points at the record the page is about, or a list that may hold it. */
+    const ofField = (entity: string, field: string | undefined, at: string) => {
+      if (field === undefined) return;
+      if (!page.record) return issues.push({ path: `${at}.of`, message: 'Only a page about one record shows the records that refer to it' });
+      const declared = definition.entities[entity]?.fields.find((f) => f.name === field);
+      if (declared?.type !== 'reference' || declared.entity !== page.record.entity) {
+        issues.push({ path: `${at}.of`, message: `${field} isn't a field of ${entity} that refers to a ${page.record.entity}` });
+      }
+    };
+    for (const { block, path: where } of pageBlocks(page)) {
+      const path = `pages.${name}.${blockPlace(where)}`;
       if (block.type === 'buttons') {
         block.buttons.forEach((button, b) => {
           if ('form' in button && !definition.forms[button.form]) issues.push({ path: `${path}.buttons[${b}]`, message: `No form named ${button.form}` });
           if ('page' in button && !definition.pages[button.page]) issues.push({ path: `${path}.buttons[${b}]`, message: `No page named ${button.page}` });
+          else if ('page' in button && recordPage(button.page))
+            issues.push({ path: `${path}.buttons[${b}]`, message: `${button.page} is about one record, so a list's row opens it, not a button` });
         });
+      }
+      if (block.type === 'fields') {
+        if (!about) {
+          issues.push({ path, message: 'Only a page about one record shows its fields: say which entity the page is about' });
+          continue;
+        }
+        // A lines field shows as a table of its lines.
+        const fields = entityFields(definition.entities[about]!);
+        const lines = linesOf.get(about)!;
+        for (const field of block.fields)
+          if ((!fields.has(field) && !lines.has(field)) || field === 'version') issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
+        for (const actionName of block.actions) oneClick(actionName, about, `${path}.actions`, 'this record');
+        continue;
       }
       if (block.type === 'stat' || block.type === 'chart') {
         checkSummary(block, path);
-        return;
+        ofField(block.entity, block.of, path);
+        continue;
       }
-      if (block.type !== 'list') return;
+      if (block.type !== 'list') continue;
       const fields = recordEntityAt(block.entity, `${path}.entity`);
-      if (!fields) return;
+      if (!fields) continue;
       const lines = linesOf.get(block.entity)!;
       const shown = new Set<string>();
       for (const column of block.columns) {
@@ -1003,398 +684,62 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       if (block.filter) checkCondition(block.filter, { record: fields, lines }, `${path}.filter`, issues);
       block.sort.forEach((sort, s) => {
         const info = fields.get(sort.field);
-        if (!info) issues.push({ path: `${path}.sort[${s}]`, message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}` });
+        if (!info)
+          issues.push({
+            path: `${path}.sort[${s}]`,
+            message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}`,
+          });
         else if (!isSortableKind(info.kind)) issues.push({ path: `${path}.sort[${s}]`, message: `${sort.field} can't be sorted` });
       });
-      for (const actionName of block.actions) {
-        const action = definition.actions[actionName];
-        if (!action) issues.push({ path: `${path}.actions`, message: `No action named ${actionName}` });
-        else if (action.entity !== block.entity || action.operation !== 'update') {
-          issues.push({ path: `${path}.actions`, message: `${actionName} doesn't change a ${block.entity} record, so it can't run on a row` });
-        } else if (action.input.length) {
-          issues.push({ path: `${path}.actions`, message: `${actionName} takes input, so it can't run in one click: open it from a form instead` });
-        }
+      for (const actionName of block.actions) oneClick(actionName, block.entity, `${path}.actions`, 'a row');
+      ofField(block.entity, block.of, path);
+      if (block.open !== undefined) {
+        const opened = definition.pages[block.open];
+        if (!opened) issues.push({ path: `${path}.open`, message: `No page named ${block.open}` });
+        else if (opened.record?.entity !== block.entity)
+          issues.push({ path: `${path}.open`, message: `${block.open} isn't a page about one ${block.entity}, so a row can't open it` });
       }
-    });
+    }
   }
 
   if (definition.navigation) {
     const { home, items } = definition.navigation;
     if (home && !definition.pages[home]) issues.push({ path: 'navigation.home', message: `No page named ${home}` });
+    else if (home && recordPage(home)) issues.push({ path: 'navigation.home', message: `${home} is about one record, so the app can't open on it` });
     items.forEach((item, index) => {
       const path = `navigation.items[${index}]`;
       if ('page' in item && !definition.pages[item.page]) issues.push({ path, message: `No page named ${item.page}` });
+      else if ('page' in item && recordPage(item.page))
+        issues.push({ path, message: `${item.page} is about one record, so a list's row opens it, not the menu` });
       if ('form' in item && !definition.forms[item.form]) issues.push({ path, message: `No form named ${item.form}` });
       if ('entity' in item) recordEntityAt(item.entity, path);
     });
   }
 }
 
-/** System fields that name a person, which a user task can be assigned to. */
-const PERSON_FIELDS: readonly string[] = ['owner', 'created_by', 'updated_by'];
-
 /**
- * Check the app's processes (design §6.10): each is about records of a real entity; its flows join
- * elements that exist, in the directions BPMN 2.0 allows; each element has the flows it needs;
- * tasks name roles, actions, outcomes and cards that exist and fit; conditions read the record and
- * the tasks' outcomes; and every element can be reached from a start event.
+ * Check each flow that waits as the engine runs it: the roles, fields, actions and cards that its
+ * tasks and waits name, and how its parts join. The issues show on the steps they are about. A
+ * flow with issues of its own waits until they are fixed, so that each issue shows once.
  */
-function checkProcesses(definition: StoredDefinition, issues: Issue[]): void {
-  const owners = lineOwners(definition);
-  for (const [name, process] of Object.entries(definition.processes ?? {})) {
-    const base = `processes.${name}`;
-    const entity = definition.entities[process.entity];
-    if (!entity) {
-      issues.push({ path: `${base}.entity`, message: `No entity named ${process.entity}` });
-      continue;
-    }
-    const owner = owners.get(process.entity);
-    if (owner) {
-      issues.push({ path: `${base}.entity`, message: `${process.entity} is the lines of ${owner.parent}.${owner.field}, so it has no records of its own: use ${owner.parent}` });
-      continue;
-    }
-    const fields = entityFields(entity);
-    const lines = new Set(entity.fields.filter((field) => field.type === 'lines').map((field) => field.name));
-    const graph = processGraph(process);
-    const label = (id: string) => elementName(process, id);
-    const tasks = new Map(
-      Object.entries(process.elements).flatMap(([id, element]) => (element.type === 'userTask' ? [[id, element.outcomes.map((outcome) => outcome.name)] as const] : [])),
-    );
-    const scope = { record: fields, lines, tasks };
-
-    for (const id of Object.keys(process.flows)) {
-      if (id in process.elements) issues.push({ path: `${base}.flows.${id}`, message: `${id} is also an element's ID: elements and flows share one set of IDs` });
-    }
-    for (const [id, flow] of Object.entries(process.flows)) {
-      const path = `${base}.flows.${id}`;
-      const from = process.elements[flow.from];
-      const to = process.elements[flow.to];
-      if (!from) issues.push({ path: `${path}.from`, message: `No element ${flow.from}` });
-      if (!to) issues.push({ path: `${path}.to`, message: `No element ${flow.to}` });
-      if (!from || !to) continue;
-      if (from.type === 'endEvent') issues.push({ path: `${path}.from`, message: `${label(flow.from)} is an end event: no flow leaves it` });
-      if (to.type === 'startEvent') issues.push({ path: `${path}.to`, message: `${label(flow.to)} is a start event: no flow leads into it` });
-      if (to.type === 'boundaryEvent') issues.push({ path: `${path}.to`, message: `${label(flow.to)} sits on a task's boundary: no flow leads into it` });
-      const [fromScope, toScope] = [scopeOf(process, flow.from), scopeOf(process, flow.to)];
-      if (fromScope !== toScope) {
-        const where = (scope: string | undefined) => (scope ? `in ${label(scope)}` : 'in the process itself');
-        issues.push({ path, message: `A flow can't cross the edge of a sub-process: ${label(flow.from)} is ${where(fromScope)}, and ${label(flow.to)} is ${where(toScope)}` });
-      }
-      if (flow.outcome !== undefined) {
-        if (from.type !== 'userTask') issues.push({ path: `${path}.outcome`, message: 'Only a flow out of a user task follows an outcome' });
-        else if (!from.outcomes.some((outcome) => outcome.name === flow.outcome)) issues.push({ path: `${path}.outcome`, message: `${label(flow.from)} has no outcome ${flow.outcome}` });
-      }
-      if ((flow.when || flow.default) && from.type !== 'exclusiveGateway' && from.type !== 'inclusiveGateway') {
-        issues.push({ path, message: 'Only a flow out of an exclusive or inclusive gateway has a condition or is its default' });
-      }
-      if (flow.when && flow.default) issues.push({ path: `${path}.when`, message: "A default flow has no condition: it's taken when no other flow's condition holds" });
-      if (flow.when) checkCondition(flow.when, scope, `${path}.when`, issues);
-    }
-
-    const checkTimer = (timer: Timer, path: string) => {
-      if (!('date' in timer)) return;
-      const info = fields.get(timer.date);
-      if (!info) issues.push({ path: `${path}.timer.date`, message: `No field ${timer.date}` });
-      else if (info.kind !== 'date' && info.kind !== 'datetime') issues.push({ path: `${path}.timer.date`, message: `${timer.date} isn't a date or a time` });
-    };
-    const updateAction = (action: string, path: string) => {
-      const found = definition.actions[action];
-      if (!found) issues.push({ path, message: `No action named ${action}` });
-      else if (found.entity !== process.entity) issues.push({ path, message: `${action} works on ${found.entity}, not on ${process.entity}` });
-      else if (found.operation !== 'update') issues.push({ path, message: `${action} creates a record; here an action changes the process's own record` });
-      return found;
-    };
-    /** A message is an update action committing on the process's record. */
-    const messageAction = (action: string, path: string) => {
-      updateAction(action, path);
-    };
-    /** An action that starts the process: it may create the record or change it. */
-    const startAction = (action: string, path: string) => {
-      const found = definition.actions[action];
-      if (!found) issues.push({ path, message: `No action named ${action}` });
-      else if (found.entity !== process.entity) issues.push({ path, message: `${action} works on ${found.entity}, not on ${process.entity}` });
-      else return found;
-      return undefined;
-    };
-    let starts = 0;
-    let ends = 0;
-    const startedBy = new Map<string, string>();
-    for (const [id, element] of Object.entries(process.elements)) {
-      const path = `${base}.elements.${id}`;
-      const into = graph.incoming.get(id) ?? [];
-      const out = graph.outgoing.get(id) ?? [];
-      const oneOut = () => {
-        if (out.length !== 1) issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
-      };
-      if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !into.length) issues.push({ path, message: `No flow leads to ${label(id)}` });
-      if (element.type !== 'boundaryEvent' && element.in !== undefined) {
-        const container = process.elements[element.in];
-        if (!container) issues.push({ path: `${path}.in`, message: `No element ${element.in}` });
-        else if (container.type !== 'subProcess') issues.push({ path: `${path}.in`, message: `${label(element.in)} isn't a sub-process: only a sub-process holds other elements` });
-        else if (scopeOf(process, element.in) !== undefined && scopesOf(process, element.in).includes(id)) {
-          issues.push({ path: `${path}.in`, message: `${label(id)} would be inside itself` });
-        }
-      }
-      switch (element.type) {
-        case 'startEvent':
-          if (element.in === undefined) starts++;
-          else if (element.actions.length) issues.push({ path: `${path}.actions`, message: 'A start event inside a sub-process starts when the sub-process does: it names no actions' });
-          oneOut();
-          element.actions.forEach((action, index) => {
-            if (!startAction(action, `${path}.actions[${index}]`)) return;
-            const other = startedBy.get(action);
-            if (other) issues.push({ path: `${path}.actions[${index}]`, message: `${action} already starts this process, at ${label(other)}` });
-            startedBy.set(action, id);
-          });
-          break;
-        case 'endEvent':
-          if (element.in === undefined) ends++;
-          break;
-        case 'subProcess': {
-          const inner = startEventsOf(process, id);
-          if (inner.length !== 1) issues.push({ path, message: inner.length ? `${label(id)} starts at one start event inside it` : `${label(id)} needs a start event inside it` });
-          if (!Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id)) issues.push({ path, message: `${label(id)} needs an end event inside it` });
-          oneOut();
-          break;
-        }
-        case 'callActivity': {
-          const called = definition.processes?.[element.process];
-          if (!called) issues.push({ path: `${path}.process`, message: `No process named ${element.process}` });
-          else if (element.process === name) issues.push({ path: `${path}.process`, message: "A process can't call itself" });
-          if (element.record !== undefined) {
-            const info = fields.get(element.record);
-            const field = info?.field;
-            if (!info) issues.push({ path: `${path}.record`, message: `No field ${element.record}` });
-            else if (field?.type !== 'reference') issues.push({ path: `${path}.record`, message: `${element.record} doesn't refer to a record` });
-            else if (called && called.entity !== field.entity) {
-              issues.push({ path: `${path}.record`, message: `${element.record} refers to ${field.entity}, but ${called.label} is about ${called.entity}` });
-            }
-          } else if (called && called.entity !== process.entity) {
-            issues.push({ path: `${path}.record`, message: `${called.label} is about ${called.entity}: name the reference field whose record it runs on` });
-          }
-          if (called) {
-            const start = plainStartOf(called);
-            const at = start ? called.elements[start] : undefined;
-            if (at?.type === 'startEvent' && at.actions.length) issues.push({ path: `${path}.process`, message: `${called.label} has no start event without actions, where a call starts it` });
-          }
-          oneOut();
-          break;
-        }
-        case 'userTask': {
-          const role = definition.roles[element.role];
-          if (!role) issues.push({ path: `${path}.role`, message: `No role named ${element.role}` });
-          const person = (field: string, at: string) => {
-            const info = fields.get(field);
-            if (!info) issues.push({ path: at, message: `No field ${field}` });
-            else if (!(info.field?.type === 'user' || PERSON_FIELDS.includes(info.name))) issues.push({ path: at, message: `${info.name} doesn't name a person` });
-          };
-          if (element.assignee) {
-            if ('field' in element.assignee) person(element.assignee.field, `${path}.assignee.field`);
-            else person(element.assignee.managerOf, `${path}.assignee.managerOf`);
-          }
-          if (element.department) person(element.department.of, `${path}.department.of`);
-          if (element.several) {
-            const { people, decide } = element.several;
-            if (element.assignee) issues.push({ path: `${path}.assignee`, message: 'Several people decide this task, so it has no one assignee' });
-            if ('fields' in people) {
-              people.fields.forEach((field, index) => person(field, `${path}.several.people.fields[${index}]`));
-              if (new Set(people.fields).size !== people.fields.length) issues.push({ path: `${path}.several.people.fields`, message: 'Name each field once' });
-            }
-            if ('lineOf' in people) person(people.lineOf, `${path}.several.people.lineOf`);
-            if (!('first' in decide)) {
-              const names = element.outcomes.map((outcome) => outcome.name);
-              if (!names.includes(decide.outcome)) issues.push({ path: `${path}.several.decide.outcome`, message: `${label(id)} has no outcome ${decide.outcome}` });
-              if (!names.includes(decide.otherwise)) issues.push({ path: `${path}.several.decide.otherwise`, message: `${label(id)} has no outcome ${decide.otherwise}` });
-              if (decide.outcome === decide.otherwise) issues.push({ path: `${path}.several.decide.otherwise`, message: 'The other outcome differs from the one the votes are for' });
-              const most = 'fields' in people ? people.fields.length : 'lineOf' in people ? people.levels : undefined;
-              if (typeof decide.count === 'number' && most !== undefined && decide.count > most) {
-                issues.push({ path: `${path}.several.decide.count`, message: `${decide.count} votes are needed, but only ${most} people vote` });
-              }
-            }
-            // No one person decides, so the outcome's action runs with the app's authority, as a service task's does.
-            element.outcomes.forEach((outcome, index) => {
-              const action = outcome.action ? definition.actions[outcome.action] : undefined;
-              if (action && readsPrincipal(action)) {
-                issues.push({ path: `${path}.outcomes[${index}].action`, message: `${outcome.action} reads the person who runs it, but when several people decide, it runs with no one person` });
-              }
-            });
-          }
-          const seen = new Set<string>();
-          element.outcomes.forEach((outcome, index) => {
-            const at = `${path}.outcomes[${index}]`;
-            if (seen.has(outcome.name)) issues.push({ path: `${at}.name`, message: `Another outcome is already named ${outcome.name}` });
-            seen.add(outcome.name);
-            if (!outcome.action) return;
-            // Running an outcome's action completes the task with that outcome, so each outcome runs its own.
-            if (element.outcomes.findIndex((other) => other.action === outcome.action) !== index) {
-              issues.push({ path: `${at}.action`, message: `Another outcome already runs ${outcome.action}: each outcome runs an action of its own` });
-            }
-            const action = updateAction(outcome.action, `${at}.action`);
-            // When several people decide, the action runs with the app's authority: the role need not run it.
-            if (action && role && !element.several && !role.actions.includes(outcome.action)) {
-              issues.push({ path: `${at}.action`, message: `${role.label} can't run ${outcome.action}, so nobody who may do the task could choose ${outcome.label}` });
-            }
-          });
-          if (element.card) {
-            const card = definition.cards[element.card];
-            if (!card) issues.push({ path: `${path}.card`, message: `No card named ${element.card}` });
-            else if (card.entity !== process.entity) issues.push({ path: `${path}.card`, message: `${element.card} shows ${card.entity}, not ${process.entity}` });
-          }
-          const named = out.filter((flowId) => process.flows[flowId]!.outcome !== undefined);
-          if (named.length) {
-            if (named.length !== out.length) issues.push({ path, message: `Every flow out of ${label(id)} follows an outcome, or one flow leads on to a gateway` });
-            for (const outcome of element.outcomes) {
-              const taken = named.filter((flowId) => process.flows[flowId]!.outcome === outcome.name).length;
-              if (taken !== 1) issues.push({ path, message: taken ? `${outcome.label}: one flow follows each outcome` : `${outcome.label} leads nowhere: draw a flow for it` });
-            }
-          } else {
-            oneOut();
-          }
-          break;
-        }
-        case 'serviceTask':
-          if (Boolean(element.action) === Boolean(element.skill)) issues.push({ path, message: `${label(id)} runs an action or starts an a7c skill: one of the two` });
-          if (element.action && updateAction(element.action, `${path}.action`) && readsPrincipal(definition.actions[element.action]!)) {
-            issues.push({ path: `${path}.action`, message: `${element.action} reads the person who runs it, but a service task runs it with no person` });
-          }
-          if (element.input && !element.skill) issues.push({ path: `${path}.input`, message: 'Only a skill takes input' });
-          for (const [input, expression] of Object.entries(element.input ?? {})) {
-            for (const ref of expressionRefs(expression)) {
-              const [root, field, ...rest] = ref.split('.');
-              const ok = root === 'record' && field !== undefined && !rest.length && fields.has(field);
-              if (!ok) {
-                issues.push({
-                  path: `${path}.input.${input}`,
-                  message: root === 'record' && field && lines.has(field) ? `${ref}: a skill's input can't read lines one by one` : `${ref}: a process's skill input reads fields of the record`,
-                });
-              }
-            }
-          }
-          oneOut();
-          break;
-        case 'task':
-        case 'manualTask':
-          oneOut();
-          break;
-        case 'intermediateCatchEvent':
-          oneOut();
-          if (Boolean(element.timer) === Boolean(element.message)) issues.push({ path, message: `${label(id)} waits for a timer or a message: one of the two` });
-          if (element.timer) checkTimer(element.timer, path);
-          if (element.message) messageAction(element.message.action, `${path}.message.action`);
-          break;
-        case 'exclusiveGateway':
-        case 'inclusiveGateway': {
-          if (!out.length) issues.push({ path, message: `${label(id)} needs a flow out` });
-          const defaults = out.filter((flowId) => process.flows[flowId]!.default);
-          if (defaults.length > 1) issues.push({ path, message: `${label(id)} has one default flow at most` });
-          if (out.length > 1) {
-            for (const flowId of out) {
-              const flow = process.flows[flowId]!;
-              if (!flow.default && !flow.when) issues.push({ path: `${base}.flows.${flowId}`, message: `A flow out of ${label(id)} needs a condition, or must be its default` });
-            }
-          }
-          break;
-        }
-        case 'parallelGateway':
-          if (!out.length) issues.push({ path, message: `${label(id)} needs a flow out` });
-          break;
-        case 'boundaryEvent': {
-          const host = process.elements[element.attachedTo];
-          const kinds = [element.timer, element.message, element.error].filter(Boolean).length;
-          if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message or an error: one of the three` });
-          if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
-          else if (element.error) {
-            if (host.type !== 'serviceTask' && host.type !== 'subProcess') {
-              issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} can't catch an error: an error sits on a service task, whose action can fail, or on a sub-process, for what fails inside it` });
-            } else if (host.type === 'serviceTask' && host.skill) {
-              issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} starts an a7c skill, which runs later in a7c: an error event catches the failure of an action` });
-            }
-            if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'An error always ends what it sits on' });
-            const errors = (graph.boundaries.get(element.attachedTo) ?? []).filter((other) => {
-              const candidate = process.elements[other];
-              return candidate?.type === 'boundaryEvent' && candidate.error;
-            });
-            if (errors[0] !== id && errors.includes(id)) issues.push({ path, message: `${label(element.attachedTo)} has one error event at most` });
-          } else if (host.type !== 'userTask' && host.type !== 'subProcess' && host.type !== 'callActivity') {
-            issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} can't have a timer or a message on its boundary: they sit on a user task, a sub-process or a call activity` });
-          }
-          if (element.timer) checkTimer(element.timer, path);
-          if (element.message) {
-            const action = element.message.action;
-            messageAction(action, `${path}.message.action`);
-            if (host?.type === 'userTask' && host.outcomes.some((outcome) => outcome.action === action)) {
-              issues.push({ path: `${path}.message.action`, message: `${action} decides ${label(element.attachedTo)}, so it can't also interrupt it` });
-            }
-            if (host?.type === 'subProcess') {
-              const decides = [...insideOf(process, element.attachedTo)].find((inner) => {
-                const task = process.elements[inner];
-                return task?.type === 'userTask' && task.outcomes.some((outcome) => outcome.action === action);
-              });
-              if (decides) issues.push({ path: `${path}.message.action`, message: `${action} decides ${label(decides)} inside ${label(element.attachedTo)}, so it can't also interrupt it` });
-            }
-          }
-          oneOut();
-          break;
-        }
-      }
-    }
-    if (!starts) issues.push({ path: `${base}.elements`, message: 'A process needs a start event' });
-    if (!ends) issues.push({ path: `${base}.elements`, message: 'A process needs an end event' });
-
-    // Every element can be reached from a start event: a boundary event, once its task can; what is in a sub-process, once the sub-process can.
-    const reached = new Set<string>();
-    const queue = startEventsOf(process);
-    while (queue.length) {
-      const id = queue.pop()!;
-      if (reached.has(id)) continue;
-      reached.add(id);
-      for (const flowId of graph.outgoing.get(id) ?? []) queue.push(process.flows[flowId]!.to);
-      for (const boundary of graph.boundaries.get(id) ?? []) queue.push(boundary);
-      if (process.elements[id]?.type === 'subProcess') queue.push(...startEventsOf(process, id));
-    }
-    for (const [id, element] of Object.entries(process.elements)) {
-      const flagged = element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !(graph.incoming.get(id) ?? []).length;
-      if (!reached.has(id) && !flagged) issues.push({ path: `${base}.elements.${id}`, message: `${label(id)} can't be reached from a start event` });
-    }
-
-    for (const id of Object.keys(process.diagram?.shapes ?? {})) {
-      if (!process.elements[id]) issues.push({ path: `${base}.diagram.shapes.${id}`, message: `No element ${id}` });
-    }
-    for (const id of Object.keys(process.diagram?.edges ?? {})) {
-      if (!process.flows[id]) issues.push({ path: `${base}.diagram.edges.${id}`, message: `No flow ${id}` });
-    }
-
-  }
-  for (const [roleName, role] of Object.entries(definition.roles)) {
-    (role.processes ?? []).forEach((process, index) => {
-      if (!definition.processes?.[process]) issues.push({ path: `roles.${roleName}.processes[${index}]`, message: `No process named ${process}` });
-    });
-  }
-  checkCalls(definition, issues);
-}
-
-/** Processes that call each other in a ring would call without end: each call is refused where the ring closes. */
-function checkCalls(definition: StoredDefinition, issues: Issue[]): void {
-  const processes = definition.processes ?? {};
-  const calls = new Map(Object.entries(processes).map(([name, process]) => [name, processWork(process).calls.filter((called) => called !== name && processes[called])]));
-  const reaches = (from: string, target: string): boolean => {
-    const seen = new Set<string>();
-    const queue = [from];
-    while (queue.length) {
-      const at = queue.pop()!;
-      if (at === target) return true;
-      if (seen.has(at)) continue;
-      seen.add(at);
-      queue.push(...(calls.get(at) ?? []));
-    }
-    return false;
+function checkWaitingFlows(definition: StoredDefinition, issues: Issue[]): void {
+  if (!definition.flows) return;
+  const compiled = compileFlows(definition);
+  const flawed = new Set(issues.flatMap((issue) => /^flows\.([a-z][a-z0-9_]*)/.exec(issue.path)?.slice(1, 2) ?? []));
+  const runs: StoredDefinition = {
+    ...definition,
+    processes: { ...definition.processes, ...compiled.processes },
+    flows: { ...definition.flows, ...compiled.parts },
   };
-  for (const [name, process] of Object.entries(processes)) {
-    for (const [id, element] of Object.entries(process.elements)) {
-      if (element.type !== 'callActivity' || element.process === name || !processes[element.process]) continue;
-      if (reaches(element.process, name)) {
-        issues.push({ path: `processes.${name}.elements.${id}.process`, message: `${processes[element.process]!.label} calls ${process.label} in turn, so they would call each other without end` });
-      }
+  for (const [name, process] of Object.entries(compiled.processes)) {
+    if (definition.processes?.[name]) {
+      issues.push({ path: `flows.${name}`, message: `A process is also named ${name}, and a flow that waits runs as one: rename one of them` });
+      continue;
     }
+    if (flawed.has(name)) continue;
+    const found: Issue[] = [];
+    checkProcess(runs, name, process, found);
+    const at = compiled.at.get(name) ?? new Map<string, string>();
+    for (const issue of found) issues.push({ path: stepPathOf(name, issue.path, process, at), message: issue.message });
   }
 }

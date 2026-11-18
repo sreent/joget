@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { sha256Hex, uuidv7 } from '@platform/audit';
-import { apiTokens, serviceAccounts, users, type Database, type Executor } from '@platform/db';
+import { apiTokens, type Database, type Executor, serviceAccounts, users } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { FastifyRequest } from 'fastify';

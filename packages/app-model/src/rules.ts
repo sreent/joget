@@ -1,4 +1,4 @@
-import { evaluateCondition } from '@platform/authz';
+import { type Condition, evaluateCondition } from '@platform/authz';
 import type { StoredDefinition } from './fields.js';
 import { conditionRecord, type RecordLines, type RecordValues } from './values.js';
 
@@ -35,11 +35,38 @@ export function evaluateRules(
       const fields = (rule.fields ?? []).map((field) => (place ? `${place.field}[${place.index}].${field}` : field));
       findings.push({ rule: name, severity: rule.severity, message: rule.message, fields, ...(place ? { line: place } : {}) });
     }
+    // A field required while a condition holds is a rule of the field's own.
+    for (const field of definition.entities[entityName]?.fields ?? []) {
+      if (!field.requiredWhen || field.type === 'lines' || !evaluateCondition(field.requiredWhen, scope)) continue;
+      const value = record[field.name];
+      if (value !== undefined && value !== null && value !== '' && !(Array.isArray(value) && !value.length)) continue;
+      const at = place ? `${place.field}[${place.index}].${field.name}` : field.name;
+      findings.push({
+        rule: `fields.${field.name}`,
+        severity: 'error',
+        message: `${field.label} is required`,
+        fields: [at],
+        ...(place ? { line: place } : {}),
+      });
+    }
   };
   check(entity, values);
   for (const field of definition.entities[entity]?.fields ?? []) {
     if (field.type !== 'lines') continue;
-    (lines[field.name] ?? []).forEach((line, index) => check(field.entity, { ...line.values, ...(line.id ? { id: line.id } : {}) }, { field: field.name, index }));
+    for (const [index, line] of (lines[field.name] ?? []).entries()) {
+      check(field.entity, { ...line.values, ...(line.id ? { id: line.id } : {}) }, { field: field.name, index });
+    }
   }
   return findings.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'error' ? -1 : 1));
+}
+
+/**
+ * Whether a condition holds of a record's values as a form has them now: what screens show, hide
+ * and ask for. An empty value counts as missing, as it does in a rule.
+ */
+export function holdsOn(condition: Condition, values: Readonly<Record<string, unknown>>, principal: Readonly<Record<string, unknown>> = {}): boolean {
+  const record = Object.fromEntries(
+    Object.entries(values).filter(([, value]) => value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && !value.length)),
+  );
+  return evaluateCondition(condition, { record, principal, context: {} });
 }

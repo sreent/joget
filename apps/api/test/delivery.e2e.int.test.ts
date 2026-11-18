@@ -1,7 +1,7 @@
-import { EXPENSE_APP } from '@platform/app-model';
 import { createRequire } from 'node:module';
+import { EXPENSE_APP } from '@platform/app-model';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Governed delivery in a real browser: a builder makes a working copy of a team app and submits a
@@ -62,7 +62,9 @@ describe.skipIf(!enabled)('governed delivery, in a browser', () => {
     await t.app.listen({ host: '127.0.0.1', port: PORT });
     [alice, carol, dave, erin] = [await t.login('alice'), await t.login('carol'), await t.login('dave'), await t.login('erin')];
     const olivia = await t.login('olivia');
-    spaceId = (await t.app.inject({ method: 'POST', url: '/v1/spaces', cookies: alice.cookies, payload: { name: 'Finance', coOwnerUserIds: [olivia.userId] } })).json().id;
+    spaceId = (
+      await t.app.inject({ method: 'POST', url: '/v1/spaces', cookies: alice.cookies, payload: { name: 'Finance', coOwnerUserIds: [olivia.userId] } })
+    ).json().id;
     for (const [session, roleId] of [
       [carol, 'space.builder'],
       [dave, 'space.reviewer'],
@@ -115,7 +117,12 @@ describe.skipIf(!enabled)('governed delivery, in a browser', () => {
     const copyId = page.url().split('/apps/')[1]!.split('/')[0]!;
     // The builder drafts the app in their copy (here through the API, as their AI client would).
     const current = (await t.app.inject({ method: 'GET', url: `/v1/apps/${copyId}/definition`, cookies: carol.cookies })).json();
-    const saved = await t.app.inject({ method: 'PUT', url: `/v1/apps/${copyId}/definition`, cookies: carol.cookies, payload: { definition: EXPENSE_APP, baseRevision: current.revision } });
+    const saved = await t.app.inject({
+      method: 'PUT',
+      url: `/v1/apps/${copyId}/definition`,
+      cookies: carol.cookies,
+      payload: { definition: EXPENSE_APP, baseRevision: current.revision },
+    });
     expect(saved.statusCode, saved.body).toBe(200);
     await page.goto(`${BASE}/studio/apps/${copyId}/build/data`);
     await visible(page.getByRole('button', { name: /^Expense claim/ }).first());
@@ -198,7 +205,12 @@ describe.skipIf(!enabled)('governed delivery, in a browser', () => {
   it('rolls Prod back to the previous release', async () => {
     // A second release, through the API: a new field, reviewed, merged, released and deployed.
     const api = async (session: Session, method: 'GET' | 'POST' | 'PUT', url: string, payload?: unknown) => {
-      const response = await t.app.inject({ method, url, cookies: session.cookies, ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}) });
+      const response = await t.app.inject({
+        method,
+        url,
+        cookies: session.cookies,
+        ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}),
+      });
       expect(response.statusCode, response.body).toBeLessThan(300);
       return response.json();
     };
@@ -225,7 +237,12 @@ describe.skipIf(!enabled)('governed delivery, in a browser', () => {
   });
 
   it('moves a personal app to the team space through a change request', async () => {
-    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${carol.personalSpaceId}/apps`, cookies: carol.cookies, payload: { name: 'Travel', definition: EXPENSE_APP } });
+    const created = await t.app.inject({
+      method: 'POST',
+      url: `/v1/spaces/${carol.personalSpaceId}/apps`,
+      cookies: carol.cookies,
+      payload: { name: 'Travel', definition: EXPENSE_APP },
+    });
     const personalId = created.json().app.id as string;
     const page = await open(carol);
     await page.goto(`${BASE}/studio/apps/${personalId}/build/share`);

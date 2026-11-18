@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, useEffect, useId, useRef } from 'react';
 
 /** Small building blocks in Ocean (via the Tailwind theme in styles.css). */
 
@@ -78,8 +78,23 @@ export function Badge({ tone = 'idle', children }: { tone?: keyof typeof TONES; 
   return <span className={cx('inline-flex items-center rounded-full px-2 py-px text-xs font-semibold whitespace-nowrap', TONES[tone])}>{children}</span>;
 }
 
-export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <section className={cx('rounded-lg border border-line bg-surface p-5 shadow-card', className)}>{children}</section>;
+/** A panel. With a label, it is a region that screen readers and tests find by its name. */
+export function Card({ className, children, 'aria-label': label }: { className?: string; children: ReactNode; 'aria-label'?: string }) {
+  return (
+    <section aria-label={label} className={cx('rounded-lg border border-line bg-surface p-5 shadow-card', className)}>
+      {children}
+    </section>
+  );
+}
+
+/** Ocean's choice of views: a button for each view, the one shown pressed. */
+export function Modes({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: Ocean draws a choice of views as a group of buttons, without a fieldset's frame
+    <div className={cx('modes', className)} role="group" aria-label={label}>
+      {children}
+    </div>
+  );
 }
 
 export function Notice({ tone, children }: { tone: 'bad' | 'warn' | 'good'; children: ReactNode }) {
@@ -91,7 +106,19 @@ export function Notice({ tone, children }: { tone: 'bad' | 'warn' | 'good'; chil
 }
 
 /** A modal dialog on the platform's <dialog>, which traps focus and closes on Escape. */
-export function Dialog({ open, title, onClose, children, actions }: { open: boolean; title: string; onClose: () => void; children: ReactNode; actions: ReactNode }) {
+export function Dialog({
+  open,
+  title,
+  onClose,
+  children,
+  actions,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  actions: ReactNode;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -100,7 +127,12 @@ export function Dialog({ open, title, onClose, children, actions }: { open: bool
     if (!open && dialog.open) dialog.close();
   }, [open]);
   return (
-    <dialog ref={ref} onClose={onClose} className="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-lg border border-line bg-surface p-0 text-text shadow-raised" aria-labelledby="dialog-title">
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      className="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-lg border border-line bg-surface p-0 text-text shadow-raised"
+      aria-labelledby="dialog-title"
+    >
       <div className="grid gap-4 p-5">
         <h2 id="dialog-title" className="m-0 text-lg font-semibold">
           {title}

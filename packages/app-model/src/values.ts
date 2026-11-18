@@ -1,14 +1,14 @@
-import {
-  entityFields,
-  isWritable,
-  lineOwners,
-  rollupOf,
-  type FieldInfo,
-  type StoredDefinition,
-  type StoredEntity,
-  type StoredLinesField,
-} from './fields.js';
+import { type ExpressionValue, roundTo } from './expressions.js';
+import { entityFields, type FieldInfo, isWritable, lineOwners, rollupOf, type StoredDefinition, type StoredEntity, type StoredLinesField } from './fields.js';
+import { withFormulas } from './formulas.js';
 import { MAX_NUMBER_MAGNITUDE } from './schema.js';
+
+/** When a record is written, and by whom: what a default such as today or the person works out from. */
+export interface WriteContext {
+  readonly now?: Date | undefined;
+  /** The person who writes the record, if a person does. */
+  readonly person?: string | undefined;
+}
 
 /** A record value in its canonical JSON form (see ValueKind). `null` is an empty value. */
 export type FieldValue = string | number | boolean | readonly string[] | null;
@@ -75,6 +75,37 @@ function uuid(value: unknown): Result {
   return ok(value.toLowerCase());
 }
 
+/** Fit a worked-out value to its field: a number to the field's decimal places, as money is rounded; a time to its day. */
+export function fitValue(info: FieldInfo, raw: ExpressionValue): ExpressionValue {
+  if (info.field?.type === 'number' && typeof raw === 'number') return roundTo(raw, info.field.decimals);
+  if (info.field?.type === 'date' && typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw.slice(0, 10);
+  return raw;
+}
+
+/**
+ * A field's default, as the field holds it: a fixed value; a day so many days from today; a time so
+ * many hours from now; or the person who writes the record. Undefined when it has none, or when no
+ * person writes it.
+ */
+export function defaultValue(info: FieldInfo, at: WriteContext = {}): FieldValue | undefined {
+  const field = info.field;
+  if (!field || !('default' in field) || field.default === undefined) return undefined;
+  const given: unknown = field.default;
+  let raw = given;
+  if (given !== null && typeof given === 'object' && !Array.isArray(given)) {
+    const now = (at.now ?? new Date()).getTime();
+    if ('today' in given && typeof given.today === 'number') raw = new Date(now + given.today * 86_400_000).toISOString().slice(0, 10);
+    else if ('now' in given && typeof given.now === 'number') raw = new Date(now + given.now * 3_600_000).toISOString();
+    else if ('me' in given) raw = at.person;
+  }
+  if (raw === undefined) return undefined;
+  const result = canonicalValue(info, raw);
+  return result.ok ? result.value : undefined;
+}
+
+/** The most records one reference field can hold. */
+export const MAX_REFERENCES = 100;
+
 /** Check one value against its field, and return it in canonical form. */
 export function canonicalValue(info: FieldInfo, value: unknown): Result {
   if (value === null || value === undefined) return ok(null);
@@ -136,7 +167,19 @@ export function canonicalValue(info: FieldInfo, value: unknown): Result {
       // Canonical order is the order of the options, so equal choices always look the same.
       return ok(allowed.filter((option) => value.includes(option)));
     }
-    case 'reference':
+    case 'reference': {
+      if (!field.multiple) return uuid(value);
+      if (!Array.isArray(value)) return fail('invalid_type', 'Expected a list of IDs');
+      if (value.length > MAX_REFERENCES) return fail('too_big', `At most ${MAX_REFERENCES} records`);
+      const ids: string[] = [];
+      for (const item of value) {
+        const result = uuid(item);
+        if (!result.ok) return result;
+        // Each record once, in the order given.
+        if (!ids.includes(result.value as string)) ids.push(result.value as string);
+      }
+      return ok(ids.length ? ids : null);
+    }
     case 'user':
     case 'file':
       return uuid(value);
@@ -213,6 +256,7 @@ export function completeLines(
   field: StoredLinesField,
   input: readonly LineInput[],
   current: readonly LineValues[],
+  writing: WriteContext = {},
 ): { readonly lines: LineValues[]; readonly issues: ValueIssue[] } {
   const issues: ValueIssue[] = [];
   const fields = entityFields(lineEntity, { line: true });
@@ -229,15 +273,15 @@ export function completeLines(
     for (const declared of lineEntity.fields) {
       if (declared.name in line.values) values[declared.name] = line.values[declared.name]!;
       else if (base) values[declared.name] = base.values[declared.name] ?? null;
-      else if ('default' in declared && declared.default !== undefined) {
-        const result = canonicalValue(fields.get(declared.name)!, declared.default);
-        values[declared.name] = result.ok ? result.value : null;
-      } else values[declared.name] = null;
+      else values[declared.name] = defaultValue(fields.get(declared.name)!, writing) ?? null;
       if (declared.required && values[declared.name] === null) {
         issues.push({ field: `${at}.${declared.name}`, code: 'required', message: `${declared.label} is required` });
       }
     }
-    lines.push({ id: line.id ?? null, values });
+    // A line's formulas are worked out from its other values.
+    const worked = withFormulas(lineEntity, values, { line: true });
+    issues.push(...worked.issues.map((issue) => ({ ...issue, field: `${at}.${issue.field}` })));
+    lines.push({ id: line.id ?? null, values: worked.values });
   });
   if (field.required && lines.length === 0 && input.length === 0) {
     issues.push({ field: field.name, code: 'required', message: `${field.label}: add at least one line` });
@@ -304,8 +348,10 @@ export function checkInput(
     readonly allowed?: ReadonlySet<string>;
     /** Values set regardless of the input, for example by an action. They win over the input. */
     readonly fixed?: Readonly<Record<string, unknown>>;
-    /** Fields that get their value later, for example from an action's steps: no input is required for them. */
+    /** Fields that get their value later, for example from an action's flow before it saves: no input is required for them. */
     readonly given?: ReadonlySet<string>;
+    /** When, and by whom, for defaults such as today or the person. */
+    readonly at?: WriteContext;
   },
 ): InputCheck {
   const entity = definition.entities[entityName]!;
@@ -341,9 +387,9 @@ export function checkInput(
   for (const field of entity.fields) {
     // Lines are complete only once the record's current lines are known; rollups are worked out from them.
     if (field.type === 'lines' || rollupOf(field)) continue;
-    if (options.mode === 'create' && !(field.name in values) && 'default' in field && field.default !== undefined) {
-      const result = canonicalValue(fields.get(field.name)!, field.default);
-      if (result.ok) values[field.name] = result.value;
+    if (options.mode === 'create' && !(field.name in values)) {
+      const given = defaultValue(fields.get(field.name)!, options.at);
+      if (given !== undefined) values[field.name] = given;
     }
     const value = values[field.name];
     const emptied = field.name in values && value === null;

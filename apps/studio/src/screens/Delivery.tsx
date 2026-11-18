@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
-import { api, ApiError, needsStepUp, stepUp } from '../api.js';
+import { type ReactNode, useState } from 'react';
+import { ApiError, api, needsStepUp, stepUp } from '../api.js';
+import { TestResults } from '../components/tests.js';
 import { Badge, Button, Card, Checkbox, cx, Dialog, EmptyState, Field, Notice, TextInput } from '../components/ui.js';
 import { Link, navigate } from '../router.js';
 import type { AppSummary, ChangeRequest, Deployment, Me, PlanStep, Release } from '../types.js';
@@ -15,6 +16,11 @@ const SECTION_NAMES: Readonly<Record<string, string>> = {
   forms: 'Form',
   roles: 'Role',
   pages: 'Page',
+  processes: 'Process',
+  flows: 'Flow',
+  connections: 'Connection',
+  webhooks: 'Webhook',
+  tests: 'Test',
   navigation: 'The',
 };
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -66,7 +72,13 @@ function Section({ title, children, aside }: { title: string; children: ReactNod
 
 const STATUS_TONES = { open: 'accent', merged: 'good', closed: 'idle' } as const;
 const DEPLOYMENT_TONES = { awaiting_approval: 'warn', approved: 'accent', succeeded: 'good', failed: 'bad', cancelled: 'idle' } as const;
-const DEPLOYMENT_STATUS = { awaiting_approval: 'Waiting for approval', approved: 'Approved', succeeded: 'Done', failed: 'Failed', cancelled: 'Cancelled' } as const;
+const DEPLOYMENT_STATUS = {
+  awaiting_approval: 'Waiting for approval',
+  approved: 'Approved',
+  succeeded: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+} as const;
 
 /** Edit in my space: open the person's working copy of a team app, making it the first time. */
 export function EditInMySpace({ app }: { app: AppSummary }) {
@@ -104,8 +116,8 @@ export function TeamAppNotice({ app }: { app: AppSummary }) {
     <Notice tone="good">
       <span className="flex flex-wrap items-center justify-between gap-3">
         <span>
-          <strong>This is the team app's main line, at revision {app.revision}.</strong> It changes through change requests: edit it in your own space, then submit
-          the change for review.
+          <strong>This is the team app's main line, at revision {app.revision}.</strong> It changes through change requests: edit it in your own space, then
+          submit the change for review.
         </span>
         <EditInMySpace app={app} />
       </span>
@@ -123,7 +135,8 @@ export function WorkingCopyBar({ app, dirty }: { app: AppSummary; dirty: boolean
   const [confirmLoss, setConfirmLoss] = useState(false);
   const refresh = () => Promise.all(['app', 'definition', 'apps', 'ui'].map((key) => client.invalidateQueries({ queryKey: [key] })));
   const submit = useMutation({
-    mutationFn: () => api.submit(app.id, { ...(title.trim() ? { title: title.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}) }),
+    mutationFn: () =>
+      api.submit(app.id, { ...(title.trim() ? { title: title.trim() } : {}), ...(description.trim() ? { description: description.trim() } : {}) }),
     onSuccess: async (cr) => {
       setOpen(false);
       await refresh();
@@ -132,14 +145,15 @@ export function WorkingCopyBar({ app, dirty }: { app: AppSummary; dirty: boolean
   });
   const sync = useMutation({ mutationFn: () => api.sync(app.id, confirmLoss), onSuccess: refresh });
   const destructiveSync = sync.error instanceof ApiError && sync.error.code === 'destructive_change';
-  const conflicts = sync.error instanceof ApiError ? ((sync.error.details as { conflicts?: Array<{ section: string; name: string }> } | undefined)?.conflicts ?? []) : [];
+  const conflicts =
+    sync.error instanceof ApiError ? ((sync.error.details as { conflicts?: Array<{ section: string; name: string }> } | undefined)?.conflicts ?? []) : [];
 
   return (
     <Card className="grid gap-3 border-accent">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="m-0">
-          <strong>Your working copy</strong> of the team app{' '}
-          <Link to={{ name: 'build', appId: copy.appId, tab: 'delivery' }}>{copy.name}</Link>. Change it freely: it has sample data, never Prod data.
+          <strong>Your working copy</strong> of the team app <Link to={{ name: 'build', appId: copy.appId, tab: 'delivery' }}>{copy.name}</Link>. Change it
+          freely: it has sample data, never Prod data.
           {copy.behind ? <Badge tone="warn">The team app has newer changes</Badge> : null}
         </p>
         <div className="flex flex-wrap gap-2">
@@ -153,7 +167,12 @@ export function WorkingCopyBar({ app, dirty }: { app: AppSummary; dirty: boolean
               <Link to={{ name: 'change', changeRequestId: copy.changeRequest.id }} className="no-underline">
                 <Button tabIndex={-1}>Change request #{copy.changeRequest.number}</Button>
               </Link>
-              <Button variant="primary" onClick={() => submit.mutate()} disabled={submit.isPending || dirty} title={dirty ? 'Save your changes first' : undefined}>
+              <Button
+                variant="primary"
+                onClick={() => submit.mutate()}
+                disabled={submit.isPending || dirty}
+                title={dirty ? 'Save your changes first' : undefined}
+              >
                 {submit.isPending ? 'Updating…' : `Update #${copy.changeRequest.number}`}
               </Button>
             </>
@@ -195,13 +214,21 @@ export function WorkingCopyBar({ app, dirty }: { app: AppSummary; dirty: boolean
         }
       >
         <p className="m-0 text-sm text-muted">
-          Reviewers in the team space see what changes, who gains or loses access, and which agent tools change. They can try it in a preview. Someone other than
-          you approves it.
+          Reviewers in the team space see what changes, who gains or loses access, and which agent tools change. They can try it in a preview. Someone other
+          than you approves it.
         </p>
-        <Field label="What it does">{(id) => <TextInput id={id} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} placeholder="Record the vendor of each claim" />}</Field>
+        <Field label="What it does">
+          {(id) => <TextInput id={id} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} placeholder="Record the vendor of each claim" />}
+        </Field>
         <Field label="Why, and what to look at (optional)">
           {(id) => (
-            <textarea id={id} rows={3} className="w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <textarea
+              id={id}
+              rows={3}
+              className="w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
           )}
         </Field>
         {submit.error ? <Problem error={submit.error} /> : null}
@@ -220,7 +247,10 @@ export function ChangesPanel({ app }: { app: AppSummary }) {
       <ul className="m-0 grid list-none gap-2 p-0">
         {requests.map((cr) => (
           <li key={cr.id}>
-            <Link to={{ name: 'change', changeRequestId: cr.id }} className="flex flex-wrap items-center gap-3 rounded-md border border-line px-3 py-2 text-text no-underline hover:bg-sunken">
+            <Link
+              to={{ name: 'change', changeRequestId: cr.id }}
+              className="flex flex-wrap items-center gap-3 rounded-md border border-line px-3 py-2 text-text no-underline hover:bg-sunken"
+            >
               <span className="font-semibold">#{cr.number}</span>
               <span className="min-w-0 flex-1">{cr.title}</span>
               {cr.destructive ? <Badge tone="bad">Deletes data</Badge> : null}
@@ -248,12 +278,20 @@ export function ChangeRequestPage({ id, me }: { id: string; me: Me }) {
   };
   const review = useMutation({
     mutationFn: (verdict: 'approve' | 'request_changes' | 'comment') => api.review(id, verdict, comment.trim() || undefined),
-    onSuccess: async (next) => (setComment(''), await refresh(next)),
+    onSuccess: async (next) => {
+      setComment('');
+      await refresh(next);
+    },
   });
   const merge = useMutation({ mutationFn: () => api.merge(id), onSuccess: refresh });
   const close = useMutation({ mutationFn: () => api.closeChange(id), onSuccess: refresh });
 
-  if (cr.isError) return <Notice tone="bad">{cr.error instanceof ApiError && cr.error.status === 403 ? "You can't see this change request." : "This change request can't be opened."}</Notice>;
+  if (cr.isError)
+    return (
+      <Notice tone="bad">
+        {cr.error instanceof ApiError && cr.error.status === 403 ? "You can't see this change request." : "This change request can't be opened."}
+      </Notice>
+    );
   if (!cr.data || !team.data) return <p className="text-muted">Loading…</p>;
   const change = cr.data;
   const app = team.data;
@@ -261,7 +299,8 @@ export function ChangeRequestPage({ id, me }: { id: string; me: Me }) {
   const mine = change.author.id === me.id;
   const open = change.status === 'open';
   const { checks } = change;
-  const mergeConflicts = merge.error instanceof ApiError ? ((merge.error.details as { conflicts?: ChangeRequest['conflicts'] } | undefined)?.conflicts ?? []) : [];
+  const mergeConflicts =
+    merge.error instanceof ApiError ? ((merge.error.details as { conflicts?: ChangeRequest['conflicts'] } | undefined)?.conflicts ?? []) : [];
 
   return (
     <div className="grid gap-5">
@@ -351,9 +390,17 @@ export function ChangeRequestPage({ id, me }: { id: string; me: Me }) {
               ))}
             </ul>
           </Section>
+          {checks.tests ? (
+            <Section title="Tests">
+              <TestResults run={checks.tests} />
+              {checks.tests.failed ? <Notice tone="bad">A change whose tests fail doesn't merge. The author puts it right and submits it again.</Notice> : null}
+            </Section>
+          ) : null}
           <Section title="Data in Prod">
             <Steps steps={checks.migration.steps} empty="No change to the data model: names, labels, forms or rules only." />
-            {checks.migration.destructive ? <Notice tone="bad">This deletes data. It goes into a release of its own, and that release can't be rolled back.</Notice> : null}
+            {checks.migration.destructive ? (
+              <Notice tone="bad">This deletes data. It goes into a release of its own, and that release can't be rolled back.</Notice>
+            ) : null}
           </Section>
           {checks.lint.length || checks.validation.notes.length ? (
             <Section title="Worth a look">
@@ -392,7 +439,13 @@ export function ChangeRequestPage({ id, me }: { id: string; me: Me }) {
               <div className="grid gap-2">
                 <Field label="Comment">
                   {(fieldId) => (
-                    <textarea id={fieldId} rows={3} className="w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5" value={comment} onChange={(e) => setComment(e.target.value)} />
+                    <textarea
+                      id={fieldId}
+                      rows={3}
+                      className="w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5"
+                      value={comment}
+                      onChange={(e) => setComment(e.target.value)}
+                    />
                   )}
                 </Field>
                 <div className="flex flex-wrap gap-2">
@@ -435,7 +488,9 @@ export function ChangeRequestPage({ id, me }: { id: string; me: Me }) {
               ) : null}
             </Section>
           ) : null}
-          {change.status === 'merged' ? <Notice tone="good">Merged as revision {change.mergedRevision}. Cut a release to take it to Staging and Prod.</Notice> : null}
+          {change.status === 'merged' ? (
+            <Notice tone="good">Merged as revision {change.mergedRevision}. Cut a release to take it to Staging and Prod.</Notice>
+          ) : null}
         </div>
       </div>
     </div>
@@ -455,11 +510,22 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
   const refresh = () => Promise.all(['deployments', 'releases', 'app', 'apps', 'ui'].map((key) => client.invalidateQueries({ queryKey: [key] })));
   const delivery = app.access.delivery!;
 
-  const cut = useMutation({ mutationFn: (revision?: number) => api.cutRelease(app.id, { ...(revision ? { revision } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}) }), onSuccess: async () => (setCutting(false), setNotes(''), await refresh()) });
+  const cut = useMutation({
+    mutationFn: (revision?: number) => api.cutRelease(app.id, { ...(revision ? { revision } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}) }),
+    onSuccess: async () => {
+      setCutting(false);
+      setNotes('');
+      await refresh();
+    },
+  });
   const request = useMutation({
     mutationFn: ({ release, env, confirm }: { release: Release; env: 'staging' | 'prod'; confirm: boolean }) =>
       api.requestDeployment(app.id, { releaseId: release.id, env, confirmDestructive: confirm, execute: env === 'staging' }),
-    onSuccess: async () => (setDestructive(null), setConfirmLoss(false), await refresh()),
+    onSuccess: async () => {
+      setDestructive(null);
+      setConfirmLoss(false);
+      await refresh();
+    },
     onError: (error, { release, env }) => {
       if (error instanceof ApiError && error.code === 'destructive_change') {
         setDestructive({ release, env, steps: (error.details as { plan: { steps: PlanStep[] } }).plan.steps });
@@ -468,17 +534,30 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
   });
   const act = useMutation({
     mutationFn: ({ deployment, what }: { deployment: Deployment; what: 'approve' | 'execute' | 'cancel' }) =>
-      what === 'approve' ? api.approveDeployment(deployment.id) : what === 'execute' ? api.executeDeployment(deployment.id) : api.cancelDeployment(deployment.id),
+      what === 'approve'
+        ? api.approveDeployment(deployment.id)
+        : what === 'execute'
+          ? api.executeDeployment(deployment.id)
+          : api.cancelDeployment(deployment.id),
     onSettled: refresh,
   });
-  const rollback = useMutation({ mutationFn: (env: 'staging' | 'prod') => api.rollback(app.id, env), onSuccess: async () => (setRollingBack(null), await refresh()) });
+  const rollback = useMutation({
+    mutationFn: (env: 'staging' | 'prod') => api.rollback(app.id, env),
+    onSuccess: async () => {
+      setRollingBack(null);
+      await refresh();
+    },
+  });
 
   const environments = deployments.data?.environments ?? [];
   const all = deployments.data?.deployments ?? [];
   const waiting = all.filter((d) => d.status === 'awaiting_approval' || d.status === 'approved');
   const done = all.filter((d) => !waiting.includes(d));
   const releaseList = releases.data?.releases ?? [];
-  const cutConflict = cut.error instanceof ApiError && cut.error.code === 'destructive_change_alone' ? (cut.error.details as { suggestedRevision: number }).suggestedRevision : null;
+  const cutConflict =
+    cut.error instanceof ApiError && cut.error.code === 'destructive_change_alone'
+      ? (cut.error.details as { suggestedRevision: number }).suggestedRevision
+      : null;
 
   return (
     <div className="grid gap-5">
@@ -492,7 +571,9 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
                 {env?.release ? <Badge tone="good">Release {env.release.number} live</Badge> : <Badge>Not deployed</Badge>}
               </div>
               <p className="m-0 text-sm text-muted">
-                {kind === 'prod' ? 'Where people and their agents use the app. Deploying needs an approval and a fresh MFA sign-in.' : 'Optional: test a release against other systems’ test instances before Prod.'}
+                {kind === 'prod'
+                  ? 'Where people and their agents use the app. Deploying needs an approval and a fresh MFA sign-in.'
+                  : 'Optional: test a release against other systems’ test instances before Prod.'}
               </p>
               {env?.release ? (
                 <div className="flex flex-wrap gap-2">
@@ -527,7 +608,8 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
                   <Badge tone={DEPLOYMENT_TONES[d.status]}>{DEPLOYMENT_STATUS[d.status]}</Badge>
                   {d.destructive ? <Badge tone="bad">Deletes data</Badge> : null}
                   <span className="text-sm text-muted">
-                    {d.approvals.by.length} of {d.approvals.required} approvals{d.approvals.by.length ? ` (${d.approvals.by.map((p) => p.name).join(', ')})` : ''}
+                    {d.approvals.by.length} of {d.approvals.required} approvals
+                    {d.approvals.by.length ? ` (${d.approvals.by.map((p) => p.name).join(', ')})` : ''}
                   </span>
                 </p>
                 <Steps steps={d.plan.steps} empty="No change to the data model." />
@@ -536,7 +618,9 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
                     {note}
                   </p>
                 ))}
-                {d.authors.length ? <p className="m-0 text-xs text-faint">Holds changes by {d.authors.map((p) => p.name).join(', ')}, who can't approve it.</p> : null}
+                {d.authors.length ? (
+                  <p className="m-0 text-xs text-faint">Holds changes by {d.authors.map((p) => p.name).join(', ')}, who can't approve it.</p>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
                   {d.status === 'awaiting_approval' && delivery.approveDeploy ? (
                     <Button size="sm" variant="primary" onClick={() => act.mutate({ deployment: d, what: 'approve' })} disabled={act.isPending}>
@@ -570,7 +654,9 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
           ) : null
         }
       >
-        {releases.data && !releaseList.length ? <EmptyState title="No releases yet">Merge a change request, then cut a release from the main line.</EmptyState> : null}
+        {releases.data && !releaseList.length ? (
+          <EmptyState title="No releases yet">Merge a change request, then cut a release from the main line.</EmptyState>
+        ) : null}
         <ul className="m-0 grid list-none gap-2 p-0">
           {releaseList.map((release) => (
             <li key={release.id} className="grid gap-2 rounded-md border border-line px-3 py-2">
@@ -647,7 +733,9 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
           </>
         }
       >
-        <p className="m-0 text-sm text-muted">A release is the main line at one revision, hashed and signed. It never changes; rolling back makes an earlier one live again.</p>
+        <p className="m-0 text-sm text-muted">
+          A release is the main line at one revision, hashed and signed. It never changes; rolling back makes an earlier one live again.
+        </p>
         <Field label="Notes (optional)">{(id) => <TextInput id={id} value={notes} onChange={(e) => setNotes(e.target.value)} />}</Field>
         {cut.error ? <Problem error={cut.error} /> : null}
       </Dialog>
@@ -659,7 +747,11 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
         actions={
           <>
             <Button onClick={() => setDestructive(null)}>Cancel</Button>
-            <Button variant="danger" onClick={() => destructive && request.mutate({ release: destructive.release, env: destructive.env, confirm: true })} disabled={!confirmLoss || request.isPending}>
+            <Button
+              variant="danger"
+              onClick={() => destructive && request.mutate({ release: destructive.release, env: destructive.env, confirm: true })}
+              disabled={!confirmLoss || request.isPending}
+            >
               Ask to deploy
             </Button>
           </>
@@ -684,7 +776,9 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
           </>
         }
       >
-        <p className="m-0 text-sm">The release that ran here before becomes live again, at once. Data stays as it is: the older release ignores what the newer one added.</p>
+        <p className="m-0 text-sm">
+          The release that ran here before becomes live again, at once. Data stays as it is: the older release ignores what the newer one added.
+        </p>
         {rollback.error ? <Problem error={rollback.error} /> : null}
       </Dialog>
     </div>

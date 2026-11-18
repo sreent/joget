@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { EXPENSE_APP } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 import type { Definition } from '../types.js';
 import { normalize } from './edit.js';
 import { addItem, recordEntities, removeItem, renameItem, setRoleEntity, summarizeAccess, updateItem } from './logic.js';

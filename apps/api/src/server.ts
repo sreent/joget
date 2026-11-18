@@ -10,31 +10,41 @@ import {
   serializerCompiler,
   validatorCompiler,
 } from 'fastify-type-provider-zod';
-import { installAccessControl, requireAccessRules, type RouteAccess } from './access/enforce.js';
+import { installAccessControl, type RouteAccess, requireAccessRules } from './access/enforce.js';
 import { accessRoutes } from './access/routes.js';
-import { auditRoutes } from './audit/routes.js';
 import { agentRoutes } from './agents/routes.js';
 import { AppBuilder } from './apps/builder.js';
+import { bundleRoutes } from './apps/bundles.js';
 import { mcpRoutes } from './apps/mcp.js';
 import { proposalRoutes } from './apps/proposal-routes.js';
 import { appRoutes } from './apps/routes.js';
 import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
-import { skillRoutes } from './skills/routes.js';
-import { ProcessEngine } from './processes/engine.js';
-import { processRoutes } from './processes/routes.js';
-import { bundleRoutes } from './apps/bundles.js';
+import { auditRoutes } from './audit/routes.js';
 import { authRoutes } from './auth/routes.js';
-import { designRoutes } from './design/routes.js';
-import { studioRoutes } from './studio/routes.js';
+import { Composer, type ModelClient } from './compose/composer.js';
+import { composeRoutes } from './compose/routes.js';
 import type { AppContext } from './context.js';
-import { HttpError } from './errors.js';
-import { healthRoutes } from './health/routes.js';
-import { peopleRoutes } from './people/routes.js';
 import { deliveryRoutes } from './delivery/routes.js';
 import { Delivery } from './delivery/service.js';
+import { designRoutes } from './design/routes.js';
+import { HttpError } from './errors.js';
 import { fileRoutes } from './files/routes.js';
+import { FlowEngine } from './flows/engine.js';
+import { flowRoutes } from './flows/routes.js';
+import { FlowScheduler } from './flows/schedules.js';
+import { healthRoutes } from './health/routes.js';
+import { integrationRoutes } from './integration/routes.js';
+import { Secrets } from './integration/secrets.js';
+import { Services } from './integration/services.js';
+import { type Mailer, smtpMailer } from './notices/mail.js';
+import { noticeRoutes } from './notices/routes.js';
+import { Notices } from './notices/service.js';
+import { peopleRoutes } from './people/routes.js';
+import { ProcessEngine } from './processes/engine.js';
+import { processRoutes } from './processes/routes.js';
 import { spaceRoutes } from './spaces/routes.js';
+import { studioRoutes } from './studio/routes.js';
 import { tokenRoutes } from './tokens/routes.js';
 
 const REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -45,9 +55,22 @@ export interface Server {
   readonly routes: readonly RouteAccess[];
   /** The process engine, whose timers a worker fires. */
   readonly processes: ProcessEngine;
+  /** The flows on a schedule, which the same worker runs. */
+  readonly schedules: FlowScheduler;
+  /** Notices: the worker sends their emails, and tells people of tasks that are due. */
+  readonly notices: Notices;
+  /** The services apps call: the worker posts their notices to Teams. */
+  readonly services: Services;
 }
 
-export async function buildServer(ctx: AppContext, options: { logger?: FastifyServerOptions['logger'] } = {}): Promise<Server> {
+export async function buildServer(
+  ctx: AppContext,
+  options: {
+    logger?: FastifyServerOptions['logger'];
+    models?: ModelClient /** For tests: what keeps the email instead of sending it. */;
+    mailer?: Mailer;
+  } = {},
+): Promise<Server> {
   const app = Fastify({
     logger: options.logger ?? {
       level: ctx.config.LOG_LEVEL,
@@ -77,7 +100,11 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   });
   await app.register(swagger, {
     openapi: {
-      info: { title: 'Ambit API', version: '0.1.0', description: 'Governance kernel and capability core: identity, spaces, roles and permission sets, apps, records, actions, queries, proposals, audit.' },
+      info: {
+        title: 'Ambit API',
+        version: '0.1.0',
+        description: 'Governance kernel and capability core: identity, spaces, roles and permission sets, apps, records, actions, queries, proposals, audit.',
+      },
       components: {
         securitySchemes: {
           session: { type: 'apiKey', in: 'cookie', name: ctx.config.SESSION_COOKIE_NAME },
@@ -131,27 +158,31 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(tokenRoutes(ctx));
   const builder = new AppBuilder(ctx);
   const runtime = new AppRuntime(ctx);
-  const processes = new ProcessEngine(ctx, runtime);
+  const notices = new Notices(ctx, options.mailer ?? (ctx.config.SMTP_URL ? smtpMailer(ctx.config) : null));
+  const secrets = new Secrets(ctx);
+  const services = new Services(ctx, secrets);
+  const flows = new FlowEngine(ctx, runtime, notices, services);
+  const processes = new ProcessEngine(ctx, runtime, flows, notices);
+  const schedules = new FlowScheduler(ctx, flows);
   await app.register(appRoutes(ctx, builder, runtime));
   await app.register(runtimeRoutes(ctx, runtime));
-  await app.register(skillRoutes(ctx, runtime));
-  await app.register(processRoutes(ctx, runtime, processes, builder));
+  await app.register(processRoutes(ctx, runtime, processes));
+  await app.register(flowRoutes(ctx, runtime, flows));
+  await app.register(noticeRoutes(notices));
+  await app.register(integrationRoutes(ctx, flows, secrets));
   await app.register(proposalRoutes(ctx, runtime));
   const delivery = new Delivery(ctx, builder, runtime);
   await app.register(deliveryRoutes(ctx, delivery, runtime));
   await app.register(bundleRoutes(ctx, builder, delivery, runtime));
   await app.register(mcpRoutes(ctx, builder, runtime, delivery, processes));
+  await app.register(composeRoutes(ctx, new Composer(ctx.config, options.models)));
   await app.register(designRoutes());
   await app.register(agentRoutes(ctx));
   await app.register(peopleRoutes(ctx));
   await app.register(fileRoutes(ctx, runtime));
   await app.register(studioRoutes());
-  app.get(
-    '/openapi.json',
-    { config: { access: { kind: 'authenticated' } }, schema: { hide: true } },
-    async () => app.swagger(),
-  );
+  app.get('/openapi.json', { config: { access: { kind: 'authenticated' } }, schema: { hide: true } }, async () => app.swagger());
 
   await app.ready();
-  return { app, routes, processes };
+  return { app, routes, processes, schedules, notices, services };
 }

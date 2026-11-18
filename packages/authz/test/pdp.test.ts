@@ -1,22 +1,22 @@
-import { describe, expect, it } from 'vitest';
 import {
   authorize,
+  type Binding,
   createPolicy,
   effectiveGrants,
   findEscalation,
   findSodConflicts,
   MANAGED_GUARDRAILS,
-  mergePolicies,
   MANAGED_PERMISSION_SETS,
   MANAGED_ROLES,
   MANAGED_SOD_RULES,
-  PolicyError,
-  spaceScopes,
+  mergePolicies,
   orgScopes,
-  type Binding,
+  PolicyError,
   type Principal,
   type Resource,
+  spaceScopes,
 } from '@platform/authz';
+import { describe, expect, it } from 'vitest';
 
 const ORG = 'org-1';
 const TEAM = 'space-team';
@@ -88,7 +88,12 @@ describe('authorize', () => {
   it('ignores bindings for other scopes and other principals', () => {
     const otherSpace = binding({ principalId: 'alice', roleId: 'space.owner', scope: { type: 'space', id: 'elsewhere' } });
     const otherUser = binding({ principalId: 'bob', roleId: 'space.owner', scope: { type: 'space', id: TEAM } });
-    const serviceAccountWithSameId = binding({ principalType: 'service_account', principalId: 'alice', roleId: 'space.owner', scope: { type: 'space', id: TEAM } });
+    const serviceAccountWithSameId = binding({
+      principalType: 'service_account',
+      principalId: 'alice',
+      roleId: 'space.owner',
+      scope: { type: 'space', id: TEAM },
+    });
     const decision = authorize(policy, {
       principal: alice,
       action: 'space.read',
@@ -149,7 +154,14 @@ describe('guardrails', () => {
     const unknown = authorize(policy, { principal: alice, action: 'change.approve', resource: teamSpace, bindings: [owner], now });
     expect(unknown.allowed).toBe(false);
 
-    const someoneElses = authorize(policy, { principal: alice, action: 'change.approve', resource: teamSpace, context: { authorId: 'bob' }, bindings: [owner], now });
+    const someoneElses = authorize(policy, {
+      principal: alice,
+      action: 'change.approve',
+      resource: teamSpace,
+      context: { authorId: 'bob' },
+      bindings: [owner],
+      now,
+    });
     expect(someoneElses.allowed).toBe(true);
   });
 
@@ -176,7 +188,9 @@ describe('guardrails', () => {
       roles: MANAGED_ROLES,
       guardrails: MANAGED_GUARDRAILS.map((g) => ({ ...g, enabled: false })),
     });
-    expect(authorize(relaxed, { principal: alice, action: 'change.approve', resource: teamSpace, context: { authorId: 'alice' }, bindings: [owner], now }).allowed).toBe(true);
+    expect(
+      authorize(relaxed, { principal: alice, action: 'change.approve', resource: teamSpace, context: { authorId: 'alice' }, bindings: [owner], now }).allowed,
+    ).toBe(true);
   });
 });
 
@@ -192,7 +206,9 @@ describe('createPolicy', () => {
   });
 
   it('rejects invalid permission patterns and conditions', () => {
-    expect(() => createPolicy({ permissionSets: [{ id: 'ps', name: 'PS', scopeType: 'org', grants: [{ permission: 'App.Edit' }] }], roles: [] })).toThrow(PolicyError);
+    expect(() => createPolicy({ permissionSets: [{ id: 'ps', name: 'PS', scopeType: 'org', grants: [{ permission: 'App.Edit' }] }], roles: [] })).toThrow(
+      PolicyError,
+    );
     expect(() =>
       createPolicy({
         permissionSets: [{ id: 'ps', name: 'PS', scopeType: 'org', grants: [{ permission: 'app.edit', condition: { eq: [1] } as never }] }],
@@ -251,7 +267,10 @@ describe('privilege escalation', () => {
     // A builder may try changes in previews: they can pass that on, but not record access everywhere.
     const builder = binding({ principalId: 'alice', roleId: 'space.builder', scope: { type: 'space', id: TEAM } });
     expect(findEscalation(policy, alice, teamSpace.scopes, [builder], { permissionSetId: 'ps.space.preview' }, now)).toEqual([]);
-    const wider = createPolicy({ permissionSets: [{ id: 'ps.records', name: 'Records', scopeType: 'space', grants: [{ permission: 'record.read' }] }], roles: [] });
+    const wider = createPolicy({
+      permissionSets: [{ id: 'ps.records', name: 'Records', scopeType: 'space', grants: [{ permission: 'record.read' }] }],
+      roles: [],
+    });
     expect(findEscalation(mergePolicies(policy, wider), alice, teamSpace.scopes, [builder], { permissionSetId: 'ps.records' }, now)).toEqual(['record.read']);
   });
 });

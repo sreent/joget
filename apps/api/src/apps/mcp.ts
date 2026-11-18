@@ -1,4 +1,4 @@
-import { EXPENSE_APP, skillSteps, TEMPLATES, type StoredDefinition, type StoredField } from '@platform/app-model';
+import { applyEdits, DefinitionEdits, MAX_EDITS, runnable, type StoredDefinition, type StoredField, TEMPLATES } from '@platform/app-model';
 import { spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -8,13 +8,15 @@ import { checkPermission } from '../access/check.js';
 import { spaceResource } from '../access/resources.js';
 import { requireAuth } from '../access/rules.js';
 import type { AppContext, AuthContext } from '../context.js';
-import { HttpError, notFound, unprocessable } from '../errors.js';
-import { changeRequestRequired, type AppBuilder } from './builder.js';
-import { isTeamApp, type LoadedApp } from './catalog.js';
 import type { Delivery } from '../delivery/service.js';
+import { HttpError, notFound, unprocessable } from '../errors.js';
+import { opsTools } from '../ops/tools.js';
 import type { ProcessEngine } from '../processes/engine.js';
+import { type AppBuilder, changeRequestRequired } from './builder.js';
+import { isTeamApp, type LoadedApp } from './catalog.js';
+import { definitionGuide } from './guide.js';
 import { appResource } from './resources.js';
-import { definitionJsonSchema, describeApp, isNotLive, visibleApps } from './routes.js';
+import { describeApp, isNotLive, visibleApps } from './routes.js';
 import type { AppRuntime } from './runtime.js';
 
 /**
@@ -30,7 +32,7 @@ import type { AppRuntime } from './runtime.js';
 
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 
-interface Tool {
+export interface Tool {
   readonly name: string;
   readonly title: string;
   readonly description: string;
@@ -77,7 +79,16 @@ function fieldSchema(field: StoredField, definition: StoredDefinition, operation
         : { ...about, type: 'string', enum: values, description: `One of: ${labels}` };
     }
     case 'reference':
-      return { ...about, type: 'string', format: 'uuid', description: `The ID of a ${field.entity} record` };
+      return field.multiple
+        ? {
+            ...about,
+            type: 'array',
+            items: { type: 'string', format: 'uuid' },
+            uniqueItems: true,
+            maxItems: 100,
+            description: `The IDs of ${field.entity} records, in order`,
+          }
+        : { ...about, type: 'string', format: 'uuid', description: `The ID of a ${field.entity} record` };
     case 'user':
       return { ...about, type: 'string', format: 'uuid', description: "A person's ID" };
     case 'file':
@@ -90,7 +101,11 @@ function fieldSchema(field: StoredField, definition: StoredDefinition, operation
     case 'lines': {
       const lineEntity = definition.entities[field.entity]!;
       const properties: Record<string, unknown> = {
-        id: { type: 'string', format: 'uuid', description: 'Leave it out for a new line. To change a line the record has, give its ID and the values to change.' },
+        id: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Leave it out for a new line. To change a line the record has, give its ID and the values to change.',
+        },
       };
       const required: string[] = [];
       for (const f of lineEntity.fields) {
@@ -117,8 +132,18 @@ const PROVENANCE_SCHEMA = {
     'Where each value came from, by field name; for a value in a line, by its place, such as lines[0].amount. Say it for every value you did not get from the person: it is shown to them and to approvers.',
   additionalProperties: {
     oneOf: [
-      { type: 'object', properties: { source: { const: 'document' }, document: { type: 'string' }, location: { type: 'string' } }, required: ['source'], additionalProperties: false },
-      { type: 'object', properties: { source: { const: 'agent' }, note: { type: 'string', description: 'How you inferred it' } }, required: ['source'], additionalProperties: false },
+      {
+        type: 'object',
+        properties: { source: { const: 'document' }, document: { type: 'string' }, location: { type: 'string' } },
+        required: ['source'],
+        additionalProperties: false,
+      },
+      {
+        type: 'object',
+        properties: { source: { const: 'agent' }, note: { type: 'string', description: 'How you inferred it' } },
+        required: ['source'],
+        additionalProperties: false,
+      },
       { type: 'object', properties: { source: { const: 'person' } }, required: ['source'], additionalProperties: false },
     ],
   },
@@ -133,7 +158,12 @@ function toolName(handle: string, name: string, taken: Set<string>, appId: strin
 
 /** The tools an agent acting as this caller may use: every action and query they are allowed to run. */
 /** The tools of the apps the person may use, and whether any of those apps has a business process. */
-async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext): Promise<{ tools: Tool[]; processes: boolean }> {
+async function capabilityTools(
+  ctx: AppContext,
+  runtime: AppRuntime,
+  request: FastifyRequest,
+  auth: AuthContext,
+): Promise<{ tools: Tool[]; processes: boolean }> {
   const tools: Tool[] = [];
   const taken = new Set<string>();
   let processes = false;
@@ -145,11 +175,11 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
       throw error;
     });
     if (!loaded) continue;
-    if (Object.keys(loaded.definition.processes ?? {}).length) processes = true;
+    if (Object.keys(runnable(loaded.definition).processes ?? {}).length) processes = true;
     const policy = await runtime.policy(loaded);
     const allowed = async (kind: 'action' | 'query', name: string) =>
       (await ctx.policy.authorize(auth.principal, `${kind}.run`, runtime.capability(loaded, kind, name), undefined, policy)).allowed;
-    for (const [name, action] of Object.entries(loaded.definition.actions)) {
+    for (const name of Object.keys(loaded.definition.actions)) {
       if (!(await allowed('action', name))) continue;
       tools.push(actionTool(ctx, runtime, request, auth, loaded, name, toolName(loaded.app.handle, name, taken, loaded.app.id)));
     }
@@ -158,7 +188,9 @@ async function capabilityTools(ctx: AppContext, runtime: AppRuntime, request: Fa
       const params = Object.fromEntries(
         Object.entries(query.parameters).map(([param, spec]) => [param, { type: spec.type === 'text' ? 'string' : spec.type, description: spec.description }]),
       );
-      const required = Object.entries(query.parameters).filter(([, spec]) => spec.required).map(([param]) => param);
+      const required = Object.entries(query.parameters)
+        .filter(([, spec]) => spec.required)
+        .map(([param]) => param);
       if (query.summary) {
         const grouped = query.summary.group !== undefined;
         tools.push({
@@ -242,7 +274,9 @@ function taskTools(engine: ProcessEngine, request: FastifyRequest, auth: AuthCon
       },
       summarize: (result) => {
         const done = result as { task: { name: string; status: string }; result: { status: string } | null };
-        return done.result?.status === 'needs_confirmation' ? `${done.task.name} waits until the person approves the proposal.` : `${done.task.name} is ${done.task.status}.`;
+        return done.result?.status === 'needs_confirmation'
+          ? `${done.task.name} waits until the person approves the proposal.`
+          : `${done.task.name} is ${done.task.status}.`;
       },
     },
   ];
@@ -266,13 +300,10 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
     action.confirm === 'none'
       ? 'It runs straight away.'
       : `The person must confirm it before it commits (${action.confirm}): the call returns a proposal with a review link to give them.`;
-  // Work in other systems is part of what the tool does, so an agent knows of it before it calls.
-  const skills = [...new Set(skillSteps(action.steps ?? []).map(({ step }) => step.label))];
-  const then = skills.length ? ` Once saved, it starts work in other systems: ${skills.join('; ')}.` : '';
   return {
     name: tool,
     title: action.label,
-    description: `${action.description} (App: ${loaded.app.name}. ${confirm}${then} Use dry_run to see the review card and any rule findings first.)`,
+    description: `${action.description} (App: ${loaded.app.name}. ${confirm} Use dry_run to see the review card and any rule findings first.)`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -293,7 +324,12 @@ function actionTool(ctx: AppContext, runtime: AppRuntime, request: FastifyReques
         ...(args['dry_run'] === true ? { dryRun: true } : {}),
       }),
     summarize: (result) => {
-      const r = result as { status: string; proposal?: { reviewUrl: string; expiresAt: string }; findings?: Array<{ message: string }>; record?: { id: string } };
+      const r = result as {
+        status: string;
+        proposal?: { reviewUrl: string; expiresAt: string };
+        findings?: Array<{ message: string }>;
+        record?: { id: string };
+      };
       if (r.status === 'needs_confirmation') {
         return `Waiting for the person to confirm. Give them this link to review and approve it: ${r.proposal!.reviewUrl} (it expires ${r.proposal!.expiresAt}).`;
       }
@@ -330,21 +366,7 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
         'The JSON Schema of app definitions, a complete example (an expense-claim app), and notes on conditions. Read it before writing a definition.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true },
-      run: async () => ({
-        schema: definitionJsonSchema(),
-        example: EXPENSE_APP,
-        notes: [
-          'Conditions are JSON: {"eq": [a, b]}, "ne", "lt", "lte", "gt", "gte", {"in": [needle, [list]]}, {"exists": "record.field"}, {"all": [...]}, {"any": [...]}, {"not": c}. Operands are literals or {"ref": "record.<field>" | "principal.id" | "input.<parameter>"}.',
-          'An empty field is missing: it never equals anything. Test for emptiness with exists.',
-          'Entities and fields get stable IDs when first saved. Keep them when you edit a definition: a field that keeps its ID under a new name is a rename, and renames carry through to every reference.',
-          'Actions need a description written for agents, and a confirmation level: none, preview or review.',
-          'Processes are BPMN 2.0, each about one record of an entity. Elements go by ID: a startEvent names the actions that start it; a userTask names the role that may do it, its outcomes and the action each runs; a serviceTask runs an update action, with no person; exclusiveGateway, parallelGateway, intermediateCatchEvent and boundaryEvent (with a timer: an ISO 8601 duration or a date field) and endEvent. Flows join elements: a flow out of a user task names an outcome, and one out of an exclusive gateway has a condition or is its default. Conditions read record.<field> and tasks.<task>.outcome. The leave template has a process to start from.',
-          'Pages lay out lists of records, text and buttons for people in screens, and navigation is the menu. Neither protects data: roles do, and each person sees only what their role can use.',
-          'An action can have steps, which run after its input and its set values, in order: {"type": "set", "field", "value"}, {"type": "add_line", "field": "<lines field>", "values": {...}}, {"type": "check", "assert": <condition>, "message", "severity": "error" | "warning"}, {"type": "if", "when": <condition>, "then": [...], "else": [...]} (one level deep), and {"type": "skill", "label", "skill": "<project>/<skill>", "input": {...}} to start an a7c skill once the change is saved.',
-          ctx.config.A7C_URL ? 'This installation connects a7c, so actions may start a7c skills.' : "This installation doesn't connect a7c: leave skill steps out, or the definition is refused.",
-          'Step values are expressions: a literal, {"ref": "record.<field>" | "principal.id"}, {"today": true}, {"now": true}, {"add": [a, b, ...]}, {"sub": [a, b]}, {"mul": [a, b, ...]}, {"div": [a, b]}, {"round": [a, digits]} or {"concat": [a, b, ...]}. A number is rounded to its field\'s decimal places. Steps set only fields the person running the action may write.',
-        ],
-      }),
+      run: async () => definitionGuide(),
     },
     {
       name: 'list_apps',
@@ -372,7 +394,10 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
       },
       run: async (args) => {
         if (auth.actor.type !== 'user') throw new HttpError(403, 'person_required', 'Only people have personal spaces');
-        const [space] = await ctx.db.select().from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
+        const [space] = await ctx.db
+          .select()
+          .from(spaces)
+          .where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)));
         if (!space) throw notFound('Personal space');
         await checkPermission(ctx, request, auth, 'app.create', spaceResource(ctx.org.id, space));
         const template = typeof args['template'] === 'string' ? TEMPLATES.find((t) => t.id === args['template']) : undefined;
@@ -402,7 +427,8 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
     {
       name: 'plan_change',
       title: 'Check a change',
-      description: 'Validate a new definition and see what saving it would do (the migration steps, and how many records each destructive step touches), without saving.',
+      description:
+        'Validate a new definition and see what saving it would do (the migration steps, and how many records each destructive step touches), without saving.',
       inputSchema: { type: 'object', properties: { ...appId, ...definition }, required: ['app_id', 'definition'], additionalProperties: false },
       annotations: { readOnlyHint: true },
       run: async (args) => ({ plan: (await builder.plan(await sandbox(args), args['definition'])).plan }),
@@ -425,6 +451,77 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
           confirmDestructive: false,
         });
         return { plan };
+      },
+    },
+    {
+      name: 'edit_definition',
+      title: 'Change a definition with small edits',
+      description:
+        "Change an app's definition with JSON Patch edits: add, replace or remove a value at a JSON pointer, such as /entities/claim/fields/- for a new last field. They apply in order to the current definition, all or none, so you needn't send all of it. Without apply, the edits are only checked: the problems the checks find, or what saving would do. With apply, they are saved to the app's sandbox, as apply_change saves.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...appId,
+          edits: {
+            type: 'array',
+            minItems: 1,
+            maxItems: MAX_EDITS,
+            items: {
+              type: 'object',
+              properties: {
+                op: { enum: ['add', 'replace', 'remove'] },
+                path: { type: 'string', description: 'A JSON pointer' },
+                value: { description: 'The value, for add and replace' },
+              },
+              required: ['op', 'path'],
+              additionalProperties: false,
+            },
+          },
+          apply: { type: 'boolean', description: 'Save the edits to the sandbox; without it, only check them' },
+          base_revision: { type: 'integer', description: 'The revision you edited, from get_definition' },
+        },
+        required: ['app_id', 'edits'],
+        additionalProperties: false,
+      },
+      run: async (args) => {
+        const loaded = await sandbox(args);
+        const edits = DefinitionEdits.safeParse(args['edits']);
+        if (!edits.success) throw new HttpError(400, 'invalid_arguments', 'edits are add, replace or remove edits, each with a JSON pointer path');
+        const result = applyEdits(loaded.definition, edits.data);
+        if (!result.ok) throw unprocessable('edit_failed', `Nothing changed: edit ${result.index + 1} failed: ${result.message}`);
+        if (args['apply'] !== true) return { plan: (await builder.plan(loaded, result.definition)).plan };
+        const plan = await builder.save(request, auth, loaded, result.definition, {
+          ...(typeof args['base_revision'] === 'number' ? { baseRevision: args['base_revision'] } : {}),
+          confirmDestructive: false,
+        });
+        return { plan };
+      },
+    },
+    {
+      name: 'run_tests',
+      title: "Run an app's tests",
+      description:
+        "Run the tests in an app's saved definition (its tests section, see describe_format) in its sandbox: a personal app or a working copy. Each test makes its records, has someone in a role run an action, and checks what comes of it, in a transaction that is undone. Every change request runs them too, and a test that fails stops the merge.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...appId,
+          only: { type: 'array', items: { type: 'string' }, maxItems: 100, description: 'The names of the tests to run; all of them without it' },
+        },
+        required: ['app_id'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true },
+      run: async (args) => {
+        const only = args['only'];
+        if (only !== undefined && !(Array.isArray(only) && only.every((name) => typeof name === 'string')))
+          throw new HttpError(400, 'invalid_arguments', 'only is a list of test names');
+        const results = await runtime.runTests(request, await sandbox(args), only);
+        return { passed: results.filter((result) => result.passed).length, failed: results.filter((result) => !result.passed).length, results };
+      },
+      summarize: (result) => {
+        const counts = z.object({ passed: z.number(), failed: z.number() }).safeParse(result);
+        return counts.success ? `${counts.data.passed} passed, ${counts.data.failed} failed.` : '';
       },
     },
     {
@@ -467,7 +564,6 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
 }
 
 function serve(
-  ctx: AppContext,
   path: string,
   server: { name: string; instructions: string },
   tools: (request: FastifyRequest, auth: AuthContext) => Promise<Tool[]>,
@@ -502,7 +598,15 @@ function serve(
           return {
             jsonrpc: '2.0',
             id,
-            result: { tools: list.map(({ name, title, description, inputSchema, annotations }) => ({ name, title, description, inputSchema, ...(annotations ? { annotations } : {}) })) },
+            result: {
+              tools: list.map(({ name, title, description, inputSchema, annotations }) => ({
+                name,
+                title,
+                description,
+                inputSchema,
+                ...(annotations ? { annotations } : {}),
+              })),
+            },
           };
         }
         case 'tools/call': {
@@ -528,7 +632,11 @@ function serve(
             return {
               jsonrpc: '2.0',
               id,
-              result: { isError: true, content: [{ type: 'text', text: `${error.code}: ${error.message}${details}` }], structuredContent: { error: error.code, message: error.message, details: error.details ?? null } },
+              result: {
+                isError: true,
+                content: [{ type: 'text', text: `${error.code}: ${error.message}${details}` }],
+                structuredContent: { error: error.code, message: error.message, details: error.details ?? null },
+              },
             };
           }
         }
@@ -537,7 +645,10 @@ function serve(
       }
     });
     app.get(path, { config: { access: { kind: 'authenticated' } }, schema: { hide: true } }, async (_request, reply) =>
-      reply.status(405).header('allow', 'POST').send({ error: 'method_not_allowed', message: 'This server answers each request directly and offers no event stream' }),
+      reply
+        .status(405)
+        .header('allow', 'POST')
+        .send({ error: 'method_not_allowed', message: 'This server answers each request directly and offers no event stream' }),
     );
   };
 }
@@ -546,7 +657,6 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
   return async (app) => {
     await app.register(
       serve(
-        ctx,
         '/mcp',
         {
           name: 'ambit',
@@ -561,14 +671,24 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
     );
     await app.register(
       serve(
-        ctx,
         '/mcp/build',
         {
           name: 'ambit-builder',
           instructions:
-            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change. Changes apply at once to the person's sandbox; anything that deletes data waits for them. A team app changes through change requests: start_working_copy, change the copy, then submit_change for review.",
+            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change, and run_tests to run the app's tests. Changes apply at once to the person's sandbox; anything that deletes data waits for them. A team app changes through change requests: start_working_copy, change the copy, then submit_change for review.",
         },
         async (request, auth) => builderTools(ctx, builder, runtime, delivery, request, auth),
+      ),
+    );
+    await app.register(
+      serve(
+        '/mcp/ops',
+        {
+          name: 'ambit-ops',
+          instructions:
+            "Operate apps within the caller's operator permissions: watch process instances, try stuck work again, cancel an instance, throw a signal, and give a task to someone else. Start with list_apps. Cancelling ends an instance for good: confirm with the person first. Deciding tasks, approving and deleting data are not here: they stay with people.",
+        },
+        async (request, auth) => opsTools(ctx, runtime, processes, request, auth),
       ),
     );
   };

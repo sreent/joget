@@ -1,3 +1,4 @@
+import type { Expression } from './expressions.js';
 import type { AppDefinition, Entity, Field, SystemField } from './schema.js';
 
 /** A field with its stable ID, as stored once the platform has assigned IDs. */
@@ -19,6 +20,21 @@ export function linesFieldsOf(entity: StoredEntity): StoredLinesField[] {
 /** A field computed from lines, if it is one. */
 export function rollupOf(field: Field): Extract<Field, { type: 'number' }>['rollup'] {
   return field.type === 'number' ? field.rollup : undefined;
+}
+
+/** A field's formula, if the platform works it out from the record's other fields. */
+export function formulaOf(field: Field): Expression | undefined {
+  return 'formula' in field ? field.formula : undefined;
+}
+
+/** How the platform works a field out, in words: from lines, or by a formula. */
+export function workedOutBy(info: Pick<FieldInfo, 'field'>): string {
+  return info.field && formulaOf(info.field) ? 'worked out by a formula' : 'worked out from lines';
+}
+
+/** Whether the platform works a field out, from lines or by a formula: people and agents can't set it. */
+export function isComputed(field: Field): boolean {
+  return Boolean(rollupOf(field) || formulaOf(field));
 }
 
 /** Where a line entity belongs: the entity whose lines it holds, and the lines field. */
@@ -44,10 +60,16 @@ export function lineOwners(definition: { readonly entities: Readonly<Record<stri
 /**
  * How a value is represented, in JSON and in conditions:
  * `text` and `uuid` are strings, `date` is `YYYY-MM-DD`, `datetime` is an ISO 8601 UTC timestamp
- * with milliseconds, and `text[]` is a non-empty list of strings. An empty value is `null` in
- * JSON and counts as missing in conditions.
+ * with milliseconds, `text[]` is a non-empty list of strings, and `uuid[]` a non-empty list of
+ * IDs, each once. An empty value is `null` in JSON and counts as missing in conditions.
  */
-export type ValueKind = 'text' | 'uuid' | 'number' | 'boolean' | 'date' | 'datetime' | 'text[]';
+export type ValueKind = 'text' | 'uuid' | 'number' | 'boolean' | 'date' | 'datetime' | 'text[]' | 'uuid[]';
+
+/** True for a kind whose values are lists. */
+export const isListKind = (kind: ValueKind): kind is 'text[]' | 'uuid[]' => kind === 'text[]' || kind === 'uuid[]';
+
+/** True for a reference that holds several records. */
+export const refersToMany = (field: Field): boolean => field.type === 'reference' && field.multiple === true;
 
 export interface FieldInfo {
   readonly name: string;
@@ -85,6 +107,7 @@ export function fieldKind(field: Field): ValueKind {
     case 'datetime':
       return 'datetime';
     case 'reference':
+      return field.multiple ? 'uuid[]' : 'uuid';
     case 'user':
     case 'file':
       return 'uuid';
@@ -131,24 +154,33 @@ export function jsTypeOf(kind: ValueKind): 'string' | 'number' | 'boolean' | 'ar
     case 'boolean':
       return 'boolean';
     case 'text[]':
+    case 'uuid[]':
       return 'array';
     default:
       return 'string';
   }
 }
 
-/** Kinds that conditions can test. Dates and timestamps can't be compared yet, so they are left out. */
-export function isConditionKind(kind: ValueKind): boolean {
-  return kind !== 'date' && kind !== 'datetime';
+/** Kinds that have an order, so that conditions compare them: numbers, dates and times. */
+export function isOrderedKind(kind: ValueKind): boolean {
+  return kind === 'number' || kind === 'date' || kind === 'datetime';
 }
 
 /** Kinds a list can be sorted by. */
 export function isSortableKind(kind: ValueKind): boolean {
-  return kind !== 'text[]';
+  return !isListKind(kind);
 }
 
-/** Fields a caller may write: every user field that isn't worked out from lines, plus `owner`. */
+/** Fields a caller may write: every user field that the platform doesn't work out, plus `owner`. */
 export function isWritable(info: FieldInfo): boolean {
-  if (info.field) return !rollupOf(info.field);
+  if (info.field) return !isComputed(info.field);
   return info.name === 'owner';
+}
+
+/** A record in a few words, for a notice or a link: its entity's label, and the value of its title field when it has one. */
+export function recordLabel(entity: Pick<StoredEntity, 'label' | 'titleField' | 'fields'>, values: Readonly<Record<string, unknown>>): string {
+  const field = entity.titleField ? entity.fields.find((f) => f.name === entity.titleField) : undefined;
+  const raw = field ? values[field.name] : undefined;
+  const shown = field?.type === 'choice' && typeof raw === 'string' ? (field.options.find((option) => option.value === raw)?.label ?? raw) : raw;
+  return shown === undefined || shown === null || shown === '' || typeof shown === 'object' ? entity.label : `${entity.label}: ${String(shown)}`;
 }

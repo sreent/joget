@@ -64,6 +64,34 @@ export function requireUser(request: FastifyRequest): AuthContext {
   return auth;
 }
 
+/**
+ * Steps that stay with a person on every channel (design §5.7). An agent, a script or an
+ * automation may prepare them, but only the person, signed in, does them.
+ */
+export const PERSON_STEPS = {
+  'proposal.approve': 'Approving a proposal',
+  'change.approve': 'Approving a change request',
+  'deploy.approve': 'Approving a deployment',
+  'deploy.prod': 'Deploying to Prod',
+  'rollback.prod': 'Rolling Prod back',
+  'data.delete': 'Deleting data',
+} as const;
+export type PersonStep = keyof typeof PERSON_STEPS;
+
+/**
+ * Refuse a step that stays with a person unless the person does it in an interactive session.
+ * The services call this, not the routes, so that every channel keeps the rule: the API with a
+ * token, MCP, an agent that acts for the person, and the studio's chat.
+ */
+export function requirePerson(auth: AuthContext, step: PersonStep, details: Record<string, unknown> = {}): void {
+  if (auth.actor.type === 'user' && auth.credential.kind === 'session' && !auth.agent) return;
+  throw forbidden(
+    'session_required',
+    `${PERSON_STEPS[step]} stays with a person: sign in to do it. An agent, a script or an automation can prepare it, but can't do it.`,
+    { step, ...details },
+  );
+}
+
 /** The caller, who must be a person signed in interactively: API tokens cannot do this. */
 export function requireSession(request: FastifyRequest): AuthContext & { credential: { kind: 'session'; sessionId: string } } {
   const auth = requireUser(request);

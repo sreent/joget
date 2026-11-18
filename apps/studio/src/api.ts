@@ -2,21 +2,34 @@ import type {
   AppSummary,
   ChangeRequest,
   ChangeRequestSummary,
+  ComposeReply,
+  ComposeRequest,
   Definition,
   Deployment,
   EnvironmentInfo,
   FileInfo,
+  FlowCase,
+  FlowLive,
+  FlowRunResult,
   HistoryEntry,
-  SkillCall,
+  ImportResult,
+  IntegrationStatus,
   Me,
+  Notice,
+  NoticeSettings,
   Person,
   Plan,
+  ProcessInstance,
   RecordOut,
   Release,
   Revision,
+  SecretState,
   Share,
   Space,
-  UiManifest, ProcessInstance, Task } from './types.js';
+  Task,
+  TestsRun,
+  UiManifest,
+} from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -101,7 +114,13 @@ export async function uploadFile(target: string | AppAt, file: File): Promise<Fi
     body: file,
   });
   const data = (await response.json().catch(() => ({}))) as { error?: string; message?: string; details?: unknown } & FileInfo & { id: string };
-  if (!response.ok) throw new ApiError(response.status, data.error ?? 'error', response.status === 413 ? 'The file is too big' : (data.message ?? response.statusText), data.details);
+  if (!response.ok)
+    throw new ApiError(
+      response.status,
+      data.error ?? 'error',
+      response.status === 413 ? 'The file is too big' : (data.message ?? response.statusText),
+      data.details,
+    );
   return data;
 }
 const records = (target: string | AppAt, entity: string) => `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/records`;
@@ -117,8 +136,6 @@ export const api = {
   example: () => call<{ schema: unknown; example: Definition }>('GET', '/v1/app-model/schema'),
   /** An app's definition, as the file Ambit exports: the main line, never data. */
   exportApp: (appId: string) => call<Record<string, unknown> & { app: { handle: string } }>('GET', `${app(appId)}/export`),
-  /** What this installation offers builders, such as whether it connects a7c. */
-  features: () => call<{ a7c: boolean }>('GET', '/v1/features'),
   templates: () => call<{ templates: Array<{ id: string; name: string; description: string; entities: string[] }> }>('GET', '/v1/templates'),
   importApp: (spaceId: string, body: { name?: string; template?: string; bundle?: Record<string, unknown> }) =>
     call<{ app: AppSummary; plan: Plan | null; changeRequest: { id: string; number: number } | null; asExported: boolean | null }>(
@@ -128,6 +145,8 @@ export const api = {
     ),
   definition: (id: string) => call<{ revision: number; definition: Definition }>('GET', `${app(id)}/definition`),
   plan: (id: string, definition: Definition) => call<{ plan: Plan; definition: Definition }>('POST', `${app(id)}/definition/plan`, { definition }),
+  composeEnabled: () => call<{ enabled: boolean }>('GET', '/v1/compose'),
+  compose: (id: string, request: ComposeRequest) => call<ComposeReply>('POST', `${app(id)}/compose`, request),
   save: (id: string, definition: Definition, baseRevision: number, confirmDestructive: boolean) =>
     call<{ plan: Plan }>('PUT', `${app(id)}/definition${confirmDestructive ? '?confirmDestructive=true' : ''}`, { definition, baseRevision }),
   revisions: (id: string) => call<{ revisions: Revision[] }>('GET', `${app(id)}/revisions`),
@@ -136,25 +155,38 @@ export const api = {
   unshare: (id: string, shareId: string) => call<void>('DELETE', `${app(id)}/shares/${encodeURIComponent(shareId)}`),
   ui: (target: string | AppAt) => call<UiManifest>('GET', `${app(at(target).id)}/ui${envParams(target)}`),
   records: (target: string | AppAt, entity: string, cursor?: string) =>
-    call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`),
-  record: (target: string | AppAt, entity: string, recordId: string) => call<RecordOut>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`),
-  createRecord: (target: string | AppAt, entity: string, values: Record<string, unknown>) => call<RecordOut>('POST', `${records(target, entity)}${envParams(target)}`, { values }),
-  updateRecord: (target: string | AppAt, entity: string, recordId: string, values: Record<string, unknown>, version: number) =>
-    call<RecordOut>('PATCH', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`, { values, version }),
-  pageRecords: (target: string | AppAt, page: string, block: number, cursor?: string) =>
     call<{ records: RecordOut[]; nextCursor: string | null }>(
       'GET',
-      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/records${envParams(target, cursor ? { cursor } : {})}`,
+      `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`,
     ),
-  pageSummary: (target: string | AppAt, page: string, block: number) =>
+  /** Run the app's saved tests, each in a transaction that is undone. */
+  runTests: (target: string | AppAt, only?: string[]) => call<TestsRun>('POST', `${app(at(target).id)}/tests/run${envParams(target)}`, only ? { only } : {}),
+  /** Bring records in from CSV: all of its lines, or none. A dry run checks it and writes nothing. */
+  importRecords: (target: string | AppAt, entity: string, body: { csv: string; name?: string; dryRun: boolean }) =>
+    call<ImportResult>('POST', `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/import${envParams(target)}`, body),
+  /** Where the records the person can read are taken out as CSV. */
+  exportUrl: (target: string | AppAt, entity: string) => `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/export${envParams(target)}`,
+  /** Records whose titles contain some text, for a picker: those the person may read. */
+  searchRecords: (target: string | AppAt, entity: string, search: string) =>
+    call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '20', search })}`),
+  record: (target: string | AppAt, entity: string, recordId: string) =>
+    call<RecordOut>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`),
+  createRecord: (target: string | AppAt, entity: string, values: Record<string, unknown>) =>
+    call<RecordOut>('POST', `${records(target, entity)}${envParams(target)}`, { values }),
+  updateRecord: (target: string | AppAt, entity: string, recordId: string, values: Record<string, unknown>, version: number) =>
+    call<RecordOut>('PATCH', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`, { values, version }),
+  pageRecords: (target: string | AppAt, page: string, block: string, cursor?: string, record?: string) =>
+    call<{ records: RecordOut[]; nextCursor: string | null }>(
+      'GET',
+      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/records${envParams(target, { ...(cursor ? { cursor } : {}), ...(record ? { record } : {}) })}`,
+    ),
+  pageSummary: (target: string | AppAt, page: string, block: string, record?: string) =>
     call<{ value: number | null } | { groups: Array<{ key: string | null; label: string | null; value: number | null }>; other: number | null; more: number }>(
       'GET',
-      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/summary${envParams(target)}`,
+      `${app(at(target).id)}/pages/${encodeURIComponent(page)}/blocks/${block}/summary${envParams(target, record ? { record } : {})}`,
     ),
   history: (target: string | AppAt, entity: string, recordId: string) =>
     call<{ history: HistoryEntry[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/history${envParams(target)}`),
-  skillCalls: (target: string | AppAt, entity: string, recordId: string) =>
-    call<{ calls: SkillCall[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/skill-calls${envParams(target)}`),
   runAction: (target: string | AppAt, action: string, body: { values: Record<string, unknown>; recordId?: string; version?: number }) =>
     call<{ status: 'done'; record: RecordOut } | { status: 'needs_confirmation'; proposal: { reviewUrl: string } }>(
       'POST',
@@ -162,8 +194,24 @@ export const api = {
       body,
     ),
 
-  // Business processes (design §6.10).
+  /** Runs a flow of the app (design §6.2). Records and lists in the input go by their IDs. */
+  runFlow: (target: string | AppAt, flow: string, body: { input: Record<string, unknown>; dryRun?: boolean }) =>
+    call<FlowRunResult>('POST', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/run${envParams(target)}`, body),
+
+  // People's tasks, and the flows that wait on records (design §6.10, §6.11).
   tasks: (status: 'open' | 'closed' = 'open') => call<{ tasks: Task[] }>('GET', `/v1/me/tasks?status=${status}`),
+  integration: (target: string | AppAt) => call<IntegrationStatus>('GET', `${app(at(target).id)}/connections${envParams(target)}`),
+  setConnectionSecret: (target: string | AppAt, name: string, value: string) =>
+    call<SecretState>('PUT', `${app(at(target).id)}/connections/${encodeURIComponent(name)}/secret${envParams(target)}`, { value }),
+  clearConnectionSecret: (target: string | AppAt, name: string) =>
+    call<SecretState>('DELETE', `${app(at(target).id)}/connections/${encodeURIComponent(name)}/secret${envParams(target)}`),
+  makeWebhookKey: (target: string | AppAt, name: string) =>
+    call<{ key: string; url: string; setAt: string }>('POST', `${app(at(target).id)}/webhooks/${encodeURIComponent(name)}/secret${envParams(target)}`),
+  notices: (unread: boolean) => call<{ notices: Notice[]; unread: number }>('GET', `/v1/me/notices?unread=${unread}&limit=100`),
+  unreadNotices: () => call<{ unread: number }>('GET', '/v1/me/notices/unread'),
+  readNotices: (which: { ids: string[] } | { upTo: string }) => call<{ unread: number }>('POST', '/v1/me/notices/read', which),
+  noticeSettings: () => call<NoticeSettings>('GET', '/v1/me/notices/settings'),
+  setNoticeEmail: (email: boolean) => call<NoticeSettings>('PUT', '/v1/me/notices/settings', { email }),
   completeTask: (id: string, outcome: string, values?: Record<string, unknown>) =>
     call<{ task: Task; result: { status: 'done' } | { status: 'needs_confirmation'; proposal: { reviewUrl: string } } | null }>(
       'POST',
@@ -173,38 +221,33 @@ export const api = {
   claimTask: (id: string) => call<Task>('POST', `/v1/tasks/${encodeURIComponent(id)}/claim`),
   reassignTask: (id: string, userId: string) => call<Task>('POST', `/v1/tasks/${encodeURIComponent(id)}/reassign`, { userId }),
   cover: (userId: string) =>
-    call<{ id: string; department: string | null; managerId: string | null; coverId: string | null; coverUntil: string | null }>('GET', `/v1/people/${encodeURIComponent(userId)}/directory`),
+    call<{ id: string; department: string | null; managerId: string | null; coverId: string | null; coverUntil: string | null }>(
+      'GET',
+      `/v1/people/${encodeURIComponent(userId)}/directory`,
+    ),
   setCover: (coverId: string | null, until?: string) =>
     call<{ coverId: string | null; coverUntil: string | null }>('PUT', '/v1/me/cover', { coverId, ...(coverId && until ? { until } : {}) }),
   recordProcesses: (target: string | AppAt, entity: string, recordId: string) =>
     call<{ instances: ProcessInstance[] }>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}/processes${envParams(target)}`),
   startProcess: (target: string | AppAt, process: string, recordId: string) =>
     call<ProcessInstance>('POST', `${app(at(target).id)}/processes/${encodeURIComponent(process)}/start${envParams(target)}`, { recordId }),
+  /** How many cases of a flow that waits wait at each of its steps now: the live view of its canvas. */
+  flowLive: (target: string | AppAt, flow: string) => call<FlowLive>('GET', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/live${envParams(target)}`),
+  /** The cases that wait at one step now, the longest waiting first: what its live count opens. */
+  flowCases: (target: string | AppAt, flow: string, path: string) =>
+    call<{ cases: FlowCase[] }>('GET', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/live/cases${envParams(target, { path })}`),
   processInstances: (target: string | AppAt, stuck = false) =>
     call<{ instances: ProcessInstance[] }>('GET', `${app(at(target).id)}/process-instances${envParams(target, stuck ? { stuck: 'true' } : {})}`),
-  retryInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/retry${envParams(target)}`),
-  cancelInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/cancel${envParams(target)}`),
-  /** A process as a BPMN 2.0 file, saved by the browser. */
-  downloadBpmn: async (appId: string, process: string) => {
-    const response = await fetch(`${app(appId)}/processes/${encodeURIComponent(process)}/bpmn`, { credentials: 'same-origin' });
-    if (!response.ok) {
-      const data = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
-      throw new ApiError(response.status, data.error ?? 'error', data.message ?? response.statusText);
-    }
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${process}.bpmn`;
-    link.click();
-    URL.revokeObjectURL(url);
-  },
-  importBpmn: (appId: string, xml: string, options: { entity?: string; as?: string } = {}) =>
-    call<{ plan: Plan; processes: string[]; notes: string[] }>('POST', `${app(appId)}/processes/import`, { xml, ...options }),
+  retryInstance: (target: string | AppAt, id: string) =>
+    call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/retry${envParams(target)}`),
+  cancelInstance: (target: string | AppAt, id: string) =>
+    call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/cancel${envParams(target)}`),
 
   // Governed delivery for team apps.
   spaces: () => call<{ spaces: Space[] }>('GET', '/v1/spaces'),
   workingCopy: (teamId: string) => call<{ app: AppSummary; created: boolean; sampleRecords: number }>('POST', `${app(teamId)}/working-copy`),
-  promote: (appId: string, body: { spaceId: string; name?: string }) => call<{ app: AppSummary; changeRequest: ChangeRequest }>('POST', `${app(appId)}/promote`, body),
+  promote: (appId: string, body: { spaceId: string; name?: string }) =>
+    call<{ app: AppSummary; changeRequest: ChangeRequest }>('POST', `${app(appId)}/promote`, body),
   sync: (copyId: string, confirmDestructive: boolean) =>
     call<{ plan: Plan | null; app: AppSummary }>('POST', `${app(copyId)}/sync${confirmDestructive ? '?confirmDestructive=true' : ''}`),
   submit: (copyId: string, body: { title?: string; description?: string }) => call<ChangeRequest>('POST', `${app(copyId)}/submit`, body),

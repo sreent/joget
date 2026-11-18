@@ -62,7 +62,7 @@ export interface AppSummary {
   promotion?: { appId: string; name: string; changeRequest: { id: string; number: number; status: 'open' | 'merged' | 'closed' } | null } | null;
   /** On a team app made by promotion: the personal app it came from. */
   promotedFrom?: string | null;
-  access: { build: boolean; run: boolean; share: boolean; edit: boolean; roles: string[]; delivery?: DeliveryAccess };
+  access: { build: boolean; run: boolean; share: boolean; edit: boolean; compose: boolean; roles: string[]; delivery?: DeliveryAccess };
 }
 
 export interface Space {
@@ -102,11 +102,20 @@ export interface ChangeRequest extends ChangeRequestSummary {
     access: Array<{ role: string; kind: 'gains' | 'loses' | 'changes'; text: string; holders: number }>;
     capabilities: Array<{ tool: string; change: 'added' | 'removed' | 'changed'; text: string }>;
     lint: string[];
+    /** The head's tests, run on its preview: a test that fails stops the merge. */
+    tests?: TestsRun;
   };
   changes: Array<{ section: string; name: string; change: 'added' | 'removed' | 'changed'; from?: string; details: string[] }>;
   behind: boolean;
   conflicts: Array<{ section: string; name: string; ours: string; theirs: string }>;
-  reviews: Array<{ id: string; reviewer: PersonRef; verdict: 'approve' | 'request_changes' | 'comment'; comment: string | null; createdAt: string; current: boolean }>;
+  reviews: Array<{
+    id: string;
+    reviewer: PersonRef;
+    verdict: 'approve' | 'request_changes' | 'comment';
+    comment: string | null;
+    createdAt: string;
+    current: boolean;
+  }>;
   approvals: { required: number; approvedBy: PersonRef[]; changesRequestedBy: PersonRef[]; ready: boolean };
   preview: { environmentId: string } | null;
   mergedAt: string | null;
@@ -193,6 +202,10 @@ export interface UiField {
   label: string;
   type: FieldType;
   required: boolean;
+  /** Required only while this holds, of the record's values. */
+  requiredWhen?: Definition['rules'][string]['assert'];
+  /** What a new record starts with, worked out for the person now. */
+  default?: Value;
   description?: string;
   options?: Array<{ value: string; label: string }>;
   multiple?: boolean;
@@ -206,6 +219,8 @@ export interface UiField {
   computed?: boolean;
   /** How it is worked out, such as `{ sum: 'lines.amount' }`. */
   rollup?: Record<string, string>;
+  /** Its formula, worked out from the record's other fields. */
+  formula?: unknown;
   /** For a lines field: the most lines, what a line is called and named by, and the fields of each line. */
   lines?: { max: number; label: string; titleField: string | null; fields: UiField[] };
   read: 'full' | 'masked' | null;
@@ -217,7 +232,7 @@ export interface UiEntity {
   label: string;
   pluralLabel: string;
   titleField: string | null;
-  can: { read: boolean; create: boolean; update: boolean; delete: boolean };
+  can: { read: boolean; create: boolean; update: boolean; delete: boolean; export?: boolean };
   fields: UiField[];
 }
 
@@ -225,7 +240,19 @@ export interface UiForm {
   label: string;
   entity: string;
   action?: string;
-  sections: Array<{ title?: string; fields: Array<{ field: string; label?: string; help?: string; width: 'full' | 'half'; readOnly: boolean }> }>;
+  /** All sections on one page, or a section at a time. */
+  layout: 'page' | 'steps';
+  sections: Array<{
+    title?: string;
+    fields: Array<{
+      field: string;
+      label?: string;
+      help?: string;
+      width: 'full' | 'half';
+      readOnly: boolean;
+      visibleWhen?: Definition['rules'][string]['assert'];
+    }>;
+  }>;
 }
 
 export interface UiAction {
@@ -247,14 +274,18 @@ export interface UiColumn {
 }
 
 /** A block of a page, as the person may use it. A list names its place in the page, which reads its records. */
+/** A block of a page, named by its path: "2", or "2.1.0" inside tabs. `of` keeps the records that refer to the page's record. */
 export type UiBlock =
   | { type: 'text'; style: 'heading' | 'paragraph' | 'note'; text: string }
-  | { type: 'list'; index: number; entity: string; title?: string; columns: UiColumn[]; actions: string[]; empty?: string }
+  | { type: 'list'; path: string; entity: string; title?: string; columns: UiColumn[]; actions: string[]; empty?: string; of?: string; open?: string }
   | { type: 'buttons'; buttons: Array<{ form: string; label?: string } | { page: string; label?: string }> }
-  | { type: 'stat'; index: number; entity: string; label: string; op: string; decimals: number }
+  | { type: 'stat'; path: string; entity: string; label: string; op: string; decimals: number; of?: string }
+  | { type: 'fields'; path: string; title?: string; fields: string[]; actions: string[] }
+  | { type: 'tabs'; tabs: Array<{ label: string; blocks: UiBlock[] }> }
   | {
       type: 'chart';
-      index: number;
+      path: string;
+      of?: string;
       entity: string;
       title: string;
       show: 'bar' | 'column' | 'line' | 'table';
@@ -267,6 +298,8 @@ export type UiBlock =
 export interface UiPage {
   label: string;
   description?: string;
+  /** A page about one record of this entity: a list's row opens it. */
+  record?: { entity: string };
   blocks: UiBlock[];
 }
 
@@ -315,6 +348,8 @@ export interface RecordOut {
   masked?: string[];
   /** The files the values name, by ID. */
   files?: Record<string, FileInfo>;
+  /** The titles of the records the values refer to, by ID, of those the person may read. */
+  titles?: Record<string, string>;
 }
 
 /** Someone a record or its history names: a person, or an agent that changed the record. */
@@ -338,22 +373,6 @@ export interface LinesChange {
   reordered: boolean;
 }
 
-/** A call to an a7c skill that an action on a record made, and how it went. */
-export interface SkillCall {
-  id: string;
-  action: string;
-  step: string;
-  skill: string;
-  label: string;
-  tier: 'personal' | 'team' | 'production';
-  status: 'pending' | 'started' | 'failed';
-  attempts: number;
-  lastError: string | null;
-  runId: string | null;
-  createdAt: string;
-  startedAt: string | null;
-}
-
 export interface HistoryEntry {
   version: number;
   operation: 'create' | 'update' | 'delete';
@@ -365,6 +384,35 @@ export interface HistoryEntry {
 }
 
 /** A person's task in a business process (design §6.10): a decision that waits in their inbox. */
+/** A connection or a webhook of an app, with whether the environment keeps the secret it needs: never the secret. */
+export interface SecretState {
+  set: boolean;
+  setAt: string | null;
+}
+export interface IntegrationStatus {
+  connections: Array<{ name: string; kind: 'service' | 'teams'; label: string; host: string | null; needsSecret: boolean; secret: SecretState }>;
+  webhooks: Array<{ name: string; label: string; flow: string; url: string; secret: SecretState }>;
+}
+
+/** What reached the person: a flow told them, or a task came to them, is due soon or is overdue. */
+export interface Notice {
+  id: string;
+  kind: 'inform' | 'task_assigned' | 'task_due_soon' | 'task_overdue';
+  title: string;
+  message: string | null;
+  app: { id: string; name: string };
+  about: { entity: string; recordId: string; label: string | null } | null;
+  taskId: string | null;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface NoticeSettings {
+  email: boolean;
+  /** Whether the installation sends email at all. */
+  emailAvailable: boolean;
+}
+
 export interface Task {
   id: string;
   name: string;
@@ -392,6 +440,23 @@ export interface Task {
 }
 
 /** One run of a process on a record: where it waits, and what happened in it. */
+/** Where the cases of a flow that waits are now, by the path of the step each waits at. */
+/** A case that waits at a step of a flow: its instance, its record, since when, and whether it is stuck there. */
+export interface FlowCase {
+  instanceId: string;
+  recordId: string;
+  since: string;
+  stuck: boolean;
+  error?: string;
+}
+
+export interface FlowLive {
+  running: number;
+  steps: Array<{ path: string; waiting: number; stuck: number; since: string }>;
+  /** A flow on a schedule: when it runs next, and how its last run went. */
+  schedule?: { nextRunAt: string; lastRunAt: string | null; lastError: string | null };
+}
+
 export interface ProcessInstance {
   id: string;
   process: string;
@@ -409,4 +474,69 @@ export interface ProcessInstance {
   endedAt: string | null;
   tasks?: Task[];
   events?: Array<{ at: string; kind: string; element: string | null; name: string | null; by: string | null; detail: unknown }>;
+}
+
+/** A file that the builder gives the chat: a picture of a form, or a PDF. */
+export interface ComposeAttachment {
+  readonly name: string;
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'application/pdf';
+  readonly data: string;
+}
+
+/** What the builder asks the chat that builds apps. */
+export interface ComposeRequest {
+  readonly prompt: string;
+  readonly definition: Definition;
+  readonly history: ReadonlyArray<{ readonly role: 'user' | 'assistant'; readonly text: string }>;
+  readonly attachments: readonly ComposeAttachment[];
+}
+
+/** What the chat answers: its reply, and the draft when it changed the definition. */
+export interface ComposeReply {
+  readonly reply: string;
+  readonly changed: boolean;
+  readonly definition: Definition | null;
+  /** How many problems the checks still find in the draft. */
+  readonly problems: number;
+  readonly edits: number;
+  readonly turns: number;
+  readonly stopped: 'turns' | 'length' | 'declined' | null;
+}
+
+/** What running a flow gave: its result, its warnings and its writes. A dry run undid the writes. */
+export interface FlowRunResult {
+  readonly output: unknown;
+  readonly findings: ReadonlyArray<{ readonly flow: string; readonly message: string }>;
+  readonly writes: { readonly created: number; readonly changed: number; readonly deleted: number };
+  readonly dryRun: boolean;
+}
+
+/** True for a field the platform works out, from lines or by a formula: shown, never filled in. */
+export function isWorkedOut(field: Field): boolean {
+  return Boolean((field.type === 'number' && field.rollup) || ('formula' in field && field.formula !== undefined));
+}
+
+/** What an import of CSV found: which field each column fills, each line's problems, and how many records it made. */
+export interface ImportResult {
+  columns: Array<{ header: string; field: string | null; note?: string }>;
+  rows: number;
+  issues: Array<{ row: number; field?: string; message: string }>;
+  created: number;
+}
+
+/** What one of the app's tests found: whether it passed, what the action did, and where the record differs from what the test expects. */
+export interface TestResult {
+  name: string;
+  label: string;
+  passed: boolean;
+  outcome: 'saved' | 'refused' | 'error';
+  message?: string;
+  mismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
+}
+
+/** A run of the app's tests: how many passed and failed, and each test's result. */
+export interface TestsRun {
+  passed: number;
+  failed: number;
+  results: TestResult[];
 }

@@ -81,7 +81,12 @@ export const ConfigSchema = z
     /** Approvals a Prod deployment needs, from people who authored none of its changes (design §7.1). */
     DEPLOY_PROD_APPROVALS: z.coerce.number().int().min(1).max(5).default(1),
     /** How long an agent's proposal waits for the person before it expires. */
-    PROPOSAL_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(72),
+    PROPOSAL_TTL_HOURS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(24 * 30)
+      .default(72),
     /** The longest a service-account token may live. */
     SERVICE_ACCOUNT_TOKEN_MAX_TTL_DAYS: z.coerce.number().int().min(1).max(366).default(90),
 
@@ -99,7 +104,12 @@ export const ConfigSchema = z
     S3_ACCESS_KEY_ID: z.string().min(1).optional(),
     S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     /** The largest file anyone may upload. */
-    FILE_MAX_BYTES: z.coerce.number().int().min(1024).max(50 * 1024 * 1024).default(10 * 1024 * 1024),
+    FILE_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1024)
+      .max(50 * 1024 * 1024)
+      .default(10 * 1024 * 1024),
     /**
      * How uploads are checked for malware before anyone can use them: `clamav` asks a clamd server.
      * With `none`, files are marked as not scanned; in production, uploads are then refused.
@@ -108,7 +118,12 @@ export const ConfigSchema = z
     CLAMAV_HOST: z.string().min(1).default('localhost'),
     CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).default(3310),
     /** How long an upload waits to be attached to a record. At least as long as a proposal waits. */
-    FILE_UNATTACHED_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 90).default(24 * 7),
+    FILE_UNATTACHED_TTL_HOURS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(24 * 90)
+      .default(24 * 7),
     /** How often expired uploads are removed. 0 turns it off, for example when a worker does it. */
     FILE_SWEEP_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(3600),
 
@@ -129,14 +144,56 @@ export const ConfigSchema = z
         ctx.addIssue({ code: 'custom', message: 'Must be a JSON object of keyId to PEM public key' });
         return z.NEVER;
       }),
-    /** The a7c control plane that runs the skills actions call, for example https://a7c.example.com. Without it, skill calls wait. */
-    A7C_URL: z.url().optional(),
-    /** A file that holds Ambit's bearer token for a7c. It is read at each call, so whatever issues the token can renew it. */
-    A7C_TOKEN_FILE: z.string().min(1).optional(),
-    /** How often the dispatcher starts the skill calls that are due. 0 disables it (for example, when a worker does it). */
-    SKILL_DISPATCH_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
-    /** How many times a skill call is tried before it fails for good. */
-    SKILL_CALL_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(12),
+    /**
+     * The model provider that the studio's chat builds apps with (vibe composition). Without it, the
+     * chat is off. Only Anthropic for now.
+     */
+    AI_PROVIDER: z.enum(['anthropic']).optional(),
+    /** The model the chat uses, as the provider names it. The installation chooses it: Ambit names none. */
+    AI_MODEL: z.string().min(1).max(200).optional(),
+    /** A file that holds the provider's API key. It is read at each request, so whatever issues the key can renew it. */
+    AI_API_KEY_FILE: z.string().min(1).optional(),
+    /** Another address for the provider's API, such as a gateway that the installation runs. */
+    AI_BASE_URL: z.url().optional(),
+    /** How much effort the model puts into each turn; off for a model that takes no effort setting. */
+    AI_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'off']).default('high'),
+    /** Whether a turn that the model declines goes on with the provider's fallback model: default, or off for a model or gateway that refuses the setting. */
+    AI_FALLBACK: z.enum(['default', 'off']).default('default'),
+    /** The most turns of the model in one request to the chat: each turn can read or change the definition. */
+    AI_MAX_TURNS: z.coerce.number().int().min(1).max(30).default(12),
+    /**
+     * Where email goes out, for notices: an SMTP server, as smtp://mail.example.com:587, which must
+     * then offer STARTTLS, or smtps://mail.example.com:465. Without it, notices stay in the app.
+     */
+    SMTP_URL: z.url().optional(),
+    SMTP_USER: z.string().min(1).max(200).optional(),
+    /** A file that holds the SMTP password. It is read at each sending, so whatever issues it can renew it. */
+    SMTP_PASSWORD_FILE: z.string().min(1).optional(),
+    /** Who email comes from, as "a3t <noreply@example.com>". */
+    MAIL_FROM: z.string().min(3).max(200).default('a3t <noreply@localhost>'),
+    /** How long a notice stays, read or not, before it goes. */
+    NOTICE_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
+    /** How long before a task is due its person hears that it is due soon. */
+    TASK_DUE_SOON_HOURS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(24 * 14)
+      .default(24),
+    /**
+     * A file that holds the key that seals the secrets environments keep for their connections and
+     * webhooks: 32 random bytes, in base64. Required in production to keep any; elsewhere, a key
+     * worked out from COOKIE_SECRET stands in.
+     */
+    SECRETS_KEY_FILE: z.string().min(1).optional(),
+    /** The hosts that connections may call, as names or *.example.com; * for any public host. */
+    OUTBOUND_HOSTS: z.string().default('*'),
+    /** Hosts on a private network that connections may call all the same, such as payroll.internal. */
+    OUTBOUND_PRIVATE_HOSTS: z.string().default(''),
+    /** Whether connections may call plain http, without TLS: for development only. */
+    OUTBOUND_ALLOW_HTTP: bool.default(false),
+    /** How long a call to a service may take. */
+    SERVICE_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(60).default(10),
     /** How often the timers of processes that are due fire. 0 disables it (for example, when a worker fires them). */
     PROCESS_TIMER_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How often the in-process sealer runs. 0 disables it (for example, when a worker seals). */
@@ -152,7 +209,7 @@ export const ConfigSchema = z
       [config.OIDC_ALLOW_HTTP, 'OIDC_ALLOW_HTTP', 'OIDC_ALLOW_HTTP must be false in production'],
       [!config.AUDIT_SIGNING_KEY_PEM, 'AUDIT_SIGNING_KEY_PEM', 'AUDIT_SIGNING_KEY_PEM is required in production'],
       [!config.PUBLIC_BASE_URL.startsWith('https://'), 'PUBLIC_BASE_URL', 'PUBLIC_BASE_URL must use https in production'],
-      [Boolean(config.A7C_URL) && !config.A7C_URL!.startsWith('https://'), 'A7C_URL', 'A7C_URL must use https in production'],
+      [Boolean(config.AI_BASE_URL) && !config.AI_BASE_URL!.startsWith('https://'), 'AI_BASE_URL', 'AI_BASE_URL must use https in production'],
     ];
     for (const [broken, path, message] of rules) {
       if (broken) ctx.addIssue({ code: 'custom', message, path: [path] });
@@ -163,11 +220,22 @@ export const ConfigSchema = z
     if (Boolean(config.S3_ACCESS_KEY_ID) !== Boolean(config.S3_SECRET_ACCESS_KEY)) {
       ctx.addIssue({ code: 'custom', message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither', path: ['S3_ACCESS_KEY_ID'] });
     }
-    if (Boolean(config.A7C_URL) !== Boolean(config.A7C_TOKEN_FILE)) {
-      ctx.addIssue({ code: 'custom', message: 'Set both A7C_URL and A7C_TOKEN_FILE, or neither', path: ['A7C_URL'] });
+    if (config.NODE_ENV === 'production' && config.OUTBOUND_ALLOW_HTTP)
+      ctx.addIssue({ code: 'custom', message: 'OUTBOUND_ALLOW_HTTP must be false in production', path: ['OUTBOUND_ALLOW_HTTP'] });
+    if (config.SMTP_URL && !/^smtps?:\/\//.test(config.SMTP_URL))
+      ctx.addIssue({ code: 'custom', message: 'SMTP_URL must start with smtp:// or smtps://', path: ['SMTP_URL'] });
+    if (Boolean(config.SMTP_USER) !== Boolean(config.SMTP_PASSWORD_FILE)) {
+      ctx.addIssue({ code: 'custom', message: 'Set both SMTP_USER and SMTP_PASSWORD_FILE, or neither', path: ['SMTP_USER'] });
+    }
+    if (config.AI_PROVIDER && (!config.AI_MODEL || !config.AI_API_KEY_FILE)) {
+      ctx.addIssue({ code: 'custom', message: 'AI_PROVIDER needs AI_MODEL and AI_API_KEY_FILE', path: ['AI_PROVIDER'] });
     }
     if (config.FILE_UNATTACHED_TTL_HOURS < config.PROPOSAL_TTL_HOURS) {
-      ctx.addIssue({ code: 'custom', message: 'FILE_UNATTACHED_TTL_HOURS must be at least PROPOSAL_TTL_HOURS, so files outlive the proposals that name them', path: ['FILE_UNATTACHED_TTL_HOURS'] });
+      ctx.addIssue({
+        code: 'custom',
+        message: 'FILE_UNATTACHED_TTL_HOURS must be at least PROPOSAL_TTL_HOURS, so files outlive the proposals that name them',
+        path: ['FILE_UNATTACHED_TTL_HOURS'],
+      });
     }
   });
 

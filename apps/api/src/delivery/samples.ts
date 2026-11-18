@@ -1,4 +1,4 @@
-import { lineOwners, rollupOf, type StoredDefinition, type StoredEntity, type StoredField } from '@platform/app-model';
+import { isComputed, lineOwners, type StoredDefinition, type StoredEntity, type StoredField } from '@platform/app-model';
 import type { FastifyRequest } from 'fastify';
 import type { LoadedApp } from '../apps/catalog.js';
 import type { AppRuntime } from '../apps/runtime.js';
@@ -32,16 +32,20 @@ function sampleValue(
   n: number,
   context: { readonly userId: string; readonly today: Date; readonly samples: ReadonlyMap<string, readonly string[]> },
 ): unknown {
+  // The platform works these out.
+  if (isComputed(field)) return undefined;
   switch (field.type) {
     case 'text': {
       if (field.default !== undefined) return field.default;
-      const base = entity.titleField === field.name || field.name === 'title' || field.name === 'name' ? `Sample ${entity.label.toLowerCase()}` : `Sample ${field.label.toLowerCase()}`;
+      const base =
+        entity.titleField === field.name || field.name === 'title' || field.name === 'name'
+          ? `Sample ${entity.label.toLowerCase()}`
+          : `Sample ${field.label.toLowerCase()}`;
       return `${base} ${n}`.slice(0, field.maxLength);
     }
     case 'email':
       return `sample${n}@example.com`;
     case 'number': {
-      if (rollupOf(field)) return undefined;
       if (field.default !== undefined) return field.default;
       const low = field.min ?? 0;
       const value = Math.min(field.max ?? Number.MAX_SAFE_INTEGER, low + 10 * n + (field.decimals ? 0.5 : 0));
@@ -62,7 +66,9 @@ function sampleValue(
       return context.userId;
     case 'reference': {
       const targets = context.samples.get(field.entity) ?? [];
-      return targets.length ? targets[(n - 1) % targets.length] : undefined;
+      if (!targets.length) return undefined;
+      const target = targets[(n - 1) % targets.length];
+      return field.multiple ? [target] : target;
     }
     case 'lines': {
       const lineEntity = definition.entities[field.entity]!;

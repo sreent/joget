@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../context.js';
 import { forbidden, unauthorized } from '../errors.js';
 import { checkAnyPermission, checkQuery } from './check.js';
-import { requireAuth, type AccessRule } from './rules.js';
+import { type AccessRule, requireAuth } from './rules.js';
 
 export interface RouteAccess {
   readonly method: string;

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import {
+  type AuditEvent,
   auditEventDigest,
   canonicalJson,
   createEd25519Signer,
@@ -8,12 +8,12 @@ import {
   generateEd25519KeyPair,
   merkleRoot,
   publicKeyPemFor,
-  uuidv7,
-  verifySeals,
-  type AuditEvent,
   type Seal,
   type StoredEvent,
+  uuidv7,
+  verifySeals,
 } from '@platform/audit';
+import { describe, expect, it } from 'vitest';
 
 describe('canonicalJson', () => {
   it('is independent of key order and drops undefined members', () => {
@@ -162,7 +162,12 @@ describe('seal chains', () => {
   it('detects a removed seal, a forged seal and an unknown key', async () => {
     const { stored, seals, lookup } = await buildLog();
     const gap = await verifySeals([seals[0]!, seals[2]!], lookup(stored), verifier);
-    expect(gap.problems).toEqual(expect.arrayContaining([{ kind: 'broken_chain', sealIndex: 1 }, { kind: 'range_gap', sealIndex: 1, expectedFromSeq: 4 }]));
+    expect(gap.problems).toEqual(
+      expect.arrayContaining([
+        { kind: 'broken_chain', sealIndex: 1 },
+        { kind: 'range_gap', sealIndex: 1, expectedFromSeq: 4 },
+      ]),
+    );
 
     const forged = await verifySeals([{ ...seals[0]!, eventCount: 2 }], lookup(stored), verifier);
     expect(forged.problems).toContainEqual({ kind: 'seal_hash_mismatch', sealIndex: 0 });

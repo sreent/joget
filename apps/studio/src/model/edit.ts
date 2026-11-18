@@ -1,7 +1,6 @@
-import type { Definition, Entity, Field, FieldType, Form, FormField } from '../types.js';
+import { type Definition, type Entity, type Field, type FieldType, type Form, type FormField, isWorkedOut } from '../types.js';
 import { forgetEntity, forgetField, forgetForm } from './pages.js';
-import { forgetStepField } from './steps.js';
-import { forgetInProcesses } from './processes.js';
+import { forgetInWaits } from './waits.js';
 
 /**
  * Pure edits of a draft definition, for the designers. Each returns a new definition and leaves
@@ -97,7 +96,12 @@ export function normalize(definition: Partial<Definition>): Definition {
 export function addEntity(definition: Definition, label: string): { definition: Definition; name: string } {
   const name = toName(label, Object.keys(definition.entities));
   const next = clone(definition);
-  next.entities[name] = { label, history: true, fields: [{ name: 'title', label: 'Title', type: 'text', required: true, classification: 'internal', maxLength: 200, multiline: false, unique: false }], titleField: 'title' } as Entity;
+  next.entities[name] = {
+    label,
+    history: true,
+    fields: [{ name: 'title', label: 'Title', type: 'text', required: true, classification: 'internal', maxLength: 200, multiline: false, unique: false }],
+    titleField: 'title',
+  } as Entity;
   return { definition: next, name };
 }
 
@@ -112,7 +116,11 @@ export function renameEntity(definition: Definition, from: string, to: string): 
   return next;
 }
 
-export function updateEntity(definition: Definition, name: string, patch: Partial<Pick<Entity, 'label' | 'pluralLabel' | 'description' | 'titleField' | 'history'>>): Definition {
+export function updateEntity(
+  definition: Definition,
+  name: string,
+  patch: Partial<Pick<Entity, 'label' | 'pluralLabel' | 'description' | 'titleField' | 'history'>>,
+): Definition {
   const next = clone(definition);
   const entity = next.entities[name]!;
   for (const [key, value] of Object.entries(patch)) {
@@ -129,7 +137,13 @@ export function updateEntity(definition: Definition, name: string, patch: Partia
 export function removeEntity(definition: Definition, name: string): Definition {
   let next = clone(definition);
   const owner = lineOwner(next, name);
-  if (owner) next = removeField(next, owner.parent, next.entities[owner.parent]!.fields.findIndex((f) => f.name === owner.field), false);
+  if (owner)
+    next = removeField(
+      next,
+      owner.parent,
+      next.entities[owner.parent]!.fields.findIndex((f) => f.name === owner.field),
+      false,
+    );
   for (const field of next.entities[name]?.fields ?? []) if (field.type === 'lines') delete next.entities[field.entity];
   delete next.entities[name];
   for (const [formName, form] of Object.entries(next.forms)) {
@@ -148,7 +162,9 @@ function addLineEntity(definition: Definition, parent: string): string {
   definition.entities[name] = {
     label,
     history: true,
-    fields: [{ name: 'description', label: 'Description', type: 'text', required: true, classification: 'internal', maxLength: 200, multiline: false, unique: false }],
+    fields: [
+      { name: 'description', label: 'Description', type: 'text', required: true, classification: 'internal', maxLength: 200, multiline: false, unique: false },
+    ],
     titleField: 'description',
   } as Entity;
   return name;
@@ -171,7 +187,15 @@ function fieldOfType(base: Pick<Field, 'name' | 'label'> & Partial<Field>, type:
     case 'number':
       return { ...common, type, decimals: 0, unique: false };
     case 'choice':
-      return { ...common, type, multiple: false, options: [{ value: 'option_1', label: 'Option 1' }, { value: 'option_2', label: 'Option 2' }] };
+      return {
+        ...common,
+        type,
+        multiple: false,
+        options: [
+          { value: 'option_1', label: 'Option 1' },
+          { value: 'option_2', label: 'Option 2' },
+        ],
+      };
     case 'reference': {
       const target = Object.keys(definition.entities).find((name) => name !== entity && !lineOwner(definition, name)) ?? entity;
       return { ...common, type, entity: target };
@@ -192,7 +216,10 @@ export function addField(definition: Definition, entity: string, type: FieldType
   const next = clone(definition);
   const fields = next.entities[entity]!.fields;
   const label = `New ${typeLabel(type).toLowerCase()}`;
-  const name = toName(label, fields.map((f) => f.name));
+  const name = toName(
+    label,
+    fields.map((f) => f.name),
+  );
   const field = fieldOfType({ name, label }, type, next, entity);
   // Lines need an entity of their own: one is made for them, to design next.
   if (field.type === 'lines') field.entity = addLineEntity(next, entity);
@@ -236,6 +263,32 @@ export function updateField(definition: Definition, entity: string, index: numbe
 }
 
 /** Make a number field worked out from lines (`sum:lines.amount`), or entered by people again (''). */
+/**
+ * Work a field out by a formula, or stop: undefined lets people enter it again. The platform works
+ * it out, so nobody can be asked for it, and it has no default and no rollup. Forms show it, and
+ * actions no longer take it.
+ */
+export function setFormula(definition: Definition, entity: string, index: number, formula: unknown): Definition {
+  const next = clone(definition);
+  const field = next.entities[entity]!.fields[index]! as Record<string, unknown>;
+  if (formula === undefined) {
+    delete field['formula'];
+    return next;
+  }
+  field['formula'] = formula;
+  field['required'] = false;
+  delete field['requiredWhen'];
+  delete field['default'];
+  delete field['rollup'];
+  const name = next.entities[entity]!.fields[index]!.name;
+  for (const form of Object.values(next.forms)) {
+    if (form.entity !== entity) continue;
+    for (const section of form.sections) for (const item of section.fields) if (item.field === name) item.readOnly = true;
+  }
+  for (const action of Object.values(next.actions)) if (action.entity === entity) action.input = action.input.filter((input) => input !== name);
+  return next;
+}
+
 export function setRollup(definition: Definition, entity: string, index: number, key: string): Definition {
   const next = clone(definition);
   const field = next.entities[entity]!.fields[index]!;
@@ -296,8 +349,7 @@ export function removeField(definition: Definition, entity: string, index: numbe
     for (const section of form.sections) section.fields = section.fields.filter((item) => item.field !== removed!.name);
   }
   forgetField(next, entity, removed!.name);
-  forgetStepField(next, entity, removed!.name);
-  return forgetInProcesses(next, { entity, field: removed!.name });
+  return forgetInWaits(next, { entity, field: removed!.name });
 }
 
 // Forms
@@ -315,12 +367,12 @@ export function addForm(definition: Definition, entity: string): { definition: D
   next.forms[name] = {
     label: entityDef.label,
     entity,
-    sections: [{ fields: entityDef.fields.map((field) => ({ field: field.name, width: 'full', readOnly: Boolean(field.type === 'number' && field.rollup) })) }],
+    sections: [{ fields: entityDef.fields.map((field) => ({ field: field.name, width: 'full', readOnly: isWorkedOut(field) })) }],
   } as Form;
   return { definition: next, name };
 }
 
-export function updateForm(definition: Definition, form: string, patch: Partial<Pick<Form, 'label' | 'action'>>): Definition {
+export function updateForm(definition: Definition, form: string, patch: Partial<Pick<Form, 'label' | 'action' | 'layout'>>): Definition {
   const next = clone(definition);
   const target = next.forms[form]! as Record<string, unknown>;
   for (const [key, value] of Object.entries(patch)) {
@@ -356,7 +408,10 @@ export function removeSection(definition: Definition, form: string, section: num
   const sections = definition.forms[form]!.sections;
   if (sections.length <= 1) return definition;
   const next = clone(definition);
-  next.forms[form]!.sections.splice(section, 1);
+  const target = next.forms[form]!;
+  target.sections.splice(section, 1);
+  // A form in steps needs two sections or more.
+  if (target.sections.length < 2 && target.layout === 'steps') target.layout = 'page';
   return next;
 }
 
@@ -372,7 +427,7 @@ export function placeField(definition: Definition, form: string, field: string, 
   const next = clone(definition);
   const sections = next.forms[form]!.sections;
   const declared = next.entities[next.forms[form]!.entity]?.fields.find((f) => f.name === field);
-  let item: FormField = { field, width: 'full', readOnly: Boolean(declared?.type === 'number' && declared.rollup) };
+  let item: FormField = { field, width: 'full', readOnly: declared ? isWorkedOut(declared) : false };
   let target = { ...at };
   sections.forEach((section, s) => {
     const index = section.fields.findIndex((f) => f.field === field);
@@ -382,6 +437,9 @@ export function placeField(definition: Definition, form: string, field: string, 
   });
   const fields = sections[target.section]!.fields;
   fields.splice(Math.max(0, Math.min(target.index, fields.length)), 0, item);
+  // A form that runs an action sends what people fill in: the action takes it, unless it sets it itself.
+  const action = next.forms[form]!.action ? next.actions[next.forms[form]!.action!] : undefined;
+  if (action && declared && !item.readOnly && !action.input.includes(field) && !(field in (action.set ?? {}))) action.input.push(field);
   return next;
 }
 

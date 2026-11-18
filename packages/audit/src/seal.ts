@@ -1,6 +1,6 @@
-import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from 'node:crypto';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject, sign, verify } from 'node:crypto';
 import { canonicalJson } from './canonical.js';
-import { auditEventDigest, sha256Hex, type AuditEvent } from './event.js';
+import { type AuditEvent, auditEventDigest, sha256Hex } from './event.js';
 import { merkleRoot } from './merkle.js';
 
 /**
@@ -86,9 +86,7 @@ export function createEd25519Signer(keyId: string, privateKeyPem: string): Signe
 }
 
 export function createEd25519Verifier(publicKeys: Readonly<Record<string, string | KeyObject>>): SignatureVerifier {
-  const keys = new Map(
-    Object.entries(publicKeys).map(([keyId, key]) => [keyId, typeof key === 'string' ? createPublicKey(key) : key]),
-  );
+  const keys = new Map(Object.entries(publicKeys).map(([keyId, key]) => [keyId, typeof key === 'string' ? createPublicKey(key) : key]));
   return {
     verify: async (keyId, data, signature) => {
       const key = keys.get(keyId);

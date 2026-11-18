@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError, type AppAt } from '../api.js';
+import { ApiError, type AppAt, api } from '../api.js';
 import { PersonName, PersonPicker } from '../components/people.js';
-import { Badge, Button, Card, EmptyState, Field, Notice, TextInput } from '../components/ui.js';
+import { Badge, Button, Card, EmptyState, Field, Modes, Notice, TextInput } from '../components/ui.js';
 import { Link } from '../router.js';
 import type { ProcessInstance, Task } from '../types.js';
 
@@ -46,7 +46,13 @@ export function TaskOutcomes({ task, onDone }: { task: Task; onDone?: () => void
     <div className="grid gap-2">
       <div className="flex flex-wrap gap-2">
         {task.outcomes.map((outcome, index) => (
-          <Button key={outcome.name} variant={index === 0 ? 'primary' : 'secondary'} size="sm" onClick={() => decide.mutate(outcome.name)} disabled={decide.isPending}>
+          <Button
+            key={outcome.name}
+            variant={index === 0 ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={() => decide.mutate(outcome.name)}
+            disabled={decide.isPending}
+          >
             {outcome.label}
           </Button>
         ))}
@@ -102,14 +108,14 @@ export function Tasks() {
           </p>
           <h1 className="m-0 text-2xl font-semibold tracking-tight">Your tasks</h1>
         </div>
-        <div className="flex gap-1" role="group" aria-label="Which tasks">
-          <Button size="sm" variant={status === 'open' ? 'primary' : 'secondary'} onClick={() => setStatus('open')}>
+        <Modes label="Which tasks">
+          <button type="button" aria-pressed={status === 'open'} onClick={() => setStatus('open')}>
             To do
-          </Button>
-          <Button size="sm" variant={status === 'closed' ? 'primary' : 'secondary'} onClick={() => setStatus('closed')}>
+          </button>
+          <button type="button" aria-pressed={status === 'closed'} onClick={() => setStatus('closed')}>
             Done
-          </Button>
-        </div>
+          </button>
+        </Modes>
       </div>
       {tasks.isError ? <Notice tone="bad">Your tasks can't be loaded right now.</Notice> : null}
       {status === 'open' ? <Cover /> : null}
@@ -128,7 +134,13 @@ export function Tasks() {
                   <h2 className="m-0 text-base font-semibold">{task.name}</h2>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {status === 'open' ? <Due task={task} /> : <Badge tone={task.status === 'completed' ? 'good' : 'idle'}>{task.status === 'completed' ? (task.outcomes.find((o) => o.name === task.outcome)?.label ?? task.outcome) : 'Cancelled'}</Badge>}
+                  {status === 'open' ? (
+                    <Due task={task} />
+                  ) : (
+                    <Badge tone={task.status === 'completed' ? 'good' : 'idle'}>
+                      {task.status === 'completed' ? (task.outcomes.find((o) => o.name === task.outcome)?.label ?? task.outcome) : 'Cancelled'}
+                    </Badge>
+                  )}
                   {task.assignee ? null : <Badge>For the role {task.role}</Badge>}
                   {task.several ? <Badge tone="accent">{task.voters ? `Your vote, of ${task.voters}` : 'Your vote'}</Badge> : null}
                 </div>
@@ -161,7 +173,8 @@ function Cover() {
       {current.data.coverId ? (
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span>
-            <PersonName id={current.data.coverId} /> takes your new tasks{current.data.coverUntil ? ` until ${DAY.format(new Date(current.data.coverUntil))}` : ''}.
+            <PersonName id={current.data.coverId} /> takes your new tasks
+            {current.data.coverUntil ? ` until ${DAY.format(new Date(current.data.coverUntil))}` : ''}.
           </span>
           <Button size="sm" onClick={() => save.mutate(null)} disabled={save.isPending}>
             I'm back
@@ -204,9 +217,17 @@ const EVENTS: Readonly<Record<string, string>> = {
   reassigned: 'Handed over',
   timer_fired: 'Timer fired',
   message: 'Action saved',
+  condition: 'Condition met',
   ran: 'Ran',
-  error_caught: 'Failure caught',
-  skill_queued: 'Started work in a7c',
+  error_caught: 'Error caught',
+  escalated: 'Escalated',
+  signalled: 'Signal thrown',
+  signal: 'Signal heard',
+  compensated: 'Undone',
+  transaction_cancelled: 'Transaction cancelled',
+  sent: 'Sent a message',
+  checked: 'Checked the rules',
+  reached: 'Milestone reached',
   entered: 'Sub-process started',
   exited: 'Sub-process done',
   called: 'Called a process',
@@ -217,7 +238,7 @@ const EVENTS: Readonly<Record<string, string>> = {
   cancelled: 'Cancelled',
 };
 
-/** Where a record's processes are, who they wait for, and the person's own decisions on it. */
+/** Where the flows that wait on a record are, who and what they wait for, and the person's own decisions on it. */
 export function ProcessCard({ at, entity, recordId }: { at: AppAt; entity: string; recordId: string }) {
   const processes = useQuery({ queryKey: ['processes', at.id, at.env, entity, recordId], queryFn: () => api.recordProcesses(at, entity, recordId) });
   const mine = useQuery({ queryKey: ['tasks', 'open'], queryFn: () => api.tasks('open') });
@@ -226,7 +247,7 @@ export function ProcessCard({ at, entity, recordId }: { at: AppAt; entity: strin
   const myTasks = new Set((mine.data?.tasks ?? []).map((task) => task.id));
   return (
     <Card className="grid content-start gap-3">
-      <h3 className="m-0 text-sm font-semibold text-muted">Process</h3>
+      <h3 className="m-0 text-sm font-semibold text-muted">Flows</h3>
       {instances.map((instance) => (
         <InstanceView key={instance.id} instance={instance} myTasks={myTasks} />
       ))}
@@ -236,6 +257,8 @@ export function ProcessCard({ at, entity, recordId }: { at: AppAt; entity: strin
 
 function InstanceView({ instance, myTasks }: { instance: ProcessInstance; myTasks: ReadonlySet<string> }) {
   const open = (instance.tasks ?? []).filter((task) => task.status === 'open');
+  // What it waits for besides people's tasks: a time, an action, a condition, or the first of several.
+  const waits = instance.status === 'running' ? instance.waiting.filter((wait) => !open.some((task) => task.name === wait.name)) : [];
   return (
     <div className="grid gap-2 border-t border-line pt-2 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -252,6 +275,11 @@ function InstanceView({ instance, myTasks }: { instance: ProcessInstance; myTask
           </p>
           {myTasks.has(task.id) ? <TaskOutcomes task={task} /> : null}
         </div>
+      ))}
+      {waits.map((wait) => (
+        <p key={wait.element} className="m-0 text-sm text-muted">
+          {wait.name}
+        </p>
       ))}
       {instance.stuck.map((stuck) => (
         <Notice key={stuck.element} tone="bad">

@@ -1,6 +1,6 @@
-import { COMPARISON_OPERATORS, evaluateCondition, isRef, type Condition, type Operand } from '@platform/authz';
-import { isConditionKind, jsTypeOf, type FieldInfo, type ValueKind } from './fields.js';
-import { isCanonicalUuid, type FieldValue } from './values.js';
+import { COMPARISON_OPERATORS, type Condition, evaluateCondition, isRef, isRelativeTime, type Operand, relativeValue, timeOf } from '@platform/authz';
+import { type FieldInfo, isListKind, jsTypeOf, type ValueKind } from './fields.js';
+import { type FieldValue, isCanonicalUuid } from './values.js';
 
 /**
  * SQL for the built-in store. Every identifier comes from a validated definition (stable IDs,
@@ -50,6 +50,8 @@ export function sqlType(kind: ValueKind): string {
       return 'timestamptz';
     case 'text[]':
       return 'text[]';
+    case 'uuid[]':
+      return 'uuid[]';
   }
 }
 
@@ -67,12 +69,7 @@ const SQL_COMPARISON = { lt: '<', lte: '<=', gt: '>', gte: '>=' } as const;
  * values are missing: every comparison is `IS TRUE`, so NULL never leaks into the logic, and
  * `not` behaves as it does in TypeScript.
  */
-export function compileCondition(
-  condition: Condition,
-  fields: ReadonlyMap<string, FieldInfo>,
-  sql: SqlBuilder,
-  alias = 'r',
-): string {
+export function compileCondition(condition: Condition, fields: ReadonlyMap<string, FieldInfo>, sql: SqlBuilder, alias = 'r'): string {
   const column = (ref: string): Extract<Term, { kind: 'column' }> => {
     if (!ref.startsWith('record.')) throw new CompileError(`${ref} should have been filled in before compiling`);
     const info = fields.get(ref.slice('record.'.length));
@@ -80,17 +77,21 @@ export function compileCondition(
     return { kind: 'column', info, sql: `${alias}.${ident(info.column)}` };
   };
   const term = (operand: Operand): Term => {
+    // Today and now are filled in as a request is checked; one that reaches here takes the clock's.
+    if (isRelativeTime(operand)) return { kind: 'literal', value: relativeValue(operand, new Date()) };
     if (!isRef(operand)) return { kind: 'literal', value: operand };
-    const t = column(operand.ref);
-    if (!isConditionKind(t.info.kind)) throw new CompileError(`${operand.ref} can't be compared in conditions`);
-    return t;
+    return column(operand.ref);
   };
+  const isDateKind = (kind: ValueKind) => kind === 'date' || kind === 'datetime';
 
   /** A parameter equal to `value` as a stored value of the column, or null if no stored value can equal it. */
   const equalTo = (info: FieldInfo, value: string | number | boolean | null): string | null => {
     const type = jsTypeOf(info.kind);
     if (value === null || type === 'array' || typeof value !== type) return null;
     if (info.kind === 'uuid' && !isCanonicalUuid(value)) return null;
+    // A date equals only a date, and a time a time: other text would not even cast.
+    if (info.kind === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return null;
+    if (info.kind === 'datetime' && (timeOf(value) === undefined || /^\d{4}-\d{2}-\d{2}$/.test(String(value)))) return null;
     if (typeof value === 'string' && value.includes('\u0000')) return null;
     return sql.param(value, sqlType(info.kind));
   };
@@ -134,8 +135,19 @@ export function compileCondition(
       return parameter ? `((${column.sql} <> ${parameter}) IS TRUE)` : `(${column.sql} IS NOT NULL)`;
     }
 
-    // Only numbers compare. Decide that before creating any parameter, so none goes unused.
+    // Numbers compare, and so do dates and times. Decide that before creating any parameter, so none goes unused.
     const isNumber = (t: Term) => (t.kind === 'column' ? t.info.kind === 'number' : typeof t.value === 'number');
+    const isTime = (t: Term) => (t.kind === 'column' ? isDateKind(t.info.kind) : timeOf(t.value) !== undefined);
+    if (isTime(a) && isTime(b)) {
+      // A date is the start of its day in UTC, as evaluateCondition takes it.
+      const moment = (t: Term) =>
+        t.kind === 'column'
+          ? t.info.kind === 'date'
+            ? `(${t.sql}::timestamp AT TIME ZONE 'UTC')`
+            : t.sql
+          : sql.param(new Date(timeOf(t.value)!).toISOString(), 'timestamptz');
+      return `((${moment(a)} ${SQL_COMPARISON[op]} ${moment(b)}) IS TRUE)`;
+    }
     if (!isNumber(a) || !isNumber(b)) return 'FALSE';
     const side = (t: Term) => (t.kind === 'column' ? t.sql : sql.param(t.value, 'numeric'));
     return `((${side(a)} ${SQL_COMPARISON[op]} ${side(b)}) IS TRUE)`;
@@ -145,14 +157,21 @@ export function compileCondition(
     const needle = term(needleOperand);
     if (!Array.isArray(haystackOperand)) {
       const haystack = term(haystackOperand as Operand);
-      // Only a list can contain anything, and the only lists records hold are multiple choices.
-      if (haystack.kind === 'literal' || haystack.info.kind !== 'text[]') return 'FALSE';
+      // Only a list can contain anything: a choice of several options, or several records.
+      if (haystack.kind === 'literal' || !isListKind(haystack.info.kind)) return 'FALSE';
+      const ids = haystack.info.kind === 'uuid[]';
       if (needle.kind === 'literal') {
         const value = needle.value;
         if (typeof value !== 'string' || value.includes('\u0000')) return 'FALSE';
-        return `((${sql.param(value, 'text')} = ANY(${haystack.sql})) IS TRUE)`;
+        // A list of records holds only IDs: other text is never in it, and would not even cast.
+        if (ids && !isCanonicalUuid(value)) return 'FALSE';
+        return `((${sql.param(value, ids ? 'uuid' : 'text')} = ANY(${haystack.sql})) IS TRUE)`;
       }
-      return jsTypeOf(needle.info.kind) === 'string' ? `((${needle.sql}::text = ANY(${haystack.sql})) IS TRUE)` : 'FALSE';
+      if (jsTypeOf(needle.info.kind) !== 'string') return 'FALSE';
+      // Text and IDs are both strings: an ID in a list of IDs compares as it is, anything else as text.
+      return ids && needle.info.kind === 'uuid'
+        ? `((${needle.sql} = ANY(${haystack.sql})) IS TRUE)`
+        : `((${needle.sql}::text = ANY(${haystack.sql}::text[])) IS TRUE)`;
     }
 
     const items = (haystackOperand as readonly Operand[]).map(term);
@@ -208,7 +227,7 @@ export function selectExpression(info: FieldInfo, alias = 'r'): string {
 export function fromDatabase(info: FieldInfo, raw: unknown): FieldValue {
   if (raw === null || raw === undefined) return null;
   if (info.kind === 'number') return Number(raw);
-  if (info.kind === 'text[]') return Array.isArray(raw) && raw.length ? (raw as string[]) : null;
+  if (isListKind(info.kind)) return Array.isArray(raw) && raw.length ? (raw as string[]) : null;
   return raw as FieldValue;
 }
 
@@ -231,9 +250,7 @@ export function afterCursor(keys: readonly SortKey[], after: readonly FieldValue
   const column = (key: SortKey) => `${alias}.${ident(key.info.column)}`;
   const equal = (key: SortKey, value: FieldValue) => (value === null ? `${column(key)} IS NULL` : `${column(key)} = ${toDatabase(sql, key.info, value)}`);
   const beyond = (key: SortKey, value: FieldValue) =>
-    value === null
-      ? 'FALSE'
-      : `(${column(key)} ${key.direction === 'asc' ? '>' : '<'} ${toDatabase(sql, key.info, value)} OR ${column(key)} IS NULL)`;
+    value === null ? 'FALSE' : `(${column(key)} ${key.direction === 'asc' ? '>' : '<'} ${toDatabase(sql, key.info, value)} OR ${column(key)} IS NULL)`;
   const branches = keys.map((key, index) => {
     const prefix = keys.slice(0, index).map((k, i) => equal(k, after[i]!));
     return `(${[...prefix, beyond(key, after[index]!)].join(' AND ')})`;

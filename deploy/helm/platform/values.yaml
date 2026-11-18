@@ -51,23 +51,48 @@ config:
   # that a Prod deployment needs, from people who wrote none of its changes.
   CHANGE_APPROVALS: "1"
   DEPLOY_PROD_APPROVALS: "1"
-  # How often skill calls are sent to a7c, and how many tries each gets before it fails for good.
-  SKILL_DISPATCH_INTERVAL_SECONDS: "5"
-  SKILL_CALL_MAX_ATTEMPTS: "12"
   # How often the timers of business processes that are due fire: deadlines, escalations and waits.
   PROCESS_TIMER_INTERVAL_SECONDS: "5"
 
 # Extra environment variables for the API container, in Kubernetes `env` format.
 extraEnv: []
 
-# a7c runs the skills that actions start, for work in other systems. Without a URL, skill calls
-# wait in the outbox until one is set.
-a7c:
-  # a7c's control plane, for example https://a7c.example.com.
+# The model that the studio's chat builds apps with (design §6.5). Without a provider, the chat is
+# off. The API reads the key file at each request, so a renewed Secret needs no restart.
+ai:
+  # anthropic, or empty to leave the chat off.
+  provider: ""
+  # The model's ID at the provider. Ambit names no default: the installation chooses.
+  model: ""
+  # A Secret with the provider's API key under the key `key`.
+  keySecret: ""
+  # A gateway in front of the provider, over https. Empty: the provider's own address.
+  baseUrl: ""
+  # How much effort the model puts into each turn: low, medium, high, xhigh or max; off for a model
+  # that takes no effort setting.
+  effort: high
+  # default: a turn that the model declines goes on with the provider's fallback model. off: for a
+  # model or gateway that refuses the setting.
+  fallback: default
+  # The most turns of the model in one request to the chat.
+  maxTurns: 12
+
+# Email for notices (design §6.12). Without a server, notices stay in the app. The API reads the
+# password file at each sending, so a renewed Secret needs no restart.
+mail:
+  # smtp://mail.example.com:587, which must offer STARTTLS, or smtps://mail.example.com:465. Empty: no email.
   url: ""
-  # A Secret with Ambit's a7c token under the key `token`. Whatever issues the token renews the
-  # Secret; the API reads the file at each call.
-  tokenSecret: ""
+  # The user name on the server, and a Secret with its password under the key `password`.
+  user: ""
+  passwordSecret: ""
+  # Who email comes from.
+  from: "a3t <noreply@example.com>"
+
+# The key that seals the secrets environments keep for their apps' connections and webhooks
+# (design §6.13): a Secret with 32 random bytes, in base64, under the key `key`. Without it,
+# production keeps no such secrets.
+appSecrets:
+  keySecret: ""
 
 telemetry:
   # An OTLP/HTTP endpoint, for example http://otel-collector.observability:4318. Empty disables export.
@@ -124,7 +149,7 @@ networkPolicy:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
   # Where the API may connect: the database, the identity provider, the OTLP collector, the malware
-  # scanner and, over HTTPS, an object store.
+  # scanner, the mail server and, over HTTPS, an object store and the model provider of the studio's chat.
   # Narrow these with `to:` selectors or CIDRs for your environment.
   egress:
     - ports:
@@ -139,6 +164,12 @@ networkPolicy:
     # The malware scanner (clamd).
     - ports:
         - port: 3310
+          protocol: TCP
+    # The mail server, for notices by email.
+    - ports:
+        - port: 587
+          protocol: TCP
+        - port: 465
           protocol: TCP
 
 serviceAccount:

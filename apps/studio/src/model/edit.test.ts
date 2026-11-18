@@ -6,14 +6,15 @@ import {
   addSection,
   changeFieldType,
   emptyDefinition,
+  lineOwner,
   moveField,
   placeField,
-  lineOwner,
   removeEntity,
   removeField,
   removeSection,
   renameEntity,
   rollupChoices,
+  setFormula,
   setRollup,
   toName,
   unplaced,
@@ -56,10 +57,19 @@ describe('editing a draft', () => {
     expect(updateField(definition, entity, 1, { name: 'Bad Name' })).toBe(definition);
   });
 
-  it('drops the old type\'s properties when the type changes', () => {
+  it("drops the old type's properties when the type changes", () => {
     const { definition, entity } = start();
     const changed = changeFieldType(definition, entity, 2, 'text');
-    expect(changed.entities[entity]!.fields[2]).toEqual({ name: 'new_choice', label: 'New choice', required: false, classification: 'internal', type: 'text', maxLength: 1000, multiline: false, unique: false });
+    expect(changed.entities[entity]!.fields[2]).toEqual({
+      name: 'new_choice',
+      label: 'New choice',
+      required: false,
+      classification: 'internal',
+      type: 'text',
+      maxLength: 1000,
+      multiline: false,
+      unique: false,
+    });
   });
 
   it('reorders and removes fields, and takes removed ones off forms', () => {
@@ -71,7 +81,7 @@ describe('editing a draft', () => {
     expect(definition.forms['expense_claim_form']!.sections[0]!.fields.map((f) => f.field)).toEqual(['title', 'new_number']);
   });
 
-  it('renames entities, and the draft\'s forms and links follow', () => {
+  it("renames entities, and the draft's forms and links follow", () => {
     let { definition, entity } = start();
     definition = addForm(definition, entity).definition;
     definition = renameEntity(definition, entity, 'claim');
@@ -91,6 +101,26 @@ describe('editing a draft', () => {
     definition = removeSection(definition, name, 1);
     expect(unplaced(definition, name)).toEqual(['new_number']);
     expect(removeSection(definition, name, 0)).toBe(definition);
+  });
+
+  it('has the action a form runs take each field placed on it, unless the action sets it or the platform works it out', () => {
+    let { definition, entity } = start();
+    const { definition: withForm, name } = addForm(definition, entity);
+    definition = removeSection(addSection(withForm, name, 'More'), name, 0);
+    definition.actions['submit'] = {
+      label: 'Submit',
+      description: '',
+      entity,
+      operation: 'create',
+      input: [],
+      set: { new_choice: 'a' },
+      confirm: 'none',
+    } as unknown as (typeof definition.actions)[string];
+    definition.forms[name]!.action = 'submit';
+    definition = addField(definition, entity, 'number').definition;
+    definition = setFormula(definition, entity, 3, 1);
+    for (const field of ['title', 'new_number', 'new_choice', 'new_number_2']) definition = placeField(definition, name, field, { section: 0, index: 9 });
+    expect(definition.actions['submit']!.input).toEqual(['title', 'new_number']);
   });
 
   it('makes an entity for new lines, and takes it away with them', () => {
@@ -121,5 +151,44 @@ describe('editing a draft', () => {
     d = updateField(d, 'expense_claim_line', 1, { name: 'value' });
     expect(d.entities[entity]!.fields[1]).toMatchObject({ rollup: { sum: 'receipts.value' } });
     expect(setRollup(d, entity, 1, '').entities[entity]!.fields[1]).not.toHaveProperty('rollup');
+  });
+
+  it('works a field out by a formula: forms show it, actions no longer take it, and nobody is asked for it', () => {
+    let { definition: d, entity } = start();
+    d = updateField(d, entity, 0, { name: 'amount', label: 'Amount', required: true, default: 5 });
+    d = addField(d, entity, 'number').definition;
+    d = updateField(d, entity, 2, { name: 'with_tax', label: 'With tax', required: true, default: 1 });
+    d = addForm(d, entity).definition;
+    d.actions['submit'] = {
+      label: 'Submit',
+      description: '',
+      entity,
+      operation: 'create',
+      input: ['amount', 'with_tax'],
+      set: {},
+      confirm: 'none',
+    } as unknown as (typeof d.actions)[string];
+    d = setFormula(d, entity, 2, { mul: [{ ref: 'record.amount' }, 1.09] });
+    expect(d.entities[entity]!.fields[2]).toMatchObject({ formula: { mul: [{ ref: 'record.amount' }, 1.09] }, required: false });
+    expect(d.entities[entity]!.fields[2]).not.toHaveProperty('default');
+    expect(d.forms['expense_claim_form']!.sections[0]!.fields.find((f) => f.field === 'with_tax')).toMatchObject({ readOnly: true });
+    expect(d.actions['submit']!.input).toEqual(['amount']);
+    // People enter it again once it has no formula.
+    expect(setFormula(d, entity, 2, undefined).entities[entity]!.fields[2]).not.toHaveProperty('formula');
+  });
+});
+
+describe('tests', () => {
+  it('adds a test that runs an action that makes a record, as a role that may run it, and takes it out again', async () => {
+    const { addTest, removeTest, givenName, givenOf } = await import('./tests.js');
+    const { EXPENSE_APP } = await import('@platform/app-model');
+    const start = structuredClone(EXPENSE_APP) as unknown as Parameters<typeof addTest>[0];
+    const { definition, name } = addTest(start, 'A requester submits a claim');
+    expect(name).toBe('a_requester_submits_a_claim');
+    expect(definition.tests?.[name]).toMatchObject({ when: { action: 'submit_claim', as: 'requester' }, then: { outcome: 'saved' } });
+    const test = { ...definition.tests![name]!, given: { expense_claim: { entity: 'expense_claim', values: {} } } };
+    expect(givenName(test, 'expense_claim')).toBe('expense_claim_2');
+    expect(givenOf(test, 'expense_claim')).toEqual(['expense_claim']);
+    expect(removeTest(definition, name)).not.toHaveProperty('tests');
   });
 });

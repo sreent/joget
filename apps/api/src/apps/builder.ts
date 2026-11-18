@@ -1,24 +1,25 @@
-import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
 import {
   appRoleId,
   appRoleName,
   dropEnvironment,
   environmentNames,
+  type MigrationPlan,
   NAME_PATTERN,
   planMigration,
   provisionEnvironment,
-  skillStepIssues,
-  validateDefinition,
-  type MigrationPlan,
   type StoredDefinition,
+  validateDefinition,
 } from '@platform/app-model';
-import { appEnvironments, appRevisions, apps, bindings, groups, proposals, users, type Database } from '@platform/db';
+import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
+import { appEnvironments, appRevisions, apps, bindings, type Database, groups, proposals, users } from '@platform/db';
 import { and, count, eq, isNotNull, isNull, like } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
+import { requirePerson } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
-import { conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
-import { isTeamApp, type AppRef, type LoadedApp, type SpaceRow } from './catalog.js';
+import { conflict, HttpError, notFound, unprocessable } from '../errors.js';
+import { planSchedules } from '../flows/schedules.js';
+import { type AppRef, isTeamApp, type LoadedApp, type SpaceRow } from './catalog.js';
 import { pgError as pgCode } from './pg-errors.js';
 import { withAppTransaction, withTransaction } from './transaction.js';
 
@@ -63,17 +64,6 @@ function invalid(issues: readonly { path: string; message: string }[]): HttpErro
   return unprocessable('invalid_definition', 'The definition has problems', { issues });
 }
 
-/**
- * a7c is left out until an installation connects it (A7C_URL): until then a definition that starts
- * a7c skills is refused, rather than queue calls that nothing would ever send.
- */
-export function refuseSkillsWithoutA7c(ctx: AppContext, definition: StoredDefinition): void {
-  if (ctx.config.A7C_URL) return;
-  const issues = skillStepIssues(definition);
-  if (issues.length) throw invalid(issues);
-}
-
-
 /** Creating apps, changing their definitions, sharing and deleting them (design §6). */
 export class AppBuilder {
   readonly #ctx: AppContext;
@@ -109,11 +99,13 @@ export class AppBuilder {
       .from(apps)
       .where(and(eq(apps.spaceId, space.id), eq(apps.status, 'active'), isNull(apps.workingCopyOf)))) as [{ n: number }];
     if (n >= ctx.config.PERSONAL_SPACE_MAX_APPS) {
-      throw unprocessable('too_many_apps', `A personal space holds at most ${ctx.config.PERSONAL_SPACE_MAX_APPS} apps. Delete one, or move it to a team space.`);
+      throw unprocessable(
+        'too_many_apps',
+        `A personal space holds at most ${ctx.config.PERSONAL_SPACE_MAX_APPS} apps. Delete one, or move it to a team space.`,
+      );
     }
     const result = validateDefinition(input.definition ?? {});
     if (!result.ok) throw invalid(result.issues);
-    refuseSkillsWithoutA7c(ctx, result.definition);
     const { appId, plan } = await this.#createSandboxApp(request, auth, space, {
       name: input.name,
       handle,
@@ -122,7 +114,15 @@ export class AppBuilder {
       notes: result.notes,
       action: 'app.create',
     });
-    return { appId, plan: { revision: 1, destructive: false, steps: plan.steps.map(({ kind, description, destructive }) => ({ kind, description, destructive })), notes: [...result.notes] } };
+    return {
+      appId,
+      plan: {
+        revision: 1,
+        destructive: false,
+        steps: plan.steps.map(({ kind, description, destructive }) => ({ kind, description, destructive })),
+        notes: [...result.notes],
+      },
+    };
   }
 
   /**
@@ -202,6 +202,7 @@ export class AppBuilder {
           createdAt: now,
         });
         for (const statement of [...provisionEnvironment(names), ...plan.statements]) await client.query(statement);
+        await planSchedules(db, ctx.org.id, { id: envId, appId, kind: 'sandbox' }, input.definition, now);
         await recordAudit(db, audit, {
           action: input.action,
           target: { type: 'app', id: appId, name: input.name },
@@ -229,7 +230,12 @@ export class AppBuilder {
   }
 
   /** An empty team app, whose content arrives through a change request: for promotion and import (design §3). */
-  async createEmptyTeamApp(request: FastifyRequest, auth: AuthContext, space: SpaceRow, input: { readonly name: string; readonly description?: string; readonly promotedFrom?: string }): Promise<string> {
+  async createEmptyTeamApp(
+    request: FastifyRequest,
+    auth: AuthContext,
+    space: SpaceRow,
+    input: { readonly name: string; readonly description?: string; readonly promotedFrom?: string },
+  ): Promise<string> {
     const handle = handleFrom(input.name);
     if (!NAME_PATTERN.test(handle)) throw unprocessable('invalid_handle', 'Give the app a name that starts with a letter');
     return this.#createTeamApp(request, auth, space, { ...input, handle });
@@ -262,14 +268,30 @@ export class AppBuilder {
           createdAt: now,
           updatedAt: now,
         });
-        await this.#insertRevision(db, appId, 1, definition.definition, planMigration(undefined, definition.definition, environmentNames(appId, 'prod')), [], auth, now);
+        await this.#insertRevision(
+          db,
+          appId,
+          1,
+          definition.definition,
+          planMigration(undefined, definition.definition, environmentNames(appId, 'prod')),
+          [],
+          auth,
+          now,
+        );
         await recordAudit(db, auditScopeFor(request, ctx.org.id, now), {
           action: 'app.create',
           target: { type: 'app', id: appId, name: input.name },
           spaceId: space.id,
           appId,
           changes: {
-            after: { name: input.name, handle: input.handle, revision: 1, digest: digestOf(definition.definition), team: true, ...(input.promotedFrom ? { promotedFrom: input.promotedFrom } : {}) },
+            after: {
+              name: input.name,
+              handle: input.handle,
+              revision: 1,
+              digest: digestOf(definition.definition),
+              team: true,
+              ...(input.promotedFrom ? { promotedFrom: input.promotedFrom } : {}),
+            },
           },
         });
       });
@@ -290,7 +312,6 @@ export class AppBuilder {
     if (isTeamApp(loaded)) throw changeRequestRequired(loaded);
     const result = validateDefinition(input, loaded.definition);
     if (!result.ok) throw invalid(result.issues);
-    refuseSkillsWithoutA7c(this.#ctx, result.definition);
     const names = { schema: loaded.env.schemaName, role: loaded.env.dbRole };
     const migration = planMigration(loaded.definition, result.definition, names);
     const counts = new Map<number, number>();
@@ -341,7 +362,11 @@ export class AppBuilder {
     const ctx = this.#ctx;
     if (isTeamApp(loaded)) throw changeRequestRequired(loaded);
     if (options.baseRevision !== undefined && options.baseRevision !== loaded.app.currentRevision) {
-      throw new HttpError(412, 'revision_mismatch', `The app is at revision ${loaded.app.currentRevision}, not ${options.baseRevision}. Reload it and try again.`);
+      throw new HttpError(
+        412,
+        'revision_mismatch',
+        `The app is at revision ${loaded.app.currentRevision}, not ${options.baseRevision}. Reload it and try again.`,
+      );
     }
     const { definition, migration, plan, revokes } = await this.plan(loaded, input);
     if (migration.destructive) {
@@ -349,9 +374,7 @@ export class AppBuilder {
         throw conflict('destructive_change', 'This change deletes data. Check the plan, then confirm it.', { plan });
       }
       // Agents and scripts may prepare such a change, but only the builder, signed in, can confirm it.
-      if (auth.credential.kind !== 'session') {
-        throw forbidden('session_required', 'A change that deletes data must be confirmed by the builder in an interactive session.', { plan });
-      }
+      requirePerson(auth, 'data.delete', { plan });
     }
     const now = ctx.now();
     const audit = auditScopeFor(request, ctx.org.id, now);
@@ -367,6 +390,7 @@ export class AppBuilder {
           .set({ currentRevision: plan.revision, updatedAt: now, ...(options.syncedTo !== undefined ? { baseRevision: options.syncedTo } : {}) })
           .where(eq(apps.id, loaded.app.id));
         await tx.db.update(appEnvironments).set({ appliedRevision: plan.revision, activeRevision: plan.revision }).where(eq(appEnvironments.id, loaded.env.id));
+        await planSchedules(tx.db, ctx.org.id, { id: loaded.env.id, appId: loaded.app.id, kind: loaded.env.kind }, definition, now);
         for (const bindingId of revokes) {
           await tx.db.update(bindings).set({ revokedAt: now, revokedByType: auth.actor.type, revokedBy: auth.actor.id }).where(eq(bindings.id, bindingId));
         }
@@ -395,6 +419,7 @@ export class AppBuilder {
 
   async remove(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp): Promise<void> {
     const ctx = this.#ctx;
+    requirePerson(auth, 'data.delete');
     if (isTeamApp(loaded)) throw unprocessable('team_app_delete', 'Team apps cannot be deleted yet. A space owner can freeze the space instead.');
     const now = ctx.now();
     const audit = auditScopeFor(request, ctx.org.id, now);
@@ -447,7 +472,10 @@ export class AppBuilder {
     let principal: { type: 'user' | 'group'; id: string };
     if (input.groupId) {
       if (!team) throw unprocessable('groups_in_team_apps', 'Personal apps are shared with named people. Give groups access in a team app.');
-      const [group] = await ctx.db.select({ id: groups.id }).from(groups).where(and(eq(groups.orgId, ctx.org.id), eq(groups.id, input.groupId)));
+      const [group] = await ctx.db
+        .select({ id: groups.id })
+        .from(groups)
+        .where(and(eq(groups.orgId, ctx.org.id), eq(groups.id, input.groupId)));
       if (!group) throw unprocessable('unknown_group', 'No group has that ID');
       principal = { type: 'group', id: group.id };
     } else {
@@ -472,7 +500,10 @@ export class AppBuilder {
         .where(and(eq(bindings.scopeType, 'env'), eq(bindings.scopeId, loaded.env.id), isNull(bindings.revokedAt), isNotNull(bindings.appRoleId)));
       const people = new Set(current.map((row) => row.principalId));
       if (!people.has(principal.id) && people.size >= ctx.config.PERSONAL_APP_MAX_SHARES) {
-        throw unprocessable('too_many_shares', `A personal app can be shared with at most ${ctx.config.PERSONAL_APP_MAX_SHARES} people. Consider moving it to a team space.`);
+        throw unprocessable(
+          'too_many_shares',
+          `A personal app can be shared with at most ${ctx.config.PERSONAL_APP_MAX_SHARES} people. Consider moving it to a team space.`,
+        );
       }
     }
     const now = ctx.now();
@@ -517,7 +548,15 @@ export class AppBuilder {
       const [revoked] = await tx
         .update(bindings)
         .set({ revokedAt: now, revokedByType: auth.actor.type, revokedBy: auth.actor.id })
-        .where(and(eq(bindings.id, bindingId), eq(bindings.scopeType, 'env'), eq(bindings.scopeId, loaded.env.id), isNull(bindings.revokedAt), isNotNull(bindings.appRoleId)))
+        .where(
+          and(
+            eq(bindings.id, bindingId),
+            eq(bindings.scopeType, 'env'),
+            eq(bindings.scopeId, loaded.env.id),
+            isNull(bindings.revokedAt),
+            isNotNull(bindings.appRoleId),
+          ),
+        )
         .returning();
       if (!revoked) throw notFound('Share');
       await recordAudit(tx, auditScopeFor(request, ctx.org.id, now), {
@@ -573,4 +612,3 @@ export async function insertRevision(
     createdAt: input.now,
   });
 }
-

@@ -1,7 +1,8 @@
 import type { PermissionGrant, PermissionSet, QueryExclusion, QueryGrant, Role } from '@platform/authz';
 import { evaluateCondition } from '@platform/authz';
-import type { StoredDefinition, StoredEntity } from './fields.js';
+import { isComputed, type StoredDefinition, type StoredEntity } from './fields.js';
 import { conditionRecord, type LineValues, type RecordValues } from './values.js';
+import { flowWaits } from './waiting.js';
 
 /** The policy ID of an app role. App roles are bound at environment scope. */
 export const appRoleId = (appId: string, role: string): string => `app:${appId}:${role}`;
@@ -17,8 +18,9 @@ export function appRoleName(appId: string, id: string): string | null {
  * becomes one permission set and one role with the same ID:
  *
  * - `app.run` for every role, so its holders can use the app;
- * - `action.run` and `query.run` for the role's actions and queries, and `process.start` for the
- *   processes it may start by hand;
+ * - `action.run` and `query.run` for the role's actions and queries, `process.start` for the
+ *   processes it may start by hand, and `flow.run` for the flows it may run through the API: for
+ *   a flow that waits, `process.start` too, as it runs on a record;
  * - `record.*` grants per entity, with record conditions, field selections and masks. Fields
  *   classified as PII are masked unless the role unmasks them, the fields of lines too.
  *
@@ -34,6 +36,12 @@ export function compileAppPolicy(appId: string, definition: StoredDefinition): {
     for (const action of role.actions) grants.push({ permission: 'action.run', resource: action });
     for (const query of role.queries) grants.push({ permission: 'query.run', resource: query });
     for (const process of role.processes ?? []) grants.push({ permission: 'process.start', resource: process });
+    for (const flow of role.flows ?? []) {
+      grants.push({ permission: 'flow.run', resource: flow });
+      // A flow that waits runs on a record: the role may start it there, as it would a process.
+      const found = definition.flows?.[flow];
+      if (found && flowWaits(found, definition.flows)) grants.push({ permission: 'process.start', resource: flow });
+    }
     for (const [entityName, permissions] of Object.entries(role.entities)) {
       const entity = definition.entities[entityName];
       if (!entity) continue;
@@ -106,7 +114,9 @@ export function covers(grant: PermissionGrant, field: string): boolean {
   const [lines, sub] = splitPath(field);
   if ('include' in grant.fields) {
     const include = grant.fields.include;
-    return sub === undefined ? include.includes(field) || include.some((name) => name.startsWith(`${field}.`)) : include.includes(lines) || include.includes(field);
+    return sub === undefined
+      ? include.includes(field) || include.some((name) => name.startsWith(`${field}.`))
+      : include.includes(lines) || include.includes(field);
   }
   const exclude = grant.fields.exclude;
   return !exclude.includes(field) && !(sub !== undefined && exclude.includes(lines));
@@ -144,11 +154,15 @@ export function excludedBy(exclusions: readonly QueryExclusion[], values: Record
  * the lines field and every field of its lines; changing lines writes just the fields that change.
  */
 export function linesWritten(lineEntity: StoredEntity, field: string, before: readonly LineValues[], after: readonly LineValues[]): string[] {
-  const all = [field, ...lineEntity.fields.map((f) => `${field}.${f.name}`)];
+  // What the platform works out, a line's formulas, nobody writes.
+  const entered = lineEntity.fields.filter((f) => !isComputed(f));
+  const all = [field, ...entered.map((f) => `${field}.${f.name}`)];
   const old = new Map(before.flatMap((line) => (line.id ? [[line.id, line] as const] : [])));
   const kept = after.map((line) => (line.id ? old.get(line.id) : undefined));
   if (kept.some((line) => !line) || before.length !== after.length || before.some((line, i) => line.id !== after[i]!.id)) return all;
-  const changed = lineEntity.fields.filter((f) => after.some((line, i) => JSON.stringify(line.values[f.name] ?? null) !== JSON.stringify(kept[i]!.values[f.name] ?? null)));
+  const changed = entered.filter((f) =>
+    after.some((line, i) => JSON.stringify(line.values[f.name] ?? null) !== JSON.stringify(kept[i]!.values[f.name] ?? null)),
+  );
   return changed.map((f) => `${field}.${f.name}`);
 }
 

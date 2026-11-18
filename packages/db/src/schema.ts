@@ -1,19 +1,5 @@
 import { sql } from 'drizzle-orm';
-import {
-  bigint,
-  boolean,
-  check,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  primaryKey,
-  text,
-  timestamp,
-  uniqueIndex,
-  uuid,
-  type AnyPgColumn,
-} from 'drizzle-orm/pg-core';
+import { type AnyPgColumn, bigint, boolean, check, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 type Json = Record<string, unknown>;
 
@@ -53,6 +39,8 @@ export const users = pgTable(
     /** Out-of-office cover: who takes the tasks that would come to this person, until when. */
     coverId: uuid('cover_id').references((): AnyPgColumn => users.id),
     coverUntil: timestamp('cover_until', tz),
+    /** Whether notices reach the person by email too, as well as in the app. */
+    emailNotices: boolean('email_notices').notNull().default(true),
     createdAt: createdAt(),
     lastLoginAt: timestamp('last_login_at', tz),
   },
@@ -336,9 +324,7 @@ export const apps = pgTable(
   (t) => [
     index('apps_space_idx').on(t.spaceId),
     uniqueIndex('apps_space_handle_uq').on(t.spaceId, t.handle).where(sql`${t.status} = 'active'`),
-    uniqueIndex('apps_one_working_copy_uq')
-      .on(t.workingCopyOf, t.ownerUserId)
-      .where(sql`${t.status} = 'active' and ${t.workingCopyOf} is not null`),
+    uniqueIndex('apps_one_working_copy_uq').on(t.workingCopyOf, t.ownerUserId).where(sql`${t.status} = 'active' and ${t.workingCopyOf} is not null`),
     check('apps_working_copy_has_base', sql`(${t.workingCopyOf} is null) = (${t.baseRevision} is null)`),
     // One promotion of a personal app at a time.
     uniqueIndex('apps_one_promotion_uq').on(t.promotedFrom).where(sql`${t.status} = 'active' and ${t.promotedFrom} is not null`),
@@ -404,9 +390,7 @@ export const appEnvironments = pgTable(
   },
   (t) => [
     uniqueIndex('app_environments_schema_uq').on(t.schemaName),
-    uniqueIndex('app_environments_app_kind_uq')
-      .on(t.appId, t.kind)
-      .where(sql`${t.status} = 'active' and ${t.kind} <> 'preview'`),
+    uniqueIndex('app_environments_app_kind_uq').on(t.appId, t.kind).where(sql`${t.status} = 'active' and ${t.kind} <> 'preview'`),
     uniqueIndex('app_environments_preview_uq').on(t.changeRequestId).where(sql`${t.status} = 'active'`),
     check('app_environments_previews_show_changes', sql`(${t.kind} = 'preview') = (${t.changeRequestId} is not null)`),
   ],
@@ -565,9 +549,7 @@ export const deployments = pgTable(
   },
   (t) => [
     index('deployments_app_idx').on(t.appId, t.requestedAt),
-    uniqueIndex('deployments_one_open_per_env_uq')
-      .on(t.appId, t.environmentKind)
-      .where(sql`${t.status} in ('awaiting_approval', 'approved')`),
+    uniqueIndex('deployments_one_open_per_env_uq').on(t.appId, t.environmentKind).where(sql`${t.status} in ('awaiting_approval', 'approved')`),
   ],
 );
 
@@ -637,57 +619,6 @@ export const proposals = pgTable(
   (t) => [index('proposals_person_idx').on(t.onBehalfOf, t.status), index('proposals_app_idx').on(t.appId)],
 );
 
-/**
- * Calls to a7c skills that actions make (design §6.2). Each is queued in the transaction of the
- * change that makes it, so a call exists exactly when its change commits. A dispatcher then asks
- * a7c to start it, with the call's ID as the idempotency key, so a retry never starts it twice.
- */
-export const skillCalls = pgTable(
-  'skill_calls',
-  {
-    id: uuid('id').primaryKey(),
-    orgId: uuid('org_id')
-      .notNull()
-      .references(() => orgs.id),
-    appId: uuid('app_id')
-      .notNull()
-      .references(() => apps.id),
-    environmentId: uuid('environment_id')
-      .notNull()
-      .references(() => appEnvironments.id),
-    action: text('action').notNull(),
-    /** The record the action wrote. */
-    recordId: uuid('record_id').notNull(),
-    /** Where the step is in the action, such as `steps[2]`. */
-    step: text('step').notNull(),
-    skill: text('skill').notNull(),
-    label: text('label').notNull(),
-    /** The a7c tier that runs it: production for Prod, team for Staging and previews, personal for a sandbox. */
-    tier: text('tier', { enum: ['personal', 'team', 'production'] }).notNull(),
-    input: jsonb('input').$type<Json>().notNull(),
-    /** The person the action ran for. A service account that runs an action for nobody leaves it empty. */
-    onBehalfOf: uuid('on_behalf_of').references(() => users.id),
-    /** The proposal it came from, when a person approved an agent's proposal. */
-    proposalId: uuid('proposal_id').references(() => proposals.id),
-    status: text('status', { enum: ['pending', 'started', 'failed'] })
-      .notNull()
-      .default('pending'),
-    attempts: integer('attempts').notNull().default(0),
-    /** When the dispatcher may try it next. A try in progress holds it for a while, so a crash only delays it. */
-    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
-    lastError: text('last_error'),
-    /** The run that a7c started. */
-    runId: text('run_id'),
-    createdAt: createdAt(),
-    startedAt: timestamp('started_at', tz),
-  },
-  (t) => [
-    index('skill_calls_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'pending'`),
-    index('skill_calls_record_idx').on(t.appId, t.recordId),
-    check('skill_calls_started_when', sql`(${t.status} = 'started') = (${t.startedAt} is not null)`),
-  ],
-);
-
 /*
  * Business processes (design §6.10): instances, the tokens that wait in them, people's tasks,
  * timers and each instance's history. A process advances in the transaction of the change that
@@ -719,6 +650,8 @@ export const processInstances = pgTable(
       .default('running'),
     /** The outcome each user task was last completed with, which conditions read. */
     outcomes: jsonb('outcomes').$type<Record<string, string>>().notNull().default({}),
+    /** How many times each activity that repeats has run so far, in its run: by the run and the element. */
+    loops: jsonb('loops').$type<Record<string, number>>().notNull().default({}),
     /** Who started it: the person whose action started it, or who started it by hand. */
     startedBy: uuid('started_by').references(() => users.id),
     /** The action whose commit started it, if one did. */
@@ -748,9 +681,15 @@ export const processTokens = pgTable(
       .notNull()
       .references(() => processInstances.id, { onDelete: 'cascade' }),
     element: text('element').notNull(),
+    /**
+     * The run of the sub-process it is in: the token that waits at the sub-process while it runs.
+     * Null in the process itself. Each run of a sub-process has its own tokens.
+     */
+    scope: uuid('scope'),
     /** The flow it came by: a parallel gateway waits for a token from each flow in. */
     arrivedBy: text('arrived_by'),
-    state: text('state', { enum: ['waiting', 'stuck'] }).notNull(),
+    /** A complex gateway that went on leaves a fired token, which ends the paths that arrive after, until none can still arrive. */
+    state: text('state', { enum: ['waiting', 'stuck', 'fired'] }).notNull(),
     /** Why it is stuck, for the operator who retries it. */
     error: text('error'),
     /** At a task that several people decide: who votes, in order. */
@@ -802,11 +741,15 @@ export const processTasks = pgTable(
     /** Why it closed without an outcome: a timer, or the instance ending or being cancelled. */
     cancelReason: text('cancel_reason'),
     dueAt: timestamp('due_at', tz),
+    /** When whom it waits for heard that it is due soon, and that it is overdue. */
+    dueSoonNoticeAt: timestamp('due_soon_notice_at', tz),
+    overdueNoticeAt: timestamp('overdue_notice_at', tz),
     createdAt: createdAt(),
     closedAt: timestamp('closed_at', tz),
   },
   (t) => [
     index('process_tasks_open_idx').on(t.environmentId, t.role).where(sql`${t.status} = 'open'`),
+    index('process_tasks_due_idx').on(t.dueAt).where(sql`${t.status} = 'open' and ${t.dueAt} is not null`),
     index('process_tasks_assignee_idx').on(t.assignee).where(sql`${t.status} = 'open'`),
     index('process_tasks_record_idx').on(t.environmentId, t.recordId),
     index('process_tasks_instance_idx').on(t.instanceId),
@@ -846,11 +789,245 @@ export const processTimers = pgTable(
   (t) => [
     index('process_timers_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`),
     index('process_timers_instance_idx').on(t.instanceId),
-    check('process_timers_one_place', sql`(${t.tokenId} is null) <> (${t.taskId} is null)`),
+    // A timer waits on a token, on a task, or on the instance itself: an event sub-process of the process listens for as long as it runs.
+    check('process_timers_one_place', sql`not (${t.tokenId} is not null and ${t.taskId} is not null)`),
   ],
 );
 
 /** What happened in an instance, step by step, for the people in it and its operators. */
+/**
+ * A start that waits for a record: a process with a timer start event starts on the record's date,
+ * or a time after the record was created. One per process, start event and record, and once.
+ */
+export const processStartTimers = pgTable(
+  'process_start_timers',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    process: text('process').notNull(),
+    /** The start event. */
+    element: text('element').notNull(),
+    entity: text('entity').notNull(),
+    recordId: uuid('record_id').notNull(),
+    fireAt: timestamp('fire_at', tz).notNull(),
+    status: text('status', { enum: ['waiting', 'fired', 'cancelled'] })
+      .notNull()
+      .default('waiting'),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    firedAt: timestamp('fired_at', tz),
+  },
+  (t) => [
+    uniqueIndex('process_start_timers_one_uq').on(t.environmentId, t.process, t.element, t.recordId),
+    index('process_start_timers_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`),
+  ],
+);
+
+/**
+ * A flow on a schedule, in one environment of its app: when it runs next. The environment plans it
+ * when its active release changes, and a timer worker runs it once at each time.
+ */
+export const flowSchedules = pgTable(
+  'flow_schedules',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    flow: text('flow').notNull(),
+    /** The schedule it was planned on, so that a change to it plans the next run again. */
+    schedule: jsonb('schedule').$type<Record<string, unknown>>().notNull(),
+    nextRunAt: timestamp('next_run_at', tz).notNull(),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastRunAt: timestamp('last_run_at', tz),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('flow_schedules_one_uq').on(t.environmentId, t.flow), index('flow_schedules_due_idx').on(t.nextAttemptAt)],
+);
+
+/**
+ * What reached a person: a flow told them, or a task came to them, is due soon or is overdue. Each
+ * person sees only their own, until they mark them read. A notice keeps the words it said, which a
+ * flow worked out from the app's records, for as long as notices are kept.
+ */
+export const notices = pgTable(
+  'notices',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    kind: text('kind', { enum: ['inform', 'task_assigned', 'task_due_soon', 'task_overdue'] }).notNull(),
+    title: text('title').notNull(),
+    message: text('message'),
+    /** The record it is about, which it links to, and what it was called then. */
+    entity: text('entity'),
+    recordId: uuid('record_id'),
+    label: text('label'),
+    taskId: uuid('task_id'),
+    createdAt: createdAt(),
+    readAt: timestamp('read_at', tz),
+  },
+  (t) => [index('notices_user_idx').on(t.userId, t.createdAt), index('notices_unread_idx').on(t.userId).where(sql`${t.readAt} is null`)],
+);
+
+/** An email that a notice sends, until a worker has sent it, or given up. */
+export const noticeEmails = pgTable(
+  'notice_emails',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    noticeId: uuid('notice_id')
+      .notNull()
+      .references(() => notices.id, { onDelete: 'cascade' }),
+    address: text('address').notNull(),
+    status: text('status', { enum: ['waiting', 'sent', 'failed'] })
+      .notNull()
+      .default('waiting'),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    sentAt: timestamp('sent_at', tz),
+  },
+  (t) => [index('notice_emails_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`)],
+);
+
+/**
+ * A secret that an environment keeps for its app: what a connection proves who it is with (a
+ * token, a password, a key, or a Teams channel's address), or the key that signs a webhook's
+ * requests. Sealed with the installation's key: the API never shows it again, and a flow never sees it.
+ */
+export const appSecrets = pgTable(
+  'app_secrets',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    kind: text('kind', { enum: ['connection', 'webhook'] }).notNull(),
+    name: text('name').notNull(),
+    /** AES-256-GCM: the key's ID, the nonce, the ciphertext and its tag. */
+    sealed: text('sealed').notNull(),
+    setByType: text('set_by_type', { enum: actorTypes }).notNull(),
+    setBy: uuid('set_by').notNull(),
+    setAt: timestamp('set_at', tz).notNull(),
+  },
+  (t) => [uniqueIndex('app_secrets_one_uq').on(t.environmentId, t.kind, t.name)],
+);
+
+/** A post that a flow's notice makes to a Teams channel, until a worker has posted it, or given up. */
+export const channelPosts = pgTable(
+  'channel_posts',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    /** The Teams connection of the app. */
+    connection: text('connection').notNull(),
+    title: text('title').notNull(),
+    message: text('message'),
+    link: text('link'),
+    status: text('status', { enum: ['waiting', 'sent', 'failed'] })
+      .notNull()
+      .default('waiting'),
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    sentAt: timestamp('sent_at', tz),
+  },
+  (t) => [index('channel_posts_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`)],
+);
+
+/**
+ * A signal that a process or an operator threw, until the timer workers deliver it to every process
+ * of the app's environment that waits for it. Delivery is a transaction of its own, so a signal
+ * never holds up the change that threw it.
+ */
+export const processSignals = pgTable(
+  'process_signals',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    name: text('name').notNull(),
+    /** The record it was thrown for, if any: a process that the signal starts starts on that record. */
+    entity: text('entity'),
+    recordId: uuid('record_id'),
+    /** The instance and the element that threw it. An operator's signal has neither. */
+    instanceId: uuid('instance_id').references(() => processInstances.id, { onDelete: 'set null' }),
+    element: text('element'),
+    /** The person who threw it by hand. */
+    thrownBy: uuid('thrown_by').references(() => users.id),
+    /** What waited for it then hears it: what starts waiting later doesn't. */
+    thrownAt: timestamp('thrown_at', tz).notNull(),
+    status: text('status', { enum: ['waiting', 'delivered'] })
+      .notNull()
+      .default('waiting'),
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    deliveredAt: timestamp('delivered_at', tz),
+    /** How many instances heard it, and how many processes it started. */
+    heard: integer('heard'),
+    started: integer('started'),
+  },
+  (t) => [index('process_signals_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`)],
+);
+
 export const processEvents = pgTable(
   'process_events',
   {
@@ -871,9 +1048,18 @@ export const processEvents = pgTable(
         'reassigned',
         'timer_fired',
         'message',
+        'condition',
         'ran',
         'error_caught',
-        'skill_queued',
+        'signalled',
+        'signal',
+        'escalated',
+        'repeated',
+        'compensated',
+        'transaction_cancelled',
+        'sent',
+        'checked',
+        'reached',
         'entered',
         'exited',
         'called',
@@ -942,9 +1128,7 @@ export const auditEvents = pgTable(
      * Database wall-clock time of the insert (clock_timestamp(), not the transaction start), so it
      * follows insertion order. Used by the sealer's safety window; not part of the digest.
      */
-    recordedAt: timestamp('recorded_at', tz)
-      .notNull()
-      .default(sql`clock_timestamp()`),
+    recordedAt: timestamp('recorded_at', tz).notNull().default(sql`clock_timestamp()`),
     orgId: uuid('org_id').notNull(),
     spaceId: uuid('space_id'),
     appId: uuid('app_id'),

@@ -1,4 +1,4 @@
-import { TEMPLATES, type StoredDefinition, validateDefinition } from '@platform/app-model';
+import { type StoredDefinition, TEMPLATES, validateDefinition } from '@platform/app-model';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -9,7 +9,7 @@ import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import type { Delivery } from '../delivery/service.js';
 import { notFound, unprocessable } from '../errors.js';
-import { digestOf, type AppBuilder } from './builder.js';
+import { type AppBuilder, digestOf } from './builder.js';
 import { appResource } from './resources.js';
 import { describeApp } from './routes.js';
 import type { AppRuntime } from './runtime.js';
@@ -45,35 +45,37 @@ function entitiesOf(definition: (typeof TEMPLATES)[number]['definition']): strin
 export function bundleRoutes(ctx: AppContext, builder: AppBuilder, delivery: Delivery, runtime: AppRuntime): FastifyPluginAsyncZod {
   return async (app) => {
     app.get(
-      '/v1/features',
-      {
-        config: { access: { kind: 'authenticated' } },
-        schema: {
-          tags: ['apps'],
-          summary: 'What this installation offers builders: whether it connects a7c, so actions can start a7c skills',
-          response: { 200: z.object({ a7c: z.boolean() }) },
-        },
-      },
-      async () => ({ a7c: Boolean(ctx.config.A7C_URL) }),
-    );
-
-    app.get(
       '/v1/templates',
       {
         config: { access: { kind: 'authenticated' } },
         schema: {
           tags: ['apps'],
           summary: 'The apps a builder can start from, besides a blank one',
-          response: { 200: z.object({ templates: z.array(z.object({ id: z.string(), name: z.string(), description: z.string(), entities: z.array(z.string()) })) }) },
+          response: {
+            200: z.object({ templates: z.array(z.object({ id: z.string(), name: z.string(), description: z.string(), entities: z.array(z.string()) })) }),
+          },
         },
       },
-      async () => ({ templates: TEMPLATES.map((template) => ({ id: template.id, name: template.name, description: template.description, entities: entitiesOf(template.definition) })) }),
+      async () => ({
+        templates: TEMPLATES.map((template) => ({
+          id: template.id,
+          name: template.name,
+          description: template.description,
+          entities: entitiesOf(template.definition),
+        })),
+      }),
     );
 
     app.get(
       '/v1/apps/:appId/export',
       {
-        config: { access: { kind: 'permission', action: 'app.export', resource: async (request: FastifyRequest) => appResource(ctx.org.id, await ctx.apps.ref((request.params as { appId: string }).appId)) } },
+        config: {
+          access: {
+            kind: 'permission',
+            action: 'app.export',
+            resource: async (request: FastifyRequest) => appResource(ctx.org.id, await ctx.apps.ref((request.params as { appId: string }).appId)),
+          },
+        },
         schema: {
           tags: ['apps'],
           summary: "Download an app's definition as a file: its main line, never its data. Import it again, here or elsewhere",
@@ -164,7 +166,13 @@ export function bundleRoutes(ctx: AppContext, builder: AppBuilder, delivery: Del
 
         if (space.kind === 'personal') {
           const { appId, plan } = await builder.create(request, auth, space, { name, ...(description ? { description } : {}), definition });
-          await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), { action: 'app.import', target: { type: 'app', id: appId, name }, spaceId: space.id, appId, reason: source });
+          await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
+            action: 'app.import',
+            target: { type: 'app', id: appId, name },
+            spaceId: space.id,
+            appId,
+            reason: source,
+          });
           return reply.status(201).send({ app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(appId)), plan, changeRequest: null, asExported });
         }
         const brought = await delivery.bringIn(request, auth, space, {
@@ -172,7 +180,10 @@ export function bundleRoutes(ctx: AppContext, builder: AppBuilder, delivery: Del
           description,
           definition,
           title: templateId !== undefined ? `Start ${name} from a template` : `Bring in ${name} from a file`,
-          body: templateId !== undefined ? `${name} starts from the ${templateId} template.` : `${name} starts from an exported definition${asExported === false ? ', changed since it was exported' : ''}. No data comes with it.`,
+          body:
+            templateId !== undefined
+              ? `${name} starts from the ${templateId} template.`
+              : `${name} starts from an exported definition${asExported === false ? ', changed since it was exported' : ''}. No data comes with it.`,
         });
         await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {
           action: 'app.import',

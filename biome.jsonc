@@ -1,0 +1,68 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.8/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    // Ocean's icons come as scripts/sync-ocean.mjs writes them.
+    "includes": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.mjs", "!packages/design/src/icons.ts"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 160
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      // noUncheckedIndexedAccess makes each read by a key optional: the code asserts one with ! where a check before it holds.
+      "style": {
+        "noNonNullAssertion": "off"
+      },
+      // A key in brackets reads a record of names, such as the arguments of a tool: a dot reads a known property.
+      "complexity": {
+        "useLiteralKeys": "off"
+      },
+      "a11y": {
+        // A label that holds one of the studio's own inputs is a label of a control.
+        "noLabelWithoutControl": { "level": "error", "options": { "inputComponents": ["Select", "TextInput"] } }
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        // A decision's steps and a test's outcome are named then, as in the definition format.
+        "noThenProperty": "off",
+        // Lists that the builder edits in place, such as the clauses of a condition, have no IDs: their place is their identity.
+        "noArrayIndexKey": "off"
+      }
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "overrides": [
+    {
+      // Tests read JSON answers loosely.
+      "includes": ["**/test/**", "**/*.test.ts", "**/*.test.tsx"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          }
+        }
+      }
+    }
+  ]
+}

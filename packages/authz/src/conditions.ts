@@ -8,8 +8,21 @@
  * Semantics are deliberately strict: a reference to a missing value never equals anything, never
  * compares, and is never `in` a list. Only `not` and `exists` can turn a missing value into `true`.
  * Non-finite numbers (NaN, Infinity) count as missing values.
+ *
+ * Numbers compare, and so do dates and times: ISO 8601 text, such as `2026-11-18` or
+ * `2026-11-18T09:30:00Z`, where a date is the start of its day in UTC. `{ today: n }` is the date
+ * `n` days from today, and `{ now: n }` the time `n` hours from now, in UTC; `n` may be negative.
  */
-export type Operand = string | number | boolean | null | { readonly ref: string };
+export type Operand = string | number | boolean | null | { readonly ref: string } | RelativeTime;
+
+/** A date or a time worked out from the clock when the condition is evaluated. */
+export type RelativeTime = { readonly today: number } | { readonly now: number };
+
+/**
+ * Where an environment may carry the time to evaluate against, as a Date or ISO text. Without it,
+ * the clock's time. It can't clash with a reference, which starts with a letter.
+ */
+export const CLOCK = '$now';
 
 export type Condition =
   | { readonly all: readonly Condition[] }
@@ -40,7 +53,39 @@ type BinaryOperator = (typeof BINARY)[number];
 const MAX_DEPTH = 32;
 
 export function isRef(operand: Operand): operand is { readonly ref: string } {
-  return typeof operand === 'object' && operand !== null;
+  return typeof operand === 'object' && operand !== null && 'ref' in operand;
+}
+
+/** True for a date or a time relative to the clock. */
+export function isRelativeTime(operand: Operand): operand is RelativeTime {
+  return typeof operand === 'object' && operand !== null && ('today' in operand || 'now' in operand);
+}
+
+/** The time an environment carries, or the clock's. */
+function clockOf(env: ConditionEnv): Date {
+  const given = env[CLOCK];
+  if (given instanceof Date) return given;
+  if (typeof given === 'string' && !Number.isNaN(Date.parse(given))) return new Date(given);
+  return new Date();
+}
+
+/** A relative date or time as the ISO text that a field holds: a date for `today`, a time for `now`. */
+export function relativeValue(operand: RelativeTime, now: Date): string {
+  if ('today' in operand) {
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + operand.today));
+    return day.toISOString().slice(0, 10);
+  }
+  return new Date(now.getTime() + operand.now * 3_600_000).toISOString();
+}
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** The moment ISO text names, in milliseconds, or undefined if it names none: a date is the start of its day in UTC. */
+export function timeOf(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (DATE.test(value)) return Date.parse(`${value}T00:00:00Z`);
+  return DATE_TIME.test(value) ? Date.parse(value) : undefined;
 }
 
 function resolve(env: ConditionEnv, path: string): Value {
@@ -53,8 +98,9 @@ function resolve(env: ConditionEnv, path: string): Value {
   return current;
 }
 
-function valueOf(operand: Operand, env: ConditionEnv): Value {
-  return isRef(operand) ? resolve(env, operand.ref) : operand;
+function operandValue(operand: Operand, env: ConditionEnv): Value {
+  if (isRef(operand)) return resolve(env, operand.ref);
+  return isRelativeTime(operand) ? relativeValue(operand, clockOf(env)) : operand;
 }
 
 function isScalar(value: Value): value is string | number | boolean | null {
@@ -67,16 +113,18 @@ function binary(op: BinaryOperator, a: Value, b: Value): boolean {
     if (a === MISSING || b === MISSING || !isScalar(a) || !isScalar(b)) return false;
     return op === 'eq' ? a === b : a !== b;
   }
-  if (typeof a !== 'number' || typeof b !== 'number') return false;
+  // Numbers compare; so do dates and times, by the moments they name.
+  const [x, y] = typeof a === 'number' && typeof b === 'number' ? [a, b] : [timeOf(a), timeOf(b)];
+  if (x === undefined || y === undefined || Number.isNaN(x) || Number.isNaN(y)) return false;
   switch (op) {
     case 'lt':
-      return a < b;
+      return x < y;
     case 'lte':
-      return a <= b;
+      return x <= y;
     case 'gt':
-      return a > b;
+      return x > y;
     case 'gte':
-      return a >= b;
+      return x >= y;
   }
 }
 
@@ -99,14 +147,14 @@ export function evaluateCondition(condition: Condition, env: ConditionEnv): bool
   if ('in' in condition) {
     const [needle, haystack] = condition.in;
     const items: Value = Array.isArray(haystack)
-      ? (haystack as readonly Operand[]).map((operand) => valueOf(operand, env))
-      : valueOf(haystack as Operand, env);
-    return member(valueOf(needle, env), items);
+      ? (haystack as readonly Operand[]).map((operand) => operandValue(operand, env))
+      : operandValue(haystack as Operand, env);
+    return member(operandValue(needle, env), items);
   }
   const op = binaryOperator(condition);
   if (!op) return false;
   const [left, right] = (condition as Record<BinaryOperator, readonly [Operand, Operand]>)[op];
-  return binary(op, valueOf(left, env), valueOf(right, env));
+  return binary(op, operandValue(left, env), operandValue(right, env));
 }
 
 /** True if a reference points into one of the pending roots, for example `record.status` for `record`. */
@@ -119,7 +167,7 @@ type Partial = { readonly pending: true; readonly operand: Operand } | { readonl
 
 function substitute(operand: Operand, env: ConditionEnv, pending: readonly string[]): Partial {
   if (isRef(operand) && isPendingRef(operand.ref, pending)) return { pending: true, operand };
-  return { pending: false, value: valueOf(operand, env) };
+  return { pending: false, value: operandValue(operand, env) };
 }
 
 /** A known value as a literal operand. Only called for present scalars. */
@@ -175,7 +223,7 @@ export function partialEvaluate(condition: Condition, env: ConditionEnv, pending
   for (const side of [a, b]) {
     if (side.pending) continue;
     if (side.value === MISSING) return false;
-    if (op === 'eq' || op === 'ne' ? !isScalar(side.value) : typeof side.value !== 'number') return false;
+    if (op === 'eq' || op === 'ne' ? !isScalar(side.value) : typeof side.value !== 'number' && timeOf(side.value) === undefined) return false;
   }
   const operand = (side: Partial): Operand => (side.pending ? side.operand : literal(side.value));
   return { [op]: [operand(a), operand(b)] } as unknown as Condition;
@@ -216,9 +264,10 @@ function partialIn(args: readonly [Operand, Operand | readonly Operand[]], env: 
 export function conditionRefs(condition: Condition): string[] {
   const refs = new Set<string>();
   const visit = (c: Condition): void => {
-    if ('all' in c) return c.all.forEach(visit);
-    if ('any' in c) return c.any.forEach(visit);
-    if ('not' in c) return visit(c.not);
+    if ('all' in c || 'any' in c || 'not' in c) {
+      for (const each of 'all' in c ? c.all : 'any' in c ? c.any : [c.not]) visit(each);
+      return;
+    }
     if ('exists' in c) {
       refs.add(c.exists);
       return;
@@ -242,12 +291,12 @@ function isOperand(value: unknown): value is Operand {
   if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
     return typeof value !== 'number' || Number.isFinite(value);
   }
-  return (
-    typeof value === 'object' &&
-    Object.keys(value as object).length === 1 &&
-    typeof (value as { ref?: unknown }).ref === 'string' &&
-    (value as { ref: string }).ref.length > 0
-  );
+  if (typeof value !== 'object' || Object.keys(value as object).length !== 1) return false;
+  const object = value as Record<string, unknown>;
+  // Ten years either way, in days or in hours.
+  if ('today' in object) return Number.isInteger(object['today']) && Math.abs(object['today'] as number) <= 3650;
+  if ('now' in object) return Number.isInteger(object['now']) && Math.abs(object['now'] as number) <= 87_600;
+  return typeof object['ref'] === 'string' && (object['ref'] as string).length > 0;
 }
 
 /** Validate untrusted JSON (for example, read from the database) as a condition. */
@@ -266,18 +315,8 @@ export function isCondition(value: unknown, depth = 0): value is Condition {
     case 'exists':
       return typeof arg === 'string' && arg.length > 0;
     case 'in':
-      return (
-        Array.isArray(arg) &&
-        arg.length === 2 &&
-        isOperand(arg[0]) &&
-        (isOperand(arg[1]) || (Array.isArray(arg[1]) && arg[1].every(isOperand)))
-      );
+      return Array.isArray(arg) && arg.length === 2 && isOperand(arg[0]) && (isOperand(arg[1]) || (Array.isArray(arg[1]) && arg[1].every(isOperand)));
     default:
-      return (
-        (BINARY as readonly string[]).includes(key) &&
-        Array.isArray(arg) &&
-        arg.length === 2 &&
-        arg.every(isOperand)
-      );
+      return (BINARY as readonly string[]).includes(key) && Array.isArray(arg) && arg.length === 2 && arg.every(isOperand);
   }
 }

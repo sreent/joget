@@ -1,19 +1,19 @@
-import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   deleteRecord,
-  environmentNames,
   EXPENSE_APP,
+  environmentNames,
   insertRecord,
   parseLines,
   planMigration,
   provisionEnvironment,
+  type StoredDefinition,
+  type StoredLine,
   selectLines,
   validateDefinition,
   writeLines,
-  type StoredDefinition,
-  type StoredLine,
 } from '@platform/app-model';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
  * Lines in a real PostgreSQL: they keep their order, a write touches only what differs, they go
@@ -43,7 +43,10 @@ async function lines(parent = CLAIM): Promise<StoredLine[]> {
 async function write(current: StoredLine[], next: StoredLine[]) {
   for (const statement of writeLines(names, lineEntity(), CLAIM, current, next)) await client.query(statement.text, statement.values as unknown[]);
 }
-const line = (n: number, merchant: string, amount: number): StoredLine => ({ id: id(n), values: { date: '2026-11-02', merchant, category: 'travel', amount, receipt: null } });
+const line = (n: number, merchant: string, amount: number): StoredLine => ({
+  id: id(n),
+  values: { date: '2026-11-02', merchant, category: 'travel', amount, receipt: null },
+});
 
 beforeAll(async () => {
   const url = process.env['TEST_DATABASE_URL'];
@@ -53,7 +56,13 @@ beforeAll(async () => {
   await client.query('begin');
   definition = valid(EXPENSE_APP);
   for (const statement of [...provisionEnvironment(names), ...planMigration(undefined, definition, names).statements]) await client.query(statement);
-  const claim = insertRecord(names, definition.entities['expense_claim']!, { id: CLAIM, owner: USER, actor: USER, at: '2026-11-15T00:00:00.000Z', values: { title: 'Trip', status: 'draft' } });
+  const claim = insertRecord(names, definition.entities['expense_claim']!, {
+    id: CLAIM,
+    owner: USER,
+    actor: USER,
+    at: '2026-11-15T00:00:00.000Z',
+    values: { title: 'Trip', status: 'draft' },
+  });
   await client.query(claim.text, claim.values as unknown[]);
 });
 
@@ -85,7 +94,9 @@ describe('lines in PostgreSQL', () => {
     for (const statement of plan.statements) await client.query(statement);
     const column = `f_${counted.entities['expense_claim']!.fields.find((f) => f.name === 'receipts')!.id}`;
     const total = `f_${counted.entities['expense_claim']!.fields.find((f) => f.name === 'total')!.id}`;
-    const { rows } = await client.query(`select "${column}"::int as receipts, "${total}" as total from "${names.schema}"."e_${counted.entities['expense_claim']!.id}"`);
+    const { rows } = await client.query(
+      `select "${column}"::int as receipts, "${total}" as total from "${names.schema}"."e_${counted.entities['expense_claim']!.id}"`,
+    );
     // The total was never written here, so it is still empty: rollups are worked out on writes, and when they change.
     expect(rows).toEqual([{ receipts: 1, total: null }]);
     definition = counted;

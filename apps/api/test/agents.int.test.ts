@@ -3,7 +3,7 @@ import { apiTokens, auditEvents, proposals } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Agents act for one named person (design §6.4): a Security admin approves an agent and caps
@@ -47,13 +47,22 @@ async function rpc(token: string, method: string, params: Record<string, unknown
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
-  const created = await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } }, 201);
+  const created = await inject(
+    { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } },
+    201,
+  );
   appId = created.json().app.id;
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
   const team = await inject({ method: 'POST', url: '/v1/spaces', ...as(alice), payload: { name: 'Agents', coOwnerUserIds: [carol.userId] } }, 201);
-  const account = await inject({ method: 'POST', url: `/v1/spaces/${team.json().id}/service-accounts`, ...as(alice), payload: { name: 'agentos', description: 'The company assistant' } }, 201);
+  const account = await inject(
+    { method: 'POST', url: `/v1/spaces/${team.json().id}/service-accounts`, ...as(alice), payload: { name: 'agentos', description: 'The company assistant' } },
+    201,
+  );
   agentId = account.json().id;
-  const token = await inject({ method: 'POST', url: `/v1/service-accounts/${agentId}/tokens`, ...as(alice), payload: { name: 'agentos', scopes: ['space.read'], expiresInDays: 30 } }, 201);
+  const token = await inject(
+    { method: 'POST', url: `/v1/service-accounts/${agentId}/tokens`, ...as(alice), payload: { name: 'agentos', scopes: ['space.read'], expiresInDays: 30 } },
+    201,
+  );
   agentToken = token.json().token;
 });
 
@@ -71,7 +80,10 @@ describe('approving an agent', () => {
   it('lets only a Security admin approve it, with capped scopes', async () => {
     const payload = { scopes: ['app.run', 'action.run', 'query.run'], justification: 'Company assistant in Teams' };
     await inject({ method: 'PUT', url: `/v1/service-accounts/${agentId}/agent`, ...as(bob), payload }, 403);
-    const tooMuch = await inject({ method: 'PUT', url: `/v1/service-accounts/${agentId}/agent`, ...as(alice), payload: { ...payload, scopes: ['access.binding.manage'] } }, 400);
+    const tooMuch = await inject(
+      { method: 'PUT', url: `/v1/service-accounts/${agentId}/agent`, ...as(alice), payload: { ...payload, scopes: ['access.binding.manage'] } },
+      400,
+    );
     expect(tooMuch.json().error).toBe('invalid_request');
     const approved = await inject({ method: 'PUT', url: `/v1/service-accounts/${agentId}/agent`, ...as(alice), payload }, 200);
     expect(approved.json().agent).toMatchObject({ scopes: ['action.run', 'app.run', 'query.run'], approvedBy: alice.userId });
@@ -86,7 +98,12 @@ describe('acting for one named person', () => {
     expect(response.statusCode, response.body).toBe(200);
     expect(response.headers['cache-control']).toBe('no-store');
     const body = response.json();
-    expect(body).toMatchObject({ token_type: 'Bearer', issued_token_type: 'urn:ietf:params:oauth:token-type:access_token', expires_in: 600, scope: 'action.run app.run query.run' });
+    expect(body).toMatchObject({
+      token_type: 'Bearer',
+      issued_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+      expires_in: 600,
+      scope: 'action.run app.run query.run',
+    });
     expect(body.access_token).toMatch(/^plt_dlg_/);
     delegated = body.access_token;
     const me = (await inject({ method: 'GET', url: '/v1/me', ...bearer(delegated) }, 200)).json();
@@ -103,7 +120,9 @@ describe('acting for one named person', () => {
     const broad = await exchange(agentToken, { subject_token: 'idtoken:bob', scope: 'app.run record.read' });
     expect(broad.json()).toMatchObject({ error: 'invalid_scope' });
     // Neither a person's own token nor a delegated token can exchange.
-    const pat = (await inject({ method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'mine', scopes: ['app.run'], expiresInDays: 1 } }, 201)).json().token;
+    const pat = (
+      await inject({ method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'mine', scopes: ['app.run'], expiresInDays: 1 } }, 201)
+    ).json().token;
     expect((await exchange(pat, { subject_token: 'idtoken:carol' })).json()).toMatchObject({ error: 'unauthorized_client' });
     expect((await exchange(delegated, { subject_token: 'idtoken:carol' })).json()).toMatchObject({ error: 'unauthorized_client' });
   });
@@ -121,7 +140,10 @@ describe('acting for one named person', () => {
     const proposalId = call.result.structuredContent.proposal.id;
     const [row] = await t.ctx.db.select().from(proposals).where(eq(proposals.id, proposalId));
     expect(row).toMatchObject({ proposedByType: 'service_account', proposedBy: agentId, onBehalfOf: bob.userId });
-    const [event] = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'proposal.create'), eq(auditEvents.appId, appId)));
+    const [event] = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'proposal.create'), eq(auditEvents.appId, appId)));
     expect(event!.actor).toMatchObject({ type: 'service_account', id: agentId, via: 'mcp', onBehalfOf: bob.userId });
 
     const page = await inject({ method: 'GET', url: `/review/${proposalId}`, ...as(bob) }, 200);
@@ -129,7 +151,9 @@ describe('acting for one named person', () => {
 
     // The agent can't approve, mint tokens, or touch records directly.
     const digest = row!.digest;
-    expect((await inject({ method: 'POST', url: `/v1/proposals/${proposalId}/approve`, ...bearer(delegated), payload: { digest } }, 403)).json().error).toBe('session_required');
+    expect((await inject({ method: 'POST', url: `/v1/proposals/${proposalId}/approve`, ...bearer(delegated), payload: { digest } }, 403)).json().error).toBe(
+      'session_required',
+    );
     await inject({ method: 'POST', url: '/v1/me/tokens', ...bearer(delegated), payload: { name: 'x', scopes: ['app.run'], expiresInDays: 1 } }, 403);
     await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records`, ...bearer(delegated) }, 403);
 
