@@ -11,6 +11,7 @@ import type { AppRuntime } from '../apps/runtime.js';
 import { ActionResultOut, AppParams, EnvQuery } from '../apps/schemas.js';
 import type { AppContext } from '../context.js';
 import { unprocessable } from '../errors.js';
+import { plannedRun } from '../flows/schedules.js';
 import type { ProcessEngine } from './engine.js';
 import { reassignTask, requireOperator, type Operation } from './operators.js';
 
@@ -225,13 +226,15 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         config: { access: { kind: 'authenticated' } },
         schema: {
           tags: ['processes'],
-          summary: 'Where the cases of a flow that waits are now: how many wait at each step, how many are stuck there, and since when the first of them has waited',
+          summary:
+            'Where the cases of a flow that waits are now: how many wait at each step, how many are stuck there, and since when the first of them has waited. For a flow on a schedule, when it runs next',
           params: AppParams.extend({ flow: z.string().regex(NAME_PATTERN) }),
           querystring: EnvQuery,
           response: {
             200: z.object({
               running: z.int(),
               steps: z.array(z.object({ path: z.string(), waiting: z.int(), stuck: z.int(), since: z.string() })),
+              schedule: z.object({ nextRunAt: z.string(), lastRunAt: z.string().nullable(), lastError: z.string().nullable() }).optional(),
             }),
           },
         },
@@ -239,7 +242,8 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
       async (request) => {
         const loaded = await theApp(request);
         await operate(request, loaded, 'ops.monitor.read');
-        return engine.live(loaded, request.params.flow);
+        const schedule = await plannedRun(ctx.db, loaded.env.id, request.params.flow);
+        return { ...(await engine.live(loaded, request.params.flow)), ...(schedule ? { schedule } : {}) };
       },
     );
 

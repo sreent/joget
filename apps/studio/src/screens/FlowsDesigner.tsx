@@ -4,6 +4,7 @@ import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, ty
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
+import { DateShift, DurationInput } from '../components/duration.js';
 import { Icon, type IconName } from '../components/icon.js';
 import { Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type RefChoice } from '../model/conditions.js';
@@ -16,6 +17,7 @@ import {
   layoutFlow,
   listChoices,
   liveWords,
+  startsWords,
   moveStep,
   newStep,
   recordVariables,
@@ -35,8 +37,8 @@ import {
   type CanvasNode,
   type StepType,
 } from '../model/flows.js';
-import { durationOf, durationParts } from '../model/waits.js';
 import type { Definition, Field as FieldDef, FlowLive } from '../types.js';
+import { HowItStarts } from './FlowStarts.js';
 import { ValueEditor, type ValueMode, type ValueSources } from './StepsEditor.js';
 
 /*
@@ -213,7 +215,8 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
                   select(null);
                 }}
               />
-              {flowWaits(flow, definition.flows) ? <HowItStarts definition={definition} name={name} /> : <TryFlow appId={appId} definition={definition} name={name} flow={flow} dirty={dirty} />}
+              <HowItStarts appId={appId} definition={definition} name={name} readOnly={readOnly} dirty={dirty} onChange={onChange} />
+              {flowWaits(flow, definition.flows) ? null : <TryFlow appId={appId} definition={definition} name={name} flow={flow} dirty={dirty} />}
               <EarlierProcesses definition={definition} readOnly={readOnly} onChange={onChange} />
             </>
           )}
@@ -225,8 +228,9 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
   );
 }
 
-/** Whether a list of steps is inside a loop or an error handler, where a flow can't wait yet. */
+/** Whether a list of steps is inside a loop over a list, an error handler or a reminder, where a flow can't wait. */
 function insideLoop(flow: AppFlow, list: string): boolean {
+  if (list.includes('.reminders[')) return true;
   const holders = [...list.matchAll(/\]/g)].map((match) => list.slice(0, match.index + 1));
   return holders.some((holder) => {
     const type = /\]$/.test(holder) && /^steps(\[\d+\]\.[a-z_]+)*\[\d+\]$/.test(holder) ? stepAt(flow, holder)?.type : undefined;
@@ -369,16 +373,25 @@ function LiveChip({ live }: { live: Live | undefined }) {
   return live ? <span className={cx('logic-live', live.stuck > 0 && 'text-bad')}>{liveWords(live)}</span> : null;
 }
 
-const FRAME_ICONS: Readonly<Partial<Record<StepType, IconName>>> = { each: 'sync', try: 'guard', first_of: 'wait', all_at_once: 'studio' };
+const FRAME_ICONS: Readonly<Partial<Record<StepType, IconName>>> = { each: 'sync', repeat: 'sync', try: 'guard', first_of: 'wait', all_at_once: 'studio' };
 
 function FrameNode({ data }: NodeProps<FlowNode>) {
   const { node, selected } = data;
   return (
     <div className={cx('logic-frame', selected && 'ring-2 ring-focus')}>
-      <button type="button" className="logic-frame-head nodrag" onClick={() => node.path && data.onSelect(node.path)} data-testid={`flow-step-${node.path}`}>
+      {/* Its words stop short of the fold button, and say the rest when pointed at. */}
+      <button
+        type="button"
+        className="logic-frame-head nodrag max-w-[calc(100%-4rem)] overflow-hidden"
+        title={node.about ? `${node.label} · ${node.about}` : node.label}
+        onClick={() => node.path && data.onSelect(node.path)}
+        data-testid={`flow-step-${node.path}`}
+      >
         <Icon name={FRAME_ICONS[node.step?.type ?? 'each'] ?? 'sync'} />
-        {node.label}
-        {node.about ? <span className="note"> · {node.about}</span> : null}
+        <span className="truncate">
+          {node.label}
+          {node.about ? <span className="note"> · {node.about}</span> : null}
+        </span>
       </button>
       <button
         type="button"
@@ -634,6 +647,7 @@ function FlowListing(props: {
             ? `${starts.map((action) => action.label).join(', ')}, as it saves its record`
             : `An action, a role or another flow that runs it${Object.keys(flow.input).length ? `, with ${Object.keys(flow.input).join(', ')}` : ''}`}
         </p>
+        {flow.schedule || flow.starts?.length ? <p className="m-0 text-sm text-muted">It also starts by itself: {startsWords(definition, flow)}.</p> : null}
       </section>
       <section>
         <h2>Its steps, in order</h2>
@@ -684,11 +698,13 @@ function sourcesFor(definition: Definition, scope: ReadonlyMap<string, VarKind>)
   return {
     all: choices.map((choice) => ({ ref: choice.ref, label: choice.label })),
     numbers: choices.filter((choice) => choice.kind === 'number').map((choice) => ({ ref: choice.ref, label: choice.label })),
+    dates: choices.filter((choice) => choice.kind === 'date').map((choice) => ({ ref: choice.ref, label: choice.label })),
+    choices,
     label: 'A variable',
   };
 }
 
-const ANY_VALUE: readonly ValueMode[] = ['fixed', 'field', 'calc', 'join', 'person', 'today', 'now'];
+const ANY_VALUE: readonly ValueMode[] = ['fixed', 'field', 'calc', 'join', 'person', 'today', 'now', 'shift', 'between', 'choose', 'text', 'first'];
 
 function StepEditor(props: { definition: Definition; name: string; path: string; readOnly: boolean; onChange: (definition: Definition) => void; onRemoved: () => void; onMoved: (path: string) => void; onClosed: () => void }) {
   const { definition, name, path, readOnly, onChange } = props;
@@ -890,6 +906,16 @@ function StepFields(props: {
       );
     case 'if':
       return <ConditionEditor label="If" value={step.when} choices={variables} compareWith={[THE_PERSON, ...variables]} onChange={(when) => set({ ...step, when: when ?? step.when })} />;
+    case 'repeat':
+      return (
+        <>
+          <ConditionEditor label="Repeat while" value={step.while} choices={variables} compareWith={[THE_PERSON, ...variables]} onChange={(when) => set({ ...step, while: when ?? step.while })} />
+          <Field label="At most" hint="It stops after this many times, even if the condition still holds.">
+            {(id) => <TextInput id={id} type="number" min={1} max={100} className="w-24" value={step.max} onChange={(e) => set({ ...step, max: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })} />}
+          </Field>
+          <p className="m-0 text-xs text-muted">It checks the condition before each time round. In a flow that waits, its steps can wait, and the condition reads the record.</p>
+        </>
+      );
     case 'check':
       return (
         <>
@@ -1030,27 +1056,6 @@ function StepFields(props: {
 // ---- People and time: a person's task, and what a flow waits for
 
 /** A duration set with a number and a unit, or its ISO 8601 text when it has another shape. */
-function DurationInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  const parts = durationParts(value);
-  if (!parts) {
-    return <Field label={label} hint="ISO 8601, such as P3D">{(id) => <TextInput id={id} value={value} onChange={(event) => onChange(event.target.value)} />}</Field>;
-  }
-  return (
-    <Field label={label}>
-      {(id) => (
-        <div className="flex gap-2">
-          <TextInput id={id} type="number" min={1} className="w-20" value={parts.amount} onChange={(event) => onChange(durationOf(Number(event.target.value) || 1, parts.unit))} />
-          <Select aria-label={`${label}: unit`} className="w-auto" value={parts.unit} onChange={(event) => onChange(durationOf(parts.amount, event.target.value === 'hours' ? 'hours' : event.target.value === 'weeks' ? 'weeks' : 'days'))}>
-            <option value="hours">hours</option>
-            <option value="days">days</option>
-            <option value="weeks">weeks</option>
-          </Select>
-        </div>
-      )}
-    </Field>
-  );
-}
-
 /** The user fields of the record a flow that waits is about: whom its tasks can go to. */
 function peopleOf(definition: Definition, entity: string | undefined): Array<{ name: string; label: string }> {
   return (entity ? (definition.entities[entity]?.fields ?? []) : []).filter((field) => field.type === 'user').map((field) => ({ name: field.name, label: field.label }));
@@ -1170,6 +1175,29 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
           }}
         >
           Add an outcome
+        </Button>
+      </fieldset>
+      <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+        <legend className="px-1 text-sm text-muted">Reminders</legend>
+        {(step.reminders ?? []).map((reminder, index) => (
+          <div key={index} className="flex items-end gap-2">
+            <DurationInput label={`Reminder ${index + 1} after`} value={reminder.after} onChange={(after) => set({ ...step, reminders: (step.reminders ?? []).map((each, i) => (i === index ? { ...each, after } : each)) })} />
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label={`Remove reminder ${index + 1}`}
+              onClick={() => {
+                const rest = (step.reminders ?? []).filter((_, i) => i !== index);
+                set(rest.length ? { ...step, reminders: rest } : without(step, 'reminders'));
+              }}
+            >
+              ✕
+            </Button>
+          </div>
+        ))}
+        <p className="m-0 text-xs text-muted">A reminder's steps run while the task still waits, a time after it opens. They hang below the task on the canvas.</p>
+        <Button size="sm" className="justify-self-start" disabled={(step.reminders?.length ?? 0) >= 3} onClick={() => set({ ...step, reminders: [...(step.reminders ?? []), { after: 'P1D', steps: [] }] })}>
+          Add a reminder
         </Button>
       </fieldset>
       <Checkbox label="It has a deadline" checked={Boolean(step.deadline)} onChange={(on) => set(on ? { ...step, deadline: { after: 'P3D', steps: [] } } : without(step, 'deadline'))} />
@@ -1308,17 +1336,20 @@ function WaitForEditor(props: { definition: Definition; name: string; label: str
       </Field>
       {'duration' in value ? <DurationInput label="For" value={value.duration} onChange={(duration) => onChange({ duration })} /> : null}
       {'date' in value ? (
-        <Field label="Until">
-          {(id) => (
-            <Select id={id} value={value.date} onChange={(e) => onChange({ date: e.target.value })}>
-              {dates.map((field) => (
-                <option key={field.name} value={field.name}>
-                  The record's {field.label.toLowerCase()}
-                </option>
-              ))}
-            </Select>
-          )}
-        </Field>
+        <>
+          <Field label="Until">
+            {(id) => (
+              <Select id={id} value={value.date} onChange={(e) => onChange({ ...value, date: e.target.value })}>
+                {dates.map((field) => (
+                  <option key={field.name} value={field.name}>
+                    The record's {field.label.toLowerCase()}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <DateShift label="When" value={value} onChange={(shift) => onChange({ date: value.date, ...shift })} />
+        </>
       ) : null}
       {'action' in value ? (
         <Field label="Until someone runs" hint="An update action on the record, such as withdrawing it.">
@@ -1531,29 +1562,6 @@ function FlowSettings({ definition, name, readOnly, onChange, onRemove }: { defi
           Delete the flow
         </Button>
       )}
-    </Card>
-  );
-}
-
-/** How a flow that waits starts on a record: the actions that run it, and the roles that may start it by hand. */
-function HowItStarts({ definition, name }: { definition: Definition; name: string }) {
-  const flow = definition.flows![name]!;
-  const subject = flowSubject(flow);
-  const actions = Object.values(definition.actions).filter((action) => action.flow?.flow === name);
-  const roles = Object.values(definition.roles).filter((role) => role.flows?.includes(name));
-  return (
-    <Card className="grid gap-2 p-4" aria-label="How it starts">
-      <h3 className="m-0 text-base font-semibold">How it starts</h3>
-      <p className="m-0 text-sm text-muted">
-        This flow waits for people and for time, so it keeps its place on one {subject ? (definition.entities[subject.entity]?.label.toLowerCase() ?? subject.entity) : 'record'}. A bar on the canvas marks each place where it saves before it waits.
-      </p>
-      {actions.length ? (
-        <p className="m-0 text-sm">
-          {actions.map((action) => action.label).join(', ')} start{actions.length === 1 ? 's' : ''} it, as {actions.length === 1 ? 'it saves its' : 'they save their'} record.
-        </p>
-      ) : null}
-      {roles.length ? <p className="m-0 text-sm">{roles.map((role) => role.label).join(', ')} may start it on a record by hand.</p> : null}
-      {!actions.length && !roles.length ? <Notice tone="warn">Nothing starts it yet: have an action run it, or let a role run it.</Notice> : null}
     </Card>
   );
 }

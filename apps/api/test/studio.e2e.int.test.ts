@@ -472,6 +472,75 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(record, '17-record-flow');
   });
 
+  it('starts a flow that waits by itself, reminds while a task waits, repeats steps, and runs a flow on a schedule', async () => {
+    // Its own app, so that it runs whatever ran before it.
+    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave, by itself', template: 'leave' } });
+    expect(created.statusCode, created.body).toBe(201);
+    const leaveId = created.json().app.id as string;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    const canvas = page.getByTestId('flow-canvas');
+    await visible(canvas.getByText('Decide on the leave'));
+
+    // It starts by itself two days before the first day of the leave, too.
+    const starts = page.getByRole('region', { name: 'How it starts' });
+    await starts.getByRole('button', { name: 'Add a way it starts by itself' }).click();
+    await starts.getByLabel('Start 1', { exact: true }).selectOption('date');
+    await starts.getByLabel('When', { exact: true }).selectOption('before');
+    await visible(canvas.getByText('on 1 day before First day', { exact: false }));
+
+    // A reminder hangs below the task, before its deadline, and runs its own steps.
+    await canvas.getByTestId('flow-step-steps[0]').click();
+    await page.getByRole('button', { name: 'Add a reminder' }).click();
+    await page.getByLabel('It has a deadline').check();
+    await visible(canvas.getByTestId('flow-wait-steps[0]:reminder:0').getByText('After 1 day'));
+    await visible(canvas.getByTestId('flow-wait-steps[0]:deadline').getByText('After 3 days'));
+    await canvas.getByTestId('flow-slot-steps[0].reminders[0].steps').getByRole('button', { name: 'Add a step here' }).click();
+    await page.getByRole('button', { name: 'Set a variable', exact: true }).click();
+    await page.getByRole('button', { name: 'Close the step' }).click();
+
+    // After the decision, steps that wait repeat while the record says so.
+    await page.getByRole('button', { name: 'Add a step at steps[1]' }).click();
+    await page.getByRole('button', { name: 'Repeat while', exact: true }).click();
+    await visible(canvas.getByTestId('flow-step-steps[1]').getByText('Repeats while', { exact: false }));
+    await canvas.getByTestId('flow-slot-steps[1].steps').getByRole('button', { name: 'Add a step here' }).click();
+    await page.getByRole('button', { name: 'Wait', exact: true }).click();
+    await visible(canvas.getByTestId('flow-wait-steps[1].steps[0]').getByText('Waits 1 day'));
+    await page.getByRole('button', { name: 'Close the step' }).click();
+    await shot(page, '15c-flow-starts-reminders');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+
+    // A flow that needs no input runs every weekday at seven, with the app's authority.
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    await page.getByLabel('New flow').fill('Tidy up');
+    await page.getByRole('button', { name: 'Add flow' }).click();
+    await canvas.getByRole('button', { name: 'Add a step here' }).click();
+    await page.getByRole('button', { name: 'Set a variable', exact: true }).click();
+    const step = page.getByRole('region', { name: 'Step' });
+    // A value can be a date some days away, worked out when the flow runs.
+    await step.getByLabel('Value: how', { exact: true }).selectOption('shift');
+    await step.getByLabel('Value, how many', { exact: true }).fill('14');
+    await visible(canvas.getByText('today + 14 days', { exact: false }));
+    await shot(page, '15d-flow-value-date');
+    await page.getByRole('button', { name: 'Close the step' }).click();
+    const tidy = page.getByRole('region', { name: 'How it starts' });
+    await tidy.getByLabel('It runs by itself, on a schedule').check();
+    await tidy.getByLabel('At', { exact: true }).fill('07:00');
+    await visible(tidy.getByText("Every weekday at 07:00 UTC, with the app's authority."));
+    await visible(canvas.getByText('every weekday at 07:00 UTC', { exact: false }));
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    await visible(tidy.getByText('It runs next', { exact: false }));
+    await shot(page, '15e-flow-schedule');
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.flows.tidy_up.schedule).toEqual({ every: 'weekday', at: '07:00' });
+    expect(saved.flows.leave_approval.starts).toEqual([{ date: 'starts', before: 'P1D' }]);
+    expect(saved.flows.leave_approval.steps[0].reminders).toEqual([{ after: 'P1D', steps: [{ type: 'set', var: 'value', value: 0 }] }]);
+  });
+
   it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);

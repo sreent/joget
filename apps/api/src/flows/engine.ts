@@ -29,7 +29,7 @@ export interface FlowCaller {
   /** The caller's credentials, when a person or a token started it. A token can't delete data (design §5.7). */
   readonly auth: AuthContext | null;
   /** What started it, for the audit log. */
-  readonly trigger: { readonly kind: 'action' | 'process' | 'api'; readonly name: string };
+  readonly trigger: { readonly kind: 'action' | 'process' | 'api' | 'schedule'; readonly name: string };
 }
 
 export interface FlowResult {
@@ -284,6 +284,10 @@ export class FlowEngine implements FlowHooks {
       }
       case 'if':
         await this.#block(state, flow, holds(step.when) ? step.then : step.else, frame);
+        return;
+      case 'repeat':
+        // Checked before each time, on the variables as the last time left them.
+        for (let times = 0; times < step.max && holds(step.while); times++) await this.#block(state, flow, step.steps, frame);
         return;
       case 'check':
         if (holds(step.assert)) return;

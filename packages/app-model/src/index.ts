@@ -8,6 +8,7 @@ export * from './fields.js';
 export * from './migrations.js';
 export * from './roles.js';
 export * from './rules.js';
+export * from './schedules.js';
 export * from './schema.js';
 export * from './sql.js';
 export * from './validate.js';

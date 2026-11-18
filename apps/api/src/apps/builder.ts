@@ -18,6 +18,7 @@ import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { requirePerson } from '../access/rules.js';
 import { conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
+import { planSchedules } from '../flows/schedules.js';
 import { isTeamApp, type AppRef, type LoadedApp, type SpaceRow } from './catalog.js';
 import { pgError as pgCode } from './pg-errors.js';
 import { withAppTransaction, withTransaction } from './transaction.js';
@@ -191,6 +192,7 @@ export class AppBuilder {
           createdAt: now,
         });
         for (const statement of [...provisionEnvironment(names), ...plan.statements]) await client.query(statement);
+        await planSchedules(db, ctx.org.id, { id: envId, appId, kind: 'sandbox' }, input.definition, now);
         await recordAudit(db, audit, {
           action: input.action,
           target: { type: 'app', id: appId, name: input.name },
@@ -353,6 +355,7 @@ export class AppBuilder {
           .set({ currentRevision: plan.revision, updatedAt: now, ...(options.syncedTo !== undefined ? { baseRevision: options.syncedTo } : {}) })
           .where(eq(apps.id, loaded.app.id));
         await tx.db.update(appEnvironments).set({ appliedRevision: plan.revision, activeRevision: plan.revision }).where(eq(appEnvironments.id, loaded.env.id));
+        await planSchedules(tx.db, ctx.org.id, { id: loaded.env.id, appId: loaded.app.id, kind: loaded.env.kind }, definition, now);
         for (const bindingId of revokes) {
           await tx.db.update(bindings).set({ revokedAt: now, revokedByType: auth.actor.type, revokedBy: auth.actor.id }).where(eq(bindings.id, bindingId));
         }

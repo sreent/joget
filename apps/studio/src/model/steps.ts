@@ -214,6 +214,17 @@ export function describeExpression(definition: Definition, entity: string, expre
       return operands.map((part) => describeExpression(definition, entity, part)).join(` ${OPERATOR_WORDS[op]} `);
     }
   }
+  const said = (part: Expression) => describeExpression(definition, entity, part);
+  if ('add_days' in expression) return `${said(expression.add_days[0])} + ${said(expression.add_days[1])} days`;
+  if ('add_hours' in expression) return `${said(expression.add_hours[0])} + ${said(expression.add_hours[1])} hours`;
+  if ('days_between' in expression) return `the days from ${said(expression.days_between[0])} to ${said(expression.days_between[1])}`;
+  if ('if' in expression) return `${said(expression.if[1])} if ${describeCondition(definition, entity, expression.if[0])}, else ${said(expression.if[2])}`;
+  if ('upper' in expression) return `${said(expression.upper[0])} in capitals`;
+  if ('lower' in expression) return `${said(expression.lower[0])} in small letters`;
+  if ('trim' in expression) return `${said(expression.trim[0])}, without spaces at its ends`;
+  if ('text_length' in expression) return `the length of ${said(expression.text_length[0])}`;
+  if ('left' in expression) return `the first ${said(expression.left[1])} characters of ${said(expression.left[0])}`;
+  if ('coalesce' in expression) return expression.coalesce.map(said).join(', or else ');
   return 'a formula';
 }
 
@@ -324,17 +335,17 @@ const SYSTEM_SOURCES: ReadonlyArray<{ ref: string; label: string; kind: ValueKin
  * The record's fields a value can come from. For a field, those that hold the same kind of value;
  * a date takes a time's day. Without a target, every field but files.
  */
-export function valueSources(definition: Definition, entity: string, target?: Field | 'number'): Array<{ ref: string; label: string }> {
+export function valueSources(definition: Definition, entity: string, target?: Field | 'number' | 'date'): Array<{ ref: string; label: string }> {
   const own = (definition.entities[entity]?.fields ?? []).flatMap((field) => {
     const kind = kindOfField(field);
     return kind ? [{ ref: `record.${field.name}`, label: field.label, kind, entity: field.type === 'reference' ? field.entity : undefined }] : [];
   });
   const all = [...own, ...SYSTEM_SOURCES.map((source) => ({ ...source, entity: undefined }))];
   if (!target) return all.filter((source) => source.kind !== 'file').map(({ ref, label }) => ({ ref, label }));
-  const wanted = target === 'number' ? 'number' : kindOfField(target);
+  const wanted = target === 'number' || target === 'date' ? target : kindOfField(target);
   return all
     .filter((source) => {
-      if (target !== 'number' && target.type === 'reference') return source.kind === 'record' && source.entity === target.entity;
+      if (target !== 'number' && target !== 'date' && target.type === 'reference') return source.kind === 'record' && source.entity === target.entity;
       return source.kind === wanted || (wanted === 'date' && source.kind === 'datetime');
     })
     .map(({ ref, label }) => ({ ref, label }));
@@ -373,6 +384,72 @@ export function calc(op: CalcOp, a: Operand, b: Operand): Expression {
     case 'div':
       return { div: [a, b] };
   }
+}
+
+/** A date or a time that a function reads: a field, or today or now. */
+export type Moment = { readonly ref: string } | { readonly today: true } | { readonly now: true };
+const isMoment = (value: Expression | undefined): value is Moment =>
+  value !== null && typeof value === 'object' && !isList(value) && (('ref' in value && Object.keys(value).length === 1) || 'today' in value || 'now' in value);
+
+/** A date or a time so many days or hours away, if the expression is one the editor can show. */
+export function shiftOf(expression: Expression): { op: 'add_days' | 'add_hours'; from: Moment; by: Operand } | undefined {
+  if (expression === null || typeof expression !== 'object' || isList(expression)) return undefined;
+  const found = 'add_days' in expression ? (['add_days', expression.add_days] as const) : 'add_hours' in expression ? (['add_hours', expression.add_hours] as const) : undefined;
+  if (!found) return undefined;
+  const [from, by] = found[1];
+  return isMoment(from) && by !== undefined && isOperand(by) && typeof by !== 'string' ? { op: found[0], from, by } : undefined;
+}
+
+export function shift(op: 'add_days' | 'add_hours', from: Moment, by: Operand): Expression {
+  return op === 'add_hours' ? { add_hours: [from, by] } : { add_days: [from, by] };
+}
+
+/** The days between two dates or times, if the expression is one the editor can show. */
+export function betweenOf(expression: Expression): { from: Moment; to: Moment } | undefined {
+  if (expression === null || typeof expression !== 'object' || isList(expression) || !('days_between' in expression)) return undefined;
+  const [from, to] = expression.days_between;
+  return isMoment(from) && isMoment(to) ? { from, to } : undefined;
+}
+
+/** One of two values, by a condition, if the expression is one. */
+export function chooseOf(expression: Expression): { when: Condition; then: Expression; otherwise: Expression } | undefined {
+  if (expression === null || typeof expression !== 'object' || isList(expression) || !('if' in expression)) return undefined;
+  const [when, then, otherwise] = expression.if;
+  return { when, then, otherwise };
+}
+
+export const TEXT_FNS = ['upper', 'lower', 'trim', 'left', 'text_length'] as const;
+export type TextFn = (typeof TEXT_FNS)[number];
+/** Text changed by a function, or its length, if the expression is one the editor can show. */
+export function textFnOf(expression: Expression): { fn: TextFn; of: Operand; count: number } | undefined {
+  if (expression === null || typeof expression !== 'object' || isList(expression)) return undefined;
+  for (const fn of TEXT_FNS) {
+    if (!(fn in expression)) continue;
+    const [of, count] = (expression as Record<string, readonly Expression[]>)[fn]!;
+    if (of === undefined || !isOperand(of)) return undefined;
+    return { fn, of, count: typeof count === 'number' ? count : 10 };
+  }
+  return undefined;
+}
+export function textFn(fn: TextFn, of: Operand, count: number): Expression {
+  switch (fn) {
+    case 'left':
+      return { left: [of, count] };
+    case 'upper':
+      return { upper: [of] };
+    case 'lower':
+      return { lower: [of] };
+    case 'trim':
+      return { trim: [of] };
+    case 'text_length':
+      return { text_length: [of] };
+  }
+}
+
+/** The values, the first filled in of which counts, if the expression is one the editor can show. */
+export function firstFilledOf(expression: Expression): Operand[] | undefined {
+  if (expression === null || typeof expression !== 'object' || isList(expression) || !('coalesce' in expression)) return undefined;
+  return expression.coalesce.every(isOperand) ? [...expression.coalesce].filter(isOperand) : undefined;
 }
 
 /** The parts of joined text, if the expression is one the editor can show. */

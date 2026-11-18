@@ -849,6 +849,37 @@ export const processStartTimers = pgTable(
 );
 
 /**
+ * A flow on a schedule, in one environment of its app: when it runs next. The environment plans it
+ * when its active release changes, and a timer worker runs it once at each time.
+ */
+export const flowSchedules = pgTable(
+  'flow_schedules',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    flow: text('flow').notNull(),
+    /** The schedule it was planned on, so that a change to it plans the next run again. */
+    schedule: jsonb('schedule').$type<Record<string, unknown>>().notNull(),
+    nextRunAt: timestamp('next_run_at', tz).notNull(),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastRunAt: timestamp('last_run_at', tz),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('flow_schedules_one_uq').on(t.environmentId, t.flow), index('flow_schedules_due_idx').on(t.nextAttemptAt)],
+);
+
+/**
  * A signal that a process or an operator threw, until the timer workers deliver it to every process
  * of the app's environment that waits for it. Delivery is a transaction of its own, so a signal
  * never holds up the change that threw it.

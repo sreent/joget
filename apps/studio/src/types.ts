@@ -380,6 +380,8 @@ export interface Task {
 export interface FlowLive {
   running: number;
   steps: Array<{ path: string; waiting: number; stuck: number; since: string }>;
+  /** A flow on a schedule: when it runs next, and how its last run went. */
+  schedule?: { nextRunAt: string; lastRunAt: string | null; lastError: string | null };
 }
 
 export interface ProcessInstance {

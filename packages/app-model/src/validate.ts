@@ -336,7 +336,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
               case 'boundaryEvent':
                 return {
                   ...element,
-                  ...(element.timer && 'date' in element.timer ? { timer: { date: field(element.timer.date) } } : {}),
+                  ...(element.timer && 'date' in element.timer ? { timer: { ...element.timer, date: field(element.timer.date) } } : {}),
                   ...(element.condition ? { condition: condition(entity, element.condition) } : {}),
                 };
               case 'callActivity': {
@@ -1114,6 +1114,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
 
   const checkTimer = (timer: Timer, path: string) => {
     if (!('date' in timer)) return;
+    if (timer.before && timer.after) issues.push({ path: `${path}.timer`, message: 'A timer fires before its date or after it: not both' });
     const info = fields.get(timer.date);
     if (!info) issues.push({ path: `${path}.timer.date`, message: `No field ${timer.date}` });
     else if (info.kind !== 'date' && info.kind !== 'datetime') issues.push({ path: `${path}.timer.date`, message: `${timer.date} isn't a date or a time` });
@@ -1643,16 +1644,24 @@ function stepPathOf(name: string, path: string, process: Process, at: ReadonlyMa
   const tail = found[3]!;
   const element = process.elements[found[2]!];
   // The step names some parts as the engine's element does not.
-  const part =
-    element?.type === 'userTask'
-      ? tail.replace(/^\.name\b/, '.label')
-      : element?.type === 'intermediateCatchEvent'
-        ? tail.replace(/^\.(timer|message)\b/, '.for').replace(/^\.(condition|signal)\b/, '.for.$1')
-        : element?.type === 'boundaryEvent'
-          ? (/^\.timer\b/.test(tail) ? '.after' : '')
-          : element?.type === 'callActivity'
-            ? tail.replace(/^\.process\b/, '.flow')
-            : '';
+  const part = ((): string => {
+    switch (element?.type) {
+      case 'userTask':
+        return tail.replace(/^\.name\b/, '.label');
+      case 'startEvent':
+        return tail.replace(/^\.timer\.duration\b/, '.after').replace(/^\.timer\b/, '');
+      case 'subProcess':
+        return tail.replace(/^\.repeat\b/, '');
+      case 'intermediateCatchEvent':
+        return tail.replace(/^\.(timer|message)\b/, '.for').replace(/^\.(condition|signal)\b/, '.for.$1');
+      case 'boundaryEvent':
+        return /^\.timer\b/.test(tail) ? '.after' : '';
+      case 'callActivity':
+        return tail.replace(/^\.process\b/, '.flow');
+      default:
+        return '';
+    }
+  })();
   return `flows.${name}.${step}${part}`;
 }
 

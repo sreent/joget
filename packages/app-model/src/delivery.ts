@@ -4,7 +4,9 @@ import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles
 import { conditionText } from './condition-text.js';
 import { flowWork } from './flows.js';
 import { processWork } from './processes.js';
-import type { Action, ConfirmationLevel, Process, Query } from './schema.js';
+import { scheduleWords } from './schedules.js';
+import type { Action, AppFlow, ConfirmationLevel, Process, Query } from './schema.js';
+import { flowSubject, startWords } from './waiting.js';
 
 /*
  * What a change request shows its reviewers (design §6.7): what changed, who gains or loses
@@ -298,6 +300,8 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
         ...(work.deletes.length ? [`deletes ${work.deletes.map(entityLabel).join(', ')}`] : []),
         ...(work.calls.length ? [`calls ${work.calls.join(', ')}`] : []),
         ...(work.asks.length ? [`waits for ${work.asks.join(', ')}`] : []),
+        ...startTexts(head, h).map((start) => `starts by itself ${start}`),
+        ...(h.schedule ? [`runs by itself, with the app's authority: ${lowerFirst(scheduleWords(h.schedule))}`] : []),
       ];
       changes.push({ tool: name, change: 'added', text: `New flow ${h.label}${does.length ? `: it ${does.join('; ')}` : ''}` });
     } else if (b && !h) {
@@ -314,11 +318,31 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       for (const flow of before.calls) if (!after.calls.includes(flow)) texts.push(`${h.label} no longer calls ${flow}`);
       for (const ask of after.asks) if (!before.asks.includes(ask)) texts.push(`${h.label} now waits for ${ask}`);
       for (const ask of before.asks) if (!after.asks.includes(ask)) texts.push(`${h.label} no longer waits for ${ask}`);
+      const [startsBefore, startsAfter] = [startTexts(base, b), startTexts(head, h)];
+      for (const start of startsAfter) if (!startsBefore.includes(start)) texts.push(`${h.label} now starts by itself ${start}`);
+      for (const start of startsBefore) if (!startsAfter.includes(start)) texts.push(`${h.label} no longer starts by itself ${start}`);
+      const [runsBefore, runsAfter] = [b.schedule ? scheduleWords(b.schedule) : undefined, h.schedule ? scheduleWords(h.schedule) : undefined];
+      if (runsAfter && runsAfter !== runsBefore) texts.push(`${h.label} now runs by itself, with the app's authority: ${lowerFirst(runsAfter)}`);
+      else if (runsBefore && !runsAfter) texts.push(`${h.label} no longer runs on a schedule`);
       if (!texts.length) texts.push(`${h.label} runs different steps`);
       for (const text of texts) changes.push({ tool: name, change: 'changed', text });
     }
   }
   return changes;
+}
+
+const lowerFirst = (text: string) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+
+/** How a flow that waits starts by itself, in words, as a change request reads it: "when a Leave request is created". */
+function startTexts(definition: StoredDefinition, flow: AppFlow): string[] {
+  const subject = flowSubject(flow);
+  if (!subject || !flow.starts) return [];
+  const entity = definition.entities[subject.entity];
+  const fieldLabel = (field: string) => entity?.fields.find((f) => f.name === field)?.label ?? field;
+  return flow.starts.map((start) => {
+    const words = lowerFirst(startWords(start, entity?.label ?? subject.entity, fieldLabel));
+    return 'condition' in start ? `when ${conditionText(start.condition)}` : words;
+  });
 }
 
 /** The actions whose commit starts a process. */

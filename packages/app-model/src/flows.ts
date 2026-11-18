@@ -2,7 +2,8 @@ import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, typ
 import { mapRefs } from './condition-refs.js';
 import { calculationKind, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
 import { entityFields, fieldKind, isOrderedKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
-import { MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStep, type FlowType, type Voters, type WaitFor } from './schema.js';
+import { MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStart, type FlowStep, type FlowType, type Voters, type WaitFor } from './schema.js';
+import { scheduleIssues } from './schedules.js';
 import { canonicalValue } from './values.js';
 import { atProcessLevel, flowSubject, flowWaits, innerLists, stepWaits, withLists } from './waiting.js';
 
@@ -256,17 +257,32 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
   if (waits) {
     if (!subject) issue('input', 'A flow that waits keeps its place on one record: give it one input, a record of what it is about');
     if (flow.output) issue('output', 'A flow that waits gives no result: what it does shows on its record');
-    // The engine can't keep a place inside a loop or an error handler yet.
+    // The engine can't keep a place inside a loop over a list or an error handler yet; a repeat can.
     const ending = new Set<string>();
     for (const { step, path } of flowSteps(flow.steps)) {
-      if (step.type !== 'each' && step.type !== 'try') continue;
+      if (step.type !== 'each' && step.type !== 'try' && step.type !== 'repeat') continue;
       const lists = innerLists(step, path);
-      if (lists.some((list) => list.steps.some((inner) => stepWaits(inner, flows)))) {
-        issue(path, step.type === 'each' ? "A loop can't hold steps that wait yet: move them out of it" : "An error handler can't hold steps that wait yet: move them out of it");
+      if (step.type !== 'repeat' && lists.some((list) => list.steps.some((inner) => stepWaits(inner, flows)))) {
+        issue(path, step.type === 'each' ? "A loop over a list can't hold steps that wait yet: move them out of it, or repeat them while a condition holds" : "An error handler can't hold steps that wait yet: move them out of it");
       }
       for (const list of lists) for (const found of flowSteps(list.steps, list.path)) if (found.step.type === 'return') ending.add(found.path);
     }
     for (const path of ending) issue(path, 'A flow that waits ends outside its loops and error handlers: move this step out');
+  }
+  // A reminder runs beside its task, which still waits: it neither waits nor ends the flow.
+  for (const { step, path } of flowSteps(flow.steps)) {
+    if (step.type !== 'task') continue;
+    (step.reminders ?? []).forEach((reminder, index) => {
+      const at = `${path}.reminders[${index}]`;
+      if (!reminder.steps.length) issue(`${at}.steps`, 'Say what the reminder does: give it a step');
+      for (const found of flowSteps(reminder.steps, `${at}.steps`)) {
+        const own = found.step.type;
+        if (own === 'return') issue(found.path, "A reminder can't end the flow: give the task a deadline for that");
+        else if (own === 'task' || own === 'wait' || own === 'first_of' || own === 'all_at_once' || (own === 'call' && stepWaits(found.step, flows))) {
+          issue(found.path, "A reminder runs in one go, while its task waits: it can't wait itself");
+        }
+      }
+    });
   }
   /** The variables that went when the flow last waited, as the step being checked sees them. */
   let gone: ReadonlySet<string> = new Set();
@@ -458,6 +474,20 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
     if (!(kind === 'any' || kind === 'null' || kind === wanted.value || (wanted.value === 'date' && kind === 'datetime'))) issue(at, `This gives ${KIND_WORDS[kind]}, not ${KIND_WORDS[wanted.value]}`);
   };
 
+  // A flow that waits starts by itself on its record; a flow that needs no input, on a schedule.
+  const inputs: Scope = new Map(Object.entries(flow.input).map(([input, type]) => [input, kindOfType(type)]));
+  (flow.starts ?? []).forEach((start, index) => {
+    const at = `starts[${index}]`;
+    // The engine checks the date fields of the record, as it does for a wait.
+    if (!waits) issue(at, 'Only a flow that waits starts by itself on a record. Run a flow that runs in one go from an action, or on a schedule');
+    else if ('condition' in start) condition(start.condition, inputs, `${at}.condition`);
+  });
+  if (flow.schedule) {
+    if (waits) issue('schedule', 'A flow that waits keeps its place on one record, so it starts on records, not on a schedule: say how in its starts');
+    else if (Object.keys(flow.input).length) issue('schedule', 'A flow on a schedule runs with nobody to give it input: give it no input, and find the records it works on');
+    for (const problem of scheduleIssues(flow.schedule)) issue(`schedule${problem.path}`, problem.message);
+  }
+
   let count = 0;
   walk(
     definition,
@@ -515,6 +545,10 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
         case 'if':
           condition(step.when, scope, `${at}.when`);
           if (!step.then.length && !step.else.length) issue(at, 'A branch needs at least one step');
+          return;
+        case 'repeat':
+          condition(step.while, scope, `${at}.while`);
+          if (!step.steps.length) issue(`${at}.steps`, 'A loop needs a step');
           return;
         case 'check':
           condition(step.assert, scope, `${at}.assert`);
@@ -751,7 +785,10 @@ export function renameInFlows(
   };
   /** What a wait waits for: a date field of the record, or a condition on it, follows renames. */
   const waitFor = (wait: WaitFor, scope: Scope, field: (name: string) => string): WaitFor =>
-    'date' in wait ? { date: field(wait.date) } : 'condition' in wait ? { condition: condition(scope)(wait.condition) } : wait;
+    'date' in wait ? { ...wait, date: field(wait.date) } : 'condition' in wait ? { condition: condition(scope)(wait.condition) } : wait;
+  /** How a flow starts by itself: a date field of its record, or a condition on it, follows renames. */
+  const startOf = (start: FlowStart, scope: Scope, field: (name: string) => string): FlowStart =>
+    'date' in start ? { ...start, date: field(start.date) } : 'condition' in start ? { condition: condition(scope)(start.condition) } : start;
   const voters = (people: Voters, field: (name: string) => string): Voters =>
     'fields' in people ? { fields: people.fields.map(field) } : 'lineOf' in people ? { ...people, lineOf: field(people.lineOf) } : people;
 
@@ -805,6 +842,9 @@ export function renameInFlows(
           case 'if':
             next = { ...step, when: condition(scope)(step.when) };
             break;
+          case 'repeat':
+            next = { ...step, while: condition(scope)(step.while) };
+            break;
           case 'check':
             next = { ...step, assert: condition(scope)(step.assert) };
             break;
@@ -845,7 +885,8 @@ export function renameInFlows(
           return withLists(renamed.get(at) ?? original, at, rebuild);
         });
       const steps = flow.steps.map((step) => renameEntities(step, entityName));
-      return [name, { ...flow, steps: rebuild(steps, 'steps') }];
+      const inputs: Scope = new Map(Object.entries(flow.input).map(([input, type]) => [input, kindOfType(type)]));
+      return [name, { ...flow, ...(flow.starts ? { starts: flow.starts.map((start) => startOf(start, inputs, field)) } : {}), steps: rebuild(steps, 'steps') }];
     }),
   );
 }

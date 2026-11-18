@@ -188,10 +188,11 @@ export function automaticStarts(definition: Pick<StoredDefinition, 'processes'>,
 }
 
 /**
- * Add an ISO 8601 duration to a time, in UTC. Years and months follow the calendar, and a day
- * past the end of the month stays in it: 31 January and P1M is 28 or 29 February.
+ * Add an ISO 8601 duration to a time, in UTC, or take it away with `sign` -1. Years and months
+ * follow the calendar, and a day past the end of the month stays in it: 31 January and P1M is 28
+ * or 29 February.
  */
-export function addDuration(at: Date, duration: string): Date {
+export function addDuration(at: Date, duration: string, sign: 1 | -1 = 1): Date {
   const match = DURATION_PATTERN.exec(duration);
   if (!match) throw new Error(`Not an ISO 8601 duration: ${duration}`);
   const [years, months, weeks, days, hours, minutes, seconds] = match.slice(1).map((part) => Number(part ?? 0)) as [number, number, number, number, number, number, number];
@@ -199,23 +200,24 @@ export function addDuration(at: Date, duration: string): Date {
   if (years || months) {
     const day = out.getUTCDate();
     out.setUTCDate(1);
-    out.setUTCMonth(out.getUTCMonth() + years * 12 + months);
+    out.setUTCMonth(out.getUTCMonth() + sign * (years * 12 + months));
     const last = new Date(Date.UTC(out.getUTCFullYear(), out.getUTCMonth() + 1, 0)).getUTCDate();
     out.setUTCDate(Math.min(day, last));
   }
-  return new Date(out.getTime() + ((((weeks * 7 + days) * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000);
+  return new Date(out.getTime() + sign * ((((weeks * 7 + days) * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000);
 }
 
 /**
  * When a timer that starts now fires: after its duration, or on its date field, at the start of
- * the day (UTC) for a date. Null if the record has no value there.
+ * the day (UTC) for a date, moved by its `before` or `after`. Null if the record has no value there.
  */
 export function timerFiresAt(timer: Timer, startedAt: Date, record: RecordValues): Date | null {
   if ('duration' in timer) return addDuration(startedAt, timer.duration);
   const value = record[timer.date];
   if (typeof value !== 'string') return null;
   const at = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value);
-  return Number.isNaN(at.getTime()) ? null : at;
+  if (Number.isNaN(at.getTime())) return null;
+  return timer.before ? addDuration(at, timer.before, -1) : timer.after ? addDuration(at, timer.after) : at;
 }
 
 /** What a process's conditions read: the record as it is now, and the outcome each user task was last completed with. */

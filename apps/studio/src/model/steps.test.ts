@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { EXPENSE_APP } from '@platform/app-model';
 import type { Definition } from '../types.js';
 import { normalize, removeField } from './edit.js';
-import { addStep, calc, calcOf, describeStep, joinOf, moveStep, newStep, removeStep, stepAt, updateStep, valueSources, type Step } from './steps.js';
+import { addStep, betweenOf, calc, calcOf, chooseOf, describeExpression, describeStep, firstFilledOf, joinOf, moveStep, newStep, removeStep, shift, shiftOf, stepAt, textFn, textFnOf, updateStep, valueSources, type Step } from './steps.js';
 
 const app = () => normalize(structuredClone(EXPENSE_APP) as unknown as Definition);
 const steps = (definition: Definition, action = 'approve_claim') => (definition.actions[action]!.steps ?? []) as Step[];
@@ -77,5 +77,21 @@ describe('values of steps', () => {
     expect(calcOf({ round: [{ ref: 'record.total' }, 2] })).toBeUndefined();
     expect(joinOf({ concat: ['Per diem: ', { ref: 'record.trip' }] })).toEqual(['Per diem: ', { ref: 'record.trip' }]);
     expect(joinOf({ concat: ['x', { today: true }] })).toBeUndefined();
+  });
+  it('shows date maths, a choice by a condition and text functions in its own inputs, and in words', () => {
+    const definition = app();
+    const due = shift('add_days', { ref: 'record.date' }, 14);
+    expect(shiftOf(due)).toEqual({ op: 'add_days', from: { ref: 'record.date' }, by: 14 });
+    expect(describeExpression(definition, 'expense_line', due)).toBe('Date + 14 days');
+    expect(betweenOf({ days_between: [{ today: true }, { ref: 'record.date' }] })).toEqual({ from: { today: true }, to: { ref: 'record.date' } });
+    const choice = { if: [{ gt: [{ ref: 'record.total' }, 1000] }, 'big', 'small'] } as const;
+    expect(chooseOf(choice)).toEqual({ when: { gt: [{ ref: 'record.total' }, 1000] }, then: 'big', otherwise: 'small' });
+    expect(describeExpression(definition, 'expense_claim', choice)).toBe('“big” if Total (SGD) is more than 1000, else “small”');
+    expect(textFnOf(textFn('left', { ref: 'record.title' }, 3))).toEqual({ fn: 'left', of: { ref: 'record.title' }, count: 3 });
+    expect(textFnOf({ upper: [{ ref: 'record.title' }] })).toMatchObject({ fn: 'upper' });
+    expect(firstFilledOf({ coalesce: [{ ref: 'record.title' }, 'Untitled'] })).toEqual([{ ref: 'record.title' }, 'Untitled']);
+    // A shape the inputs can't show stays a formula.
+    expect(shiftOf({ add_days: [{ add: [1, 2] }, 1] })).toBeUndefined();
+    expect(valueSources(definition, 'expense_line', 'date').map((source) => source.ref)).toContain('record.date');
   });
 });

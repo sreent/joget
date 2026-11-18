@@ -21,6 +21,7 @@ import { appRoutes } from './apps/routes.js';
 import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
 import { FlowEngine } from './flows/engine.js';
+import { FlowScheduler } from './flows/schedules.js';
 import { flowRoutes } from './flows/routes.js';
 import { ProcessEngine } from './processes/engine.js';
 import { processRoutes } from './processes/routes.js';
@@ -48,6 +49,8 @@ export interface Server {
   readonly routes: readonly RouteAccess[];
   /** The process engine, whose timers a worker fires. */
   readonly processes: ProcessEngine;
+  /** The flows on a schedule, which the same worker runs. */
+  readonly schedules: FlowScheduler;
 }
 
 export async function buildServer(ctx: AppContext, options: { logger?: FastifyServerOptions['logger']; models?: ModelClient } = {}): Promise<Server> {
@@ -136,6 +139,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   const runtime = new AppRuntime(ctx);
   const flows = new FlowEngine(ctx, runtime);
   const processes = new ProcessEngine(ctx, runtime, flows);
+  const schedules = new FlowScheduler(ctx, flows);
   await app.register(appRoutes(ctx, builder, runtime));
   await app.register(runtimeRoutes(ctx, runtime));
   await app.register(processRoutes(ctx, runtime, processes));
@@ -158,5 +162,5 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   );
 
   await app.ready();
-  return { app, routes, processes };
+  return { app, routes, processes, schedules };
 }

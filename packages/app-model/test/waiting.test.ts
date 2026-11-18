@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  automaticStarts,
   capabilityChanges,
   compileAppPolicy,
   compileFlow,
@@ -203,7 +204,7 @@ describe('a flow that waits', () => {
     ).toEqual([
       'flows.review.input: A flow that waits keeps its place on one record: give it one input, a record of what it is about',
       'flows.review.output: A flow that waits gives no result: what it does shows on its record',
-      "flows.review.steps[1]: A loop can't hold steps that wait yet: move them out of it",
+      "flows.review.steps[1]: A loop over a list can't hold steps that wait yet: move them out of it, or repeat them while a condition holds",
       "flows.review.steps[2]: An error handler can't hold steps that wait yet: move them out of it",
       'flows.review.steps[1].steps[1]: A flow that waits ends outside its loops and error handlers: move this step out',
       'flows.review.steps[2].steps[0].outcomes[1].name: Another outcome is named ok: give each its own name',
@@ -276,5 +277,154 @@ describe('a flow that waits', () => {
       { type: 'wait', for: { date: 'first_day' } },
       { type: 'wait', for: { condition: { gt: [{ ref: 'leave.working_days' }, 1] } } },
     ]);
+  });
+  it('starts by itself on a record: as it is created, on a date of it, when a condition holds, or on a signal', () => {
+    const definition = valid(
+      leave((d) => {
+        d.flows.leave_approval.starts = [
+          { created: true },
+          { created: true, after: 'P1D' },
+          { date: 'starts', before: 'P2D' },
+          { condition: { gt: [{ ref: 'leave.days' }, 10] } },
+          { signal: 'reopen' },
+        ];
+      }),
+    );
+    const { process, at } = compileFlow(definition, 'leave_approval', definition.flows!['leave_approval']!)!;
+    expect(Object.entries(process.elements).filter(([, element]) => element.type === 'startEvent')).toEqual([
+      ['start', { type: 'startEvent', name: 'Leave approval', actions: [] }],
+      ['start_by_action', { type: 'startEvent', name: 'Ask for leave', actions: ['request_leave'] }],
+      ['start_0', { type: 'startEvent', name: 'When a Leave request is created', actions: [], condition: { exists: 'record.id' } }],
+      ['start_1', { type: 'startEvent', name: '1 day after a Leave request is created', actions: [], timer: { duration: 'P1D' } }],
+      ['start_2', { type: 'startEvent', name: 'On 2 days before First day', actions: [], timer: { date: 'starts', before: 'P2D' } }],
+      ['start_3', { type: 'startEvent', name: 'When its condition holds', actions: [], condition: { gt: [{ ref: 'record.days' }, 10] } }],
+      ['start_4', { type: 'startEvent', name: 'On the signal reopen', actions: [], signal: 'reopen' }],
+    ]);
+    expect(at.get('start_2')).toBe('starts[2]');
+    // The engine finds the starts that a timer or a condition makes, as it finds a process's.
+    expect(automaticStarts(runnable(definition), 'leave_request').map((start) => start.element)).toEqual(['start_0', 'start_1', 'start_2', 'start_3']);
+    // A change request says how the flow now starts.
+    const before = valid(leave());
+    expect(capabilityChanges(before, definition).filter((change) => change.tool === 'leave_approval').map((change) => change.text)).toEqual(
+      expect.arrayContaining([
+        'Leave approval now starts by itself when a Leave request is created',
+        'Leave approval now starts by itself 1 day after a Leave request is created',
+        'Leave approval now starts by itself on 2 days before First day',
+        'Leave approval now starts by itself when leave.days > 10',
+      ]),
+    );
+  });
+
+  it('checks how it starts by itself, and carries renames into its starts', () => {
+    expect(
+      issuesOf(
+        leave((d) => {
+          d.flows.leave_approval.starts = [{ date: 'reason' }, { date: 'starts', before: 'P1D', after: 'P1D' }, { condition: { gt: [{ ref: 'leave.nothing' }, 1] } }];
+          d.flows.shift = { label: 'Shift', input: {}, starts: [{ created: true }], steps: [{ type: 'set', var: 'x', value: 1 }] };
+        }),
+      ),
+    ).toEqual([
+      "flows.leave_approval.starts[2].condition: leave.nothing: Leave request has no field nothing",
+      'flows.shift.starts[0]: Only a flow that waits starts by itself on a record. Run a flow that runs in one go from an action, or on a schedule',
+    ]);
+    expect(issuesOf(leave((d) => void (d.flows.leave_approval.starts = [{ date: 'reason' }, { date: 'starts', before: 'P1D', after: 'P1D' }])))).toEqual([
+      "flows.leave_approval.starts[0].date: reason isn't a date or a time",
+      'flows.leave_approval.starts[1]: A timer fires before its date or after it: not both',
+    ]);
+    const first = valid(leave((d) => void (d.flows.leave_approval.starts = [{ date: 'starts', after: 'P1D' }, { condition: { eq: [{ ref: 'leave.status' }, 'approved'] } }])));
+    const next = structuredClone(first) as unknown as Record<string, any>;
+    const fields = next.entities.leave_request.fields as Array<{ name: string }>;
+    fields.find((f) => f.name === 'starts')!.name = 'first_day';
+    fields.find((f) => f.name === 'status')!.name = 'state';
+    expect(valid(next, first).flows!['leave_approval']!.starts).toEqual([{ date: 'first_day', after: 'P1D' }, { condition: { eq: [{ ref: 'leave.state' }, 'approved'] } }]);
+  });
+
+  it('reminds while a task waits, beside it, with steps that run in one go', () => {
+    const definition = valid(
+      leave((d) => {
+        d.flows.leave_approval.steps[0].reminders = [{ after: 'P2D', steps: [{ type: 'change', record: 'leave', values: { reason: 'Reminded' } }] }];
+      }),
+    );
+    const { process, parts } = compileFlow(definition, 'leave_approval', definition.flows!['leave_approval']!)!;
+    expect(process.elements['steps_0_reminders_0']).toEqual({ type: 'boundaryEvent', name: 'Decide on the leave: a reminder after 2 days', attachedTo: 'steps_0', interrupting: false, timer: { duration: 'P2D' } });
+    expect(process.elements['steps_0_reminders_0_end']).toEqual({ type: 'endEvent', name: 'Reminded', terminate: false });
+    expect(Object.values(process.flows)).toEqual(
+      expect.arrayContaining([
+        { from: 'steps_0_reminders_0', to: 'steps_0_reminders_0_steps_0' },
+        { from: 'steps_0_reminders_0_steps_0', to: 'steps_0_reminders_0_end' },
+      ]),
+    );
+    expect(parts['leave_approval.steps_0_reminders_0_steps_0']?.steps).toEqual([{ type: 'change', record: 'leave', values: { reason: 'Reminded' } }]);
+    expect(
+      issuesOf(
+        leave((d) => {
+          d.flows.leave_approval.steps[0].reminders = [{ after: 'P1D', steps: [] }, { after: 'P2D', steps: [{ type: 'wait', for: { duration: 'P1D' } }, { type: 'return' }] }];
+        }),
+      ),
+    ).toEqual([
+      'flows.leave_approval.steps[0].reminders[0].steps: Say what the reminder does: give it a step',
+      "flows.leave_approval.steps[0].reminders[1].steps[0]: A reminder runs in one go, while its task waits: it can't wait itself",
+      "flows.leave_approval.steps[0].reminders[1].steps[1]: A reminder can't end the flow: give the task a deadline for that",
+    ]);
+  });
+
+  it('repeats steps that wait while a condition on its record holds', () => {
+    const definition = valid(
+      leave((d) => {
+        d.flows.leave_approval.steps = [
+          {
+            type: 'repeat',
+            while: { ne: [{ ref: 'leave.status' }, 'approved'] },
+            max: 3,
+            steps: [
+              { type: 'task', label: 'Review', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'approve', label: 'Approve', action: 'approve_leave' }, { name: 'redo', label: 'Ask again' }] },
+              { type: 'change', record: 'leave', values: { reason: 'Seen' } },
+            ],
+          },
+        ];
+      }),
+    );
+    const { process } = compileFlow(definition, 'leave_approval', definition.flows!['leave_approval']!)!;
+    expect(process.elements['steps_0']).toEqual({ type: 'subProcess', name: 'Repeats', repeat: { while: { ne: [{ ref: 'record.status' }, 'approved'] }, max: 3, before: true } });
+    expect(process.elements['steps_0_start']).toEqual({ type: 'startEvent', actions: [], in: 'steps_0' });
+    expect(process.elements['steps_0_steps_0']).toMatchObject({ type: 'userTask', name: 'Review', in: 'steps_0' });
+    expect(process.elements['steps_0_steps_1']).toMatchObject({ type: 'serviceTask', in: 'steps_0' });
+    expect(process.elements['steps_0_end']).toEqual({ type: 'endEvent', name: 'Once round', terminate: false, in: 'steps_0' });
+    // Its condition reads the record, as the engine does; no variable lives on across its waits.
+    expect(
+      issuesOf(
+        leave((d) => {
+          d.flows.leave_approval.steps = [
+            { type: 'set', var: 'times', value: 0 },
+            { type: 'repeat', while: { lt: [{ ref: 'times' }, 2] }, steps: [{ type: 'wait', for: { duration: 'P1D' } }, { type: 'return' }] },
+            { type: 'repeat', while: { lt: [{ ref: 'leave.days' }, 2] }, steps: [] },
+          ];
+        }),
+      ),
+    ).toEqual([
+      'flows.leave_approval.steps[1].steps[1]: A flow that waits ends outside its loops and error handlers: move this step out',
+      "flows.leave_approval.steps[1].while: times: times doesn't live on after the flow waits. Keep the value in a field of the record, and read it from there",
+      'flows.leave_approval.steps[2].steps: A loop needs a step',
+    ]);
+  });
+
+  it('runs on a schedule only when it needs no input and does not wait', () => {
+    expect(
+      issuesOf(
+        leave((d) => {
+          d.flows.leave_approval.schedule = { every: 'day', at: '07:30' };
+          d.flows.tidy = { label: 'Tidy', input: { n: { type: 'number' } }, schedule: { every: 'week', day: 3, zone: 'Mars/Olympus' }, steps: [{ type: 'set', var: 'x', value: 1 }] };
+        }),
+      ),
+    ).toEqual([
+      'flows.leave_approval.schedule: A flow that waits keeps its place on one record, so it starts on records, not on a schedule: say how in its starts',
+      'flows.tidy.schedule: A flow on a schedule runs with nobody to give it input: give it no input, and find the records it works on',
+      'flows.tidy.schedule.on: Say on which day of the week it runs',
+      'flows.tidy.schedule.day: A day of the month is for a flow that runs every month',
+      'flows.tidy.schedule.zone: No time zone named Mars/Olympus: give one such as Europe/London',
+    ]);
+    const before = valid(leave());
+    const after = valid(leave((d) => void (d.flows.tidy = { label: 'Tidy', schedule: { every: 'weekday', at: '07:30', zone: 'Europe/London' }, steps: [{ type: 'set', var: 'x', value: 1 }] })));
+    expect(capabilityChanges(before, after).find((change) => change.tool === 'tidy')?.text).toBe("New flow Tidy: it runs by itself, with the app's authority: every weekday at 07:30, Europe/London time");
   });
 });

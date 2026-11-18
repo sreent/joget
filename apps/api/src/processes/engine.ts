@@ -2482,8 +2482,12 @@ export class ProcessEngine implements ProcessHooks {
   }
 }
 
-/** Fire due timers on an interval. Returns a function that stops it. */
-export function startProcessTimers(engine: ProcessEngine, options: { readonly intervalSeconds: number; readonly logger: { error(obj: object, message: string): void } }): () => void {
+/** Fire due timers on an interval, and run the flows whose schedule has come round. Returns a function that stops it. */
+export function startProcessTimers(
+  engine: ProcessEngine,
+  schedules: { runDue(): Promise<number> },
+  options: { readonly intervalSeconds: number; readonly logger: { error(obj: object, message: string): void } },
+): () => void {
   let running = false;
   const timer = setInterval(() => {
     if (running) return;
@@ -2491,6 +2495,8 @@ export function startProcessTimers(engine: ProcessEngine, options: { readonly in
     engine
       .fireDue()
       .catch((error: unknown) => options.logger.error({ err: error }, 'Firing process timers failed'))
+      .then(() => schedules.runDue())
+      .catch((error: unknown) => options.logger.error({ err: error }, 'Running flows on a schedule failed'))
       .finally(() => (running = false));
   }, options.intervalSeconds * 1000);
   timer.unref();

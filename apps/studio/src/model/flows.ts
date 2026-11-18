@@ -1,6 +1,9 @@
 import {
   conditionText,
+  dateWords,
   durationWords,
+  scheduleWords,
+  startWords,
   flowScopeAfter,
   flowScopes,
   flowSteps,
@@ -38,6 +41,7 @@ export const STEP_NAMES: Readonly<Record<StepType, string>> = {
   delete: 'Delete a record',
   add_line: 'Add a line',
   each: 'For each',
+  repeat: 'Repeat while',
   if: 'Decision',
   check: 'Check',
   call: 'Call a flow',
@@ -53,7 +57,7 @@ export const STEP_NAMES: Readonly<Record<StepType, string>> = {
 /** The kinds of step a builder is offered, in groups, in order. */
 export const STEP_GROUPS: ReadonlyArray<{ readonly label: string; readonly types: readonly StepType[]; readonly waits?: boolean }> = [
   { label: 'Records', types: ['find', 'create', 'change', 'add_line', 'delete'] },
-  { label: 'Logic', types: ['set', 'if', 'each', 'total', 'check', 'call', 'try', 'return'] },
+  { label: 'Logic', types: ['set', 'if', 'each', 'repeat', 'total', 'check', 'call', 'try', 'return'] },
   { label: 'People and time', types: ['task', 'wait', 'first_of', 'all_at_once'], waits: true },
 ];
 export const STEP_TYPES: readonly StepType[] = STEP_GROUPS.flatMap((group) => group.types);
@@ -168,7 +172,7 @@ export function startRun(definition: Definition, flow: string, entity: string): 
   return { flow, input };
 }
 
-export function updateFlow(definition: Definition, name: string, patch: Partial<Pick<AppFlow, 'label' | 'description' | 'input' | 'output'>>): Definition {
+export function updateFlow(definition: Definition, name: string, patch: Partial<Pick<AppFlow, 'label' | 'description' | 'input' | 'output' | 'starts' | 'schedule'>>): Definition {
   return withFlow(definition, name, (flow) => {
     const next: Record<string, unknown> = { ...flow };
     for (const [key, value] of Object.entries(patch)) {
@@ -267,6 +271,8 @@ export function newStep(definition: Definition, name: string, scope: ReadonlyMap
     }
     case 'each':
       return { type, in: lists[0]?.value ?? '', as: fresh(scope, 'item'), steps: [] };
+    case 'repeat':
+      return { type, while: test, max: 10, steps: [] };
     case 'if':
       return { type, when: test, then: [], else: [] };
     case 'check':
@@ -314,9 +320,25 @@ function valueText(value: unknown): string {
   if (object['now']) return 'now';
   const [op, args] = Object.entries(object)[0] ?? [];
   const symbols: Record<string, string> = { add: ' + ', sub: ' − ', mul: ' × ', div: ' ÷ ', concat: ' & ' };
-  if (op && Array.isArray(args) && symbols[op]) return args.map(valueText).join(symbols[op]);
-  if (op === 'round' && Array.isArray(args)) return `round ${valueText(args[0])}`;
-  return 'a calculation';
+  if (!op || !Array.isArray(args)) return 'a calculation';
+  if (symbols[op]) return args.map(valueText).join(symbols[op]);
+  const [a, b, c] = args as unknown[];
+  switch (op) {
+    case 'round':
+      return `round ${valueText(a)}`;
+    case 'add_days':
+      return `${valueText(a)} + ${valueText(b)} days`;
+    case 'add_hours':
+      return `${valueText(a)} + ${valueText(b)} hours`;
+    case 'days_between':
+      return `days from ${valueText(a)} to ${valueText(b)}`;
+    case 'if':
+      return `${isRecord(a) ? conditionText(a as Condition) : 'a condition'} ? ${valueText(b)} : ${valueText(c)}`;
+    case 'coalesce':
+      return args.map(valueText).join(' or else ');
+    default:
+      return `${op}(${args.map(valueText).join(', ')})`;
+  }
 }
 
 /**
@@ -357,6 +379,8 @@ export function describeFlowStep(definition: Definition, step: FlowStep): string
       return `Add a line to ${step.record}.${step.field}`;
     case 'each':
       return `For each ${step.as} in ${step.in}`;
+    case 'repeat':
+      return `Repeat while ${conditionWords(definition, step.while)}, ${step.max} times at most`;
     case 'if':
       return `If ${conditionWords(definition, step.when)}`;
     case 'check':
@@ -383,13 +407,28 @@ export function describeFlowStep(definition: Definition, step: FlowStep): string
 /** What a wait waits for, in words: on the record of the entity a flow is about. */
 export function waitWords(definition: Definition, wait: WaitFor, entity?: string): { words: string; about?: string; icon: WaitIcon } {
   if ('duration' in wait) return { words: `Waits ${durationWords(wait.duration)}`, icon: 'clock' };
-  if ('date' in wait) {
-    const field = entity ? definition.entities[entity]?.fields.find((f) => f.name === wait.date) : undefined;
-    return { words: `Waits until ${field?.label ?? wait.date}`, about: 'of the record', icon: 'clock' };
-  }
+  if ('date' in wait) return { words: `Waits until ${dateWords(wait, fieldLabelOf(definition, entity))}`, about: 'of the record', icon: 'clock' };
   if ('action' in wait) return { words: `Waits for ${definition.actions[wait.action]?.label ?? wait.action}`, about: 'on the record', icon: 'message' };
   if ('condition' in wait) return { words: 'Waits until it holds', about: conditionWords(definition, wait.condition), icon: 'decide' };
   return { words: `Waits for ${wait.signal}`, about: 'a signal', icon: 'bell' };
+}
+
+/** The label of a field of the entity a flow is about, or the field's name. */
+const fieldLabelOf = (definition: Definition, entity: string | undefined) => (field: string) => (entity ? definition.entities[entity]?.fields.find((f) => f.name === field)?.label : undefined) ?? field;
+
+/** How a flow starts, in words, for its start ring and its list: on a schedule, by itself on a record, or with its input. */
+export function startsWords(definition: Definition, flow: AppFlow): string {
+  const lowerFirst = (text: string) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+  if (flow.schedule) return lowerFirst(scheduleWords(flow.schedule));
+  const subject = flowSubject(flow);
+  const [first, ...more] = flow.starts ?? [];
+  if (first && subject) {
+    const entity = definition.entities[subject.entity];
+    const said = 'condition' in first ? `when ${conditionWords(definition, first.condition)}` : lowerFirst(startWords(first, entity?.label ?? subject.entity, fieldLabelOf(definition, subject.entity)));
+    return more.length ? `${said}, or ${more.length} more way${more.length === 1 ? '' : 's'}` : said;
+  }
+  const inputs = Object.keys(flow.input);
+  return inputs.length ? `with ${inputs.join(', ')}` : 'when it runs';
 }
 
 /** The lists of steps a step holds, each with what a builder calls it: for the list view of a canvas. */
@@ -402,6 +441,8 @@ export function labelledLists(definition: Definition, step: FlowStep, path: stri
       ];
     case 'each':
       return [{ label: `For each ${step.as}`, steps: step.steps, path: `${path}.steps` }];
+    case 'repeat':
+      return [{ label: 'Repeats while it holds', steps: step.steps, path: `${path}.steps` }];
     case 'try':
       return [
         { label: 'The steps it guards', steps: step.steps, path: `${path}.steps` },
@@ -410,6 +451,7 @@ export function labelledLists(definition: Definition, step: FlowStep, path: stri
     case 'task':
       return [
         ...step.outcomes.map((outcome, index) => ({ label: outcome.label, steps: outcome.steps, path: `${path}.outcomes[${index}].steps` })),
+        ...(step.reminders ?? []).map((reminder, index) => ({ label: `After ${durationWords(reminder.after)}, a reminder`, steps: reminder.steps, path: `${path}.reminders[${index}].steps` })),
         ...(step.deadline ? [{ label: `After ${durationWords(step.deadline.after)}, the task ends`, steps: step.deadline.steps, path: `${path}.deadline.steps` }] : []),
       ];
     case 'first_of':
@@ -519,6 +561,10 @@ const WRAP_GAP = 76;
 const MARGIN = 28;
 /** How far the words of a ring reach above or below it. */
 const CAPTION = 44;
+/** The narrowest frame: its head says what it is. */
+const FRAME_MIN = 230;
+/** About how wide a character of a ring's words is, at their size. */
+const CAPTION_CHAR = 6;
 
 type Pt = readonly [number, number];
 type Side = 'left' | 'right' | 'top' | 'bottom';
@@ -660,6 +706,8 @@ export function stepWords(definition: Definition, step: FlowStep, entity?: strin
       return { kind: 'Decision', words: conditionWords(definition, step.when) };
     case 'each':
       return { kind: 'For each', words: `For each ${step.as} in ${step.in}` };
+    case 'repeat':
+      return { kind: 'Repeat', words: `Repeats while ${conditionWords(definition, step.while)}`, about: `${step.max} times at most` };
     case 'try':
       return { kind: 'Handle errors', words: 'Handle errors', about: step.rollback === false ? 'keeps what it did' : 'undoes what it did' };
     case 'return':
@@ -812,23 +860,47 @@ function stepPiece(c: Ctx, step: FlowStep, path: string): Piece {
     const all = [...placed.flatMap((piece) => piece.wires), ...placed.map((piece, index) => wire(from, piece.entry, { label: ways[index]!.label, near: index > 0, insert: { list: ways[index]!.list, index: 0 } }))];
     let bottom = down;
     let width = waysWidth;
-    if (step.deadline) {
-      const list = `${path}.deadline.steps`;
-      const after = listPiece(c, step.deadline.steps, list);
-      const ringY = Math.max(BOX_H / 2 + 46 + WAIT / 2, down + ROW + Math.max(after.up, WAIT / 2 + 8));
-      // It hangs near the box's left edge, as Ocean draws it, clear of who acts at the box's foot.
-      const hangX = 33;
-      const ring = moved(waitPiece({ id: `${path}:deadline`, path, step, label: `After ${durationWords(step.deadline.after)}`, about: 'the task ends', icon: 'clock', caption: 'below' }), hangX - WAIT / 2, ringY);
+    // What hangs below the task, from its foot on the left, dashed, in the order it comes: each
+    // reminder, whose way ends by itself while the task waits on; then the deadline, whose way goes on.
+    // It hangs near the box's left edge, as Ocean draws it, clear of who acts at the box's foot.
+    const hangX = 33;
+    let hang: Anchor = { id: path, at: [hangX, BOX_H / 2], side: 'bottom' };
+    const hanging = [
+      ...(step.reminders ?? []).map((reminder, index) => ({
+        id: `${path}:reminder:${index}`,
+        list: `${path}.reminders[${index}].steps`,
+        steps: reminder.steps,
+        label: `After ${durationWords(reminder.after)}`,
+        about: 'a reminder',
+        icon: 'bell' as const,
+        ends: true,
+      })),
+      ...(step.deadline ? [{ id: `${path}:deadline`, list: `${path}.deadline.steps`, steps: step.deadline.steps, label: `After ${durationWords(step.deadline.after)}`, about: 'the task ends', icon: 'clock' as const, ends: false }] : []),
+    ];
+    for (const item of hanging) {
+      const after = listPiece(c, item.steps, item.list);
+      const ringY = Math.max(hang.at[1] + 46 + WAIT / 2, bottom + ROW + Math.max(after.up, WAIT / 2 + 8));
+      const ring = moved(waitPiece({ id: item.id, path, step, label: item.label, about: item.about, icon: item.icon, caption: 'below' }), hangX - WAIT / 2, ringY);
       const placedAfter = moved(after, bx, ringY);
       nodes.push(...ring.nodes, ...placedAfter.nodes);
       all.push(
         ...placedAfter.wires,
-        wire({ id: path, at: [hangX, BOX_H / 2], side: 'bottom' }, { id: ring.entry.id, at: [hangX, ringY - WAIT / 2], side: 'top' }, { dashed: true }),
-        wire(ring.exits[0]!, placedAfter.entry, { insert: { list, index: 0 } }),
+        wire(hang, { id: ring.entry.id, at: [hangX, ringY - WAIT / 2], side: 'top' }, { dashed: true }),
+        wire(ring.exits[0]!, placedAfter.entry, { insert: { list: item.list, index: 0 } }),
       );
-      rows.push({ piece: placedAfter, list, length: step.deadline.steps.length });
+      if (item.ends) {
+        const endX = bx + after.width + GAP;
+        const end: CanvasNode = { id: `${item.id}:end`, kind: 'end', x: endX, y: ringY - RING / 2, width: RING, height: RING, label: 'Reminded' };
+        nodes.push(end);
+        for (const exit of placedAfter.exits) all.push(wire(exit, { id: end.id, at: [endX, ringY], side: 'left' }, { insert: { list: item.list, index: item.steps.length } }));
+        width = Math.max(width, after.width + GAP + RING);
+      } else {
+        rows.push({ piece: placedAfter, list: item.list, length: item.steps.length });
+        width = Math.max(width, after.width);
+      }
       bottom = ringY + Math.max(WAIT / 2 + CAPTION, after.down);
-      width = Math.max(width, after.width);
+      // The next hangs from below this one's words.
+      hang = { id: item.id, at: [hangX, ringY + WAIT / 2 + CAPTION - 4], side: 'bottom' };
     }
     const up = Math.max(box.up, ways[0]?.piece.up ?? 0);
     const exits = rows.flatMap((row) => row.piece.exits);
@@ -841,15 +913,15 @@ function stepPiece(c: Ctx, step: FlowStep, path: string): Piece {
     const said = waitWords(definition, step.for, c.entity);
     return waitPiece({ id: path, path, step, label: said.words, ...(said.about ? { about: said.about } : {}), icon: said.icon, caption: 'above' });
   }
-  if ((step.type === 'each' || step.type === 'try' || step.type === 'first_of' || step.type === 'all_at_once') && c.folded.has(path)) {
+  if ((step.type === 'each' || step.type === 'repeat' || step.type === 'try' || step.type === 'first_of' || step.type === 'all_at_once') && c.folded.has(path)) {
     // A folded frame is one box, which says how many steps it holds.
     const inner = labelledLists(definition, step, path, c.entity).reduce((sum, list) => sum + flowSteps(list.steps).length, 0);
     return boxPiece({ id: path, path, step, kindLabel: words.kind, label: words.words, about: `${inner} step${inner === 1 ? '' : 's'} inside`, folded: true });
   }
-  if (step.type === 'each' || step.type === 'try' || step.type === 'first_of' || step.type === 'all_at_once') {
+  if (step.type === 'each' || step.type === 'repeat' || step.type === 'try' || step.type === 'first_of' || step.type === 'all_at_once') {
     // A frame round steps: a loop's, those an error handler guards, or ways in rows.
     const rows =
-      step.type === 'each' || step.type === 'try'
+      step.type === 'each' || step.type === 'repeat' || step.type === 'try'
         ? [{ piece: listPiece(c, step.steps, `${path}.steps`), list: `${path}.steps`, length: step.steps.length, ring: false }]
         : step.ways.map((way, index) => {
             const list = `${path}.ways[${index}].steps`;
@@ -876,7 +948,8 @@ function stepPiece(c: Ctx, step: FlowStep, path: string): Piece {
       PAD_X,
       rows[0]!.piece.down,
     );
-    const frameW = PAD_X + inner + PAD_X + (fans ? 12 : 0);
+    // Wide enough for its head's words, however little it holds.
+    const frameW = Math.max(PAD_X + inner + PAD_X + (fans ? 12 : 0), FRAME_MIN);
     const top = -(rows[0]!.piece.up + PAD_TOP);
     const last = placed[placed.length - 1]!;
     const bottom = last.entry.at[1] + rows[rows.length - 1]!.piece.down + PAD_BOTTOM;
@@ -988,15 +1061,17 @@ export function layoutFlow(
 ): { readonly nodes: CanvasNode[]; readonly edges: CanvasEdge[]; readonly width: number; readonly height: number } {
   wires = 0;
   const c: Ctx = { definition, entity: flowSubject(flow)?.entity, folded };
-  const inputs = Object.keys(flow.input);
+  // The start ring's words sit centred under it: a long line of them needs room on the left.
+  const about = startsWords(definition, flow);
+  const lead = Math.max(0, Math.round((about.length * CAPTION_CHAR) / 2 - RING / 2 - MARGIN + 6));
   const start: Piece = {
-    width: RING,
+    width: lead + RING,
     up: RING / 2 + 8,
     down: RING / 2 + CAPTION,
-    nodes: [{ id: 'start', kind: 'start', x: 0, y: -RING / 2, width: RING, height: RING, label: 'Starts', about: inputs.length ? `with ${inputs.join(', ')}` : 'when it runs' }],
+    nodes: [{ id: 'start', kind: 'start', x: lead, y: -RING / 2, width: RING, height: RING, label: 'Starts', about }],
     wires: [],
-    entry: { id: 'start', at: [0, 0], side: 'left' },
-    exits: [{ id: 'start', at: [RING, 0], side: 'right' }],
+    entry: { id: 'start', at: [lead, 0], side: 'left' },
+    exits: [{ id: 'start', at: [lead + RING, 0], side: 'right' }],
   };
   const pieces: Array<{ piece: Piece; index?: number }> = [{ piece: start }];
   if (!flow.steps.length) pieces.push({ piece: slotPiece('steps') });
@@ -1026,7 +1101,8 @@ export function layoutFlow(
       row.push(item);
       continue;
     }
-    const at = row.findLastIndex((each, i) => i > 0 && savesHere(each));
+    // Never so that the start stands alone on its row.
+    const at = row.findLastIndex((each, i) => i > 1 && savesHere(each));
     const next = at > 0 ? row.splice(at) : [];
     rows.push(next);
     if (next.length && reach(next, false) + item.piece.width > maxWidth) rows.push([item]);

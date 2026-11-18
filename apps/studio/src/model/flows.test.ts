@@ -359,4 +359,37 @@ describe('the flow canvas', () => {
     expect(shut.nodes.find((node) => node.id === 'steps[0]')).toMatchObject({ kind: 'step', folded: true, about: '2 steps inside' });
     expect(shut.nodes.some((node) => node.id === 'steps[0].steps[0]')).toBe(false);
   });
+  it('hangs reminders below a task before its deadline, frames steps that repeat, and says how a flow starts by itself', () => {
+    const definition = leave();
+    const flow = definition.flows!['leave_approval']!;
+    const task = flow.steps[0] as Extract<FlowStep, { type: 'task' }>;
+    const steps: FlowStep[] = [
+      {
+        type: 'repeat',
+        while: { eq: [{ ref: 'leave.status' }, 'submitted'] },
+        max: 3,
+        steps: [{ ...task, reminders: [{ after: 'P1D', steps: [{ type: 'change', record: 'leave', values: { reason: 'Reminded' } }] }], deadline: { after: 'P3D', steps: [] } }],
+      },
+    ];
+    const waits = { ...definition, flows: { leave_approval: { ...flow, starts: [{ date: 'starts', before: 'P2D' }, { created: true as const }], steps } } };
+    const { nodes, edges } = layoutFlow(waits, waits.flows.leave_approval, 5000);
+    const at = (id: string) => nodes.find((node) => node.id === id)!;
+    expect(at('steps[0]')).toMatchObject({ kind: 'frame', label: 'Repeats while leave.status is “submitted”', about: '3 times at most' });
+    // The reminder hangs first, the deadline below it; the reminder's way ends by itself.
+    const reminder = at('steps[0].steps[0]:reminder:0');
+    expect(reminder).toMatchObject({ kind: 'wait', label: 'After 1 day', about: 'a reminder', icon: 'bell', path: 'steps[0].steps[0]' });
+    expect(at('steps[0].steps[0]:deadline').y).toBeGreaterThan(reminder.y + reminder.height);
+    expect(edges.find((edge) => edge.target === 'steps[0].steps[0]:deadline')).toMatchObject({ dashed: true, source: 'steps[0].steps[0]:reminder:0' });
+    expect(at('steps[0].steps[0]:reminder:0:end')).toMatchObject({ kind: 'end', label: 'Reminded' });
+    expect(edges.some((edge) => edge.source === 'steps[0].steps[0].reminders[0].steps[0]' && edge.target === 'steps[0].steps[0]:reminder:0:end')).toBe(true);
+    expect(labelledLists(waits, steps[0]!.type === 'repeat' ? steps[0]!.steps[0]! : steps[0]!, 'steps[0].steps[0]').map((list) => list.label)).toEqual([
+      'Approve',
+      'Reject',
+      'After 1 day, a reminder',
+      'After 3 days, the task ends',
+    ]);
+    expect(at('start')).toMatchObject({ about: 'on 2 days before First day, or 1 more way' });
+    const scheduled = { ...definition, flows: { tidy: { label: 'Tidy', input: {}, schedule: { every: 'weekday' as const, at: '07:30', zone: 'Europe/London' }, steps: [] } } };
+    expect(layoutFlow(scheduled, scheduled.flows.tidy).nodes.find((node) => node.id === 'start')).toMatchObject({ about: 'every weekday at 07:30, Europe/London time' });
+  });
 });

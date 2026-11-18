@@ -1,4 +1,4 @@
-// Ocean's icons, from sreent/ocean at 80c0548f8359b898b9116bb2cc42d838bd22d944, taken by scripts/sync-ocean.mjs: the markup inside
+// Ocean's icons, from sreent/ocean at 83ec7defdfeb83a46373df93fad1b1df0034202d, taken by scripts/sync-ocean.mjs: the markup inside
 // each icon's <svg>, which draws in currentColor on a 24-unit square. Change them in Ocean.
 export const ICONS = {
   "admin": "<path d=\"M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z\"/><path d=\"M3 20a6 6 0 0 1 12 0\"/><path d=\"M16.5 4.3a3.5 3.5 0 0 1 0 6.4\"/><path d=\"M18.5 14.5a6 6 0 0 1 2.5 5.5\"/>",

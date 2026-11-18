@@ -50,6 +50,7 @@ import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { requirePerson } from '../access/rules.js';
 import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
+import { planSchedules } from '../flows/schedules.js';
 import { addSampleRecords } from './samples.js';
 
 export type ChangeRequestRow = typeof changeRequests.$inferSelect;
@@ -949,6 +950,7 @@ export class Delivery {
           .update(appEnvironments)
           .set({ appliedRevision: release.revision, activeRevision: release.revision, activeReleaseId: release.id })
           .where(eq(appEnvironments.id, env!.id));
+        await planSchedules(db, ctx.org.id, { id: env!.id, appId: team.app.id, kind }, definition, started);
         if (plan.revokes.length) {
           await db.update(bindings).set({ revokedAt: started, revokedByType: auth.actor.type, revokedBy: auth.actor.id }).where(inArray(bindings.id, plan.revokes));
         }
@@ -1070,6 +1072,7 @@ export class Delivery {
       const [locked] = await db.select().from(appEnvironments).where(eq(appEnvironments.id, env.id)).for('update');
       if (locked!.activeReleaseId !== current.id || locked!.status !== 'active') throw conflict('environment_changed', `${envName(kind)} changed meanwhile. Look again.`);
       await db.update(appEnvironments).set({ activeRevision: target.revision, activeReleaseId: target.id }).where(eq(appEnvironments.id, env.id));
+      await planSchedules(db, ctx.org.id, { id: env.id, appId: team.app.id, kind }, await ctx.apps.definition(team.app.id, target.revision, db), started);
       // A deployment planned against the release that is no longer live would go wrong.
       await db
         .update(deployments)

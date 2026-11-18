@@ -1,7 +1,7 @@
 import type { Condition } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
 import type { StoredDefinition } from './fields.js';
-import type { AppFlow, Flow, FlowStep, Process, ProcessElement, WaitFor } from './schema.js';
+import type { AppFlow, Flow, FlowStart, FlowStep, Process, ProcessElement, WaitFor } from './schema.js';
 
 /*
  * Flows that wait (design §6.11). A flow with a person's task, a wait, the first of several waits,
@@ -18,6 +18,7 @@ type Flows = Readonly<Record<string, AppFlow>> | undefined;
 export function innerLists(step: FlowStep, at: string): Array<{ readonly steps: readonly FlowStep[]; readonly path: string }> {
   switch (step.type) {
     case 'each':
+    case 'repeat':
       return [{ steps: step.steps, path: `${at}.steps` }];
     case 'if':
       return [
@@ -33,6 +34,7 @@ export function innerLists(step: FlowStep, at: string): Array<{ readonly steps: 
       return [
         ...step.outcomes.map((outcome, index) => ({ steps: outcome.steps, path: `${at}.outcomes[${index}].steps` })),
         ...(step.deadline ? [{ steps: step.deadline.steps, path: `${at}.deadline.steps` }] : []),
+        ...(step.reminders ?? []).map((reminder, index) => ({ steps: reminder.steps, path: `${at}.reminders[${index}].steps` })),
       ];
     case 'first_of':
     case 'all_at_once':
@@ -46,6 +48,7 @@ export function innerLists(step: FlowStep, at: string): Array<{ readonly steps: 
 export function withLists(step: FlowStep, at: string, replace: (steps: readonly FlowStep[], path: string) => FlowStep[]): FlowStep {
   switch (step.type) {
     case 'each':
+    case 'repeat':
       return { ...step, steps: replace(step.steps, `${at}.steps`) };
     case 'if':
       return { ...step, then: replace(step.then, `${at}.then`), else: replace(step.else, `${at}.else`) };
@@ -56,6 +59,7 @@ export function withLists(step: FlowStep, at: string, replace: (steps: readonly 
         ...step,
         outcomes: step.outcomes.map((outcome, index) => ({ ...outcome, steps: replace(outcome.steps, `${at}.outcomes[${index}].steps`) })),
         ...(step.deadline ? { deadline: { ...step.deadline, steps: replace(step.deadline.steps, `${at}.deadline.steps`) } } : {}),
+        ...(step.reminders ? { reminders: step.reminders.map((reminder, index) => ({ ...reminder, steps: replace(reminder.steps, `${at}.reminders[${index}].steps`) })) } : {}),
       };
     case 'first_of':
       return { ...step, ways: step.ways.map((way, index) => ({ ...way, steps: replace(way.steps, `${at}.ways[${index}].steps`) })) };
@@ -116,6 +120,19 @@ export function durationWords(duration: string): string {
   return `${amount} ${unit}${amount === '1' ? '' : 's'}`;
 }
 
+/** A date field of a record, moved or not: "2 days before Starts on". */
+export function dateWords(date: { readonly date: string; readonly before?: string | undefined; readonly after?: string | undefined }, fieldLabel: (field: string) => string): string {
+  const field = fieldLabel(date.date);
+  return date.before ? `${durationWords(date.before)} before ${field}` : date.after ? `${durationWords(date.after)} after ${field}` : field;
+}
+
+/** How a flow starts by itself, in words: "When a Leave request is created", "On 2 days before Starts on". */
+export function startWords(start: FlowStart, entityLabel: string, fieldLabel: (field: string) => string): string {
+  if ('created' in start) return start.after ? `${durationWords(start.after)} after a ${entityLabel} is created` : `When a ${entityLabel} is created`;
+  if ('date' in start) return `On ${dateWords(start, fieldLabel)}`;
+  return 'condition' in start ? 'When its condition holds' : `On the signal ${start.signal}`;
+}
+
 /** What a step does, in a word or two: for the name of a stretch of steps on the engine. */
 const STEP_WORDS: Readonly<Record<FlowStep['type'], string>> = {
   set: 'set a value',
@@ -132,6 +149,7 @@ const STEP_WORDS: Readonly<Record<FlowStep['type'], string>> = {
   total: 'count or total',
   return: 'end',
   task: 'a task',
+  repeat: 'repeat',
   wait: 'wait',
   first_of: 'the first of',
   all_at_once: 'all at once',
@@ -154,7 +172,12 @@ export interface CompiledFlow {
 }
 
 /** What the compiler needs of a definition: its entities' labels, its actions and its flows. */
-type Lookup = Pick<StoredDefinition, 'actions' | 'flows'> & { readonly entities: Readonly<Record<string, { readonly fields: ReadonlyArray<{ readonly name: string; readonly label: string }> }>> };
+type Lookup = Pick<StoredDefinition, 'actions' | 'flows'> & {
+  readonly entities: Readonly<Record<string, { readonly label: string; readonly fields: ReadonlyArray<{ readonly name: string; readonly label: string }> }>>;
+};
+
+/** A condition that holds on any record there is: a start on it starts as the record is created. */
+export const CREATED: Condition = { exists: 'record.id' };
 
 /**
  * Compile a flow that waits to the engine's graph. The actions that run the flow start it on their
@@ -180,8 +203,10 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
   /** The flow's own references to its record, as the engine reads the record: `leave.days` is `record.days`. */
   const onRecord = (condition: Condition): Condition =>
     mapRefs(condition, (ref) => (ref === subject.name ? 'record.id' : ref.startsWith(`${subject.name}.`) ? `record.${ref.slice(subject.name.length + 1)}` : ref));
+  /** The sub-process that the elements being added go in: a loop that waits. An event on a boundary is where its host is. */
+  let inside: string | undefined;
   const add = (path: string, element: ProcessElement, id = elementIdOf(path)): string => {
-    elements[id] = element;
+    elements[id] = inside === undefined || element.type === 'boundaryEvent' ? element : { ...element, in: inside };
     at.set(id, path);
     return id;
   };
@@ -205,7 +230,7 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
       'duration' in wait
         ? `Waits ${durationWords(wait.duration)}`
         : 'date' in wait
-          ? `Waits until ${fieldLabel(wait.date)}`
+          ? `Waits until ${dateWords(wait, fieldLabel)}`
           : 'action' in wait
             ? `Waits for ${definition.actions[wait.action]?.label ?? wait.action}`
             : 'condition' in wait
@@ -216,7 +241,7 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
     'duration' in wait
       ? { timer: { duration: wait.duration } }
       : 'date' in wait
-        ? { timer: { date: wait.date } }
+        ? { timer: wait }
         : 'action' in wait
           ? { message: { action: wait.action } }
           : 'condition' in wait
@@ -276,6 +301,13 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
           const late = add(`${path}.deadline`, { type: 'boundaryEvent', name: clip(`${step.label}: after ${durationWords(step.deadline.after)}`), attachedTo: id, interrupting: true, timer: { duration: step.deadline.after } });
           out.push(...list(step.deadline.steps, `${path}.deadline.steps`, [{ from: late }]));
         }
+        // A reminder runs its steps beside the task, which waits on: its way ends by itself.
+        for (const [index, reminder] of (step.reminders ?? []).entries()) {
+          const at = `${path}.reminders[${index}]`;
+          const timer = add(at, { type: 'boundaryEvent', name: clip(`${step.label}: a reminder after ${durationWords(reminder.after)}`), attachedTo: id, interrupting: false, timer: { duration: reminder.after } });
+          const done = list(reminder.steps, `${at}.steps`, [{ from: timer }]);
+          if (done.length) connect(done, add(at, { type: 'endEvent', name: 'Reminded', terminate: false }, `${elementIdOf(at)}_end`));
+        }
         return meet(out, path);
       }
       case 'wait':
@@ -313,6 +345,17 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
           path,
         );
       }
+      case 'repeat': {
+        // A loop that waits: a sub-process that runs again while its condition holds on the record.
+        add(path, { type: 'subProcess', name: 'Repeats', repeat: { while: onRecord(step.while), max: step.max, before: true } });
+        connect(ends, id);
+        const outer = inside;
+        inside = id;
+        const done = list(step.steps, `${path}.steps`, [{ from: add(path, { type: 'startEvent', actions: [] }, `${id}_start`) }]);
+        if (done.length) connect(done, add(path, { type: 'endEvent', name: 'Once round', terminate: false }, `${id}_end`));
+        inside = outer;
+        return [{ from: id }];
+      }
       case 'return':
         add(path, { type: 'endEvent', name: 'Ends here', terminate: true });
         connect(ends, id);
@@ -337,6 +380,24 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
   if (actions.length) {
     const by = listed(actions.map((action) => definition.actions[action]?.label ?? action));
     starts.push({ from: add('', { type: 'startEvent', name: clip(by), actions }, 'start_by_action') });
+  }
+  // The flow starts by itself on a record as each of its starts says.
+  const entityLabel = definition.entities[subject.entity]?.label ?? subject.entity;
+  const trigger = (start: FlowStart) =>
+    'created' in start
+      ? start.after
+        ? { timer: { duration: start.after } }
+        : { condition: CREATED }
+      : 'date' in start
+        ? { timer: start }
+        : 'condition' in start
+          ? { condition: onRecord(start.condition) }
+          : { signal: start.signal };
+  for (const [index, start] of (flow.starts ?? []).entries()) {
+    const named = clip(startWords(start, entityLabel, fieldLabel));
+    starts.push({ from: add(`starts[${index}]`, { type: 'startEvent', name: named, actions: [], ...trigger(start) }, `start_${index}`) });
+  }
+  if (starts.length > 1) {
     add('', { type: 'exclusiveGateway', name: 'Where the starts meet' }, 'start_meet');
     connect(starts, 'start_meet');
     starts = [{ from: 'start_meet' }];

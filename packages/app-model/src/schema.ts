@@ -223,8 +223,11 @@ export const MAX_STEPS = 20;
 export const DURATION_PATTERN = /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
 export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in ISO 8601, for example P3D for three days or PT4H for four hours');
 
-/** When a timer fires: after a duration, or on a date or time field of the record, such as the first day of a leave. */
-export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name })]);
+/**
+ * When a timer fires: after a duration, or on a date or time field of the record, such as the first
+ * day of a leave. A date can move: `before: 'P2D'` fires two days before it, `after` after it.
+ */
+export const Timer = z.union([z.strictObject({ duration: Duration }), z.strictObject({ date: Name, before: Duration.optional(), after: Duration.optional() })]);
 export type Timer = z.infer<typeof Timer>;
 
 /**
@@ -339,7 +342,7 @@ const FlowReturn = z.strictObject({ type: z.literal('return'), value: Expression
  */
 export const WaitFor = z.union([
   z.strictObject({ duration: Duration }),
-  z.strictObject({ date: Name }),
+  z.strictObject({ date: Name, before: Duration.optional(), after: Duration.optional() }),
   z.strictObject({ action: Name }),
   z.strictObject({ condition: ConditionSchema }),
   z.strictObject({ signal: Name }),
@@ -347,6 +350,34 @@ export const WaitFor = z.union([
 export type WaitFor = z.infer<typeof WaitFor>;
 /** Wait, then go on. */
 const FlowWait = z.strictObject({ type: z.literal('wait'), for: WaitFor });
+/**
+ * How a flow that waits starts by itself on a record of the entity it is about: when the record is
+ * created, or a time after; on a date or time field of the record, or a time before or after it;
+ * when a change makes a condition on the record hold, where it didn't before; or on a signal.
+ */
+export const FlowStart = z.union([
+  z.strictObject({ created: z.literal(true), after: Duration.optional() }),
+  z.strictObject({ date: Name, before: Duration.optional(), after: Duration.optional() }),
+  z.strictObject({ condition: ConditionSchema }),
+  z.strictObject({ signal: Name }),
+]);
+export type FlowStart = z.infer<typeof FlowStart>;
+export const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+/**
+ * When a flow that needs no input runs by itself: every hour, day, weekday, week or month, at a time
+ * of day in a time zone. Every hour, it runs at the minutes of `at`.
+ */
+export const Schedule = z.strictObject({
+  every: z.enum(['hour', 'day', 'weekday', 'week', 'month']),
+  at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Give a time of day as HH:MM, for example 07:30').default('00:00'),
+  /** Every week: the day it runs. */
+  on: z.enum(WEEKDAYS).optional(),
+  /** Every month: the day of the month it runs, 1 to 28, or the last day. */
+  day: z.union([z.int().min(1).max(28), z.literal('last')]).optional(),
+  /** The time zone of the time of day, such as Europe/London. Without it, UTC. */
+  zone: z.string().min(1).max(64).optional(),
+});
+export type Schedule = z.infer<typeof Schedule>;
 /** A step of a flow. Written out, because a step can hold steps, and declarations keep only what is written. */
 export type FlowStep =
   | { readonly type: 'set'; readonly var: string; readonly value: Expression }
@@ -382,7 +413,9 @@ export type FlowStep =
       readonly due?: string | undefined;
       readonly card?: string | undefined;
       readonly deadline?: { readonly after: string; readonly steps: FlowStep[] } | undefined;
+      readonly reminders?: Array<{ readonly after: string; readonly steps: FlowStep[] }> | undefined;
     }
+  | { readonly type: 'repeat'; readonly while: Condition; readonly max: number; readonly steps: FlowStep[] }
   | { readonly type: 'wait'; readonly for: WaitFor }
   | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps: FlowStep[] }> }
   | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps: FlowStep[] }> };
@@ -397,12 +430,14 @@ export type FlowStepInput =
   | (Omit<Extract<FlowStep, { type: 'check' }>, 'severity'> & { readonly severity?: 'error' | 'warning' | undefined })
   | (Omit<Extract<FlowStep, { type: 'call' }>, 'input'> & { readonly input?: Record<string, Expression> | undefined })
   | { readonly type: 'try'; readonly steps: FlowStepInput[]; readonly catch?: FlowStepInput[] | undefined; readonly rollback?: boolean | undefined; readonly error?: string | undefined }
-  | (Omit<Extract<FlowStep, { type: 'task' }>, 'assignee' | 'several' | 'outcomes' | 'deadline'> & {
+  | (Omit<Extract<FlowStep, { type: 'task' }>, 'assignee' | 'several' | 'outcomes' | 'deadline' | 'reminders'> & {
       readonly assignee?: z.input<typeof Routing> | undefined;
       readonly several?: z.input<typeof Several> | undefined;
       readonly outcomes: Array<{ readonly name: string; readonly label: string; readonly action?: string | undefined; readonly steps?: FlowStepInput[] | undefined }>;
       readonly deadline?: { readonly after: string; readonly steps?: FlowStepInput[] | undefined } | undefined;
+      readonly reminders?: Array<{ readonly after: string; readonly steps?: FlowStepInput[] | undefined }> | undefined;
     })
+  | { readonly type: 'repeat'; readonly while: Condition; readonly max?: number | undefined; readonly steps: FlowStepInput[] }
   | Extract<FlowStep, { type: 'wait' }>
   | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps?: FlowStepInput[] | undefined }> }
   | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps?: FlowStepInput[] | undefined }> };
@@ -453,7 +488,14 @@ const FlowTask = z.strictObject({
   /** The review card the task shows. */
   card: Name.optional(),
   deadline: z.strictObject({ after: Duration, steps: flowSteps().default([]) }).optional(),
+  /** Steps that run while the task still waits, a time after it opens, such as telling whoever has it. The task waits on. */
+  reminders: z.array(z.strictObject({ after: Duration, steps: flowSteps().default([]) })).min(1).max(3).optional(),
 });
+/**
+ * Run steps again while a condition holds, checked before each time, up to `max` times in all. In a
+ * flow that waits, the steps can wait, and the condition reads the record.
+ */
+const FlowRepeat = z.strictObject({ type: z.literal('repeat'), while: ConditionSchema, max: z.int().min(1).max(100).default(10), steps: flowSteps() });
 /** Wait for the first of several things, and go on by its way: the others no longer wait. */
 const FlowFirstOf = z.strictObject({
   type: z.literal('first_of'),
@@ -479,6 +521,7 @@ export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion
   FlowTotal,
   FlowReturn,
   FlowTask,
+  FlowRepeat,
   FlowWait,
   FlowFirstOf,
   FlowAllAtOnce,
@@ -490,6 +533,10 @@ export const AppFlow = z.strictObject({
   description: Description.optional(),
   input: z.record(Name, FlowType).default({}),
   output: FlowType.optional(),
+  /** A flow that waits starts by itself on records of its entity, in each of these ways. */
+  starts: z.array(FlowStart).min(1).max(5).optional(),
+  /** A flow that needs no input runs by itself on a schedule, with the app's authority. */
+  schedule: Schedule.optional(),
   steps: z.array(FlowStep).max(MAX_FLOW_BLOCK),
 });
 export type AppFlow = z.infer<typeof AppFlow>;
