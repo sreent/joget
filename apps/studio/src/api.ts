@@ -6,6 +6,7 @@ import type {
   Deployment,
   EnvironmentInfo,
   FileInfo,
+  FlowCase,
   HistoryEntry,
   ImportResult,
   Me,
@@ -200,6 +201,9 @@ export const api = {
     call<ProcessInstance>('POST', `${app(at(target).id)}/processes/${encodeURIComponent(process)}/start${envParams(target)}`, { recordId }),
   /** How many cases of a flow that waits wait at each of its steps now: the live view of its canvas. */
   flowLive: (target: string | AppAt, flow: string) => call<FlowLive>('GET', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/live${envParams(target)}`),
+  /** The cases that wait at one step now, the longest waiting first: what its live count opens. */
+  flowCases: (target: string | AppAt, flow: string, path: string) =>
+    call<{ cases: FlowCase[] }>('GET', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/live/cases${envParams(target, { path })}`),
   processInstances: (target: string | AppAt, stuck = false) =>
     call<{ instances: ProcessInstance[] }>('GET', `${app(at(target).id)}/process-instances${envParams(target, stuck ? { stuck: 'true' } : {})}`),
   retryInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/retry${envParams(target)}`),

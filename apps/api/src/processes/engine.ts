@@ -189,6 +189,15 @@ export interface InstanceView {
 }
 
 /** Where the cases of a flow that waits are now, by the path of the step each waits at. */
+/** A case that waits at a step of a flow: its instance, its record, since when, and whether it is stuck there. */
+export interface FlowCase {
+  readonly instanceId: string;
+  readonly recordId: string;
+  readonly since: string;
+  readonly stuck: boolean;
+  readonly error?: string;
+}
+
 export interface FlowLive {
   readonly running: number;
   readonly steps: Array<{ readonly path: string; readonly waiting: number; readonly stuck: number; readonly since: string }>;
@@ -440,6 +449,31 @@ export class ProcessEngine implements ProcessHooks {
       steps.set(path, step);
     }
     return { running: cases?.count ?? 0, steps: [...steps].map(([path, step]) => ({ path, waiting: step.waiting, stuck: step.stuck, since: new Date(step.since).toISOString() })) };
+  }
+
+  /**
+   * The cases that wait at one step of a flow now, for its live count to open: the longest waiting
+   * first, each with its record, since when it has waited, and why it is stuck if it is. Each case
+   * is placed by the steps of the revision it runs on, as the count is.
+   */
+  async casesAt(loaded: LoadedApp, flow: string, path: string, limit: number): Promise<FlowCase[]> {
+    const running = and(eq(processInstances.environmentId, loaded.env.id), eq(processInstances.process, flow), eq(processInstances.status, 'running'))!;
+    const revisions = await this.#ctx.db.selectDistinct({ revision: processInstances.revision }).from(processInstances).where(running);
+    const at: SQL[] = [];
+    for (const { revision } of revisions) {
+      const steps = compileFlows(await this.#ctx.apps.definition(loaded.app.id, revision)).at.get(flow) ?? new Map<string, string>();
+      const elements = [...steps].flatMap(([element, step]) => (step === path ? [element] : []));
+      if (elements.length) at.push(and(eq(processInstances.revision, revision), inArray(processTokens.element, elements))!);
+    }
+    if (!at.length) return [];
+    const rows = await this.#ctx.db
+      .select({ instanceId: processInstances.id, recordId: processInstances.recordId, since: processTokens.createdAt, state: processTokens.state, error: processTokens.error })
+      .from(processTokens)
+      .innerJoin(processInstances, eq(processInstances.id, processTokens.instanceId))
+      .where(and(running, sql`${processTokens.state} <> 'fired'`, or(...at)))
+      .orderBy(asc(processTokens.createdAt))
+      .limit(limit);
+    return rows.map((row) => ({ instanceId: row.instanceId, recordId: row.recordId, since: row.since.toISOString(), stuck: row.state === 'stuck', ...(row.error ? { error: row.error } : {}) }));
   }
 
   /** One instance, with its tasks and its history. */

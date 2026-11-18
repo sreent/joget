@@ -223,6 +223,14 @@ describe('flows', () => {
     expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/flows/leave_approval/live`, ...as(alice) }, 200)).steps).toEqual([
       expect.objectContaining({ path: 'steps[0].outcomes[0].steps[0]', waiting: 0, stuck: 1 }),
     ]);
+    // The count opens its cases: each with its record, since when, and why it is stuck.
+    const cases = (path: string) => inject({ method: 'GET', url: `/v1/apps/${leaveId}/flows/leave_approval/live/cases?path=${encodeURIComponent(path)}`, ...as(alice) }, 200);
+    expect((await cases('steps[0].outcomes[0].steps[0]')).cases).toEqual([
+      { instanceId: stuck.id, recordId: long.id, since: expect.any(String), stuck: true, error: 'Leave approval: change and check: Long leave needs HR' },
+    ]);
+    const waiting = await ask(5);
+    expect((await cases('steps[0]')).cases).toEqual([expect.objectContaining({ recordId: waiting.id, stuck: false })]);
+    expect((await cases('steps[9]')).cases).toEqual([]);
     // The decision before the stamp stays: a failure after the flow saves can't undo it.
     expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.status).toBe('approved');
   });

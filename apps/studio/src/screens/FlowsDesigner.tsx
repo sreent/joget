@@ -43,6 +43,7 @@ import {
   type StepType,
 } from '../model/flows.js';
 import { isWorkedOut, type Definition, type Field as FieldDef, type FlowLive } from '../types.js';
+import { FlowCases } from './FlowCases.js';
 import { HowItStarts } from './FlowStarts.js';
 import { CallServiceFields } from './ServiceStep.js';
 import { ValueEditor, type ValueMode, type ValueSources } from './ValueEditor.js';
@@ -102,6 +103,8 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
     setSelected(path);
     setAdding(null);
   };
+  // The step whose cases are open, from its live count.
+  const [cases, setCases] = useState<string | null>(null);
   // A step copied or cut, to paste after a step, or where a new step would go.
   const [copied, setCopied] = useState<FlowStep | null>(null);
   const copy = () => {
@@ -234,6 +237,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
             onFold={fold}
             onSelect={select}
             onMove={move}
+            onCases={setCases}
             onShow={setShow}
             onInsert={(place) => {
               setSelected(null);
@@ -250,6 +254,17 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
       </Card>
       {flow && name ? (
         <div className="grid content-start gap-4">
+          {cases && liveNow && flowSubject(flow) ? (
+            <FlowCases
+              appId={appId}
+              definition={definition}
+              flow={name}
+              entity={flowSubject(flow)!.entity}
+              path={cases}
+              step={stepAt(flow, cases) ? stepWords(definition, stepAt(flow, cases)!, flowSubject(flow)!.entity).words : cases}
+              onClose={() => setCases(null)}
+            />
+          ) : null}
           {adding && !readOnly ? (
             <AddStep
               waits={canWait(flow) && !insideLoop(flow, adding.list)}
@@ -328,6 +343,8 @@ type NodeData = {
   problems?: readonly string[] | undefined;
   /** For a way with no steps: a dragged step goes into it if it's dropped now. */
   drop?: boolean;
+  /** Live: open the cases that wait at the step. */
+  onCases?: ((path: string) => void) | undefined;
   onInsert: (place: Place) => void;
   onSelect: (path: string) => void;
   onFold: (path: string) => void;
@@ -387,7 +404,7 @@ function StepNode({ data }: NodeProps<FlowNode>) {
           {node.who.words}
         </span>
       ) : null}
-      <LiveChip live={data.live} />
+      <LiveChip live={data.live} onOpen={data.onCases && data.node.path ? () => data.onCases!(data.node.path!) : undefined} />
       <ProblemCount problems={data.problems} />
       {node.folded ? (
         <button
@@ -447,7 +464,7 @@ function WaitNode({ data }: NodeProps<FlowNode>) {
         <strong>{node.label}</strong>
         {node.about ? <span>{node.about}</span> : null}
       </span>
-      <LiveChip live={data.live} />
+      <LiveChip live={data.live} onOpen={data.onCases && data.node.path ? () => data.onCases!(data.node.path!) : undefined} />
       <ProblemCount problems={data.problems} />
       <Handles />
     </div>
@@ -465,9 +482,24 @@ function ProblemCount({ problems }: { problems: readonly string[] | undefined })
   );
 }
 
-/** Live: how many cases wait at a step, how many are stuck there, and the longest wait. */
-function LiveChip({ live }: { live: Live | undefined }) {
-  return live ? <span className={cx('logic-live', live.stuck > 0 && 'text-bad')}>{liveWords(live)}</span> : null;
+/** Live: how many cases wait at a step, how many are stuck there, and the longest wait; a button that opens the cases. */
+function LiveChip({ live, onOpen }: { live: Live | undefined; onOpen?: (() => void) | undefined }) {
+  if (!live) return null;
+  const look = cx('logic-live', live.stuck > 0 && 'text-bad');
+  if (!onOpen) return <span className={look}>{liveWords(live)}</span>;
+  return (
+    <button
+      type="button"
+      className={cx(look, 'nodrag cursor-pointer border-0')}
+      aria-label={`${liveWords(live)}: show the cases`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen();
+      }}
+    >
+      {liveWords(live)}
+    </button>
+  );
 }
 
 const FRAME_ICONS: Readonly<Partial<Record<StepType, IconName>>> = { each: 'sync', repeat: 'sync', try: 'guard', first_of: 'wait', all_at_once: 'studio' };
@@ -499,7 +531,7 @@ function FrameNode({ data }: NodeProps<FlowNode>) {
       >
         ⤡
       </button>
-      <LiveChip live={data.live} />
+      <LiveChip live={data.live} onOpen={data.onCases && data.node.path ? () => data.onCases!(data.node.path!) : undefined} />
       <ProblemCount problems={data.problems} />
     </div>
   );
@@ -602,6 +634,7 @@ function FlowCanvas(props: {
   onFold: (path: string) => void;
   onSelect: (path: string | null) => void;
   onMove: (from: string, to: Place) => void;
+  onCases: (path: string) => void;
   onShow: (show: 'canvas' | 'list') => void;
   onInsert: (place: Place) => void;
 }) {
@@ -654,6 +687,7 @@ function FlowCanvas(props: {
       live: node.id === node.path ? liveAt.get(node.id) : undefined,
       problems: node.id === node.path && node.path !== undefined ? props.problems.get(node.path) : undefined,
       drop: node.kind === 'slot' && dropAt?.list === node.list,
+      onCases: props.onCases,
       onInsert,
       onSelect,
       onFold,

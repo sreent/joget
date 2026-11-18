@@ -248,6 +248,32 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
     );
 
     app.get(
+      '/v1/apps/:appId/flows/:flow/live/cases',
+      {
+        config: { access: { kind: 'authenticated' } },
+        schema: {
+          tags: ['processes'],
+          summary: 'The cases that wait at one step of a flow now, the longest waiting first: what its live count opens',
+          params: AppParams.extend({ flow: z.string().regex(NAME_PATTERN) }),
+          querystring: EnvQuery.extend({
+            path: z.string().min(1).max(500).describe('The step, as steps[2].then[0]'),
+            limit: z.coerce.number().int().min(1).max(200).default(50),
+          }),
+          response: {
+            200: z.object({
+              cases: z.array(z.object({ instanceId: z.uuid(), recordId: z.uuid(), since: z.string(), stuck: z.boolean(), error: z.string().optional() })),
+            }),
+          },
+        },
+      },
+      async (request) => {
+        const loaded = await theApp(request);
+        await operate(request, loaded, 'ops.monitor.read');
+        return { cases: await engine.casesAt(loaded, request.params.flow, request.query.path, request.query.limit) };
+      },
+    );
+
+    app.get(
       '/v1/apps/:appId/process-instances/:instanceId',
       {
         config: { access: { kind: 'authenticated' } },

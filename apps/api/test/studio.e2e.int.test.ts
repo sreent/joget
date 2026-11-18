@@ -468,6 +468,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await builder.getByRole('button', { name: 'Live', exact: true }).click();
     await visible(builder.getByTestId('flow-step-steps[0]').getByText('1 waiting', { exact: false }));
     await shot(builder, '16a-flow-live');
+    // The count opens its cases, each by its record.
+    await builder.getByTestId('flow-step-steps[0]').getByRole('button', { name: /show the cases$/ }).click();
+    const cases = builder.getByRole('region', { name: 'Cases at this step' });
+    await visible(cases.getByText('Waiting for', { exact: false }));
+    await visible(cases.getByRole('link'));
+    await shot(builder, '16c-flow-cases');
     await builder.getByRole('button', { name: 'List', exact: true }).click();
     await visible(builder.getByTestId('flow-row-steps[0]').getByText('1 waiting', { exact: false }));
     await shot(builder, '16b-flow-list');
