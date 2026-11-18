@@ -18,6 +18,8 @@ interface Locator {
   count(): Promise<number>;
   click(options?: { position?: { x: number; y: number } }): Promise<void>;
   check(): Promise<void>;
+  textContent(): Promise<string | null>;
+  boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
   isDisabled(): Promise<boolean>;
   fill(value: string): Promise<void>;
   blur(): Promise<void>;
@@ -37,6 +39,7 @@ interface Locator {
 interface Page extends Locator {
   goto(url: string): Promise<unknown>;
   keyboard: { press(key: string): Promise<void> };
+  mouse: { move(x: number, y: number, options?: { steps?: number }): Promise<void>; down(): Promise<void>; up(): Promise<void> };
   url(): string;
   waitForURL(url: RegExp): Promise<void>;
   getByText(text: string, options?: { exact?: boolean }): Locator;
@@ -1014,6 +1017,48 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.getByText('No problems', { exact: true }));
     await page.keyboard.press('Control+Shift+z');
     await visible(page.getByRole('button', { name: '1 problem', exact: true }));
+  });
+
+  it('copies, cuts and pastes steps, and moves a step by dragging it onto an arrow', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await page.getByLabel('Name').fill('Claims to rearrange');
+    await page.getByLabel('Start from').selectOption('expenses');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const arrangeId = page.url().split('/apps/')[1]!.split('/')[0]!;
+    await page.goto(`${BASE}/studio/apps/${arrangeId}/build/flows/check_approval`);
+    const step = (path: string) => page.getByTestId(`flow-step-${path}`);
+    const words = async (path: string) => (await step(path).textContent()) ?? '';
+
+    // The warning about large claims goes first: dragged onto the arrow before the first step.
+    const from = (await step('steps[2]').boundingBox())!;
+    const to = (await page.getByRole('button', { name: 'Add a step at steps[0]' }).boundingBox())!;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
+    await page.mouse.up();
+    await visible(step('steps[0]').getByText('A claim over SGD 1,000', { exact: false }));
+    expect(await words('steps[1]')).toContain('stops unless');
+    await shot(page, '37-a-step-moved');
+
+    // A copy of a step goes after it, by its button or by the keys; a cut takes it out.
+    await step('steps[1]').click();
+    await page.getByRole('region', { name: 'Step' }).getByRole('button', { name: 'Copy', exact: true }).click();
+    await page.getByRole('region', { name: 'Step' }).getByRole('button', { name: 'Paste after', exact: true }).click();
+    await visible(step('steps[3]'));
+    expect(await words('steps[2]')).toContain('stops unless');
+    await page.getByRole('heading', { name: 'Claims to rearrange' }).click();
+    await step('steps[0]').click();
+    await page.keyboard.press('Control+c');
+    await page.keyboard.press('Control+v');
+    await visible(step('steps[4]'));
+    await step('steps[4]').click();
+    await page.keyboard.press('Control+x');
+    await hidden(step('steps[4]'));
+    // Undo puts back what the cut took out.
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await visible(step('steps[4]'));
   });
 
   it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {

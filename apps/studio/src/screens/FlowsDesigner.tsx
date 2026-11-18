@@ -1,6 +1,6 @@
 import { flowSubject, flowWaits, type AppFlow, type FlowStep, type FlowType, type Several, type VarKind, type WaitFor } from '@platform/app-model';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, type EdgeProps, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
+import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
@@ -10,6 +10,9 @@ import { Icon, type IconName } from '../components/icon.js';
 import { Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type RefChoice } from '../model/conditions.js';
 import {
+  splitPath,
+  moveStepTo,
+  canMoveTo,
   problemsByStep,
   addFlow,
   canWait,
@@ -99,6 +102,53 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
     setSelected(path);
     setAdding(null);
   };
+  // A step copied or cut, to paste after a step, or where a new step would go.
+  const [copied, setCopied] = useState<FlowStep | null>(null);
+  const copy = () => {
+    const step = flow && selected ? stepAt(flow, selected) : undefined;
+    if (step) setCopied(structuredClone(step));
+  };
+  const cut = () => {
+    if (!name || !selected) return;
+    copy();
+    onChange(removeStep(definition, name, selected));
+    select(null);
+  };
+  const paste = (place: Place) => {
+    if (!name || !copied) return;
+    onChange(insertStep(definition, name, place.list, place.index, structuredClone(copied)));
+    setAdding(null);
+    setSelected(`${place.list}[${place.index}]`);
+  };
+  const pasteAfter = () => {
+    if (!selected) return;
+    const { list, index } = splitPath(selected);
+    paste({ list, index: index + 1 });
+  };
+  const move = (from: string, to: Place) => {
+    const moved = name ? moveStepTo(definition, name, from, to) : null;
+    if (!moved) return;
+    onChange(moved.definition);
+    select(moved.path);
+  };
+  // Ctrl or Cmd with C, X or V copies, cuts and pastes the chosen step, when no text is chosen instead.
+  useEffect(() => {
+    if (readOnly) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (window.getSelection()?.toString()) return;
+      const key = event.key.toLowerCase();
+      if (key === 'c' && selected) copy();
+      else if (key === 'x' && selected) cut();
+      else if (key === 'v' && copied && adding) paste(adding);
+      else if (key === 'v' && copied && selected) pasteAfter();
+      else return;
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   return (
     // As Ocean's FlowDesigner lays it out: the canvas is the whole middle, with which flow at its top
@@ -183,6 +233,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
             folded={folded}
             onFold={fold}
             onSelect={select}
+            onMove={move}
             onShow={setShow}
             onInsert={(place) => {
               setSelected(null);
@@ -202,6 +253,8 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
           {adding && !readOnly ? (
             <AddStep
               waits={canWait(flow) && !insideLoop(flow, adding.list)}
+              copied={copied ? STEP_NAMES[copied.type] : null}
+              onPaste={() => paste(adding)}
               onCancel={() => setAdding(null)}
               onAdd={(type) => {
                 const scope = scopeAt(definition, name, adding);
@@ -217,6 +270,10 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
               path={selected}
               problems={byStep.get(selected) ?? []}
               readOnly={readOnly}
+              copied={Boolean(copied)}
+              onCopy={copy}
+              onCut={cut}
+              onPasteAfter={pasteAfter}
               onChange={onChange}
               onRemoved={() => select(null)}
               onMoved={(path) => setSelected(path)}
@@ -269,12 +326,14 @@ type NodeData = {
   live?: Live | undefined;
   /** What the checks find wrong with the step, as the builder changes it. */
   problems?: readonly string[] | undefined;
+  /** For a way with no steps: a dragged step goes into it if it's dropped now. */
+  drop?: boolean;
   onInsert: (place: Place) => void;
   onSelect: (path: string) => void;
   onFold: (path: string) => void;
 };
 type FlowNode = Node<NodeData>;
-type WireData = { edge: CanvasEdge; readOnly: boolean; onInsert: (place: Place) => void };
+type WireData = { edge: CanvasEdge; readOnly: boolean; onInsert: (place: Place) => void; drop?: boolean };
 
 /** Each kind of step's icon: Ocean's, in the colour of what the step does. */
 const STEP_ICONS: Readonly<Partial<Record<StepType, IconName>>> = {
@@ -448,7 +507,7 @@ function FrameNode({ data }: NodeProps<FlowNode>) {
 
 function SlotNode({ data }: NodeProps<FlowNode>) {
   return (
-    <div className="grid h-full w-full place-items-center rounded-md border border-dashed border-line-strong" data-testid={`flow-slot-${data.node.list}`}>
+    <div className={cx('grid h-full w-full place-items-center rounded-md border border-dashed', data.drop ? 'border-accent bg-accent-soft' : 'border-line-strong')} data-testid={`flow-slot-${data.node.list}`}>
       <Handles />
       {data.readOnly ? (
         <span className="text-xs text-faint">No steps</span>
@@ -470,7 +529,7 @@ const PortNode = () => (
 /** An arrow as the layout drew it: at right angles, with its head, its word, and a "+" for a new step. */
 function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
   if (!data) return null;
-  const { edge, readOnly, onInsert } = data;
+  const { edge, readOnly, onInsert, drop } = data;
   const head = edge.head;
   const triangle = head
     ? {
@@ -501,7 +560,7 @@ function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
           <button
             type="button"
             // Each arrow's "+" shows while the pointer is over the canvas, so the flow reads calmly otherwise.
-            className="logic-add nodrag nopan opacity-0 transition-opacity group-hover/canvas:opacity-70 hover:!opacity-100 focus-visible:!opacity-100"
+            className={cx('logic-add nodrag nopan opacity-0 transition-opacity group-hover/canvas:opacity-70 hover:!opacity-100 focus-visible:!opacity-100', drop && 'drop')}
             style={{ left: edge.insert.x, top: edge.insert.y, pointerEvents: 'all' }}
             aria-label={`Add a step at ${edge.insert.list}[${edge.insert.index}]`}
             title="Add a step here"
@@ -542,10 +601,14 @@ function FlowCanvas(props: {
   folded: ReadonlySet<string>;
   onFold: (path: string) => void;
   onSelect: (path: string | null) => void;
+  onMove: (from: string, to: Place) => void;
   onShow: (show: 'canvas' | 'list') => void;
   onInsert: (place: Place) => void;
 }) {
   const { definition, flow, selected, readOnly, live, folded, onFold, onSelect, onInsert } = props;
+  // A step being dragged: where it is now, and the place it goes to if it's dropped.
+  const [drag, setDrag] = useState<{ readonly id: string; readonly x: number; readonly y: number } | null>(null);
+  const [dropAt, setDropAt] = useState<Place | null>(null);
   const liveAt = useMemo(() => new Map((live?.steps ?? []).map((step) => [step.path, step])), [live]);
   // The flow wraps at the canvas's own width, so its rows fit at full size.
   const [box, setBox] = useState<HTMLDivElement | null>(null);
@@ -563,28 +626,62 @@ function FlowCanvas(props: {
   useEffect(() => {
     void view?.fitView({ padding: 0.08, maxZoom: 1 });
   }, [view, laid]);
+  // Where a step can be dropped: each arrow's "+", and each way with no steps.
+  const places = useMemo(
+    () => [
+      ...laid.edges.flatMap((edge) => (edge.insert ? [{ list: edge.insert.list, index: edge.insert.index, x: edge.insert.x, y: edge.insert.y }] : [])),
+      ...laid.nodes.flatMap((node) => (node.kind === 'slot' && node.list ? [{ list: node.list, index: 0, x: node.x + node.width / 2, y: node.y + node.height / 2 }] : [])),
+    ],
+    [laid],
+  );
+  const dropFor = (path: string, x: number, y: number): Place | null => {
+    let best: { place: Place; distance: number } | null = null;
+    for (const place of places) {
+      const distance = Math.hypot(place.x - x, place.y - y);
+      if (distance <= DROP_RADIUS && (!best || distance < best.distance) && canMoveTo(path, place)) best = { place: { list: place.list, index: place.index }, distance };
+    }
+    return best?.place ?? null;
+  };
+  const movable = (node: (typeof laid.nodes)[number]) => !readOnly && node.path !== undefined && node.id === node.path && (node.kind === 'step' || node.kind === 'wait' || node.kind === 'decision');
   const nodes: FlowNode[] = laid.nodes.map((node) => ({
     id: node.id,
     type: node.kind,
-    position: { x: node.x, y: node.y },
+    position: drag?.id === node.id ? { x: drag.x, y: drag.y } : { x: node.x, y: node.y },
     data: {
       node,
       selected: node.path !== undefined && node.path === selected,
       readOnly,
       live: node.id === node.path ? liveAt.get(node.id) : undefined,
       problems: node.id === node.path && node.path !== undefined ? props.problems.get(node.path) : undefined,
+      drop: node.kind === 'slot' && dropAt?.list === node.list,
       onInsert,
       onSelect,
       onFold,
     },
-    draggable: false,
+    draggable: movable(node),
     connectable: false,
     selectable: false,
     // React Flow draws an edge only between nodes with a size: a port gets a pixel.
     style: { width: Math.max(1, node.width), height: Math.max(1, node.height) },
     zIndex: node.kind === 'frame' ? -1 : 1,
   }));
-  const edges: Edge<WireData>[] = laid.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, type: 'wire', data: { edge, readOnly, onInsert } }));
+  const edges: Edge<WireData>[] = laid.edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    type: 'wire',
+    data: { edge, readOnly, onInsert, drop: Boolean(dropAt && edge.insert && edge.insert.list === dropAt.list && edge.insert.index === dropAt.index) },
+  }));
+  // React Flow says where a dragged step is; the flow's own layout places every other.
+  const onNodesChange = (changes: NodeChange<FlowNode>[]) => {
+    for (const change of changes) {
+      if (change.type !== 'position' || !change.position) continue;
+      const node = laid.nodes.find((each) => each.id === change.id);
+      if (!node?.path) continue;
+      setDrag({ id: change.id, x: change.position.x, y: change.position.y });
+      setDropAt(dropFor(node.path, change.position.x + node.width / 2, change.position.y + node.height / 2));
+    }
+  };
   return (
     <div ref={setBox} className="group/canvas flow flow-canvas h-[40rem]" data-testid="flow-canvas">
       <ReactFlow
@@ -592,7 +689,15 @@ function FlowCanvas(props: {
         edges={edges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        nodesDraggable={false}
+        nodesDraggable={!readOnly}
+        nodeDragThreshold={6}
+        onNodesChange={onNodesChange}
+        onNodeDragStop={(_event, node) => {
+          const path = node.data.node.path;
+          if (path && dropAt) props.onMove(path, dropAt);
+          setDrag(null);
+          setDropAt(null);
+        }}
         nodesConnectable={false}
         fitView
         fitViewOptions={{ padding: 0.08, maxZoom: 1 }}
@@ -717,7 +822,7 @@ function FlowListing(props: {
 
 // ---- Adding and editing steps
 
-function AddStep({ waits, onAdd, onCancel }: { waits: boolean; onAdd: (type: StepType) => void; onCancel: () => void }) {
+function AddStep({ waits, copied, onAdd, onPaste, onCancel }: { waits: boolean; copied: string | null; onAdd: (type: StepType) => void; onPaste: () => void; onCancel: () => void }) {
   return (
     <Card className="grid gap-3 p-4">
       <div className="flex items-center justify-between">
@@ -726,6 +831,11 @@ function AddStep({ waits, onAdd, onCancel }: { waits: boolean; onAdd: (type: Ste
           Cancel
         </Button>
       </div>
+      {copied ? (
+        <Button className="justify-self-start" onClick={onPaste} aria-keyshortcuts="Control+V Meta+V">
+          Paste the {copied.toLowerCase()} step you copied
+        </Button>
+      ) : null}
       {STEP_GROUPS.map((group) => (
         <div key={group.label} className="grid gap-1.5">
           <span className="text-xs font-semibold uppercase tracking-wide text-faint">{group.label}</span>
@@ -767,6 +877,10 @@ function StepEditor(props: {
   path: string;
   problems: readonly string[];
   readOnly: boolean;
+  copied: boolean;
+  onCopy: () => void;
+  onCut: () => void;
+  onPasteAfter: () => void;
   onChange: (definition: Definition) => void;
   onRemoved: () => void;
   onMoved: (path: string) => void;
@@ -803,6 +917,17 @@ function StepEditor(props: {
             <Button size="sm" variant="ghost" aria-label="Move the step down" onClick={() => (onChange(moveStep(definition, name, path, 1)), props.onMoved(`${base}[${index + 1}]`))}>
               ↓
             </Button>
+            <Button size="sm" variant="ghost" onClick={props.onCopy} aria-keyshortcuts="Control+C Meta+C">
+              Copy
+            </Button>
+            <Button size="sm" variant="ghost" onClick={props.onCut} aria-keyshortcuts="Control+X Meta+X">
+              Cut
+            </Button>
+            {props.copied ? (
+              <Button size="sm" variant="ghost" onClick={props.onPasteAfter} aria-keyshortcuts="Control+V Meta+V">
+                Paste after
+              </Button>
+            ) : null}
             <Button size="sm" variant="danger" aria-label="Remove the step" onClick={() => (onChange(removeStep(definition, name, path)), props.onRemoved())}>
               Remove
             </Button>
@@ -1849,3 +1974,6 @@ function RecordPick({ appId, definition, input, entity, value, onChange }: { app
     </Field>
   );
 }
+
+/** How near the "+" of an arrow a dragged step's middle must be for a drop to go there, on the canvas's scale. */
+const DROP_RADIUS = 70;

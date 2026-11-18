@@ -93,7 +93,7 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
   // What undo goes back to, and what redo goes forward to: the drafts before and after this one.
   const [past, setPast] = useState<Definition[]>([]);
   const [future, setFuture] = useState<Definition[]>([]);
-  const lastEdit = useRef(0);
+  const lastEdit = useRef<{ readonly at: number; readonly field: Element | null }>({ at: 0, field: null });
   // The draft's problems, found as it changes, and whether their list is open.
   const [problems, setProblems] = useState<Issue[]>([]);
   const [showProblems, setShowProblems] = useState(false);
@@ -102,12 +102,18 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
     if (saved.data) setDraft(normalize(saved.data.definition));
   }, [saved.data]);
 
-  /** A change to the draft, which undo takes back. Changes close together, as typing makes them, are one. */
+  /**
+   * A change to the draft, which undo takes back. What someone types into one text box in a burst is
+   * one change; a button, a key or a drag is a change of its own, however soon it follows.
+   */
   const edit = (next: Definition) => {
     if (!draft || next === draft) return;
     const now = Date.now();
-    if (now - lastEdit.current > TYPING) setPast((list) => [...list.slice(1 - HISTORY), draft]);
-    lastEdit.current = now;
+    const active = document.activeElement;
+    const field = active?.matches('textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="file"])') ? active : null;
+    const typing = field !== null && field === lastEdit.current.field && now - lastEdit.current.at <= TYPING;
+    if (!typing) setPast((list) => [...list.slice(1 - HISTORY), draft]);
+    lastEdit.current = { at: now, field };
     setFuture([]);
     setDraft(next);
   };
@@ -117,7 +123,7 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
     setPast(past.slice(0, -1));
     setFuture([draft, ...future]);
     setDraft(previous);
-    lastEdit.current = 0;
+    lastEdit.current = { at: 0, field: null };
   };
   const redo = () => {
     const [next, ...rest] = future;
@@ -125,7 +131,7 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
     setFuture(rest);
     setPast([...past, draft]);
     setDraft(next);
-    lastEdit.current = 0;
+    lastEdit.current = { at: 0, field: null };
   };
   // Ctrl or Cmd with Z undoes, and with Shift, or Y, redoes; in a text box, the box's own undo works instead.
   useEffect(() => {
@@ -395,7 +401,7 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
   );
 }
 
-/** Changes closer together than this are one step to undo, as when someone types. */
+/** Typing into one text box with pauses shorter than this is one change to undo. */
 const TYPING = 800;
 /** How many steps undo can go back. */
 const HISTORY = 100;

@@ -131,6 +131,36 @@ export function problemsByStep(flow: AppFlow, name: string, problems: ReadonlyAr
   return out;
 }
 
+/** Whether a step can move to a place: not where it is already, and not inside itself. */
+export function canMoveTo(from: string, to: { readonly list: string; readonly index: number }): boolean {
+  const { list, index } = splitPath(from);
+  if (to.list === from || to.list.startsWith(`${from}.`) || to.list.startsWith(`${from}[`)) return false;
+  return !(to.list === list && (to.index === index || to.index === index + 1));
+}
+
+/**
+ * Move a step, with all it holds, to a place in a list of steps: on another arrow, or into a way
+ * with no steps. Its new path, or null where the place is where it is already, or inside itself.
+ */
+export function moveStepTo(definition: Definition, name: string, from: string, to: { readonly list: string; readonly index: number }): { readonly definition: Definition; readonly path: string } | null {
+  const flow = definition.flows?.[name];
+  const step = flow ? stepAt(flow, from) : undefined;
+  if (!flow || !step) return null;
+  const { list, index } = splitPath(from);
+  // A step can't go into a way of its own, and its own arrows leave it where it is.
+  if (!canMoveTo(from, to)) return null;
+  // Taking the step out moves up the steps after it in its list, and every path through them.
+  const shifted = (path: string) => {
+    if (!path.startsWith(`${list}[`)) return path;
+    const match = /^\[(\d+)\]/.exec(path.slice(list.length));
+    if (!match || Number(match[1]) <= index) return path;
+    return `${list}[${Number(match[1]) - 1}]${path.slice(list.length + match[0].length)}`;
+  };
+  const target = shifted(to.list);
+  const at = to.list === list && to.index > index ? to.index - 1 : to.index;
+  return { definition: insertStep(removeStep(definition, name, from), name, target, at, step), path: `${target}[${at}]` };
+}
+
 export function insertStep(definition: Definition, name: string, list: string, index: number, step: FlowStep): Definition {
   return withSteps(definition, name, list, (steps) => [...steps.slice(0, index), step, ...steps.slice(index)]);
 }

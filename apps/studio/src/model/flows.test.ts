@@ -12,6 +12,7 @@ import {
   listAt,
   liveWords,
   moveStep,
+  moveStepTo,
   newStep,
   problemsByStep,
   removeFlow,
@@ -85,6 +86,30 @@ describe('editing flows', () => {
     expect(stepAt(flow, 'steps[0].steps[1].else[0]')).toMatchObject({ type: 'create', entity: 'budget' });
     expect(listAt(flow, 'steps[1].steps')).toBeUndefined();
     expect(stepAt(flow, 'steps[9]')).toBeUndefined();
+  });
+
+  it('moves a step, with all it holds, to another arrow or into another way, and never into itself', () => {
+    const before = app();
+    const flow = spend(before);
+    const loop = stepAt(flow, 'steps[0]')!;
+    // Out of the loop, to the end of the flow: the loop's own path stays.
+    const out = moveStepTo(before, 'record_spend', 'steps[0].steps[1]', { list: 'steps', index: 4 })!;
+    expect(out.path).toBe('steps[4]');
+    expect(stepAt(spend(out.definition), 'steps[4]')).toEqual(stepAt(flow, 'steps[0].steps[1]'));
+    expect(listAt(spend(out.definition), 'steps[0].steps')).toHaveLength(1);
+    // Into a way of the step after it: that step moves up, and so does its way's path.
+    const find = stepAt(flow, 'steps[0].steps[0]');
+    const down = moveStepTo(before, 'record_spend', 'steps[0].steps[0]', { list: 'steps[0].steps[1].then', index: 1 })!;
+    expect(down.path).toBe('steps[0].steps[0].then[1]');
+    expect(stepAt(spend(down.definition), 'steps[0].steps[0]')).toMatchObject({ type: 'if' });
+    expect(stepAt(spend(down.definition), 'steps[0].steps[0].then[1]')).toEqual(find);
+    // Later in its own list: it goes before the step at the place, as an arrow says.
+    const later = moveStepTo(before, 'record_spend', 'steps[0]', { list: 'steps', index: 3 })!;
+    expect(later.path).toBe('steps[2]');
+    expect(stepAt(spend(later.definition), 'steps[2]')).toEqual(loop);
+    // Where it is already, or into itself: nothing moves.
+    expect(moveStepTo(before, 'record_spend', 'steps[0]', { list: 'steps', index: 1 })).toBeNull();
+    expect(moveStepTo(before, 'record_spend', 'steps[0]', { list: 'steps[0].steps', index: 0 })).toBeNull();
   });
 
   it('finds the step each problem is about: the deepest step its path names', () => {

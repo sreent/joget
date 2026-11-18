@@ -1,4 +1,4 @@
-/* Ocean's css/components.css, from sreent/ocean at 18423f0c6448079facfffe1df64eb10878ff114a, taken by scripts/sync-ocean.mjs.
+/* Ocean's css/components.css, from sreent/ocean at b05dbfde986dcb473158ad81a0be857ff4390502, taken by scripts/sync-ocean.mjs.
    Change it in Ocean, not here. */
 /* Ocean's pieces: the look of every page of a5s, a7c and a3t, on css/tokens.css. Calm surfaces,
    a sidebar of the pages someone may use, cards for what belongs together, and colour only where
@@ -861,6 +861,8 @@ button.flow-row[aria-expanded="true"] { border-color: var(--focus); }
 /* A new step goes on an arrow: the chosen arrow shows where */
 .logic-add { position: absolute; display: grid; place-items: center; width: 1.35rem; height: 1.35rem; padding: 0; translate: -50% -50%;
              border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface); color: var(--muted); font-size: 0.95rem; line-height: 1; }
+/* Where a step being dragged will go when it's dropped */
+.logic-add.drop { opacity: 1; border-color: var(--accent); background: var(--accent-soft); color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 /* Which flow, and whether the canvas shows its design or its cases now */
 .logic-view { position: absolute; top: var(--space-4); inset-inline-start: var(--space-4); z-index: 5; display: flex; gap: var(--space-2); align-items: center; }
 .logic-view select { padding: 0.3rem 0.5rem; }
