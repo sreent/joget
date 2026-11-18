@@ -15,7 +15,7 @@ import type {
   Revision,
   Share,
   Space,
-  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest, FlowLive, FlowRunResult } from './types.js';
+  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest, FlowLive, FlowRunResult, Notice, NoticeSettings } from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -165,6 +165,11 @@ export const api = {
 
   // People's tasks, and the flows that wait on records (design §6.10, §6.11).
   tasks: (status: 'open' | 'closed' = 'open') => call<{ tasks: Task[] }>('GET', `/v1/me/tasks?status=${status}`),
+  notices: (unread: boolean) => call<{ notices: Notice[]; unread: number }>('GET', `/v1/me/notices?unread=${unread}&limit=100`),
+  unreadNotices: () => call<{ unread: number }>('GET', '/v1/me/notices/unread'),
+  readNotices: (which: { ids: string[] } | { upTo: string }) => call<{ unread: number }>('POST', '/v1/me/notices/read', which),
+  noticeSettings: () => call<NoticeSettings>('GET', '/v1/me/notices/settings'),
+  setNoticeEmail: (email: boolean) => call<NoticeSettings>('PUT', '/v1/me/notices/settings', { email }),
   completeTask: (id: string, outcome: string, values?: Record<string, unknown>) =>
     call<{ task: Task; result: { status: 'done' } | { status: 'needs_confirmation'; proposal: { reviewUrl: string } } | null }>(
       'POST',

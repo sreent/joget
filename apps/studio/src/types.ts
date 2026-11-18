@@ -349,6 +349,25 @@ export interface HistoryEntry {
 }
 
 /** A person's task in a business process (design §6.10): a decision that waits in their inbox. */
+/** What reached the person: a flow told them, or a task came to them, is due soon or is overdue. */
+export interface Notice {
+  id: string;
+  kind: 'inform' | 'task_assigned' | 'task_due_soon' | 'task_overdue';
+  title: string;
+  message: string | null;
+  app: { id: string; name: string };
+  about: { entity: string; recordId: string; label: string | null } | null;
+  taskId: string | null;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface NoticeSettings {
+  email: boolean;
+  /** Whether the installation sends email at all. */
+  emailAvailable: boolean;
+}
+
 export interface Task {
   id: string;
   name: string;

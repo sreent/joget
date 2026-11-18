@@ -14,10 +14,12 @@ import {
   newStep,
   removeFlow,
   removeStep,
+  recipientWords,
   replaceStep,
   scopeAt,
   startRun,
   stepAt,
+  stepWords,
   updateFlow,
   variableChoices,
   type StepType,
@@ -391,5 +393,19 @@ describe('the flow canvas', () => {
     expect(at('start')).toMatchObject({ about: 'on 2 days before First day, or 1 more way' });
     const scheduled = { ...definition, flows: { tidy: { label: 'Tidy', input: {}, schedule: { every: 'weekday' as const, at: '07:30', zone: 'Europe/London' }, steps: [] } } };
     expect(layoutFlow(scheduled, scheduled.flows.tidy).nodes.find((node) => node.id === 'start')).toMatchObject({ about: 'every weekday at 07:30, Europe/London time' });
+  });
+  it('tells people: whom the record names first, in words, and outside the app when it emails', () => {
+    const definition = leave();
+    const flow = definition.flows!['leave_approval']!;
+    const scope = scopeAt(definition, 'leave_approval', { list: 'steps', index: 1 });
+    const step = newStep(definition, 'leave_approval', scope, 'inform');
+    expect(step).toEqual({ type: 'inform', to: [{ person: { ref: 'leave.manager' } }], title: 'Say what happened', about: 'leave', email: true });
+    const told = { ...step, to: [{ person: { ref: 'leave.owner' } }, { role: 'manager' }], title: { concat: ['Approved: ', { ref: 'leave.days' }, ' days'] } } as Extract<FlowStep, { type: 'inform' }>;
+    expect(recipientWords(definition, told)).toBe('the owner and Manager');
+    expect(stepWords(definition, told)).toEqual({ kind: 'Informs people', words: '"Approved: " & leave.days & " days"', about: 'to the owner and Manager, by email too', tone: 'outside' });
+    expect(stepWords(definition, { ...told, title: 'Approved' })).toMatchObject({ words: 'Approved' });
+    expect(stepWords(definition, { ...told, email: false })).not.toHaveProperty('tone');
+    expect(describeFlowStep(definition, told)).toBe('Tell the owner and Manager: "Approved: " & leave.days & " days"');
+    expect(flow.steps.length).toBeGreaterThan(0);
   });
 });

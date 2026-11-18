@@ -32,6 +32,16 @@
         "maxTurns": { "type": "integer", "minimum": 1, "maximum": 30 }
       }
     },
+    "mail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "pattern": "^(smtps?://.+)?$", "description": "The mail server for notices: smtp:// with STARTTLS, or smtps://. Empty: no email." },
+        "user": { "type": "string" },
+        "passwordSecret": { "type": "string", "description": "A Secret with the mail server's password under the key password." },
+        "from": { "type": "string", "minLength": 3 }
+      }
+    },
     "config": {
       "type": "object",
       "required": ["PUBLIC_BASE_URL", "OIDC_ISSUER", "OIDC_CLIENT_ID"],
@@ -56,7 +66,9 @@
           { "required": ["S3_ACCESS_KEY_ID"] },
           { "required": ["S3_SECRET_ACCESS_KEY"] },
           { "required": ["AI_PROVIDER"], "description": "Set ai.provider instead, so the key Secret is mounted with it." },
-          { "required": ["AI_API_KEY_FILE"] }
+          { "required": ["AI_API_KEY_FILE"] },
+          { "required": ["SMTP_URL"], "description": "Set mail.url instead, so the password Secret is mounted with it." },
+          { "required": ["SMTP_PASSWORD_FILE"] }
         ]
       },
       "additionalProperties": { "type": ["string", "number", "boolean"] }

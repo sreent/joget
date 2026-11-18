@@ -52,6 +52,7 @@ export const STEP_NAMES: Readonly<Record<StepType, string>> = {
   wait: 'Wait',
   first_of: 'The first of',
   all_at_once: 'All at once',
+  inform: 'Inform people',
 };
 
 /** The kinds of step a builder is offered, in groups, in order. */
@@ -59,6 +60,7 @@ export const STEP_GROUPS: ReadonlyArray<{ readonly label: string; readonly types
   { label: 'Records', types: ['find', 'create', 'change', 'add_line', 'delete'] },
   { label: 'Logic', types: ['set', 'if', 'each', 'repeat', 'total', 'check', 'call', 'try', 'return'] },
   { label: 'People and time', types: ['task', 'wait', 'first_of', 'all_at_once'], waits: true },
+  { label: 'Tell people', types: ['inform'] },
 ];
 export const STEP_TYPES: readonly StepType[] = STEP_GROUPS.flatMap((group) => group.types);
 
@@ -305,6 +307,13 @@ export function newStep(definition: Definition, name: string, scope: ReadonlyMap
     }
     case 'all_at_once':
       return { type, ways: [{ steps: [] }, { steps: [] }] };
+    case 'inform': {
+      // Whom the first record's first user field names, or the person running it.
+      const person = variableChoices(definition, scope).find((choice) => choice.kind === 'person')?.ref;
+      const flow = definition.flows?.[name];
+      const waits = flow ? flowWaits(flow, definition.flows) : false;
+      return { type, to: [person ? { person: { ref: person } } : waits ? { role: Object.keys(definition.roles)[0] ?? '' } : { person: { ref: 'principal.id' } }], title: 'Say what happened', ...(records[0] ? { about: records[0] } : {}), email: true };
+    }
   }
 }
 
@@ -401,7 +410,22 @@ export function describeFlowStep(definition: Definition, step: FlowStep): string
       return `The first of: ${step.ways.map((way) => waitWords(definition, way.for).words.toLowerCase()).join(', or ')}`;
     case 'all_at_once':
       return `${step.ways.length} ways at once`;
+    case 'inform':
+      return `Tell ${recipientWords(definition, step)}: ${valueText(step.title)}`;
   }
+}
+
+/** Whom an inform step tells, in words: "the manager and HR". */
+export function recipientWords(definition: Definition, step: Extract<FlowStep, { type: 'inform' }>): string {
+  const names = step.to.map((recipient) => {
+    if ('role' in recipient) return definition.roles[recipient.role]?.label ?? (recipient.role || 'a role');
+    const ref = recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person ? recipient.person.ref : undefined;
+    if (ref === 'principal.id') return 'the person running it';
+    const field = ref?.split('.')[1];
+    const system: Readonly<Record<string, string>> = { owner: 'the owner', created_by: 'whoever created it', updated_by: 'whoever last changed it' };
+    return (field && system[field]) ?? (field ? `the ${field.replaceAll('_', ' ')}` : 'someone');
+  });
+  return names.length < 2 ? (names[0] ?? 'nobody') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
 }
 
 /** What a wait waits for, in words: on the record of the entity a flow is about. */
@@ -722,6 +746,14 @@ export function stepWords(definition: Definition, step: FlowStep, entity?: strin
       return { kind: 'The first of', words: 'The first of', about: 'whichever comes first' };
     case 'all_at_once':
       return { kind: 'All at once', words: 'All at once', about: step.ways.length === 2 ? 'when both are done' : 'when each way is done' };
+    case 'inform':
+      // Email leaves the app: the step is outside, as a service is.
+      return {
+        kind: 'Informs people',
+        words: typeof step.title === 'string' ? step.title : valueText(step.title),
+        about: `to ${recipientWords(definition, step)}${step.email ? ', by email too' : ''}`,
+        ...(step.email ? { tone: 'outside' as const } : {}),
+      };
   }
 }
 

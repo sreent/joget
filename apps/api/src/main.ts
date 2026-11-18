@@ -26,7 +26,7 @@ if (!signingKey) {
 let reportIdpError = (error: unknown) => console.error('Cannot reach the identity provider', error);
 const oidc = createResilientOidcProvider(config, (error) => reportIdpError(error));
 const ctx = await createAppContext({ config, db: database.db, pool: database.pool, oidc, auditSigningKeyPem: signingKey });
-const { app, processes, schedules } = await buildServer(ctx);
+const { app, processes, schedules, notices } = await buildServer(ctx);
 for (const warning of warnings) app.log.warn(warning);
 reportIdpError = (error) => app.log.error({ err: error }, 'Cannot reach the identity provider: sign-in answers 503 until it can');
 void oidc.warmUp();
@@ -41,7 +41,15 @@ const stopSealer =
     : () => {};
 
 const stopSweeper = config.FILE_SWEEP_INTERVAL_SECONDS > 0 ? startFileSweeper(ctx.files, { intervalSeconds: config.FILE_SWEEP_INTERVAL_SECONDS, logger: app.log }) : () => {};
-const stopTimers = config.PROCESS_TIMER_INTERVAL_SECONDS > 0 ? startProcessTimers(processes, schedules, { intervalSeconds: config.PROCESS_TIMER_INTERVAL_SECONDS, logger: app.log }) : () => {};
+const stopTimers = config.PROCESS_TIMER_INTERVAL_SECONDS > 0 ? startProcessTimers(
+        [
+          ['Firing process timers', () => processes.fireDue()],
+          ['Running flows on a schedule', () => schedules.runDue()],
+          ['Telling people of tasks that are due', () => notices.taskDeadlines()],
+          ['Sending notices by email', () => notices.deliverDue()],
+          ['Removing old notices', () => notices.sweep()],
+        ],
+        { intervalSeconds: config.PROCESS_TIMER_INTERVAL_SECONDS, logger: app.log }) : () => {};
 if (config.FILE_SCANNER === 'none') {
   app.log.warn(config.NODE_ENV === 'production' ? 'FILE_SCANNER is none, so uploads are refused: set up a clamd server' : 'FILE_SCANNER is none: uploads are kept without a malware check');
 }

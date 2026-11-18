@@ -427,6 +427,22 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
     visit(c);
   };
 
+  /** The field of a record or a line that a reference names, as `leave.manager`. */
+  const fieldOf = (ref: string, scope: Scope): Field | undefined => {
+    const [root, name, ...rest] = ref.split('.');
+    const held = root ? scope.get(root) : undefined;
+    if (!name || rest.length || !held || (held.kind !== 'record' && held.kind !== 'line')) return undefined;
+    return definition.entities[held.entity]?.fields.find((f) => f.name === name);
+  };
+  /** A value that names a person: the person running the flow, a user field of a record, or who owns, created or last changed it. */
+  const isPerson = (expression: Expression, scope: Scope): boolean => {
+    if (expression === null || typeof expression !== 'object' || Array.isArray(expression) || !('ref' in expression)) return false;
+    const [root, name, ...rest] = expression.ref.split('.');
+    if (expression.ref === 'principal.id') return true;
+    if (!rest.length && scope.get(root ?? '')?.kind === 'record' && ['owner', 'created_by', 'updated_by'].includes(name ?? '')) return true;
+    return fieldOf(expression.ref, scope)?.type === 'user';
+  };
+
   /** A list to loop over or total: a list variable, or a lines field of a record variable. */
   const listOf = (of: string, scope: Scope, at: string): { readonly kind: 'record' | 'line'; readonly entity: string } | undefined => {
     const [root, lines] = of.split('.') as [string, string | undefined];
@@ -550,6 +566,31 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
           condition(step.while, scope, `${at}.while`);
           if (!step.steps.length) issue(`${at}.steps`, 'A loop needs a step');
           return;
+        case 'inform': {
+          step.to.forEach((recipient, index) => {
+            const where = `${at}.to[${index}]`;
+            if ('role' in recipient) {
+              if (!definition.roles[recipient.role]) issue(`${where}.role`, `No role named ${recipient.role}`);
+              return;
+            }
+            const before = issues.length;
+            kindAt(recipient.person, scope, `${where}.person`);
+            if (issues.length > before) return;
+            if (!isPerson(recipient.person, scope)) issue(`${where}.person`, 'Name a person: a user field of a record, such as leave.manager, or the person running the flow');
+          });
+          kindAt(step.title, scope, `${at}.title`);
+          if (step.message !== undefined) kindAt(step.message, scope, `${at}.message`);
+          if (step.about) recordVar(step.about, scope, `${at}.about`);
+          // Email leaves the app: personal data stays in its notices in the app.
+          if (step.email) {
+            for (const [part, expression] of [['title', step.title], ['message', step.message]] as const) {
+              for (const ref of expression === undefined ? [] : expressionRefs(expression)) {
+                if (fieldOf(ref, scope)?.classification === 'pii') issue(`${at}.${part}`, `${ref} is personal data, and email takes it out of the app: leave it out, or tell people in the app only`);
+              }
+            }
+          }
+          return;
+        }
         case 'check':
           condition(step.assert, scope, `${at}.assert`);
           return;
@@ -712,8 +753,10 @@ export function flowWork(definition: StoredDefinition, flow: AppFlow): {
   readonly calls: readonly string[];
   /** Each task, as "<role>: <task>". */
   readonly asks: readonly string[];
+  /** Whom it tells: a role, the person a user field names, or the person running it. */
+  readonly tells: readonly string[];
 } {
-  const work = { finds: new Set<string>(), creates: new Set<string>(), changes: new Set<string>(), deletes: new Set<string>(), calls: new Set<string>(), asks: new Set<string>() };
+  const work = { finds: new Set<string>(), creates: new Set<string>(), changes: new Set<string>(), deletes: new Set<string>(), calls: new Set<string>(), asks: new Set<string>(), tells: new Set<string>() };
   walk(definition, flow, (step, scope) => {
     const held = (name: string) => {
       const kind = scope.get(name);
@@ -743,11 +786,24 @@ export function flowWork(definition: StoredDefinition, flow: AppFlow): {
       case 'task':
         work.asks.add(`${definition.roles[step.role]?.label ?? step.role}: ${step.label}`);
         return;
+      case 'inform':
+        for (const recipient of step.to) {
+          if ('role' in recipient) work.tells.add(definition.roles[recipient.role]?.label ?? recipient.role);
+          else {
+            const ref = recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person ? recipient.person.ref : undefined;
+            const [root, name] = ref?.split('.') ?? [];
+            const kind = root ? scope.get(root) : undefined;
+            const field = kind && (kind.kind === 'record' || kind.kind === 'line') ? definition.entities[kind.entity]?.fields.find((f) => f.name === name) : undefined;
+            const system: Readonly<Record<string, string>> = { owner: 'the owner', created_by: 'whoever created it', updated_by: 'whoever last changed it' };
+            work.tells.add(ref === 'principal.id' ? 'the person running it' : field ? `the ${field.label.toLowerCase()}` : (system[name ?? ''] ?? ref ?? 'someone'));
+          }
+        }
+        return;
       default:
         return;
     }
   });
-  return { finds: [...work.finds], creates: [...work.creates], changes: [...work.changes], deletes: [...work.deletes], calls: [...work.calls], asks: [...work.asks] };
+  return { finds: [...work.finds], creates: [...work.creates], changes: [...work.changes], deletes: [...work.deletes], calls: [...work.calls], asks: [...work.asks], tells: [...work.tells] };
 }
 
 /**
@@ -844,6 +900,14 @@ export function renameInFlows(
             break;
           case 'repeat':
             next = { ...step, while: condition(scope)(step.while) };
+            break;
+          case 'inform':
+            next = {
+              ...step,
+              to: step.to.map((recipient) => ('person' in recipient ? { person: expression(scope)(recipient.person) } : recipient)),
+              title: expression(scope)(step.title),
+              ...(step.message !== undefined ? { message: expression(scope)(step.message) } : {}),
+            };
             break;
           case 'check':
             next = { ...step, assert: condition(scope)(step.assert) };

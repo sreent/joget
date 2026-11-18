@@ -77,6 +77,17 @@ ai:
   # The most turns of the model in one request to the chat.
   maxTurns: 12
 
+# Email for notices (design §6.12). Without a server, notices stay in the app. The API reads the
+# password file at each sending, so a renewed Secret needs no restart.
+mail:
+  # smtp://mail.example.com:587, which must offer STARTTLS, or smtps://mail.example.com:465. Empty: no email.
+  url: ""
+  # The user name on the server, and a Secret with its password under the key `password`.
+  user: ""
+  passwordSecret: ""
+  # Who email comes from.
+  from: "a3t <noreply@example.com>"
+
 telemetry:
   # An OTLP/HTTP endpoint, for example http://otel-collector.observability:4318. Empty disables export.
   otlpEndpoint: ""
@@ -132,7 +143,7 @@ networkPolicy:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
   # Where the API may connect: the database, the identity provider, the OTLP collector, the malware
-  # scanner and, over HTTPS, an object store and the model provider of the studio's chat.
+  # scanner, the mail server and, over HTTPS, an object store and the model provider of the studio's chat.
   # Narrow these with `to:` selectors or CIDRs for your environment.
   egress:
     - ports:
@@ -147,6 +158,12 @@ networkPolicy:
     # The malware scanner (clamd).
     - ports:
         - port: 3310
+          protocol: TCP
+    # The mail server, for notices by email.
+    - ports:
+        - port: 587
+          protocol: TCP
+        - port: 465
           protocol: TCP
 
 serviceAccount:

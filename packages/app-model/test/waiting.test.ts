@@ -427,4 +427,32 @@ describe('a flow that waits', () => {
     const after = valid(leave((d) => void (d.flows.tidy = { label: 'Tidy', schedule: { every: 'weekday', at: '07:30', zone: 'Europe/London' }, steps: [{ type: 'set', var: 'x', value: 1 }] })));
     expect(capabilityChanges(before, after).find((change) => change.tool === 'tidy')?.text).toBe("New flow Tidy: it runs by itself, with the app's authority: every weekday at 07:30, Europe/London time");
   });
+  it('informs people the record names, a role or the person running it, and keeps personal data out of email', () => {
+    const inform = (step: Record<string, unknown>) =>
+      issuesOf(
+        leave((d) => {
+          d.entities.leave_request.fields.find((f: { name: string }) => f.name === 'reason').classification = 'pii';
+          d.flows.leave_approval.steps[0].outcomes[0].steps = [{ type: 'inform', title: 'Approved', ...step }];
+        }),
+      );
+    expect(inform({ to: [{ person: { ref: 'leave.manager' } }, { person: { ref: 'leave.owner' } }, { role: 'hr' }], about: 'leave', message: { concat: ['For ', { ref: 'leave.days' }, ' days'] } })).toEqual([]);
+    expect(inform({ to: [{ person: { ref: 'leave.days' } }, { role: 'nobody' }, { person: { ref: 'principal.id' } }], about: 'nothing', message: { ref: 'leave.reason' } })).toEqual([
+      'flows.leave_approval.steps[0].outcomes[0].steps[0].to[0].person: Name a person: a user field of a record, such as leave.manager, or the person running the flow',
+      'flows.leave_approval.steps[0].outcomes[0].steps[0].to[1].role: No role named nobody',
+      'flows.leave_approval.steps[0].outcomes[0].steps[0].to[2].person: principal.id: a flow that waits runs with no person',
+      'flows.leave_approval.steps[0].outcomes[0].steps[0].about: No variable nothing here',
+      'flows.leave_approval.steps[0].outcomes[0].steps[0].message: leave.reason is personal data, and email takes it out of the app: leave it out, or tell people in the app only',
+    ]);
+    // In the app only, personal data may go.
+    expect(inform({ to: [{ role: 'hr' }], message: { ref: 'leave.reason' }, email: false })).toEqual([]);
+    // A change request says whom a flow now tells, and a rename follows into what it says.
+    const before = valid(leave());
+    const after = valid(leave((d) => void (d.flows.leave_approval.steps[0].outcomes[0].steps = [{ type: 'inform', to: [{ person: { ref: 'leave.owner' } }, { role: 'hr' }], title: { ref: 'leave.days' } }])));
+    expect(capabilityChanges(before, after).filter((change) => change.tool === 'leave_approval').map((change) => change.text)).toEqual(
+      expect.arrayContaining(['Leave approval now tells the owner', 'Leave approval now tells HR']),
+    );
+    const next = structuredClone(after) as unknown as Record<string, any>;
+    next.entities.leave_request.fields.find((f: { name: string }) => f.name === 'days').name = 'working_days';
+    expect(valid(next, after).flows!['leave_approval']!.steps[0]).toMatchObject({ outcomes: [{ steps: [{ type: 'inform', title: { ref: 'leave.working_days' } }] }, expect.anything()] });
+  });
 });

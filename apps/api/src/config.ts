@@ -146,6 +146,20 @@ export const ConfigSchema = z
     AI_FALLBACK: z.enum(['default', 'off']).default('default'),
     /** The most turns of the model in one request to the chat: each turn can read or change the definition. */
     AI_MAX_TURNS: z.coerce.number().int().min(1).max(30).default(12),
+    /**
+     * Where email goes out, for notices: an SMTP server, as smtp://mail.example.com:587, which must
+     * then offer STARTTLS, or smtps://mail.example.com:465. Without it, notices stay in the app.
+     */
+    SMTP_URL: z.url().optional(),
+    SMTP_USER: z.string().min(1).max(200).optional(),
+    /** A file that holds the SMTP password. It is read at each sending, so whatever issues it can renew it. */
+    SMTP_PASSWORD_FILE: z.string().min(1).optional(),
+    /** Who email comes from, as "a3t <noreply@example.com>". */
+    MAIL_FROM: z.string().min(3).max(200).default('a3t <noreply@localhost>'),
+    /** How long a notice stays, read or not, before it goes. */
+    NOTICE_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
+    /** How long before a task is due its person hears that it is due soon. */
+    TASK_DUE_SOON_HOURS: z.coerce.number().int().min(1).max(24 * 14).default(24),
     /** How often the timers of processes that are due fire. 0 disables it (for example, when a worker fires them). */
     PROCESS_TIMER_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How often the in-process sealer runs. 0 disables it (for example, when a worker seals). */
@@ -171,6 +185,10 @@ export const ConfigSchema = z
     if (config.FILE_STORE === 's3' && !config.S3_BUCKET) ctx.addIssue({ code: 'custom', message: 'FILE_STORE=s3 needs S3_BUCKET', path: ['S3_BUCKET'] });
     if (Boolean(config.S3_ACCESS_KEY_ID) !== Boolean(config.S3_SECRET_ACCESS_KEY)) {
       ctx.addIssue({ code: 'custom', message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither', path: ['S3_ACCESS_KEY_ID'] });
+    }
+    if (config.SMTP_URL && !/^smtps?:\/\//.test(config.SMTP_URL)) ctx.addIssue({ code: 'custom', message: 'SMTP_URL must start with smtp:// or smtps://', path: ['SMTP_URL'] });
+    if (Boolean(config.SMTP_USER) !== Boolean(config.SMTP_PASSWORD_FILE)) {
+      ctx.addIssue({ code: 'custom', message: 'Set both SMTP_USER and SMTP_PASSWORD_FILE, or neither', path: ['SMTP_USER'] });
     }
     if (config.AI_PROVIDER && (!config.AI_MODEL || !config.AI_API_KEY_FILE)) {
       ctx.addIssue({ code: 'custom', message: 'AI_PROVIDER needs AI_MODEL and AI_API_KEY_FILE', path: ['AI_PROVIDER'] });

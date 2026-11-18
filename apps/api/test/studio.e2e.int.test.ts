@@ -29,6 +29,7 @@ interface Locator {
   getByTestId(testId: string): Locator;
   locator(selector: string, options?: { has?: Locator }): Locator;
   first(): Locator;
+  filter(options: { hasText: string }): Locator;
   setInputFiles(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
 }
 interface Page extends Locator {
@@ -539,6 +540,55 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(saved.flows.tidy_up.schedule).toEqual({ every: 'weekday', at: '07:00' });
     expect(saved.flows.leave_approval.starts).toEqual([{ date: 'starts', before: 'P1D' }]);
     expect(saved.flows.leave_approval.steps[0].reminders).toEqual([{ after: 'P1D', steps: [{ type: 'set', var: 'value', value: 0 }] }]);
+  });
+
+  it('tells people from a flow, and each reads their notices', async () => {
+    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave, told', template: 'leave' } });
+    expect(created.statusCode, created.body).toBe(201);
+    const leaveId = created.json().app.id as string;
+    await t.app.inject({ method: 'POST', url: `/v1/apps/${leaveId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'manager' } });
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    const canvas = page.getByTestId('flow-canvas');
+    // Once the manager approves, the flow tells the person who asked.
+    await canvas.getByTestId('flow-slot-steps[0].outcomes[0].steps').getByRole('button', { name: 'Add a step here' }).click();
+    await page.getByRole('button', { name: 'Inform people', exact: true }).click();
+    const step = page.getByRole('region', { name: 'Step' });
+    await step.getByLabel('Tells 1', { exact: true }).selectOption('person:leave.owner');
+    await step.getByLabel('Title', { exact: true }).fill('Your leave is approved');
+    await visible(canvas.getByTestId('flow-step-steps[0].outcomes[0].steps[0]').getByText('Your leave is approved', { exact: false }));
+    await visible(canvas.getByTestId('flow-step-steps[0].outcomes[0].steps[0]').getByText('to the owner, by email too'));
+    await shot(page, '15f-flow-inform');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+
+    // Alice asks; Bob hears of the task, and approves it.
+    const asked = await t.app.inject({
+      method: 'POST',
+      url: `/v1/apps/${leaveId}/actions/request_leave/run`,
+      cookies: alice.cookies,
+      payload: { values: { kind: 'annual', starts: '2026-12-28', ends: '2026-12-30', days: 3, manager: bob.userId } },
+    });
+    expect(asked.statusCode, asked.body).toBe(201);
+    const manager = await open(bob);
+    await manager.goto(`${BASE}/studio/notices`);
+    await visible(manager.getByRole('link', { name: /^Notices, \d+ unread$/ }));
+    const group = manager.getByTestId('notice-group').filter({ hasText: 'Leave, told' }).first();
+    await visible(group.getByText('Decide on the leave'));
+    await shot(manager, '16c-notices');
+    await group.getByRole('button', { name: /^Mark read/ }).click();
+    await hidden(group);
+    const task = (await t.app.inject({ method: 'GET', url: '/v1/me/tasks?status=open', cookies: bob.cookies })).json().tasks.find((each: { recordId: string }) => each.recordId === asked.json().record.id);
+    const done = await t.app.inject({ method: 'POST', url: `/v1/tasks/${task.id}/complete`, cookies: bob.cookies, payload: { outcome: 'approve' } });
+    expect(done.statusCode, done.body).toBe(200);
+
+    // Alice reads that it's approved, linked to her request.
+    const requester = await open(alice);
+    await requester.goto(`${BASE}/studio/notices`);
+    const told = requester.getByTestId('notice-group').filter({ hasText: 'Your leave is approved' });
+    await visible(told.getByRole('link', { name: 'Leave request: Annual leave' }));
+    await shot(requester, '16d-notice-told');
   });
 
   it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {

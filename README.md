@@ -219,6 +219,22 @@ In the Helm chart, set `ai.provider`, `ai.model` and `ai.keySecret`, a Secret wi
 - `GET /v1/compose`: whether the chat is on.
 - `POST /v1/apps/{appId}/compose`: send the request, the draft, the conversation so far and up to three files. The answer is the model's reply and the changed draft, which nothing has saved.
 
+### Notices
+
+What reaches a person comes to their notices in the studio, by record, with the unread count beside Notices in the header (design §6.12): what a flow told them with an `inform` step, and each task that came to them, is due soon or is overdue. A notice goes only to people the app is shared with, and each person reads only their own. By email too, when the installation has a mail server and the person hasn't turned email off; a field classified as PII stays out of what an email says.
+
+- `SMTP_URL`: the mail server, as `smtp://mail.example.com:587`, which must offer STARTTLS, or `smtps://mail.example.com:465`. Without it, notices stay in the app.
+- `SMTP_USER` and `SMTP_PASSWORD_FILE`: the user name, and a file that holds the password. a3t reads it at each sending.
+- `MAIL_FROM` (`a3t <noreply@localhost>`): who email comes from.
+- `TASK_DUE_SOON_HOURS` (24): how long before a task is due its person hears that it is due soon.
+- `NOTICE_RETENTION_DAYS` (90): how long a notice stays, read or not.
+
+In the Helm chart, set `mail.url`, `mail.from`, and `mail.user` with `mail.passwordSecret`, a Secret with the password under the key `password`.
+
+- `GET /v1/me/notices`: your notices, the newest first, with how many are unread; `?unread=true` for the unread only.
+- `POST /v1/me/notices/read`: mark some read by their IDs, or all up to a time, so that what came after stays unread.
+- `GET` and `PUT /v1/me/notices/settings`: whether your notices come by email too.
+
 ## Delivering a team app
 
 A team app lives in a team space and changes only through reviewed change requests. Give people the space roles first: builders (`space.builder`), reviewers (`space.reviewer`) and release managers (`space.release_manager`). Then, in the studio:

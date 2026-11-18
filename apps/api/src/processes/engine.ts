@@ -17,6 +17,7 @@ import {
   linkTarget,
   plainStartOf,
   processConditionEnv,
+  recordLabel,
   processGraph,
   raisedCode,
   scopeOf,
@@ -40,10 +41,12 @@ import {
   runnable,
   votesNeeded,
 } from '@platform/app-model';
-import { apps, bindings, groupMembers, processEvents, processInstances, processSignals, processStartTimers, processTasks, processTimers, processTokens, users, type Database } from '@platform/db';
+import { apps, processEvents, processInstances, processSignals, processStartTimers, processTasks, processTimers, processTokens, users, type Database } from '@platform/db';
 import { evaluateCondition, type Condition } from '@platform/authz';
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
+import { roleHolders } from '../access/holders.js';
+import type { Notices } from '../notices/service.js';
 import { auditScopeFor, recordAudit, SYSTEM_ACTOR, type AuditScope } from '../audit/writer.js';
 import type { LoadedApp } from '../apps/catalog.js';
 import { processWriter, type AppRuntime, type ProcessHooks, type ProcessOrigin, type Writer } from '../apps/runtime.js';
@@ -220,11 +223,13 @@ export class ProcessEngine implements ProcessHooks {
   readonly #ctx: AppContext;
   readonly #runtime: AppRuntime;
   readonly #flows: FlowEngine;
+  readonly #notices: Notices;
 
-  constructor(ctx: AppContext, runtime: AppRuntime, flows: FlowEngine) {
+  constructor(ctx: AppContext, runtime: AppRuntime, flows: FlowEngine, notices: Notices) {
     this.#ctx = ctx;
     this.#runtime = runtime;
     this.#flows = flows;
+    this.#notices = notices;
     runtime.attachProcesses(this);
   }
 
@@ -2116,6 +2121,11 @@ export class ProcessEngine implements ProcessHooks {
       dueAt: element.due ? addDuration(turn.now, element.due) : null,
       createdAt: turn.now,
     });
+    await this.#notices.taskOpened(
+      turn.tx.db,
+      { id: taskId, appId: live.row.appId, environmentId: live.row.environmentId, name: element.name, role: element.role, assignee, about: this.#about(turn, live, record), dueAt: element.due ? addDuration(turn.now, element.due) : null },
+      turn.now,
+    );
     await this.#boundaryTimers(turn, live, id, { taskId }, record);
     const routing = { role: element.role, assignee, ...(routed && routed !== assignee ? { covering: routed } : {}), ...(element.assignee && !routed ? { routing: 'fell back to the role' } : {}), ...(departmentOfTask ? { department: departmentOfTask } : {}) };
     await this.#event(turn, live, 'task_opened', id, { task: taskId, ...routing });
@@ -2129,7 +2139,7 @@ export class ProcessEngine implements ProcessHooks {
     const named = (field: string) => (typeof record[field] === 'string' ? (record[field] as string) : null);
     let found: string[] = [];
     if ('everyone' in people) {
-      found = await this.#roleHolders(db, live.row.appId, live.row.environmentId, element.role, turn.now);
+      found = await roleHolders(db, live.row.appId, live.row.environmentId, element.role, turn.now);
       const department = element.department ? await this.#departmentOfField(db, named(element.department.of)) : null;
       if (department) {
         const rows = found.length ? await db.select({ id: users.id }).from(users).where(and(inArray(users.id, found), eq(users.department, department))) : [];
@@ -2158,26 +2168,10 @@ export class ProcessEngine implements ProcessHooks {
   }
 
   /** The active people who hold an app role in an environment, themselves or through a group. */
-  async #roleHolders(db: Database, appId: string, environmentId: string, role: string, now: Date): Promise<string[]> {
-    const held = await db
-      .select({ type: bindings.principalType, id: bindings.principalId })
-      .from(bindings)
-      .where(
-        and(
-          eq(bindings.scopeType, 'env'),
-          eq(bindings.scopeId, environmentId),
-          eq(bindings.appRoleId, appRoleId(appId, role)),
-          isNull(bindings.revokedAt),
-          or(isNull(bindings.expiresAt), sql`${bindings.expiresAt} > ${now}`),
-        ),
-      );
-    const direct = held.filter((binding) => binding.type === 'user').map((binding) => binding.id);
-    const groupIds = held.filter((binding) => binding.type === 'group').map((binding) => binding.id);
-    const viaGroups = groupIds.length ? (await db.select({ id: groupMembers.userId }).from(groupMembers).where(inArray(groupMembers.groupId, groupIds))).map((row) => row.id) : [];
-    const candidates = [...new Set([...direct, ...viaGroups])];
-    if (!candidates.length) return [];
-    const active = await db.select({ id: users.id }).from(users).where(and(inArray(users.id, candidates), eq(users.status, 'active'))).orderBy(asc(users.displayName), asc(users.id));
-    return active.map((row) => row.id);
+  /** The record a task is about, as a notice names it. */
+  #about(turn: Turn, live: Live, record: RecordValues): { readonly entity: string; readonly recordId: string; readonly label: string } {
+    const entity = turn.loaded.definition.entities[live.row.entity];
+    return { entity: live.row.entity, recordId: live.row.recordId, label: entity ? recordLabel(entity, record) : live.row.entity };
   }
 
   /** Open a task that several people decide: one waiting token with its voters, and a vote for each, or for the first of them. */
@@ -2212,6 +2206,11 @@ export class ProcessEngine implements ProcessHooks {
       dueAt: element.due ? addDuration(turn.now, element.due) : null,
       createdAt: turn.now,
     });
+    await this.#notices.taskOpened(
+      turn.tx.db,
+      { id: taskId, appId: live.row.appId, environmentId: live.row.environmentId, name: element.name, role: element.role, assignee: person, about: this.#about(turn, live, (await this.#record(turn, live)) ?? {}), dueAt: element.due ? addDuration(turn.now, element.due) : null },
+      turn.now,
+    );
     await this.#event(turn, live, 'task_opened', id, { task: taskId, role: element.role, assignee: person, vote: true });
     await this.#audit(turn, live, 'process.task.assign', { task: taskId, name: element.name, role: element.role, assignee: person, vote: true }, { type: 'process_task', id: taskId, name: element.name });
   }
@@ -2482,22 +2481,27 @@ export class ProcessEngine implements ProcessHooks {
   }
 }
 
-/** Fire due timers on an interval, and run the flows whose schedule has come round. Returns a function that stops it. */
+/**
+ * Do the work that time brings, on an interval, one piece after another: fire the timers that are
+ * due, run the flows whose schedule has come round, and send notices. Returns a function that stops it.
+ */
 export function startProcessTimers(
-  engine: ProcessEngine,
-  schedules: { runDue(): Promise<number> },
+  work: ReadonlyArray<readonly [what: string, run: () => Promise<unknown>]>,
   options: { readonly intervalSeconds: number; readonly logger: { error(obj: object, message: string): void } },
 ): () => void {
   let running = false;
   const timer = setInterval(() => {
     if (running) return;
     running = true;
-    engine
-      .fireDue()
-      .catch((error: unknown) => options.logger.error({ err: error }, 'Firing process timers failed'))
-      .then(() => schedules.runDue())
-      .catch((error: unknown) => options.logger.error({ err: error }, 'Running flows on a schedule failed'))
-      .finally(() => (running = false));
+    void (async () => {
+      for (const [what, run] of work) {
+        try {
+          await run();
+        } catch (error) {
+          options.logger.error({ err: error }, `${what} failed`);
+        }
+      }
+    })().finally(() => (running = false));
   }, options.intervalSeconds * 1000);
   timer.unref();
   return () => clearInterval(timer);

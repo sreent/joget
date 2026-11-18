@@ -56,8 +56,21 @@ spec:
                 name: {{ include "platform.fullname" . }}
             - secretRef:
                 name: {{ required "existingSecret is required: a Secret with DATABASE_URL, COOKIE_SECRET and AUDIT_SIGNING_KEY_PEM" .Values.existingSecret }}
-          {{- if or .Values.extraEnv .Values.ai.provider }}
+          {{- if or .Values.extraEnv .Values.ai.provider .Values.mail.url }}
           env:
+            {{- if .Values.mail.url }}
+            # Email for notices. The password is a file, so a renewed Secret needs no restart.
+            - name: SMTP_URL
+              value: {{ .Values.mail.url | quote }}
+            - name: MAIL_FROM
+              value: {{ .Values.mail.from | quote }}
+            {{- if .Values.mail.user }}
+            - name: SMTP_USER
+              value: {{ .Values.mail.user | quote }}
+            - name: SMTP_PASSWORD_FILE
+              value: /var/run/secrets/mail/password
+            {{- end }}
+            {{- end }}
             {{- if .Values.ai.provider }}
             # The model of the studio's chat. Its key is a file, so a renewed Secret needs no restart.
             - name: AI_PROVIDER
@@ -121,9 +134,22 @@ spec:
               mountPath: /var/run/secrets/ai
               readOnly: true
             {{- end }}
+            {{- if and .Values.mail.url .Values.mail.user }}
+            - name: mail-password
+              mountPath: /var/run/secrets/mail
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if and .Values.mail.url .Values.mail.user }}
+        - name: mail-password
+          secret:
+            secretName: {{ required "mail.passwordSecret is required with mail.user: a Secret with the password under the key password" .Values.mail.passwordSecret }}
+            items:
+              - key: password
+                path: password
+        {{- end }}
         {{- if .Values.ai.provider }}
         - name: ai-key
           secret:

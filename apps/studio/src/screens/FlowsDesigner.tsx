@@ -266,6 +266,7 @@ const STEP_ICONS: Readonly<Partial<Record<StepType, IconName>>> = {
   call: 'studio',
   total: 'total',
   task: 'people',
+  inform: 'bell',
 };
 
 /** React Flow needs a handle at each end of an edge; the arrows are the layout's own, so these stay hidden. */
@@ -705,6 +706,8 @@ function sourcesFor(definition: Definition, scope: ReadonlyMap<string, VarKind>)
 }
 
 const ANY_VALUE: readonly ValueMode[] = ['fixed', 'field', 'calc', 'join', 'person', 'today', 'now', 'shift', 'between', 'choose', 'text', 'first'];
+/** The ways to give words: what a notice says. */
+const TEXT_VALUE: readonly ValueMode[] = ['fixed', 'field', 'join', 'text', 'first', 'choose'];
 
 function StepEditor(props: { definition: Definition; name: string; path: string; readOnly: boolean; onChange: (definition: Definition) => void; onRemoved: () => void; onMoved: (path: string) => void; onClosed: () => void }) {
   const { definition, name, path, readOnly, onChange } = props;
@@ -1011,6 +1014,8 @@ function StepFields(props: {
     }
     case 'task':
       return <TaskFields definition={definition} name={name} step={step} set={set} />;
+    case 'inform':
+      return <InformFields definition={definition} name={name} step={step} scope={scope} sources={sources} variables={variables} set={set} />;
     case 'wait':
       return <WaitForEditor definition={definition} name={name} label="Wait for" variables={variables} value={step.for} onChange={(wait) => set({ ...step, for: wait })} />;
     case 'first_of':
@@ -1219,6 +1224,89 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
           </Select>
         )}
       </Field>
+    </>
+  );
+}
+
+type InformStep = Extract<FlowStep, { type: 'inform' }>;
+
+/** Whom a notice goes to, what it says, the record it is about, and whether it goes by email too. */
+function InformFields(props: { definition: Definition; name: string; step: InformStep; scope: ReadonlyMap<string, VarKind>; sources: ValueSources; variables: RefChoice[]; set: (step: FlowStep) => void }) {
+  const { definition, name, step, scope, sources, variables, set } = props;
+  const waits = flowWaits(definition.flows![name]!, definition.flows);
+  const records = recordVariables(scope);
+  // A person: the one running it (not in a flow that waits), a user field of a record, or who owns, created or last changed one.
+  const people = [
+    ...(waits ? [] : [{ ref: 'principal.id', label: 'The person running it' }]),
+    ...variables.filter((choice) => choice.kind === 'person').map((choice) => ({ ref: choice.ref, label: choice.label })),
+    ...records.flatMap((record) => [
+      { ref: `${record}.owner`, label: `${record}: its owner` },
+      { ref: `${record}.created_by`, label: `${record}: whoever created it` },
+    ]),
+  ];
+  const valueOf = (recipient: InformStep['to'][number]) =>
+    'role' in recipient ? `role:${recipient.role}` : recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person ? `person:${recipient.person.ref}` : '';
+  const recipientOf = (value: string): InformStep['to'][number] => (value.startsWith('role:') ? { role: value.slice(5) } : { person: { ref: value.slice(7) } });
+  const change = (index: number, value: string) => set({ ...step, to: step.to.map((each, i) => (i === index ? recipientOf(value) : each)) });
+  return (
+    <>
+      <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
+        <legend className="px-1 text-sm text-muted">Whom it tells</legend>
+        {step.to.map((recipient, index) => (
+          <div key={index} className="flex items-end gap-2">
+            <Field label={`Tells ${index + 1}`}>
+              {(id) => (
+                <Select id={id} value={valueOf(recipient)} onChange={(e) => change(index, e.target.value)}>
+                  <option value="" disabled>
+                    Choose someone
+                  </option>
+                  <optgroup label="A person">
+                    {people.map((person) => (
+                      <option key={person.ref} value={`person:${person.ref}`}>
+                        {person.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Everyone with a role">
+                    {Object.entries(definition.roles).map(([role, spec]) => (
+                      <option key={role} value={`role:${role}`}>
+                        {spec.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                </Select>
+              )}
+            </Field>
+            <Button size="sm" variant="ghost" aria-label={`Remove whom it tells ${index + 1}`} disabled={step.to.length <= 1} onClick={() => set({ ...step, to: step.to.filter((_, i) => i !== index) })}>
+              ✕
+            </Button>
+          </div>
+        ))}
+        <Button size="sm" className="justify-self-start" disabled={step.to.length >= 10} onClick={() => set({ ...step, to: [...step.to, step.to[0] ?? { role: Object.keys(definition.roles)[0] ?? '' }] })}>
+          Tell someone else too
+        </Button>
+        <p className="m-0 text-xs text-muted">Only people the app is shared with hear it. A role means everyone who holds it.</p>
+      </fieldset>
+      <Field label="What it says first" hint="Its title in the app, and the email's subject.">
+        {() => <ValueEditor definition={definition} entity="" label="Title" value={step.title} from={sources} only={TEXT_VALUE} onChange={(title) => set({ ...step, title })} />}
+      </Field>
+      <Field label="What it says after">
+        {() => <ValueEditor definition={definition} entity="" label="Message" value={step.message ?? ''} from={sources} only={TEXT_VALUE} onChange={(message) => set(message === '' ? without(step, 'message') : { ...step, message })} />}
+      </Field>
+      <Field label="About the record" hint="The notice links to it.">
+        {(id) => (
+          <Select id={id} value={step.about ?? ''} onChange={(e) => set(e.target.value ? { ...step, about: e.target.value } : without(step, 'about'))}>
+            <option value="">No record</option>
+            {records.map((record) => (
+              <option key={record} value={record}>
+                {record}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      <Checkbox label="By email too, to each who takes email" checked={step.email} onChange={(email) => set({ ...step, email })} />
+      {step.email ? <p className="m-0 text-xs text-muted">Email leaves the app, so a field that holds personal data stays out of what it says.</p> : null}
     </>
   );
 }

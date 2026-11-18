@@ -9,6 +9,8 @@ export type Route =
   | { readonly name: 'home' }
   /** The person's tasks across apps. */
   | { readonly name: 'tasks' }
+  /** What reached the person: flows that told them, and their tasks' news. */
+  | { readonly name: 'notices' }
   | { readonly name: 'build'; readonly appId: string; readonly tab: BuildTab }
   | { readonly name: 'change'; readonly changeRequestId: string }
   /**
@@ -26,6 +28,7 @@ export function parse(pathname: string, search = ''): Route {
   const parts = pathname.replace(/^\/studio\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
   if (parts[0] === 'changes' && parts[1]) return { name: 'change', changeRequestId: parts[1] };
   if (parts[0] === 'tasks') return { name: 'tasks' };
+  if (parts[0] === 'notices') return { name: 'notices' };
   if (parts[0] !== 'apps' || !parts[1]) return { name: 'home' };
   const appId = parts[1];
   if (parts[2] === 'build') {
@@ -44,6 +47,8 @@ export function href(route: Route): string {
       return `${BASE}/`;
     case 'tasks':
       return `${BASE}/tasks`;
+    case 'notices':
+      return `${BASE}/notices`;
     case 'build':
       return `${BASE}/apps/${encodeURIComponent(route.appId)}/build/${route.tab}`;
     case 'change':

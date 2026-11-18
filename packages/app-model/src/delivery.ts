@@ -300,6 +300,7 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
         ...(work.deletes.length ? [`deletes ${work.deletes.map(entityLabel).join(', ')}`] : []),
         ...(work.calls.length ? [`calls ${work.calls.join(', ')}`] : []),
         ...(work.asks.length ? [`waits for ${work.asks.join(', ')}`] : []),
+        ...(work.tells.length ? [`tells ${work.tells.join(', ')}`] : []),
         ...startTexts(head, h).map((start) => `starts by itself ${start}`),
         ...(h.schedule ? [`runs by itself, with the app's authority: ${lowerFirst(scheduleWords(h.schedule))}`] : []),
       ];
@@ -318,6 +319,8 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       for (const flow of before.calls) if (!after.calls.includes(flow)) texts.push(`${h.label} no longer calls ${flow}`);
       for (const ask of after.asks) if (!before.asks.includes(ask)) texts.push(`${h.label} now waits for ${ask}`);
       for (const ask of before.asks) if (!after.asks.includes(ask)) texts.push(`${h.label} no longer waits for ${ask}`);
+      for (const told of after.tells) if (!before.tells.includes(told)) texts.push(`${h.label} now tells ${told}`);
+      for (const told of before.tells) if (!after.tells.includes(told)) texts.push(`${h.label} no longer tells ${told}`);
       const [startsBefore, startsAfter] = [startTexts(base, b), startTexts(head, h)];
       for (const start of startsAfter) if (!startsBefore.includes(start)) texts.push(`${h.label} now starts by itself ${start}`);
       for (const start of startsBefore) if (!startsAfter.includes(start)) texts.push(`${h.label} no longer starts by itself ${start}`);

@@ -350,6 +350,25 @@ export const WaitFor = z.union([
 export type WaitFor = z.infer<typeof WaitFor>;
 /** Wait, then go on. */
 const FlowWait = z.strictObject({ type: z.literal('wait'), for: WaitFor });
+/** Whom a notice goes to: a person a value names, such as a user field of a record, or everyone with a role of the app. */
+export const Recipient = z.union([z.strictObject({ person: ExpressionSchema }), z.strictObject({ role: Name })]);
+export type Recipient = z.infer<typeof Recipient>;
+/**
+ * Tell people: a notice in the app for each, and an email to each who takes email, in words worked
+ * out from the flow's values. It goes only to people the app is shared with.
+ */
+const FlowInform = z.strictObject({
+  type: z.literal('inform'),
+  to: z.array(Recipient).min(1).max(10),
+  /** What it says first: its title in the app, and the email's subject. */
+  title: ExpressionSchema,
+  /** What it says after its title. */
+  message: ExpressionSchema.optional(),
+  /** A record variable: the record the notice is about, which it links to. */
+  about: Name.optional(),
+  /** By email too, to each who takes email. */
+  email: z.boolean().default(true),
+});
 /**
  * How a flow that waits starts by itself on a record of the entity it is about: when the record is
  * created, or a time after; on a date or time field of the record, or a time before or after it;
@@ -416,6 +435,14 @@ export type FlowStep =
       readonly reminders?: Array<{ readonly after: string; readonly steps: FlowStep[] }> | undefined;
     }
   | { readonly type: 'repeat'; readonly while: Condition; readonly max: number; readonly steps: FlowStep[] }
+  | {
+      readonly type: 'inform';
+      readonly to: Array<{ readonly person: Expression } | { readonly role: string }>;
+      readonly title: Expression;
+      readonly message?: Expression | undefined;
+      readonly about?: string | undefined;
+      readonly email: boolean;
+    }
   | { readonly type: 'wait'; readonly for: WaitFor }
   | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps: FlowStep[] }> }
   | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps: FlowStep[] }> };
@@ -438,6 +465,7 @@ export type FlowStepInput =
       readonly reminders?: Array<{ readonly after: string; readonly steps?: FlowStepInput[] | undefined }> | undefined;
     })
   | { readonly type: 'repeat'; readonly while: Condition; readonly max?: number | undefined; readonly steps: FlowStepInput[] }
+  | (Omit<Extract<FlowStep, { type: 'inform' }>, 'email'> & { readonly email?: boolean | undefined })
   | Extract<FlowStep, { type: 'wait' }>
   | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps?: FlowStepInput[] | undefined }> }
   | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps?: FlowStepInput[] | undefined }> };
@@ -522,6 +550,7 @@ export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion
   FlowReturn,
   FlowTask,
   FlowRepeat,
+  FlowInform,
   FlowWait,
   FlowFirstOf,
   FlowAllAtOnce,

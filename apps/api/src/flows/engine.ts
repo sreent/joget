@@ -1,6 +1,7 @@
 import { uuidv7 } from '@platform/audit';
 import { CLOCK, evaluateCondition, partialEvaluate, type Condition } from '@platform/authz';
-import { evaluateExpression, flowWaits, roundTo, type AppFlow, type Expression, type FlowRun, type FlowStep, type FlowType, type RecordValues } from '@platform/app-model';
+import { evaluateExpression, flowWaits, recordLabel, roundTo, type AppFlow, type Expression, type FlowRun, type FlowStep, type FlowType, type RecordValues } from '@platform/app-model';
+import { roleHolders } from '../access/holders.js';
 import { requirePerson } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
 import type { AppRuntime, FlowHooks, Writer } from '../apps/runtime.js';
@@ -8,6 +9,7 @@ import type { AppTransaction } from '../apps/transaction.js';
 import { recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { HttpError, notFound, unprocessable } from '../errors.js';
+import type { Notices } from '../notices/service.js';
 
 /*
  * The flow engine (design §6.2). A flow runs in the transaction of what starts it, with the app's
@@ -99,15 +101,19 @@ interface State {
   savepoints: number;
   readonly findings: Array<{ flow: string; message: string }>;
   readonly writes: { created: number; changed: number; deleted: number };
+  /** How many people the flow told, and how many it couldn't, because the app isn't shared with them. */
+  readonly told: { people: number; left: number };
 }
 
 export class FlowEngine implements FlowHooks {
   readonly #ctx: AppContext;
   readonly #runtime: AppRuntime;
+  readonly #notices: Notices;
 
-  constructor(ctx: AppContext, runtime: AppRuntime) {
+  constructor(ctx: AppContext, runtime: AppRuntime, notices: Notices) {
     this.#ctx = ctx;
     this.#runtime = runtime;
+    this.#notices = notices;
     runtime.attachFlows(this);
   }
 
@@ -123,7 +129,7 @@ export class FlowEngine implements FlowHooks {
   /** Run a flow in the caller's transaction, with its input worked out already: values, records and lists. */
   async run(tx: AppTransaction, loaded: LoadedApp, name: string, input: Readonly<Record<string, unknown>>, caller: FlowCaller): Promise<FlowResult> {
     const named: FlowCaller = { ...caller, writer: flowWriter(caller.writer, name) };
-    const state: State = { tx, loaded, caller: named, now: this.#ctx.now(), steps: 0, depth: 0, savepoints: 0, findings: [], writes: { created: 0, changed: 0, deleted: 0 } };
+    const state: State = { tx, loaded, caller: named, now: this.#ctx.now(), steps: 0, depth: 0, savepoints: 0, findings: [], writes: { created: 0, changed: 0, deleted: 0 }, told: { people: 0, left: 0 } };
     const output = await this.#flow(state, name, input);
     const flow = loaded.definition.flows![name]!;
     await recordAudit(tx.db, named.writer.scope(state.now), {
@@ -132,7 +138,12 @@ export class FlowEngine implements FlowHooks {
       spaceId: loaded.space.id,
       appId: loaded.app.id,
       env: loaded.env.kind,
-      reason: { trigger: caller.trigger, writes: state.writes, ...(state.findings.length ? { findings: state.findings.map((finding) => finding.message) } : {}) },
+      reason: {
+        trigger: caller.trigger,
+        writes: state.writes,
+        ...(state.told.people || state.told.left ? { told: state.told } : {}),
+        ...(state.findings.length ? { findings: state.findings.map((finding) => finding.message) } : {}),
+      },
     });
     return { output, findings: state.findings, writes: state.writes };
   }
@@ -285,6 +296,38 @@ export class FlowEngine implements FlowHooks {
       case 'if':
         await this.#block(state, flow, holds(step.when) ? step.then : step.else, frame);
         return;
+      case 'inform': {
+        const people = new Set<string>();
+        for (const recipient of step.to) {
+          if ('role' in recipient) for (const holder of await roleHolders(tx.db, loaded.app.id, loaded.env.id, recipient.role, state.now)) people.add(holder);
+          else {
+            const person = value(recipient.person);
+            if (typeof person === 'string' && person) people.add(person);
+          }
+        }
+        const words = (expression: Expression | undefined) => {
+          const worked = expression === undefined ? null : value(expression);
+          return worked === null || worked === undefined ? '' : Array.isArray(worked) ? worked.join(', ') : String(worked);
+        };
+        const about = step.about ? record(step.about) : undefined;
+        const sent = await this.#notices.send(
+          tx.db,
+          {
+            appId: loaded.app.id,
+            environmentId: loaded.env.id,
+            kind: 'inform',
+            title: words(step.title),
+            message: words(step.message),
+            about: about ? { entity: about[ENTITY], recordId: String(about['id']), label: recordLabel(loaded.definition.entities[about[ENTITY]] ?? { label: about[ENTITY], fields: [] }, about) } : null,
+            to: [...people],
+            email: step.email,
+          },
+          state.now,
+        );
+        state.told.people += sent.told.length;
+        state.told.left += sent.left.length;
+        return;
+      }
       case 'repeat':
         // Checked before each time, on the variables as the last time left them.
         for (let times = 0; times < step.max && holds(step.while); times++) await this.#block(state, flow, step.steps, frame);

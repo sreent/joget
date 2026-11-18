@@ -152,3 +152,11 @@ export function isWritable(info: FieldInfo): boolean {
   if (info.field) return !rollupOf(info.field);
   return info.name === 'owner';
 }
+
+/** A record in a few words, for a notice or a link: its entity's label, and the value of its title field when it has one. */
+export function recordLabel(entity: Pick<StoredEntity, 'label' | 'titleField' | 'fields'>, values: Readonly<Record<string, unknown>>): string {
+  const field = entity.titleField ? entity.fields.find((f) => f.name === entity.titleField) : undefined;
+  const raw = field ? values[field.name] : undefined;
+  const shown = field?.type === 'choice' && typeof raw === 'string' ? (field.options.find((option) => option.value === raw)?.label ?? raw) : raw;
+  return shown === undefined || shown === null || shown === '' || typeof shown === 'object' ? entity.label : `${entity.label}: ${String(shown)}`;
+}

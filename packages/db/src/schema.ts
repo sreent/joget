@@ -53,6 +53,8 @@ export const users = pgTable(
     /** Out-of-office cover: who takes the tasks that would come to this person, until when. */
     coverId: uuid('cover_id').references((): AnyPgColumn => users.id),
     coverUntil: timestamp('cover_until', tz),
+    /** Whether notices reach the person by email too, as well as in the app. */
+    emailNotices: boolean('email_notices').notNull().default(true),
     createdAt: createdAt(),
     lastLoginAt: timestamp('last_login_at', tz),
   },
@@ -759,11 +761,15 @@ export const processTasks = pgTable(
     /** Why it closed without an outcome: a timer, or the instance ending or being cancelled. */
     cancelReason: text('cancel_reason'),
     dueAt: timestamp('due_at', tz),
+    /** When whom it waits for heard that it is due soon, and that it is overdue. */
+    dueSoonNoticeAt: timestamp('due_soon_notice_at', tz),
+    overdueNoticeAt: timestamp('overdue_notice_at', tz),
     createdAt: createdAt(),
     closedAt: timestamp('closed_at', tz),
   },
   (t) => [
     index('process_tasks_open_idx').on(t.environmentId, t.role).where(sql`${t.status} = 'open'`),
+    index('process_tasks_due_idx').on(t.dueAt).where(sql`${t.status} = 'open' and ${t.dueAt} is not null`),
     index('process_tasks_assignee_idx').on(t.assignee).where(sql`${t.status} = 'open'`),
     index('process_tasks_record_idx').on(t.environmentId, t.recordId),
     index('process_tasks_instance_idx').on(t.instanceId),
@@ -877,6 +883,66 @@ export const flowSchedules = pgTable(
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('flow_schedules_one_uq').on(t.environmentId, t.flow), index('flow_schedules_due_idx').on(t.nextAttemptAt)],
+);
+
+/**
+ * What reached a person: a flow told them, or a task came to them, is due soon or is overdue. Each
+ * person sees only their own, until they mark them read. A notice keeps the words it said, which a
+ * flow worked out from the app's records, for as long as notices are kept.
+ */
+export const notices = pgTable(
+  'notices',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    kind: text('kind', { enum: ['inform', 'task_assigned', 'task_due_soon', 'task_overdue'] }).notNull(),
+    title: text('title').notNull(),
+    message: text('message'),
+    /** The record it is about, which it links to, and what it was called then. */
+    entity: text('entity'),
+    recordId: uuid('record_id'),
+    label: text('label'),
+    taskId: uuid('task_id'),
+    createdAt: createdAt(),
+    readAt: timestamp('read_at', tz),
+  },
+  (t) => [index('notices_user_idx').on(t.userId, t.createdAt), index('notices_unread_idx').on(t.userId).where(sql`${t.readAt} is null`)],
+);
+
+/** An email that a notice sends, until a worker has sent it, or given up. */
+export const noticeEmails = pgTable(
+  'notice_emails',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    noticeId: uuid('notice_id')
+      .notNull()
+      .references(() => notices.id, { onDelete: 'cascade' }),
+    address: text('address').notNull(),
+    status: text('status', { enum: ['waiting', 'sent', 'failed'] })
+      .notNull()
+      .default('waiting'),
+    /** When a worker may try it next. A try in progress holds it for a while, so a crash only delays it. */
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    sentAt: timestamp('sent_at', tz),
+  },
+  (t) => [index('notice_emails_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`)],
 );
 
 /**
