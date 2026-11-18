@@ -88,6 +88,12 @@ mail:
   # Who email comes from.
   from: "a3t <noreply@example.com>"
 
+# The key that seals the secrets environments keep for their apps' connections and webhooks
+# (design §6.13): a Secret with 32 random bytes, in base64, under the key `key`. Without it,
+# production keeps no such secrets.
+appSecrets:
+  keySecret: ""
+
 telemetry:
   # An OTLP/HTTP endpoint, for example http://otel-collector.observability:4318. Empty disables export.
   otlpEndpoint: ""

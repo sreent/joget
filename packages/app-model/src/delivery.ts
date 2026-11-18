@@ -5,7 +5,7 @@ import { conditionText } from './condition-text.js';
 import { flowWork } from './flows.js';
 import { processWork } from './processes.js';
 import { scheduleWords } from './schedules.js';
-import type { Action, AppFlow, ConfirmationLevel, Process, Query } from './schema.js';
+import type { Action, AppFlow, ConfirmationLevel, Connection, ConnectionAuth, Process, Query } from './schema.js';
 import { flowSubject, startWords } from './waiting.js';
 
 /*
@@ -301,6 +301,7 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
         ...(work.calls.length ? [`calls ${work.calls.join(', ')}`] : []),
         ...(work.asks.length ? [`waits for ${work.asks.join(', ')}`] : []),
         ...(work.tells.length ? [`tells ${work.tells.join(', ')}`] : []),
+        ...(work.connects.length ? [`calls ${work.connects.map((connection) => head.connections?.[connection]?.label ?? connection).join(', ')}`] : []),
         ...startTexts(head, h).map((start) => `starts by itself ${start}`),
         ...(h.schedule ? [`runs by itself, with the app's authority: ${lowerFirst(scheduleWords(h.schedule))}`] : []),
       ];
@@ -320,6 +321,8 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       for (const ask of after.asks) if (!before.asks.includes(ask)) texts.push(`${h.label} now waits for ${ask}`);
       for (const ask of before.asks) if (!after.asks.includes(ask)) texts.push(`${h.label} no longer waits for ${ask}`);
       for (const told of after.tells) if (!before.tells.includes(told)) texts.push(`${h.label} now tells ${told}`);
+      for (const connection of after.connects) if (!before.connects.includes(connection)) texts.push(`${h.label} now calls ${head.connections?.[connection]?.label ?? connection}`);
+      for (const connection of before.connects) if (!after.connects.includes(connection)) texts.push(`${h.label} no longer calls ${base.connections?.[connection]?.label ?? connection}`);
       for (const told of before.tells) if (!after.tells.includes(told)) texts.push(`${h.label} no longer tells ${told}`);
       const [startsBefore, startsAfter] = [startTexts(base, b), startTexts(head, h)];
       for (const start of startsAfter) if (!startsBefore.includes(start)) texts.push(`${h.label} now starts by itself ${start}`);
@@ -330,6 +333,50 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       if (!texts.length) texts.push(`${h.label} runs different steps`);
       for (const text of texts) changes.push({ tool: name, change: 'changed', text });
     }
+  }
+  changes.push(...integrationChanges(base, head));
+  return changes;
+}
+
+/** How a service knows the app, in words. */
+function authWords(auth: ConnectionAuth): string {
+  return auth.type === 'none' ? 'no secret' : auth.type === 'bearer' ? 'a bearer token' : auth.type === 'basic' ? `the user ${auth.user} and a password` : `a key in ${auth.header}`;
+}
+
+/** What reviewers see of the systems an app talks to: where its data can go, and who can run its flows from outside. */
+function integrationChanges(base: StoredDefinition, head: StoredDefinition): CapabilityChange[] {
+  const changes: CapabilityChange[] = [];
+  const host = (connection: Connection) => (connection.kind === 'service' ? (URL.canParse(connection.url) ? new URL(connection.url).host : connection.url) : 'Teams');
+  const [before, after] = [base.connections ?? {}, head.connections ?? {}];
+  for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const [b, h] = [before[name], after[name]];
+    if (!b && h) {
+      const text =
+        h.kind === 'service'
+          ? `New connection ${h.label}: flows can call ${host(h)}, with ${authWords(h.auth)}${h.personalData ? '. It takes personal data' : ''}`
+          : `New Teams channel ${h.label}: notices can post to it`;
+      changes.push({ tool: name, change: 'added', text });
+    } else if (b && !h) {
+      changes.push({ tool: name, change: 'removed', text: `${b.label} is removed: nothing calls it any more` });
+    } else if (b && h && !same(b, h)) {
+      const texts: string[] = [];
+      if (host(b) !== host(h)) texts.push(`${h.label} now calls ${host(h)} instead of ${host(b)}`);
+      if (b.kind === 'service' && h.kind === 'service') {
+        if (!same(b.auth, h.auth)) texts.push(`${h.label} now proves who it is with ${authWords(h.auth)}`);
+        if (!b.personalData && h.personalData) texts.push(`${h.label} now takes personal data`);
+        if (b.personalData && !h.personalData) texts.push(`${h.label} no longer takes personal data`);
+      }
+      if (!texts.length) texts.push(`${h.label} changed`);
+      for (const text of texts) changes.push({ tool: name, change: 'changed', text });
+    }
+  }
+  const [hooksBefore, hooksAfter] = [base.webhooks ?? {}, head.webhooks ?? {}];
+  for (const name of new Set([...Object.keys(hooksBefore), ...Object.keys(hooksAfter)])) {
+    const [b, h] = [hooksBefore[name], hooksAfter[name]];
+    const flowLabel = (definition: StoredDefinition, flow: string) => definition.flows?.[flow]?.label ?? flow;
+    if (!b && h) changes.push({ tool: name, change: 'added', text: `New webhook ${h.label}: other systems can run ${flowLabel(head, h.flow)}, with the app's authority` });
+    else if (b && !h) changes.push({ tool: name, change: 'removed', text: `${b.label} is removed: other systems can no longer run ${flowLabel(base, b.flow)}` });
+    else if (b && h && !same(b, h)) changes.push({ tool: name, change: 'changed', text: b.flow !== h.flow ? `${h.label} now runs ${flowLabel(head, h.flow)}` : `${h.label} takes its input from other places` });
   }
   return changes;
 }

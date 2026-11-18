@@ -349,6 +349,16 @@ export interface HistoryEntry {
 }
 
 /** A person's task in a business process (design §6.10): a decision that waits in their inbox. */
+/** A connection or a webhook of an app, with whether the environment keeps the secret it needs: never the secret. */
+export interface SecretState {
+  set: boolean;
+  setAt: string | null;
+}
+export interface IntegrationStatus {
+  connections: Array<{ name: string; kind: 'service' | 'teams'; label: string; host: string | null; needsSecret: boolean; secret: SecretState }>;
+  webhooks: Array<{ name: string; label: string; flow: string; url: string; secret: SecretState }>;
+}
+
 /** What reached the person: a flow told them, or a task came to them, is due soon or is overdue. */
 export interface Notice {
   id: string;

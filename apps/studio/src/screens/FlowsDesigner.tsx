@@ -39,6 +39,7 @@ import {
 } from '../model/flows.js';
 import type { Definition, Field as FieldDef, FlowLive } from '../types.js';
 import { HowItStarts } from './FlowStarts.js';
+import { CallServiceFields } from './ServiceStep.js';
 import { ValueEditor, type ValueMode, type ValueSources } from './StepsEditor.js';
 
 /*
@@ -267,6 +268,7 @@ const STEP_ICONS: Readonly<Partial<Record<StepType, IconName>>> = {
   total: 'total',
   task: 'people',
   inform: 'bell',
+  call_service: 'plug',
 };
 
 /** React Flow needs a handle at each end of an edge; the arrows are the layout's own, so these stay hidden. */
@@ -1016,6 +1018,8 @@ function StepFields(props: {
       return <TaskFields definition={definition} name={name} step={step} set={set} />;
     case 'inform':
       return <InformFields definition={definition} name={name} step={step} scope={scope} sources={sources} variables={variables} set={set} />;
+    case 'call_service':
+      return <CallServiceFields definition={definition} step={step} sources={sources} set={set} />;
     case 'wait':
       return <WaitForEditor definition={definition} name={name} label="Wait for" variables={variables} value={step.for} onChange={(wait) => set({ ...step, for: wait })} />;
     case 'first_of':
@@ -1306,7 +1310,23 @@ function InformFields(props: { definition: Definition; name: string; step: Infor
         )}
       </Field>
       <Checkbox label="By email too, to each who takes email" checked={step.email} onChange={(email) => set({ ...step, email })} />
-      {step.email ? <p className="m-0 text-xs text-muted">Email leaves the app, so a field that holds personal data stays out of what it says.</p> : null}
+      {Object.values(definition.connections ?? {}).some((connection) => connection.kind === 'teams') ? (
+        <Field label="And to a Teams channel">
+          {(id) => (
+            <Select id={id} value={step.teams ?? ''} onChange={(e) => set(e.target.value ? { ...step, teams: e.target.value } : without(step, 'teams'))}>
+              <option value="">No channel</option>
+              {Object.entries(definition.connections ?? {}).flatMap(([connection, spec]) =>
+                spec.kind === 'teams' ? [
+                  <option key={connection} value={connection}>
+                    {spec.label}
+                  </option>,
+                ] : [],
+              )}
+            </Select>
+          )}
+        </Field>
+      ) : null}
+      {step.email || step.teams ? <p className="m-0 text-xs text-muted">Email and Teams leave the app, so a field that holds personal data stays out of what they say.</p> : null}
     </>
   );
 }

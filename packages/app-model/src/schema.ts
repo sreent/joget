@@ -268,6 +268,49 @@ export const Several = z.strictObject({ people: Voters, sequential: z.boolean().
 export type Several = z.infer<typeof Several>;
 
 /*
+ * Integration (design §6.13): the systems an app talks to. A connection is a service that its
+ * flows call, at an address, or a Teams channel that notices go to. Each environment keeps the
+ * connection's secret, which the platform adds to each call: the definition holds none, and a flow
+ * never sees it. A webhook is a way in: another system's request, signed with the environment's
+ * secret, runs a flow.
+ */
+
+/** How a service knows the app: nothing, a bearer token, a user name and password, or a key in a header. */
+export const ConnectionAuth = z.union([
+  z.strictObject({ type: z.literal('none') }),
+  z.strictObject({ type: z.literal('bearer') }),
+  z.strictObject({ type: z.literal('basic'), user: z.string().min(1).max(200) }),
+  z.strictObject({ type: z.literal('header'), header: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,63}$/, 'Name a header, such as X-Api-Key') }),
+]);
+export type ConnectionAuth = z.infer<typeof ConnectionAuth>;
+export const Connection = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('service'),
+    label: Label,
+    description: Description.optional(),
+    /** Every call goes under this address, such as https://api.example.com/v1. */
+    url: z.url().max(500),
+    auth: ConnectionAuth.default({ type: 'none' }),
+    /** Whether flows may send it personal data. A change request shows it. */
+    personalData: z.boolean().default(false),
+  }),
+  /** A Teams channel: its incoming webhook's address is the secret. */
+  z.strictObject({ kind: z.literal('teams'), label: Label, description: Description.optional() }),
+]);
+export type Connection = z.infer<typeof Connection>;
+export const Webhook = z.strictObject({
+  label: Label,
+  description: Description.optional(),
+  /** The flow it runs, in one go, with the app's authority. */
+  flow: Name,
+  /** Each input of the flow, from a place in the request's JSON, such as order.id. */
+  input: z.record(Name, z.string().max(200)).default({}),
+});
+export type Webhook = z.infer<typeof Webhook>;
+/** A place in JSON: names and list positions, such as data.items.0.id. Empty: the whole of it. */
+export const JSON_PATH = /^$|^[A-Za-z0-9_$-]+(\.[A-Za-z0-9_$-]+){0,15}$/;
+
+/*
  * Flows (design §6.2, §6.11): what happens in an app, as a Mendix microflow is. A flow finds,
  * creates, changes and deletes records, loops, decides, calls other flows and handles errors. It
  * runs in one go, in one transaction; or it waits for people and for time, and keeps its place on
@@ -350,6 +393,24 @@ export const WaitFor = z.union([
 export type WaitFor = z.infer<typeof WaitFor>;
 /** Wait, then go on. */
 const FlowWait = z.strictObject({ type: z.literal('wait'), for: WaitFor });
+/**
+ * Call a service through a connection, and keep what its answer says in variables, each of a kind.
+ * An answer that isn't a success fails the step, which an error handler can catch.
+ */
+const FlowCallService = z.strictObject({
+  type: z.literal('call_service'),
+  connection: Name,
+  method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
+  /** Where under the connection's address, as text worked out from values, such as /customers/42. */
+  path: ExpressionSchema.default(''),
+  query: FlowValues.default({}),
+  /** The JSON it sends: values by name. */
+  body: FlowValues.optional(),
+  /** The variables its answer gives: each from a place in the answer's JSON. */
+  results: z
+    .record(Name, z.strictObject({ from: z.string().regex(JSON_PATH, 'Name a place in the answer, such as data.id'), type: z.enum(['text', 'number', 'boolean', 'date', 'datetime']) }))
+    .default({}),
+});
 /** Whom a notice goes to: a person a value names, such as a user field of a record, or everyone with a role of the app. */
 export const Recipient = z.union([z.strictObject({ person: ExpressionSchema }), z.strictObject({ role: Name })]);
 export type Recipient = z.infer<typeof Recipient>;
@@ -368,6 +429,8 @@ const FlowInform = z.strictObject({
   about: Name.optional(),
   /** By email too, to each who takes email. */
   email: z.boolean().default(true),
+  /** A Teams connection: the channel it posts to as well. */
+  teams: Name.optional(),
 });
 /**
  * How a flow that waits starts by itself on a record of the entity it is about: when the record is
@@ -442,6 +505,16 @@ export type FlowStep =
       readonly message?: Expression | undefined;
       readonly about?: string | undefined;
       readonly email: boolean;
+      readonly teams?: string | undefined;
+    }
+  | {
+      readonly type: 'call_service';
+      readonly connection: string;
+      readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+      readonly path: Expression;
+      readonly query: Record<string, Expression>;
+      readonly body?: Record<string, Expression> | undefined;
+      readonly results: Record<string, { readonly from: string; readonly type: 'text' | 'number' | 'boolean' | 'date' | 'datetime' }>;
     }
   | { readonly type: 'wait'; readonly for: WaitFor }
   | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps: FlowStep[] }> }
@@ -466,6 +539,12 @@ export type FlowStepInput =
     })
   | { readonly type: 'repeat'; readonly while: Condition; readonly max?: number | undefined; readonly steps: FlowStepInput[] }
   | (Omit<Extract<FlowStep, { type: 'inform' }>, 'email'> & { readonly email?: boolean | undefined })
+  | (Omit<Extract<FlowStep, { type: 'call_service' }>, 'method' | 'path' | 'query' | 'results'> & {
+      readonly method?: Extract<FlowStep, { type: 'call_service' }>['method'] | undefined;
+      readonly path?: Expression | undefined;
+      readonly query?: Record<string, Expression> | undefined;
+      readonly results?: Extract<FlowStep, { type: 'call_service' }>['results'] | undefined;
+    })
   | Extract<FlowStep, { type: 'wait' }>
   | { readonly type: 'first_of'; readonly ways: Array<{ readonly for: WaitFor; readonly steps?: FlowStepInput[] | undefined }> }
   | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps?: FlowStepInput[] | undefined }> };
@@ -551,6 +630,7 @@ export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion
   FlowTask,
   FlowRepeat,
   FlowInform,
+  FlowCallService,
   FlowWait,
   FlowFirstOf,
   FlowAllAtOnce,
@@ -1207,7 +1287,7 @@ export const AppRole = z.strictObject({
 });
 export type AppRole = z.infer<typeof AppRole>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50, flows: 100 } as const;
+export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50, flows: 100, connections: 30, webhooks: 30 } as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
   z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
@@ -1235,6 +1315,16 @@ export const AppDefinition = z.strictObject({
   flows: z
     .record(Name, AppFlow)
     .refine((map) => Object.keys(map).length <= LIMITS.flows, `At most ${LIMITS.flows} flows`)
+    .optional(),
+  /** The systems the app talks to. Optional, so that earlier definitions keep their digests. */
+  connections: z
+    .record(Name, Connection)
+    .refine((map) => Object.keys(map).length <= LIMITS.connections, `At most ${LIMITS.connections} connections`)
+    .optional(),
+  /** The ways in for other systems: each runs a flow. */
+  webhooks: z
+    .record(Name, Webhook)
+    .refine((map) => Object.keys(map).length <= LIMITS.webhooks, `At most ${LIMITS.webhooks} webhooks`)
     .optional(),
 });
 export type AppDefinition = z.infer<typeof AppDefinition>;

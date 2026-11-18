@@ -946,6 +946,66 @@ export const noticeEmails = pgTable(
 );
 
 /**
+ * A secret that an environment keeps for its app: what a connection proves who it is with (a
+ * token, a password, a key, or a Teams channel's address), or the key that signs a webhook's
+ * requests. Sealed with the installation's key: the API never shows it again, and a flow never sees it.
+ */
+export const appSecrets = pgTable(
+  'app_secrets',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    kind: text('kind', { enum: ['connection', 'webhook'] }).notNull(),
+    name: text('name').notNull(),
+    /** AES-256-GCM: the key's ID, the nonce, the ciphertext and its tag. */
+    sealed: text('sealed').notNull(),
+    setByType: text('set_by_type', { enum: actorTypes }).notNull(),
+    setBy: uuid('set_by').notNull(),
+    setAt: timestamp('set_at', tz).notNull(),
+  },
+  (t) => [uniqueIndex('app_secrets_one_uq').on(t.environmentId, t.kind, t.name)],
+);
+
+/** A post that a flow's notice makes to a Teams channel, until a worker has posted it, or given up. */
+export const channelPosts = pgTable(
+  'channel_posts',
+  {
+    id: uuid('id').primaryKey(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => orgs.id),
+    appId: uuid('app_id')
+      .notNull()
+      .references(() => apps.id),
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => appEnvironments.id),
+    /** The Teams connection of the app. */
+    connection: text('connection').notNull(),
+    title: text('title').notNull(),
+    message: text('message'),
+    link: text('link'),
+    status: text('status', { enum: ['waiting', 'sent', 'failed'] })
+      .notNull()
+      .default('waiting'),
+    nextAttemptAt: timestamp('next_attempt_at', tz).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    sentAt: timestamp('sent_at', tz),
+  },
+  (t) => [index('channel_posts_due_idx').on(t.nextAttemptAt).where(sql`${t.status} = 'waiting'`)],
+);
+
+/**
  * A signal that a process or an operator threw, until the timer workers deliver it to every process
  * of the app's environment that waits for it. Delivery is a transaction of its own, so a signal
  * never holds up the change that threw it.

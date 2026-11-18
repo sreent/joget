@@ -2,7 +2,7 @@ import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, typ
 import { mapRefs } from './condition-refs.js';
 import { calculationKind, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
 import { entityFields, fieldKind, isOrderedKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
-import { MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStart, type FlowStep, type FlowType, type Voters, type WaitFor } from './schema.js';
+import { JSON_PATH, MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStart, type FlowStep, type FlowType, type Voters, type WaitFor } from './schema.js';
 import { scheduleIssues } from './schedules.js';
 import { canonicalValue } from './values.js';
 import { atProcessLevel, flowSubject, flowWaits, innerLists, stepWaits, withLists } from './waiting.js';
@@ -147,6 +147,9 @@ function walk(
         }
         case 'total':
           declare(here, step.var, value('number'), at);
+          break;
+        case 'call_service':
+          for (const [name, result] of Object.entries(step.results)) declare(here, name, value(result.type), at);
           break;
         case 'each': {
           const loop = new Map(here);
@@ -566,7 +569,31 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
           condition(step.while, scope, `${at}.while`);
           if (!step.steps.length) issue(`${at}.steps`, 'A loop needs a step');
           return;
+        case 'call_service': {
+          const connection = definition.connections?.[step.connection];
+          if (!connection) issue(`${at}.connection`, `No connection named ${step.connection}`);
+          else if (connection.kind !== 'service') issue(`${at}.connection`, `${connection.label} is a Teams channel: a notice posts to it, with an inform step`);
+          kindAt(step.path, scope, `${at}.path`);
+          for (const [name, expression] of Object.entries(step.query)) kindAt(expression, scope, `${at}.query.${name}`);
+          for (const [name, expression] of Object.entries(step.body ?? {})) kindAt(expression, scope, `${at}.body.${name}`);
+          if (step.body && step.method === 'GET') issue(`${at}.body`, 'A GET sends nothing: send values with POST, PUT or PATCH, or as the query');
+          // Personal data leaves the app only for a service that says it takes it, as a reviewer sees.
+          if (connection?.kind === 'service' && !connection.personalData) {
+            const parts: Array<readonly [string, Expression]> = [['path', step.path], ...Object.entries(step.query).map(([name, e]) => [`query.${name}`, e] as const), ...Object.entries(step.body ?? {}).map(([name, e]) => [`body.${name}`, e] as const)];
+            for (const [part, expression] of parts) {
+              for (const ref of expressionRefs(expression)) {
+                if (fieldOf(ref, scope)?.classification === 'pii') issue(`${at}.${part}`, `${ref} is personal data, and ${connection.label} doesn't take it. Leave it out, or say on the connection that it takes personal data`);
+              }
+            }
+          }
+          return;
+        }
         case 'inform': {
+          if (step.teams !== undefined) {
+            const channel = definition.connections?.[step.teams];
+            if (!channel) issue(`${at}.teams`, `No connection named ${step.teams}`);
+            else if (channel.kind !== 'teams') issue(`${at}.teams`, `${channel.label} isn't a Teams channel`);
+          }
           step.to.forEach((recipient, index) => {
             const where = `${at}.to[${index}]`;
             if ('role' in recipient) {
@@ -581,11 +608,12 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
           kindAt(step.title, scope, `${at}.title`);
           if (step.message !== undefined) kindAt(step.message, scope, `${at}.message`);
           if (step.about) recordVar(step.about, scope, `${at}.about`);
-          // Email leaves the app: personal data stays in its notices in the app.
-          if (step.email) {
+          // Email and Teams leave the app: personal data stays in its notices in the app.
+          if (step.email || step.teams !== undefined) {
+            const how = step.email ? 'email' : 'Teams';
             for (const [part, expression] of [['title', step.title], ['message', step.message]] as const) {
               for (const ref of expression === undefined ? [] : expressionRefs(expression)) {
-                if (fieldOf(ref, scope)?.classification === 'pii') issue(`${at}.${part}`, `${ref} is personal data, and email takes it out of the app: leave it out, or tell people in the app only`);
+                if (fieldOf(ref, scope)?.classification === 'pii') issue(`${at}.${part}`, `${ref} is personal data, and ${how} takes it out of the app: leave it out, or tell people in the app only`);
               }
             }
           }
@@ -690,6 +718,40 @@ export function checkFlows(definition: StoredDefinition, issues: Issue[]): void 
   };
   for (const name of Object.keys(flows)) visit(name, []);
 
+  // Connections hold no secret: each environment keeps its own, which the platform adds to each call.
+  for (const [name, connection] of Object.entries(definition.connections ?? {})) {
+    if (connection.kind !== 'service') continue;
+    const at = `connections.${name}.url`;
+    let url: URL | undefined;
+    try {
+      url = new URL(connection.url);
+    } catch {
+      url = undefined;
+    }
+    if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) issues.push({ path: at, message: 'Give the address as https://, such as https://api.example.com/v1' });
+    else if (url.username || url.password) issues.push({ path: at, message: "Keep secrets out of the address: each environment keeps the connection's secret" });
+    else if (url.search || url.hash) issues.push({ path: at, message: 'End the address before any query: each step adds its own' });
+  }
+  // A webhook runs a flow in one go, with input from places in the request.
+  for (const [name, hook] of Object.entries(definition.webhooks ?? {})) {
+    const at = `webhooks.${name}`;
+    const flow = flows[hook.flow];
+    if (!flow) {
+      issues.push({ path: `${at}.flow`, message: `No flow named ${hook.flow}` });
+      continue;
+    }
+    if (flowWaits(flow, flows)) {
+      issues.push({ path: `${at}.flow`, message: `${flow.label} waits for people or for time: a webhook runs a flow that runs in one go` });
+      continue;
+    }
+    for (const input of Object.keys(flow.input)) if (!(input in hook.input)) issues.push({ path: `${at}.input`, message: `${flow.label} needs ${input}: say where in the request it is` });
+    for (const [input, place] of Object.entries(hook.input)) {
+      if (!(input in flow.input)) issues.push({ path: `${at}.input.${input}`, message: `${flow.label} takes no ${input}` });
+      else if (!place || !JSON_PATH.test(place)) issues.push({ path: `${at}.input.${input}`, message: 'Name a place in the request, such as order.id' });
+      else if (flow.input[input]!.type === 'list') issues.push({ path: `${at}.input.${input}`, message: `${input} is a list, which a webhook can't give` });
+    }
+  }
+
   for (const [role, spec] of Object.entries(definition.roles)) {
     (spec.flows ?? []).forEach((flow, index) => {
       if (!flows[flow]) issues.push({ path: `roles.${role}.flows[${index}]`, message: `No flow named ${flow}` });
@@ -755,8 +817,10 @@ export function flowWork(definition: StoredDefinition, flow: AppFlow): {
   readonly asks: readonly string[];
   /** Whom it tells: a role, the person a user field names, or the person running it. */
   readonly tells: readonly string[];
+  /** The connections it calls, and the Teams channels it posts to. */
+  readonly connects: readonly string[];
 } {
-  const work = { finds: new Set<string>(), creates: new Set<string>(), changes: new Set<string>(), deletes: new Set<string>(), calls: new Set<string>(), asks: new Set<string>(), tells: new Set<string>() };
+  const work = { finds: new Set<string>(), creates: new Set<string>(), changes: new Set<string>(), deletes: new Set<string>(), calls: new Set<string>(), asks: new Set<string>(), tells: new Set<string>(), connects: new Set<string>() };
   walk(definition, flow, (step, scope) => {
     const held = (name: string) => {
       const kind = scope.get(name);
@@ -786,7 +850,11 @@ export function flowWork(definition: StoredDefinition, flow: AppFlow): {
       case 'task':
         work.asks.add(`${definition.roles[step.role]?.label ?? step.role}: ${step.label}`);
         return;
+      case 'call_service':
+        work.connects.add(step.connection);
+        return;
       case 'inform':
+        if (step.teams !== undefined) work.connects.add(step.teams);
         for (const recipient of step.to) {
           if ('role' in recipient) work.tells.add(definition.roles[recipient.role]?.label ?? recipient.role);
           else {
@@ -803,7 +871,16 @@ export function flowWork(definition: StoredDefinition, flow: AppFlow): {
         return;
     }
   });
-  return { finds: [...work.finds], creates: [...work.creates], changes: [...work.changes], deletes: [...work.deletes], calls: [...work.calls], asks: [...work.asks], tells: [...work.tells] };
+  return {
+    finds: [...work.finds],
+    creates: [...work.creates],
+    changes: [...work.changes],
+    deletes: [...work.deletes],
+    calls: [...work.calls],
+    asks: [...work.asks],
+    tells: [...work.tells],
+    connects: [...work.connects],
+  };
 }
 
 /**
@@ -900,6 +977,14 @@ export function renameInFlows(
             break;
           case 'repeat':
             next = { ...step, while: condition(scope)(step.while) };
+            break;
+          case 'call_service':
+            next = {
+              ...step,
+              path: expression(scope)(step.path),
+              query: valuesOf(undefined, step.query, scope),
+              ...(step.body ? { body: valuesOf(undefined, step.body, scope) } : {}),
+            };
             break;
           case 'inform':
             next = {

@@ -591,6 +591,65 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(requester, '16d-notice-told');
   });
 
+  it('connects to a service, keeps its secret, calls it from a flow, and makes a webhook key', async () => {
+    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave, connected', template: 'leave' } });
+    expect(created.statusCode, created.body).toBe(201);
+    const leaveId = created.json().app.id as string;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/connections`);
+    // A service that flows call, and how it knows the app.
+    await page.getByLabel('New connection', { exact: true }).fill('Payroll');
+    await page.getByRole('button', { name: 'Add connection' }).click();
+    const editor = page.getByRole('region', { name: 'Connection' });
+    await editor.getByLabel('Address', { exact: true }).fill('https://payroll.example.com/api');
+    await visible(page.getByText('Flows call it, with a bearer token'));
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    // Its secret is kept for the sandbox, and never shown again.
+    const secrets = page.getByRole('region', { name: 'Secrets' });
+    await visible(secrets.getByText('No secret yet', { exact: false }));
+    await secrets.getByLabel('Payroll: the secret', { exact: true }).fill('tok-123');
+    await secrets.getByRole('button', { name: 'Keep it' }).click();
+    await visible(secrets.getByText('A secret is kept', { exact: false }));
+    await shot(page, '24a-connections');
+
+    // A flow asks payroll, and keeps what it answers.
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    await page.getByLabel('New flow').fill('Check the balance');
+    await page.getByRole('button', { name: 'Add flow' }).click();
+    const canvas = page.getByTestId('flow-canvas');
+    await canvas.getByRole('button', { name: 'Add a step here' }).click();
+    await page.getByRole('button', { name: 'Call a service', exact: true }).click();
+    const step = page.getByRole('region', { name: 'Step' });
+    await step.getByLabel('Path', { exact: true }).fill('/balances');
+    await step.getByLabel('New variable', { exact: true }).fill('days_left');
+    await step.getByRole('button', { name: 'Keep a value' }).click();
+    await step.getByLabel('days_left: from', { exact: true }).fill('data.days');
+    await step.getByLabel('days_left: kind', { exact: true }).selectOption('number');
+    await visible(canvas.getByTestId('flow-step-steps[0]').getByText('GET /balances → days_left'));
+    await shot(page, '24b-flow-call');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+
+    // A webhook lets payroll run a flow; its key shows once.
+    await page.goto(`${BASE}/studio/apps/${leaveId}/build/webhooks`);
+    await page.getByLabel('New webhook', { exact: true }).fill('From payroll');
+    await page.getByRole('button', { name: 'Add webhook' }).click();
+    await page.getByLabel('The flow it runs', { exact: true }).selectOption('check_the_balance');
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const keys = page.getByRole('region', { name: 'Secrets' });
+    await keys.getByRole('button', { name: 'Make its key' }).click();
+    await visible(keys.getByText('Its key, shown this once', { exact: false }));
+    await shot(page, '24c-webhooks');
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.connections.payroll).toEqual({ kind: 'service', label: 'Payroll', url: 'https://payroll.example.com/api', auth: { type: 'bearer' }, personalData: false });
+    expect(saved.webhooks.from_payroll).toMatchObject({ label: 'From payroll', flow: 'check_the_balance' });
+  });
+
   it('designs a flow on its canvas, tries it on a claim, and an action runs it', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/flows`);

@@ -22,6 +22,9 @@ import { AppRuntime } from './apps/runtime.js';
 import { runtimeRoutes } from './apps/runtime-routes.js';
 import { FlowEngine } from './flows/engine.js';
 import { FlowScheduler } from './flows/schedules.js';
+import { integrationRoutes } from './integration/routes.js';
+import { Secrets } from './integration/secrets.js';
+import { Services } from './integration/services.js';
 import { smtpMailer, type Mailer } from './notices/mail.js';
 import { noticeRoutes } from './notices/routes.js';
 import { Notices } from './notices/service.js';
@@ -56,6 +59,8 @@ export interface Server {
   readonly schedules: FlowScheduler;
   /** Notices: the worker sends their emails, and tells people of tasks that are due. */
   readonly notices: Notices;
+  /** The services apps call: the worker posts their notices to Teams. */
+  readonly services: Services;
 }
 
 export async function buildServer(ctx: AppContext, options: { logger?: FastifyServerOptions['logger']; models?: ModelClient; /** For tests: what keeps the email instead of sending it. */ mailer?: Mailer } = {}): Promise<Server> {
@@ -143,7 +148,9 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   const builder = new AppBuilder(ctx);
   const runtime = new AppRuntime(ctx);
   const notices = new Notices(ctx, options.mailer ?? (ctx.config.SMTP_URL ? smtpMailer(ctx.config) : null));
-  const flows = new FlowEngine(ctx, runtime, notices);
+  const secrets = new Secrets(ctx);
+  const services = new Services(ctx, secrets);
+  const flows = new FlowEngine(ctx, runtime, notices, services);
   const processes = new ProcessEngine(ctx, runtime, flows, notices);
   const schedules = new FlowScheduler(ctx, flows);
   await app.register(appRoutes(ctx, builder, runtime));
@@ -151,6 +158,7 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   await app.register(processRoutes(ctx, runtime, processes));
   await app.register(flowRoutes(ctx, runtime, flows));
   await app.register(noticeRoutes(notices));
+  await app.register(integrationRoutes(ctx, flows, secrets));
   await app.register(proposalRoutes(ctx, runtime));
   const delivery = new Delivery(ctx, builder, runtime);
   await app.register(deliveryRoutes(ctx, delivery, runtime));
@@ -169,5 +177,5 @@ export async function buildServer(ctx: AppContext, options: { logger?: FastifySe
   );
 
   await app.ready();
-  return { app, routes, processes, schedules, notices };
+  return { app, routes, processes, schedules, notices, services };
 }

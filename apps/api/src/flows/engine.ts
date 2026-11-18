@@ -9,6 +9,7 @@ import type { AppTransaction } from '../apps/transaction.js';
 import { recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { HttpError, notFound, unprocessable } from '../errors.js';
+import { asKind, valueAt, type Services } from '../integration/services.js';
 import type { Notices } from '../notices/service.js';
 
 /*
@@ -31,7 +32,9 @@ export interface FlowCaller {
   /** The caller's credentials, when a person or a token started it. A token can't delete data (design §5.7). */
   readonly auth: AuthContext | null;
   /** What started it, for the audit log. */
-  readonly trigger: { readonly kind: 'action' | 'process' | 'api' | 'schedule'; readonly name: string };
+  readonly trigger: { readonly kind: 'action' | 'process' | 'api' | 'schedule' | 'webhook'; readonly name: string };
+  /** A try that is undone after: it calls no service that changes something elsewhere, which couldn't be undone. */
+  readonly dryRun?: boolean | undefined;
 }
 
 export interface FlowResult {
@@ -109,11 +112,13 @@ export class FlowEngine implements FlowHooks {
   readonly #ctx: AppContext;
   readonly #runtime: AppRuntime;
   readonly #notices: Notices;
+  readonly #services: Services;
 
-  constructor(ctx: AppContext, runtime: AppRuntime, notices: Notices) {
+  constructor(ctx: AppContext, runtime: AppRuntime, notices: Notices, services: Services) {
     this.#ctx = ctx;
     this.#runtime = runtime;
     this.#notices = notices;
+    this.#services = services;
     runtime.attachFlows(this);
   }
 
@@ -238,6 +243,11 @@ export class FlowEngine implements FlowHooks {
     };
     const holds = (condition: Condition) => evaluateCondition(condition, { ...frame.all(), principal: caller.principal, [CLOCK]: state.now });
     const values = (given: Readonly<Record<string, Expression>>) => Object.fromEntries(Object.entries(given).map(([field, expression]) => [field, value(expression)]));
+    /** A value as words: for what a notice says, and where a call goes. */
+    const words = (expression: Expression | undefined) => {
+      const worked = expression === undefined ? null : value(expression);
+      return worked === null || worked === undefined ? '' : Array.isArray(worked) ? worked.join(', ') : String(worked);
+    };
     const record = (name: string): FlowRecord & { readonly [ENTITY]: string } => {
       const held = frame.get(name);
       if (!isObject(held) || typeof (held as FlowRecord)[ENTITY] !== 'string') throw unprocessable('flow_failed', `${label}: ${name} holds no record`);
@@ -305,10 +315,6 @@ export class FlowEngine implements FlowHooks {
             if (typeof person === 'string' && person) people.add(person);
           }
         }
-        const words = (expression: Expression | undefined) => {
-          const worked = expression === undefined ? null : value(expression);
-          return worked === null || worked === undefined ? '' : Array.isArray(worked) ? worked.join(', ') : String(worked);
-        };
         const about = step.about ? record(step.about) : undefined;
         const sent = await this.#notices.send(
           tx.db,
@@ -326,6 +332,29 @@ export class FlowEngine implements FlowHooks {
         );
         state.told.people += sent.told.length;
         state.told.left += sent.left.length;
+        if (step.teams !== undefined) {
+          const base = this.#ctx.config.PUBLIC_BASE_URL.replace(/\/$/, '');
+          const link = about ? `${base}/studio/apps/${loaded.app.id}/${about[ENTITY]}/${String(about['id'])}` : null;
+          await this.#services.queuePost(tx.db, loaded, step.teams, { title: words(step.title) || 'A notice', message: words(step.message) || null, link }, state.now);
+        }
+        return;
+      }
+      case 'call_service': {
+        const connection = loaded.definition.connections?.[step.connection];
+        if (connection?.kind !== 'service') throw unprocessable('flow_failed', `${label}: no service named ${step.connection}`);
+        // What a call changes elsewhere can't be undone with a try: a try reads, and says what it didn't do.
+        if (caller.dryRun && step.method !== 'GET') {
+          state.findings.push({ flow, message: `Trying it didn't call ${connection.label}: a ${step.method} changes something there for real` });
+          for (const name of Object.keys(step.results)) frame.set(name, null);
+          return;
+        }
+        const answer = await this.#services.call(
+          loaded,
+          step.connection,
+          { method: step.method, path: words(step.path), query: values(step.query), ...(step.body ? { body: values(step.body) } : {}) },
+          caller.writer.scope(this.#ctx.now()),
+        );
+        for (const [name, result] of Object.entries(step.results)) frame.set(name, asKind(valueAt(answer, result.from), result.type));
         return;
       }
       case 'repeat':

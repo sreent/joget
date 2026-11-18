@@ -1,3 +1,4 @@
+import { ConnectionsDesigner, IntegrationSecrets, WebhooksDesigner } from './IntegrationDesigner.js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api.js';
@@ -49,6 +50,8 @@ const VIEWS: ReadonlyArray<{ readonly label: string; readonly parts: readonly Pa
     parts: [
       { tab: 'flows', label: 'Flows' },
       { tab: 'actions', label: 'Actions' },
+      { tab: 'connections', label: 'Connections' },
+      { tab: 'webhooks', label: 'Webhooks' },
     ],
   },
   {
@@ -59,7 +62,7 @@ const VIEWS: ReadonlyArray<{ readonly label: string; readonly parts: readonly Pa
     ],
   },
 ];
-const DESIGNERS: readonly BuildTab[] = ['data', 'rules', 'queries', 'forms', 'cards', 'pages', 'menu', 'flows', 'actions', 'roles'];
+const DESIGNERS: readonly BuildTab[] = ['data', 'rules', 'queries', 'forms', 'cards', 'pages', 'menu', 'flows', 'actions', 'connections', 'webhooks', 'roles'];
 /** Around the app, beside its views: a team app's delivery first; a personal app's history and settings. */
 const AROUND: readonly Part[] = [
   { tab: 'history', label: 'History' },
@@ -226,9 +229,13 @@ export function Builder({ appId, tab }: { appId: string; tab: BuildTab }) {
         {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} /> : null}
+        {tab === 'connections' ? <ConnectionsDesigner definition={draft} onChange={setDraft} /> : null}
+        {tab === 'webhooks' ? <WebhooksDesigner definition={draft} onChange={setDraft} /> : null}
         {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
         </div>
       </fieldset>
+      {/* Secrets are each environment's, for what is saved: whoever manages connections keeps them, a team app's too. */}
+      {tab === 'connections' || tab === 'webhooks' ? <IntegrationSecrets appId={appId} team={team} part={tab} revision={saved.data.revision} /> : null}
       {tab === 'share' && team ? <AccessPanel app={app} definition={saved.data.definition} /> : null}
       {tab === 'share' && !team && app.access.share ? <SharePanel at={{ id: appId }} definition={saved.data.definition} /> : null}
       {tab === 'share' && !team && !app.workingCopyOf ? <MovePanel app={app} /> : null}

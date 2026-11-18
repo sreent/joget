@@ -53,6 +53,7 @@ export const STEP_NAMES: Readonly<Record<StepType, string>> = {
   first_of: 'The first of',
   all_at_once: 'All at once',
   inform: 'Inform people',
+  call_service: 'Call a service',
 };
 
 /** The kinds of step a builder is offered, in groups, in order. */
@@ -60,7 +61,7 @@ export const STEP_GROUPS: ReadonlyArray<{ readonly label: string; readonly types
   { label: 'Records', types: ['find', 'create', 'change', 'add_line', 'delete'] },
   { label: 'Logic', types: ['set', 'if', 'each', 'repeat', 'total', 'check', 'call', 'try', 'return'] },
   { label: 'People and time', types: ['task', 'wait', 'first_of', 'all_at_once'], waits: true },
-  { label: 'Tell people', types: ['inform'] },
+  { label: 'Tell and connect', types: ['inform', 'call_service'] },
 ];
 export const STEP_TYPES: readonly StepType[] = STEP_GROUPS.flatMap((group) => group.types);
 
@@ -314,6 +315,10 @@ export function newStep(definition: Definition, name: string, scope: ReadonlyMap
       const waits = flow ? flowWaits(flow, definition.flows) : false;
       return { type, to: [person ? { person: { ref: person } } : waits ? { role: Object.keys(definition.roles)[0] ?? '' } : { person: { ref: 'principal.id' } }], title: 'Say what happened', ...(records[0] ? { about: records[0] } : {}), email: true };
     }
+    case 'call_service': {
+      const service = Object.entries(definition.connections ?? {}).find(([, connection]) => connection.kind === 'service')?.[0];
+      return { type, connection: service ?? '', method: 'GET', path: '', query: {}, results: {} };
+    }
   }
 }
 
@@ -412,6 +417,8 @@ export function describeFlowStep(definition: Definition, step: FlowStep): string
       return `${step.ways.length} ways at once`;
     case 'inform':
       return `Tell ${recipientWords(definition, step)}: ${valueText(step.title)}`;
+    case 'call_service':
+      return `Call ${definition.connections?.[step.connection]?.label ?? (step.connection || 'a service')}: ${step.method} ${valueText(step.path) || '/'}`;
   }
 }
 
@@ -746,6 +753,15 @@ export function stepWords(definition: Definition, step: FlowStep, entity?: strin
       return { kind: 'The first of', words: 'The first of', about: 'whichever comes first' };
     case 'all_at_once':
       return { kind: 'All at once', words: 'All at once', about: step.ways.length === 2 ? 'when both are done' : 'when each way is done' };
+    case 'call_service': {
+      const kept = Object.keys(step.results);
+      return {
+        kind: 'Calls a service',
+        words: definition.connections?.[step.connection]?.label ?? (step.connection || 'A service'),
+        about: `${step.method} ${typeof step.path === 'string' ? step.path || '/' : valueText(step.path)}${kept.length ? ` → ${kept.join(', ')}` : ''}`,
+        tone: 'outside',
+      };
+    }
     case 'inform':
       // Email leaves the app: the step is outside, as a service is.
       return {

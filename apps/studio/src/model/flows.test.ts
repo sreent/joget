@@ -408,4 +408,16 @@ describe('the flow canvas', () => {
     expect(describeFlowStep(definition, told)).toBe('Tell the owner and Manager: "Approved: " & leave.days & " days"');
     expect(flow.steps.length).toBeGreaterThan(0);
   });
+  it('calls a service through a connection, outside the app', () => {
+    const definition = {
+      ...leave(),
+      connections: { payroll: { kind: 'service' as const, label: 'Payroll', url: 'https://payroll.example.com/api', auth: { type: 'bearer' as const }, personalData: false } },
+    } as Definition;
+    const scope = scopeAt(definition, 'leave_approval', { list: 'steps', index: 1 });
+    const step = newStep(definition, 'leave_approval', scope, 'call_service');
+    expect(step).toEqual({ type: 'call_service', connection: 'payroll', method: 'GET', path: '', query: {}, results: {} });
+    const call = { ...step, path: '/balances', results: { days_left: { from: 'data.days', type: 'number' } } } as Extract<FlowStep, { type: 'call_service' }>;
+    expect(stepWords(definition, call)).toEqual({ kind: 'Calls a service', words: 'Payroll', about: 'GET /balances → days_left', tone: 'outside' });
+    expect(describeFlowStep(definition, call)).toBe('Call Payroll: GET "/balances"');
+  });
 });

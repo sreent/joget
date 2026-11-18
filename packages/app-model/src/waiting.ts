@@ -151,6 +151,7 @@ const STEP_WORDS: Readonly<Record<FlowStep['type'], string>> = {
   task: 'a task',
   repeat: 'repeat',
   inform: 'inform people',
+  call_service: 'call a service',
   wait: 'wait',
   first_of: 'the first of',
   all_at_once: 'all at once',

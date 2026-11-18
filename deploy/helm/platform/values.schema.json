@@ -32,6 +32,13 @@
         "maxTurns": { "type": "integer", "minimum": 1, "maximum": 30 }
       }
     },
+    "appSecrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keySecret": { "type": "string", "description": "A Secret with the key that seals apps' secrets: 32 random bytes in base64, under the key key." }
+      }
+    },
     "mail": {
       "type": "object",
       "additionalProperties": false,
@@ -68,7 +75,8 @@
           { "required": ["AI_PROVIDER"], "description": "Set ai.provider instead, so the key Secret is mounted with it." },
           { "required": ["AI_API_KEY_FILE"] },
           { "required": ["SMTP_URL"], "description": "Set mail.url instead, so the password Secret is mounted with it." },
-          { "required": ["SMTP_PASSWORD_FILE"] }
+          { "required": ["SMTP_PASSWORD_FILE"] },
+          { "required": ["SECRETS_KEY_FILE"], "description": "Set appSecrets.keySecret instead, so the key Secret is mounted with it." }
         ]
       },
       "additionalProperties": { "type": ["string", "number", "boolean"] }

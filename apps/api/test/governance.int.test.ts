@@ -30,9 +30,10 @@ afterAll(async () => {
 });
 
 describe('every route is protected', () => {
-  it('declares an access rule on each route, and only health checks and sign-in are public', () => {
+  it('declares an access rule on each route, and only health checks, sign-in and signed webhooks are public', () => {
     const publicRoutes = t.server.routes.filter((r) => r.kind === 'public').map((r) => `${r.method} ${r.url}`);
-    expect(publicRoutes.sort()).toEqual(['GET /auth/callback', 'GET /auth/login', 'GET /healthz', 'GET /readyz']);
+    // A webhook proves who calls it with the signature of the environment's key, not with a session.
+    expect(publicRoutes.sort()).toEqual(['GET /auth/callback', 'GET /auth/login', 'GET /healthz', 'GET /readyz', 'POST /v1/hooks/:environmentId/:name']);
   });
 
   it('turns away anonymous callers and cross-origin writes', async () => {

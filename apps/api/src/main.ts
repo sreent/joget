@@ -26,7 +26,7 @@ if (!signingKey) {
 let reportIdpError = (error: unknown) => console.error('Cannot reach the identity provider', error);
 const oidc = createResilientOidcProvider(config, (error) => reportIdpError(error));
 const ctx = await createAppContext({ config, db: database.db, pool: database.pool, oidc, auditSigningKeyPem: signingKey });
-const { app, processes, schedules, notices } = await buildServer(ctx);
+const { app, processes, schedules, notices, services } = await buildServer(ctx);
 for (const warning of warnings) app.log.warn(warning);
 reportIdpError = (error) => app.log.error({ err: error }, 'Cannot reach the identity provider: sign-in answers 503 until it can');
 void oidc.warmUp();
@@ -47,6 +47,7 @@ const stopTimers = config.PROCESS_TIMER_INTERVAL_SECONDS > 0 ? startProcessTimer
           ['Running flows on a schedule', () => schedules.runDue()],
           ['Telling people of tasks that are due', () => notices.taskDeadlines()],
           ['Sending notices by email', () => notices.deliverDue()],
+          ['Posting notices to Teams', () => services.deliverPosts()],
           ['Removing old notices', () => notices.sweep()],
         ],
         { intervalSeconds: config.PROCESS_TIMER_INTERVAL_SECONDS, logger: app.log }) : () => {};

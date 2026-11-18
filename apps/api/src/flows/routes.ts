@@ -64,6 +64,7 @@ export function flowRoutes(ctx: AppContext, runtime: AppRuntime, flows: FlowEngi
           // A dry run changes nothing, so a token may try a flow that deletes.
           auth: dryRun ? null : auth,
           trigger: { kind: 'api' as const, name },
+          dryRun,
         };
         const shape = (result: FlowResult, dry: boolean) => ({ output: result.output ?? null, findings: [...result.findings], writes: result.writes, dryRun: dry });
         try {

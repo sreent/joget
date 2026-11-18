@@ -160,6 +160,20 @@ export const ConfigSchema = z
     NOTICE_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
     /** How long before a task is due its person hears that it is due soon. */
     TASK_DUE_SOON_HOURS: z.coerce.number().int().min(1).max(24 * 14).default(24),
+    /**
+     * A file that holds the key that seals the secrets environments keep for their connections and
+     * webhooks: 32 random bytes, in base64. Required in production to keep any; elsewhere, a key
+     * worked out from COOKIE_SECRET stands in.
+     */
+    SECRETS_KEY_FILE: z.string().min(1).optional(),
+    /** The hosts that connections may call, as names or *.example.com; * for any public host. */
+    OUTBOUND_HOSTS: z.string().default('*'),
+    /** Hosts on a private network that connections may call all the same, such as payroll.internal. */
+    OUTBOUND_PRIVATE_HOSTS: z.string().default(''),
+    /** Whether connections may call plain http, without TLS: for development only. */
+    OUTBOUND_ALLOW_HTTP: bool.default(false),
+    /** How long a call to a service may take. */
+    SERVICE_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(60).default(10),
     /** How often the timers of processes that are due fire. 0 disables it (for example, when a worker fires them). */
     PROCESS_TIMER_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(5),
     /** How often the in-process sealer runs. 0 disables it (for example, when a worker seals). */
@@ -186,6 +200,7 @@ export const ConfigSchema = z
     if (Boolean(config.S3_ACCESS_KEY_ID) !== Boolean(config.S3_SECRET_ACCESS_KEY)) {
       ctx.addIssue({ code: 'custom', message: 'Set both S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY, or neither', path: ['S3_ACCESS_KEY_ID'] });
     }
+    if (config.NODE_ENV === 'production' && config.OUTBOUND_ALLOW_HTTP) ctx.addIssue({ code: 'custom', message: 'OUTBOUND_ALLOW_HTTP must be false in production', path: ['OUTBOUND_ALLOW_HTTP'] });
     if (config.SMTP_URL && !/^smtps?:\/\//.test(config.SMTP_URL)) ctx.addIssue({ code: 'custom', message: 'SMTP_URL must start with smtp:// or smtps://', path: ['SMTP_URL'] });
     if (Boolean(config.SMTP_USER) !== Boolean(config.SMTP_PASSWORD_FILE)) {
       ctx.addIssue({ code: 'custom', message: 'Set both SMTP_USER and SMTP_PASSWORD_FILE, or neither', path: ['SMTP_USER'] });

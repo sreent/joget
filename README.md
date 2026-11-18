@@ -26,7 +26,7 @@ The goal is not to clone Joget DX but to surpass it: match what builders can del
   - phase 0, the governance kernel, proven on a real Kubernetes cluster;
   - phase 1, the capability core with line items and files, the studio's data-model and form designers, and the screens every app gets;
   - from phase 2: governed delivery for team apps (working copies, change requests with checks and previews, signed releases, approved deployments to Prod and Staging, and rollback); the designers for rules, actions, queries, review cards, roles, pages, the menu and dashboards; steps for actions; moving a personal app to a team space; queries that total and group, for agents; app templates, export and import; and the command line, `ambit`.
-  - from phase 3: business processes on Ambit's own engine in PostgreSQL, built as flows that wait (people's tasks, waits, the first of several waits, and ways at once), with people's tasks in an inbox across apps, timers for deadlines and escalation, tools for agents, and routing from the directory: the requester's manager, a reporting line, a department, and cover while someone is away. The studio's chat builds and changes apps on the installation's model, as Joget DX 9's vibe composition does. Ambit does its own logic: flows, like Mendix microflows, with their designer in the studio ([design §6.2](docs/02-platform-design.md#62-capabilities-actions-queries-rules-and-review-cards)). Integration comes next.
+  - from phase 3: business processes on Ambit's own engine in PostgreSQL, built as flows that wait (people's tasks, waits, the first of several waits, and ways at once), with people's tasks in an inbox across apps, timers for deadlines and escalation, tools for agents, and routing from the directory: the requester's manager, a reporting line, a department, and cover while someone is away. The studio's chat builds and changes apps on the installation's model, as Joget DX 9's vibe composition does. Ambit does its own logic: flows, like Mendix microflows, with their designer in the studio ([design §6.2](docs/02-platform-design.md#62-capabilities-actions-queries-rules-and-review-cards)). Flows call other systems' services and tell people; other systems run flows through webhooks.
 - **Next:** the rest of phase 3: approving in chat, notifications, and document generation.
 
 ## What the code does today
@@ -221,7 +221,7 @@ In the Helm chart, set `ai.provider`, `ai.model` and `ai.keySecret`, a Secret wi
 
 ### Notices
 
-What reaches a person comes to their notices in the studio, by record, with the unread count beside Notices in the header (design §6.12): what a flow told them with an `inform` step, and each task that came to them, is due soon or is overdue. A notice goes only to people the app is shared with, and each person reads only their own. By email too, when the installation has a mail server and the person hasn't turned email off; a field classified as PII stays out of what an email says.
+What reaches a person comes to their notices in the studio, by record, with the unread count beside Notices in the header (design §6.12): what a flow told them with an `inform` step, and each task that came to them, is due soon or is overdue. An `inform` step can post to a Teams channel too, which a connection names. A notice goes only to people the app is shared with, and each person reads only their own. By email too, when the installation has a mail server and the person hasn't turned email off; a field classified as PII stays out of what an email says.
 
 - `SMTP_URL`: the mail server, as `smtp://mail.example.com:587`, which must offer STARTTLS, or `smtps://mail.example.com:465`. Without it, notices stay in the app.
 - `SMTP_USER` and `SMTP_PASSWORD_FILE`: the user name, and a file that holds the password. a3t reads it at each sending.
@@ -234,6 +234,21 @@ In the Helm chart, set `mail.url`, `mail.from`, and `mail.user` with `mail.passw
 - `GET /v1/me/notices`: your notices, the newest first, with how many are unread; `?unread=true` for the unread only.
 - `POST /v1/me/notices/read`: mark some read by their IDs, or all up to a time, so that what came after stays unread.
 - `GET` and `PUT /v1/me/notices/settings`: whether your notices come by email too.
+
+### Connecting to other systems
+
+An app connects to a service, at an address, or to a Teams channel (design §6.13). A flow calls the service with a `call_service` step and keeps what it answers in typed variables; another system runs a flow through a webhook, signing each request; a notice posts to the Teams channel. The definition holds no secret: each environment keeps its own, sealed, and whoever manages connections there keeps them, a personal app's owner or a team space's admins. A call goes over https, to an allowed host, never to a private network, and leaves an audit event.
+
+- `SECRETS_KEY_FILE`: a file with the key that seals apps' secrets, 32 random bytes in base64. Production keeps no secrets without it. In the Helm chart, `appSecrets.keySecret`, a Secret with the key under the key `key`.
+- `OUTBOUND_HOSTS` (`*`): the hosts connections may call, as names or `*.example.com`.
+- `OUTBOUND_PRIVATE_HOSTS`: hosts on a private network that connections may call all the same.
+- `OUTBOUND_ALLOW_HTTP` (false): plain http, for development only.
+- `SERVICE_TIMEOUT_SECONDS` (10): how long a call may take.
+
+- `GET /v1/apps/{appId}/connections`: the connections and webhooks, and whether the environment keeps each secret. Never the secrets.
+- `PUT` and `DELETE /v1/apps/{appId}/connections/{name}/secret`: keep or remove a connection's secret in the environment.
+- `POST /v1/apps/{appId}/webhooks/{name}/secret`: make a webhook's key, shown this once.
+- `POST /v1/hooks/{environmentId}/{name}`: another system runs the webhook's flow, with `X-A3T-Timestamp` and `X-A3T-Signature: sha256=…`, the HMAC-SHA256 in hex of the time, a dot and the body.
 
 ## Delivering a team app
 
