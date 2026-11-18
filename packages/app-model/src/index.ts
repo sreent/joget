@@ -1,6 +1,7 @@
 export * from './actions.js';
 export * from './before.js';
 export * from './cards.js';
+export { checkCondition, type Issue } from './checks.js';
 export * from './condition-text.js';
 export * from './csv.js';
 export * from './delivery.js';
