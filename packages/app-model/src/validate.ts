@@ -4,6 +4,7 @@ import {
   entityFields,
   workedOutBy,
   formulaOf,
+  isListKind,
   isOrderedKind,
   isSortableKind,
   isWritable,
@@ -39,7 +40,7 @@ import {
 import { beforeGives, checkBeforeFlows, moveSteps, readsPrincipal } from './before.js';
 import { blockPlace, pageBlocks } from './pages.js';
 import { FORMULA_OPERATORS } from './formulas.js';
-import { canonicalValue } from './values.js';
+import { canonicalValue, isCanonicalUuid } from './values.js';
 
 export interface Issue {
   /** Where in the definition, for example `entities.expense_claim.fields[2].name`. */
@@ -504,7 +505,7 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
     if (isRelativeTime(literal)) return info.kind === 'date' || info.kind === 'datetime' ? null : `${info.name} isn't a date or a time, so it doesn't compare with today or now`;
     if (literal === null) return `${info.name}: test for an empty field with "exists" rather than null`;
     const expected = jsTypeOf(info.kind);
-    if (expected === 'array') return `${info.name} is a multiple choice: test it with "in"`;
+    if (expected === 'array') return info.kind === 'uuid[]' ? `${info.name} holds several records: test it with "in"` : `${info.name} is a multiple choice: test it with "in"`;
     if (typeof literal !== expected) return `${info.name} holds ${expected === 'string' ? 'text' : expected}s, not ${typeof literal}s`;
     return null;
   };
@@ -526,8 +527,12 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
         }
       }
       const haystackField = Array.isArray(haystack) ? undefined : fieldOf(haystack as Operand);
-      if (haystackField && haystackField.kind !== 'text[]') {
-        issues.push({ path, message: `${haystackField.name} isn't a multiple choice, so nothing can be "in" it` });
+      if (haystackField && !isListKind(haystackField.kind)) {
+        issues.push({ path, message: `${haystackField.name} isn't a multiple choice or a list of records, so nothing can be "in" it` });
+      }
+      // A list of records holds IDs.
+      if (haystackField?.kind === 'uuid[]' && !isRef(needle) && !isCanonicalUuid(needle)) {
+        issues.push({ path, message: `${haystackField.name} holds records: look for one by its ID` });
       }
       return;
     }
@@ -572,6 +577,7 @@ const KIND_WORDS: Readonly<Record<ExpressionKind, string>> = {
   date: 'a date',
   datetime: 'a time',
   'text[]': 'a list of options',
+  'uuid[]': 'a list of records',
   null: 'nothing',
   any: 'any value',
 };
@@ -876,6 +882,9 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     });
     if (entity.titleField && !fieldsOf.get(name)!.has(entity.titleField)) {
       issues.push({ path: `${base}.titleField`, message: `No field named ${entity.titleField}` });
+    } else if (entity.titleField && fieldsOf.get(name)!.get(entity.titleField)?.kind === 'uuid[]') {
+      // Other records show a record by its title: a list of other records names none.
+      issues.push({ path: `${base}.titleField`, message: `${entity.titleField} holds several records, so it can't name a record` });
     }
     // Formulas work each other out in order: a loop of them would never end.
     const reads = new Map(entity.fields.flatMap((field) => {
@@ -1153,7 +1162,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       else if (action.entity !== entity || action.operation !== 'update') issues.push({ path: at, message: `${actionName} doesn't change a ${entity} record, so it can't run on ${where}` });
       else if (action.input.length) issues.push({ path: at, message: `${actionName} takes input, so it can't run in one click: open it from a form instead` });
     };
-    /** `of`: a reference field of the block's entity that points at the record the page is about. */
+    /** `of`: a reference field of the block's entity that points at the record the page is about, or a list that may hold it. */
     const ofField = (entity: string, field: string | undefined, at: string) => {
       if (field === undefined) return;
       if (!page.record) return issues.push({ path: `${at}.of`, message: 'Only a page about one record shows the records that refer to it' });
@@ -1336,6 +1345,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
       const field = fields.get(message.record)?.field;
       if (!field) issues.push({ path: `${path}.record`, message: `No field ${message.record}` });
       else if (field.type !== 'reference') issues.push({ path: `${path}.record`, message: `${message.record} doesn't refer to a record` });
+      else if (field.multiple) issues.push({ path: `${path}.record`, message: `${message.record} holds several records: a message goes to one` });
       else target = field.entity;
     }
     const action = definition.actions[message.action];
@@ -1527,6 +1537,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           const field = info?.field;
           if (!info) issues.push({ path: `${path}.record`, message: `No field ${element.record}` });
           else if (field?.type !== 'reference') issues.push({ path: `${path}.record`, message: `${element.record} doesn't refer to a record` });
+          else if (field.multiple) issues.push({ path: `${path}.record`, message: `${element.record} holds several records: a call runs on one` });
           else if (called && called.entity !== field.entity) {
             issues.push({ path: `${path}.record`, message: `${element.record} refers to ${field.entity}, but ${called.label} is about ${called.entity}` });
           }
@@ -1534,7 +1545,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           // For each record that refers to this one: a reference field of the called process's entity.
           const field = called ? definition.entities[called.entity]?.fields.find((candidate) => candidate.name === element.each!.field) : undefined;
           if (called && !field) issues.push({ path: `${path}.each.field`, message: `${called.entity} has no field ${element.each.field}` });
-          else if (field && (field.type !== 'reference' || field.entity !== process.entity)) {
+          else if (field && (field.type !== 'reference' || field.multiple || field.entity !== process.entity)) {
             issues.push({ path: `${path}.each.field`, message: `${element.each.field} doesn't refer to ${process.entity}: a call runs for each record that refers to this one` });
           }
         } else if (called && called.entity !== process.entity) {

@@ -409,6 +409,9 @@ export function placeField(definition: Definition, form: string, field: string, 
   });
   const fields = sections[target.section]!.fields;
   fields.splice(Math.max(0, Math.min(target.index, fields.length)), 0, item);
+  // A form that runs an action sends what people fill in: the action takes it, unless it sets it itself.
+  const action = next.forms[form]!.action ? next.actions[next.forms[form]!.action!] : undefined;
+  if (action && declared && !item.readOnly && !action.input.includes(field) && !(field in (action.set ?? {}))) action.input.push(field);
   return next;
 }
 

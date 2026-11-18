@@ -156,7 +156,7 @@ export function mapExpressionRefs(expression: Expression, map: (ref: string) => 
 }
 
 /** The kinds of value an expression can give, as a field's value kinds, with nothing and anything. */
-export type CalculationKind = 'text' | 'uuid' | 'number' | 'boolean' | 'date' | 'datetime' | 'text[]' | 'null' | 'any';
+export type CalculationKind = 'text' | 'uuid' | 'number' | 'boolean' | 'date' | 'datetime' | 'text[]' | 'uuid[]' | 'null' | 'any';
 
 const KIND_WORDS: Readonly<Record<CalculationKind, string>> = {
   text: 'text',
@@ -166,6 +166,7 @@ const KIND_WORDS: Readonly<Record<CalculationKind, string>> = {
   date: 'a date',
   datetime: 'a time',
   'text[]': 'a list of options',
+  'uuid[]': 'a list of records',
   null: 'nothing',
   any: 'any value',
 };

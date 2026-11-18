@@ -442,6 +442,7 @@ function FieldPanel(props: {
         </div>
       ) : null}
       {field.type === 'reference' ? (
+        <>
         <Field label="Links to">
           {(id) => (
             <Select id={id} value={field.entity} onChange={(e) => set({ entity: e.target.value })}>
@@ -455,6 +456,13 @@ function FieldPanel(props: {
             </Select>
           )}
         </Field>
+        <Checkbox
+          label={`Several ${definition.entities[field.entity]?.pluralLabel?.toLowerCase() ?? 'records'}, not one`}
+          checked={field.multiple === true}
+          onChange={(on) => set({ multiple: on || undefined })}
+        />
+        {field.multiple ? <span className="text-xs text-faint">Many to many: a page about one of them can list the records that hold it.</span> : null}
+        </>
       ) : null}
 
       <div className="flex flex-wrap gap-2 border-t border-line pt-3">

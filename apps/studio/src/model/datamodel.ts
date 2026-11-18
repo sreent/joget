@@ -138,7 +138,7 @@ export function fieldNote(definition: Definition, field: Field): string | undefi
   if (field.type === 'choice') return `${field.options.length} choice${field.options.length === 1 ? '' : 's'}`;
   if (isWorkedOut(field)) return 'worked out';
   if (field.type === 'file') return 'a file';
-  if (field.type === 'reference') return definition.entities[field.entity]?.label;
+  if (field.type === 'reference') return field.multiple ? `several ${definition.entities[field.entity]?.pluralLabel?.toLowerCase() ?? 'records'}` : definition.entities[field.entity]?.label;
   // Lines are named by their arrow.
   return undefined;
 }

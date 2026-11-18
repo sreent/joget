@@ -63,7 +63,9 @@ function sampleValue(
       return context.userId;
     case 'reference': {
       const targets = context.samples.get(field.entity) ?? [];
-      return targets.length ? targets[(n - 1) % targets.length] : undefined;
+      if (!targets.length) return undefined;
+      const target = targets[(n - 1) % targets.length];
+      return field.multiple ? [target] : target;
     }
     case 'lines': {
       const lineEntity = definition.entities[field.entity]!;

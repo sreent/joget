@@ -64,6 +64,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
             limit: z.coerce.number().int().min(1).max(200).default(50),
             cursor: z.string().max(4000).optional(),
             sort: z.string().max(200).optional().describe('Comma-separated fields; prefix with - for descending'),
+            search: z.string().min(1).max(200).optional().describe("Text the records' titles contain, in any case"),
           }),
           response: { 200: PageOut },
         },
@@ -75,6 +76,7 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           limit: request.query.limit,
           ...(sort ? { sort } : {}),
           ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
+          ...(request.query.search ? { search: request.query.search } : {}),
         });
       },
     );

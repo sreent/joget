@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { api, ApiError, type AppAt } from '../api.js';
 import { ChartCard, StatTile } from '../components/charts.js';
 import { FilesProvider } from '../components/files.js';
+import { TitlesProvider, titlesOf } from '../components/records.js';
 import { filledLines, LinesChangeView, LinesEditor, LinesTable, workedOut } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
 import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
@@ -56,6 +57,7 @@ export function Use({ appId, env, page, recordId, appPage }: { appId: string; en
 
   return (
     <FilesProvider at={at}>
+      <TitlesProvider at={at} entities={manifest.entities}>
       <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
         <nav aria-label={manifest.app.name} className="grid content-start gap-4">
           <div>
@@ -91,7 +93,8 @@ export function Use({ appId, env, page, recordId, appPage }: { appId: string; en
           )}
         </div>
       </div>
-    </FilesProvider>
+    </TitlesProvider>
+</FilesProvider>
   );
 }
 
@@ -250,6 +253,7 @@ function FieldsBlockView({ where, block }: { where: BlockAt; block: Extract<UiBl
   return (
     <Card className="grid gap-4">
       {block.title ? <h3 className="m-0 text-base font-semibold">{block.title}</h3> : null}
+      <TitlesProvider known={data.titles ?? {}}>
       <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
         {block.fields.map((name) => {
           const field = entity.fields.find((f) => f.name === name);
@@ -277,6 +281,7 @@ function FieldsBlockView({ where, block }: { where: BlockAt; block: Extract<UiBl
           );
         })}
       </dl>
+      </TitlesProvider>
       {block.actions.length ? (
         <div className="flex flex-wrap gap-2 border-t border-line pt-3">
           {block.actions.map((action) => (
@@ -412,6 +417,7 @@ function ListBlockView({ where, block }: { where: BlockAt; block: Extract<UiBloc
         <p className="m-0 px-4 py-6 text-center text-sm text-muted">{block.empty ?? 'Nothing here yet.'}</p>
       ) : records.length ? (
         <FilesProvider at={at} known={Object.assign({}, ...records.map((r) => r.files ?? {}))}>
+          <TitlesProvider known={titlesOf(records)}>
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-b border-line text-left text-muted">
@@ -459,7 +465,8 @@ function ListBlockView({ where, block }: { where: BlockAt; block: Extract<UiBloc
               ))}
             </tbody>
           </table>
-        </FilesProvider>
+        </TitlesProvider>
+</FilesProvider>
       ) : (
         <p className="m-0 px-4 py-6 text-sm text-muted">Loading…</p>
       )}
@@ -536,6 +543,7 @@ function RecordList({ at, manifest, entityName }: { at: AppAt; manifest: UiManif
       {records.data?.records.length === 0 ? <EmptyState title={`No ${entity.pluralLabel.toLowerCase()} you can see`} /> : null}
       {records.data?.records.length ? (
         <FilesProvider at={at} known={Object.assign({}, ...records.data.records.map((r) => r.files ?? {}))}>
+        <TitlesProvider known={titlesOf(records.data.records)}>
         <Card className="overflow-x-auto p-0">
           <table className="w-full border-collapse text-sm">
             <thead>
@@ -570,7 +578,8 @@ function RecordList({ at, manifest, entityName }: { at: AppAt; manifest: UiManif
             </tbody>
           </table>
         </Card>
-        </FilesProvider>
+        </TitlesProvider>
+</FilesProvider>
       ) : null}
     </div>
   );
@@ -790,6 +799,7 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
 
   return (
     <FilesProvider at={at} known={record.data.files ?? {}}>
+    <TitlesProvider known={record.data.titles ?? {}}>
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
       <Card className="grid content-start gap-4">
         <div>
@@ -872,7 +882,8 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
       </Card>
       </div>
     </div>
-    </FilesProvider>
+    </TitlesProvider>
+</FilesProvider>
   );
 }
 

@@ -243,7 +243,7 @@ export function listChoices(definition: Definition, scope: ReadonlyMap<string, V
   });
 }
 
-const KINDS: Readonly<Record<string, Kind>> = { text: 'text', uuid: 'id', number: 'number', boolean: 'boolean', date: 'date', datetime: 'date', 'text[]': 'multi', any: 'text', null: 'text' };
+const KINDS: Readonly<Record<string, Kind>> = { text: 'text', uuid: 'id', number: 'number', boolean: 'boolean', date: 'date', datetime: 'date', 'text[]': 'multi', 'uuid[]': 'ids', any: 'text', null: 'text' };
 
 /** What conditions and values can read at a place: variables, and the fields of record and line variables. */
 export function variableChoices(definition: Definition, scope: ReadonlyMap<string, VarKind>): RefChoice[] {
@@ -254,7 +254,7 @@ export function variableChoices(definition: Definition, scope: ReadonlyMap<strin
     const fields = (entity?.fields ?? []).flatMap((field): RefChoice[] => {
       if (field.type === 'lines') return [];
       const fieldKind: Kind =
-        field.type === 'number' ? 'number' : field.type === 'boolean' ? 'boolean' : field.type === 'choice' ? (field.multiple ? 'multi' : 'choice') : field.type === 'user' ? 'person' : field.type === 'reference' || field.type === 'file' ? 'id' : field.type === 'date' || field.type === 'datetime' ? 'date' : 'text';
+        field.type === 'number' ? 'number' : field.type === 'boolean' ? 'boolean' : field.type === 'choice' ? (field.multiple ? 'multi' : 'choice') : field.type === 'user' ? 'person' : field.type === 'reference' && field.multiple ? 'ids' : field.type === 'reference' || field.type === 'file' ? 'id' : field.type === 'date' || field.type === 'datetime' ? 'date' : 'text';
       return [{ ref: `${name}.${field.name}`, label: `${name}: ${field.label}`, kind: fieldKind, ...(field.type === 'choice' ? { options: field.options } : {}) }];
     });
     return [{ ref: `${name}.id`, label: `${name}: ID`, kind: 'id' }, ...fields];

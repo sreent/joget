@@ -511,6 +511,15 @@ Not everything is a task. Exploring data, comparing options and monitoring a pro
 - A new or changed formula is worked out again for every record there is, by the migration (§6.8). That SQL gives exactly what the platform gives as it writes, for numbers, text, dates and times, whatever the session's time zone or date style. A test in PostgreSQL holds the two to each other.
 - Because the values are stored, queries, lists, charts, conditions and record-level security read them like any field, and the database indexes and totals them.
 
+**A reference names one record, or several (added 2026-11-18).** A reference to several records, `"multiple": true`, is many to many: a claim for several trips, a project with its several sites. The built-in store keeps it as a list of IDs, each once, in the order given, with an index that finds the records whose list holds one:
+
+- The platform keeps the list true, as a foreign key keeps a reference to one record. A write takes only records that exist, and locks them until it commits. A record stays while a list holds it: deleting it is refused, as for a reference to one.
+- A condition asks whether a list holds a record with `in`, in rules, queries, record-level security and flows alike; the SQL gives what the policy engine gives. Where one record is needed, such as a record's title or the record a message goes to, a list is refused.
+- A page about one record lists the records whose list holds it, as it lists those whose reference names it.
+- A reference to one record can become a list later: the migration puts each record's one record in its list, and loses nothing. A list that becomes a reference to one, or points at another entity, is emptied, with the builder's confirmation.
+
+Screens show the records that values name by their titles, as links that open them. Each record that comes back carries the titles of the records it names, of those the reader may read: a title the reader's role hides stays hidden. A picker finds records by their title, among those the person may read.
+
 **Data is reached through connections.** As in n8n, every system a capability reads or writes is a connection, and capabilities don't care where the data lives. The platform ships a **built-in store** as the first connector, for two reasons. The first processes have no existing system of record (§14). And some guarantees only hold where the platform controls the data:
 
 | | Built-in store | Another system |
@@ -832,6 +841,7 @@ Each schema has its own `NOLOGIN` database role, which can read and write that s
 | Rename an entity or field | None: names are labels over stable IDs | Normal |
 | Make a field unique, or required | An index, or a check on existing records first | Normal, but it fails with the offending records listed |
 | Add or change a formula, or a total of lines | Worked out again for every existing record or line, in SQL that gives what the platform gives as it writes | Normal |
+| Let a reference hold several records | Each record's one record goes into its list | Normal |
 | Change a type, or drop a field or entity | Destructive | Explicit approval and an automatic snapshot first. Blocked if the entity has a `retention` tag |
 
 Migrations are generated from the model diff. In a personal sandbox, saving applies them at once, but anything destructive waits for the builder's confirmation and shows how many records it touches. In a team space, they are reviewed in the change request and executed by the deployment.

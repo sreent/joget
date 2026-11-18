@@ -60,10 +60,16 @@ export function lineOwners(definition: { readonly entities: Readonly<Record<stri
 /**
  * How a value is represented, in JSON and in conditions:
  * `text` and `uuid` are strings, `date` is `YYYY-MM-DD`, `datetime` is an ISO 8601 UTC timestamp
- * with milliseconds, and `text[]` is a non-empty list of strings. An empty value is `null` in
- * JSON and counts as missing in conditions.
+ * with milliseconds, `text[]` is a non-empty list of strings, and `uuid[]` a non-empty list of
+ * IDs, each once. An empty value is `null` in JSON and counts as missing in conditions.
  */
-export type ValueKind = 'text' | 'uuid' | 'number' | 'boolean' | 'date' | 'datetime' | 'text[]';
+export type ValueKind = 'text' | 'uuid' | 'number' | 'boolean' | 'date' | 'datetime' | 'text[]' | 'uuid[]';
+
+/** True for a kind whose values are lists. */
+export const isListKind = (kind: ValueKind): kind is 'text[]' | 'uuid[]' => kind === 'text[]' || kind === 'uuid[]';
+
+/** True for a reference that holds several records. */
+export const refersToMany = (field: Field): boolean => field.type === 'reference' && field.multiple === true;
 
 export interface FieldInfo {
   readonly name: string;
@@ -101,6 +107,7 @@ export function fieldKind(field: Field): ValueKind {
     case 'datetime':
       return 'datetime';
     case 'reference':
+      return field.multiple ? 'uuid[]' : 'uuid';
     case 'user':
     case 'file':
       return 'uuid';
@@ -147,6 +154,7 @@ export function jsTypeOf(kind: ValueKind): 'string' | 'number' | 'boolean' | 'ar
     case 'boolean':
       return 'boolean';
     case 'text[]':
+    case 'uuid[]':
       return 'array';
     default:
       return 'string';
@@ -160,7 +168,7 @@ export function isOrderedKind(kind: ValueKind): boolean {
 
 /** Kinds a list can be sorted by. */
 export function isSortableKind(kind: ValueKind): boolean {
-  return kind !== 'text[]';
+  return !isListKind(kind);
 }
 
 /** Fields a caller may write: every user field that the platform doesn't work out, plus `owner`. */

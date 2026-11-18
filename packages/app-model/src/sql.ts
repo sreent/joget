@@ -1,5 +1,5 @@
 import { COMPARISON_OPERATORS, evaluateCondition, isRef, isRelativeTime, relativeValue, timeOf, type Condition, type Operand } from '@platform/authz';
-import { jsTypeOf, type FieldInfo, type ValueKind } from './fields.js';
+import { isListKind, jsTypeOf, type FieldInfo, type ValueKind } from './fields.js';
 import { isCanonicalUuid, type FieldValue } from './values.js';
 
 /**
@@ -50,6 +50,8 @@ export function sqlType(kind: ValueKind): string {
       return 'timestamptz';
     case 'text[]':
       return 'text[]';
+    case 'uuid[]':
+      return 'uuid[]';
   }
 }
 
@@ -156,14 +158,19 @@ export function compileCondition(
     const needle = term(needleOperand);
     if (!Array.isArray(haystackOperand)) {
       const haystack = term(haystackOperand as Operand);
-      // Only a list can contain anything, and the only lists records hold are multiple choices.
-      if (haystack.kind === 'literal' || haystack.info.kind !== 'text[]') return 'FALSE';
+      // Only a list can contain anything: a choice of several options, or several records.
+      if (haystack.kind === 'literal' || !isListKind(haystack.info.kind)) return 'FALSE';
+      const ids = haystack.info.kind === 'uuid[]';
       if (needle.kind === 'literal') {
         const value = needle.value;
         if (typeof value !== 'string' || value.includes('\u0000')) return 'FALSE';
-        return `((${sql.param(value, 'text')} = ANY(${haystack.sql})) IS TRUE)`;
+        // A list of records holds only IDs: other text is never in it, and would not even cast.
+        if (ids && !isCanonicalUuid(value)) return 'FALSE';
+        return `((${sql.param(value, ids ? 'uuid' : 'text')} = ANY(${haystack.sql})) IS TRUE)`;
       }
-      return jsTypeOf(needle.info.kind) === 'string' ? `((${needle.sql}::text = ANY(${haystack.sql})) IS TRUE)` : 'FALSE';
+      if (jsTypeOf(needle.info.kind) !== 'string') return 'FALSE';
+      // Text and IDs are both strings: an ID in a list of IDs compares as it is, anything else as text.
+      return ids && needle.info.kind === 'uuid' ? `((${needle.sql} = ANY(${haystack.sql})) IS TRUE)` : `((${needle.sql}::text = ANY(${haystack.sql}::text[])) IS TRUE)`;
     }
 
     const items = (haystackOperand as readonly Operand[]).map(term);
@@ -219,7 +226,7 @@ export function selectExpression(info: FieldInfo, alias = 'r'): string {
 export function fromDatabase(info: FieldInfo, raw: unknown): FieldValue {
   if (raw === null || raw === undefined) return null;
   if (info.kind === 'number') return Number(raw);
-  if (info.kind === 'text[]') return Array.isArray(raw) && raw.length ? (raw as string[]) : null;
+  if (isListKind(info.kind)) return Array.isArray(raw) && raw.length ? (raw as string[]) : null;
   return raw as FieldValue;
 }
 

@@ -84,7 +84,6 @@ function uuid(value: unknown): Result {
   return ok(value.toLowerCase());
 }
 
-/** Check one value against its field, and return it in canonical form. */
 /** Fit a worked-out value to its field: a number to the field's decimal places, as money is rounded; a time to its day. */
 export function fitValue(info: FieldInfo, raw: ExpressionValue): ExpressionValue {
   if (info.field?.type === 'number' && typeof raw === 'number') return roundTo(raw, info.field.decimals);
@@ -113,6 +112,10 @@ export function defaultValue(info: FieldInfo, at: WriteContext = {}): FieldValue
   return result.ok ? result.value : undefined;
 }
 
+/** The most records one reference field can hold. */
+export const MAX_REFERENCES = 100;
+
+/** Check one value against its field, and return it in canonical form. */
 export function canonicalValue(info: FieldInfo, value: unknown): Result {
   if (value === null || value === undefined) return ok(null);
   const field = info.field;
@@ -173,7 +176,19 @@ export function canonicalValue(info: FieldInfo, value: unknown): Result {
       // Canonical order is the order of the options, so equal choices always look the same.
       return ok(allowed.filter((option) => value.includes(option)));
     }
-    case 'reference':
+    case 'reference': {
+      if (!field.multiple) return uuid(value);
+      if (!Array.isArray(value)) return fail('invalid_type', 'Expected a list of IDs');
+      if (value.length > MAX_REFERENCES) return fail('too_big', `At most ${MAX_REFERENCES} records`);
+      const ids: string[] = [];
+      for (const item of value) {
+        const result = uuid(item);
+        if (!result.ok) return result;
+        // Each record once, in the order given.
+        if (!ids.includes(result.value as string)) ids.push(result.value as string);
+      }
+      return ok(ids.length ? ids : null);
+    }
     case 'user':
     case 'file':
       return uuid(value);

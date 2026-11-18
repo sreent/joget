@@ -79,7 +79,9 @@ function fieldSchema(field: StoredField, definition: StoredDefinition, operation
         : { ...about, type: 'string', enum: values, description: `One of: ${labels}` };
     }
     case 'reference':
-      return { ...about, type: 'string', format: 'uuid', description: `The ID of a ${field.entity} record` };
+      return field.multiple
+        ? { ...about, type: 'array', items: { type: 'string', format: 'uuid' }, uniqueItems: true, maxItems: 100, description: `The IDs of ${field.entity} records, in order` }
+        : { ...about, type: 'string', format: 'uuid', description: `The ID of a ${field.entity} record` };
     case 'user':
       return { ...about, type: 'string', format: 'uuid', description: "A person's ID" };
     case 'file':

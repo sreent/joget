@@ -332,6 +332,8 @@ export interface RecordOut {
   masked?: string[];
   /** The files the values name, by ID. */
   files?: Record<string, FileInfo>;
+  /** The titles of the records the values refer to, by ID, of those the person may read. */
+  titles?: Record<string, string>;
 }
 
 /** Someone a record or its history names: a person, or an agent that changed the record. */

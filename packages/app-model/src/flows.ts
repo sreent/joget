@@ -40,6 +40,7 @@ const KIND_WORDS: Readonly<Record<ValueKind, string>> = {
   date: 'a date',
   datetime: 'a time',
   'text[]': 'a list of options',
+  'uuid[]': 'a list of records',
   null: 'nothing',
   any: 'any value',
 };

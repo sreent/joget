@@ -94,6 +94,18 @@ describe('editing a draft', () => {
     expect(removeSection(definition, name, 0)).toBe(definition);
   });
 
+  it('has the action a form runs take each field placed on it, unless the action sets it or the platform works it out', () => {
+    let { definition, entity } = start();
+    const { definition: withForm, name } = addForm(definition, entity);
+    definition = removeSection(addSection(withForm, name, 'More'), name, 0);
+    definition.actions['submit'] = { label: 'Submit', description: '', entity, operation: 'create', input: [], set: { new_choice: 'a' }, confirm: 'none' } as unknown as (typeof definition.actions)[string];
+    definition.forms[name]!.action = 'submit';
+    definition = addField(definition, entity, 'number').definition;
+    definition = setFormula(definition, entity, 3, 1);
+    for (const field of ['title', 'new_number', 'new_choice', 'new_number_2']) definition = placeField(definition, name, field, { section: 0, index: 9 });
+    expect(definition.actions['submit']!.input).toEqual(['title', 'new_number']);
+  });
+
   it('makes an entity for new lines, and takes it away with them', () => {
     const { definition, entity } = start();
     const { definition: withLines, index } = addField(definition, entity, 'lines');

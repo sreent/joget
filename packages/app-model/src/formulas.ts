@@ -99,6 +99,7 @@ function textOf(part: Part): string {
     case 'datetime':
       return `to_char(${part.sql} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
     case 'text[]':
+    case 'uuid[]':
       return `array_to_string(${part.sql}, ', ')`;
     case 'text':
     case 'null':
@@ -146,7 +147,7 @@ export function formulaSql(expression: Expression, fields: ReadonlyMap<string, F
         return { sql: `concat(${parts.map(textOf).join(', ')})`, kind: 'text' };
       case 'coalesce': {
         const kind = parts.find((part) => part.kind !== 'null')?.kind ?? 'null';
-        const filled = (part: Part) => (part.kind === 'text' ? `nullif(${part.sql}, '')` : part.kind === 'text[]' ? `nullif(${part.sql}, '{}'::text[])` : part.sql);
+        const filled = (part: Part) => (part.kind === 'text' ? `nullif(${part.sql}, '')` : part.kind === 'text[]' || part.kind === 'uuid[]' ? `nullif(${part.sql}, '{}'::${part.kind})` : part.sql);
         return { sql: `coalesce(${parts.map(filled).join(', ')})`, kind };
       }
       case 'if': {

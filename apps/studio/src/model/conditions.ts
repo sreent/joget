@@ -120,7 +120,7 @@ export function fromModel(group: Group): Condition | undefined {
 }
 
 /** What a reference holds, so the builder offers the right operators and inputs. */
-export type Kind = 'text' | 'number' | 'boolean' | 'choice' | 'multi' | 'person' | 'id' | 'date';
+export type Kind = 'text' | 'number' | 'boolean' | 'choice' | 'multi' | 'person' | 'id' | 'ids' | 'date';
 
 export interface RefChoice {
   readonly ref: string;
@@ -143,6 +143,7 @@ function kindOf(field: Field): Kind | null {
     case 'user':
       return 'person';
     case 'reference':
+      return field.multiple ? 'ids' : 'id';
     case 'file':
       return 'id';
     case 'date':
@@ -182,6 +183,9 @@ export function opsFor(kind: Kind): Op[] {
       return ['eq', 'ne', 'in', 'notIn', 'exists', 'missing'];
     case 'multi':
       return ['contains', 'exists', 'missing'];
+    // A list of records: whether it holds any.
+    case 'ids':
+      return ['exists', 'missing'];
     case 'boolean':
     case 'person':
     case 'id':

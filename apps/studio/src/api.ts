@@ -136,6 +136,9 @@ export const api = {
   ui: (target: string | AppAt) => call<UiManifest>('GET', `${app(at(target).id)}/ui${envParams(target)}`),
   records: (target: string | AppAt, entity: string, cursor?: string) =>
     call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`),
+  /** Records whose titles contain some text, for a picker: those the person may read. */
+  searchRecords: (target: string | AppAt, entity: string, search: string) =>
+    call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '20', search })}`),
   record: (target: string | AppAt, entity: string, recordId: string) => call<RecordOut>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`),
   createRecord: (target: string | AppAt, entity: string, values: Record<string, unknown>) => call<RecordOut>('POST', `${records(target, entity)}${envParams(target)}`, { values }),
   updateRecord: (target: string | AppAt, entity: string, recordId: string, values: Record<string, unknown>, version: number) =>

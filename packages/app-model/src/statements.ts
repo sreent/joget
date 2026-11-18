@@ -1,5 +1,5 @@
 import type { Condition } from '@platform/authz';
-import { entityFields, tableName, type FieldInfo, type StoredEntity } from './fields.js';
+import { columnName, entityFields, tableName, type FieldInfo, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
 import type { EnvironmentNames } from './migrations.js';
 import { afterCursor, compileCondition, fromDatabase, ident, orderBy, selectExpression, SqlBuilder, toDatabase, type SortKey, type SqlQuery } from './sql.js';
 import type { Period, TimeRange } from './schema.js';
@@ -56,6 +56,8 @@ export interface SelectRecords {
   readonly limit?: number;
   /** Lock the rows for the rest of the transaction, for a write. */
   readonly forUpdate?: boolean;
+  /** Text a field must contain, in any case, as a picker finds a record by its title. */
+  readonly search?: { readonly field: string; readonly text: string };
 }
 
 export interface RecordSelect extends SqlQuery {
@@ -99,6 +101,8 @@ export function selectRecords(query: SelectRecords): RecordSelect {
     ...(query.exclude ?? []).map((c) => `NOT ${condition(c)}`),
     ...(query.where ?? []).map(condition),
     ...(query.id !== undefined ? [`r.id = ${sql.param(query.id, 'uuid')}`] : []),
+    // The text is a pattern of its own: % and _ in it are plain characters.
+    ...(query.search ? [`(${selectExpression(field(query.search.field))})::text ilike ${sql.param(`%${query.search.text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`, 'text')} escape '\\'`] : []),
   ];
   const sortKeys: SortKey[] = [
     ...(query.sort ?? []).map((s) => ({ info: field(s.field), direction: s.direction })),
@@ -197,6 +201,25 @@ export function updateRecord(
 
 export function deleteRecord(names: EnvironmentNames, entity: StoredEntity, id: string): SqlQuery {
   return { text: `delete from ${tableOf(names, entity)} as r where r.id = $1::uuid`, values: [id] };
+}
+
+/**
+ * Lock records against deletion until the transaction ends, and say which exist. A list of records
+ * takes only records that exist, and keeps them, as a foreign key keeps a reference to one.
+ */
+export function lockRecords(names: EnvironmentNames, entity: StoredEntity, ids: readonly string[]): SqlQuery {
+  return { text: `select r.id from ${tableOf(names, entity)} as r where r.id = any($1::uuid[]) for key share`, values: [ids] };
+}
+
+/** Each field, of an entity or of its lines, that holds several records of an entity. */
+export function listsOf(definition: StoredDefinition, target: string): Array<{ readonly entity: StoredEntity; readonly field: StoredField }> {
+  return Object.values(definition.entities).flatMap((entity) => entity.fields.filter((field) => field.type === 'reference' && field.multiple === true && field.entity === target).map((field) => ({ entity, field })));
+}
+
+/** Whether a list of records, in any record or line, holds a record: while one does, the record stays. */
+export function selectHeld(names: EnvironmentNames, lists: ReturnType<typeof listsOf>, id: string): SqlQuery {
+  const parts = lists.map(({ entity, field }) => `select from ${tableOf(names, entity)} as r where r.${ident(columnName(field.id))} @> array[$1::uuid]`);
+  return { text: `select exists (${parts.join(' union all ')}) as held`, values: [id] };
 }
 
 /** A line as stored: its ID and its values. Its place is its position in the record's list. */

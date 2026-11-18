@@ -1,4 +1,4 @@
-import { columnName, formulaOf, hasFiles, lineOwners, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
+import { columnName, formulaOf, hasFiles, lineOwners, refersToMany, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
 import { formulaFields, formulaUpdates } from './formulas.js';
 import { NAME_PATTERN } from './schema.js';
 import { ident } from './sql.js';
@@ -68,7 +68,8 @@ export function physicalType(field: StoredField, entities: Readonly<Record<strin
     case 'user':
       return 'uuid';
     case 'reference':
-      return `uuid references ${tableName(entities[field.entity]!.id)}`;
+      // A list of records has no foreign key: the platform keeps it true as it writes and deletes.
+      return field.multiple ? `uuid[] of ${tableName(entities[field.entity]!.id)}` : `uuid references ${tableName(entities[field.entity]!.id)}`;
     case 'file':
       return 'uuid references files';
     case 'lines':
@@ -192,7 +193,11 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
   const addColumn = (entity: StoredEntity, field: StoredField) => {
     const type = physicalType(field, next.entities);
     if (type === null) return;
-    if (field.type === 'reference' || field.type === 'file') {
+    if (refersToMany(field)) {
+      adds.push(`alter table ${table(entity)} add column ${column(field)} uuid[]`);
+      // Which records hold a record in their list: for pages about it, and before it is deleted.
+      indexes.push(`create index ${index(entity, field, 'idx')} on ${table(entity)} using gin (${column(field)})`);
+    } else if (field.type === 'reference' || field.type === 'file') {
       // A file stays while anything refers to it: a record, a line, or their history.
       const target = field.type === 'reference' ? tableOf(next.entities[field.entity]!.id) : `${schema}.files`;
       references.push(`alter table ${table(entity)} add column ${column(field)} uuid references ${target} (id) on delete restrict`);
@@ -286,6 +291,21 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
       }
       // A reference's type names its target table, so pointing it at another entity counts as a new type.
       const [oldType, newType] = [physicalType(oldField, previous!.entities), physicalType(field, next.entities)];
+      // A reference to one record becomes a list of records that holds it, losing nothing.
+      if (oldType !== newType && oldField.type === 'reference' && !oldField.multiple && field.type === 'reference' && field.multiple && oldType === `uuid references ${tableName(next.entities[field.entity]!.id)}`) {
+        step({ kind: 'retype_field', entity: name, field: field.name, from: 'reference', to: 'references', destructive: false, description: `Let ${name}.${field.name} hold several records; each record keeps the one it has` });
+        const list = ident(`${columnName(field.id)}_list`);
+        drops.push(
+          `alter table ${table(entity)} add column ${list} uuid[]`,
+          `update ${table(entity)} set ${list} = array[${column(oldField)}] where ${column(oldField)} is not null`,
+          // Its foreign key and its index go with it.
+          `alter table ${table(entity)} drop column ${column(oldField)}`,
+          `alter table ${table(entity)} rename column ${list} to ${column(field)}`,
+        );
+        indexes.push(`create index ${index(entity, field, 'idx')} on ${table(entity)} using gin (${column(field)})`);
+        comments.push(`comment on column ${table(entity)}.${column(field)} is ${nameLiteral(field.name)}`);
+        continue;
+      }
       if (oldType !== newType) {
         step(
           {

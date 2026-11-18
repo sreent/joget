@@ -3,6 +3,7 @@ import type { Line, RecordValue, UiField, Value } from '../types.js';
 import { FileInput, FileLink } from './files.js';
 import { PersonName, PersonPicker } from './people.js';
 import { Checkbox, Select, TextInput } from './ui.js';
+import { RecordPicker, RecordTitles } from './records.js';
 
 /** A value as text, as people read it: labels for choices, local numbers and times. */
 export function display(field: UiField | undefined, value: RecordValue | undefined): string {
@@ -23,6 +24,7 @@ export function display(field: UiField | undefined, value: RecordValue | undefin
 /** A value as people read it: names for people, labels for choices. */
 export function ValueView({ field, value, link = true }: { field: UiField | undefined; value: RecordValue | undefined; link?: boolean }) {
   if (field?.type === 'user' && typeof value === 'string' && value) return <PersonName id={value} />;
+  if (field?.type === 'reference' && field.entity && value) return <RecordTitles entity={field.entity} value={value} link={link} />;
   if (field?.type === 'file' && typeof value === 'string' && value) return <FileLink id={value} link={link} />;
   return <>{display(field, value)}</>;
 }
@@ -44,6 +46,8 @@ export function ValueInput({ field, value, onChange, id, label }: { field: UiFie
       return <FileInput id={id} value={typeof value === 'string' ? value : null} accept={field.accept ?? ['image', 'pdf']} onChange={onChange} {...(label ? { label } : {})} />;
     case 'user':
       return <PersonPicker id={id} value={typeof value === 'string' ? value : null} onChange={onChange} {...(label ? { label } : {})} />;
+    case 'reference':
+      return field.entity ? <RecordPicker id={id} entity={field.entity} multiple={field.multiple} value={value ?? null} onChange={onChange} label={label} /> : null;
     case 'boolean':
       return <Checkbox label={field.label} checked={value === true} onChange={onChange} />;
     case 'choice':

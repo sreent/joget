@@ -50,6 +50,7 @@ function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'u
     ...(field.description ? { description: field.description } : {}),
     ...(field.type === 'choice' ? { options: field.options, multiple: field.multiple } : {}),
     ...(field.type === 'reference' || field.type === 'lines' ? { entity: field.entity } : {}),
+    ...(field.type === 'reference' && field.multiple ? { multiple: true } : {}),
     ...(field.type === 'number' ? { decimals: field.decimals, ...(field.rollup ? { computed: true, rollup: field.rollup as Record<string, string> } : {}) } : {}),
     // A formula, so that a form shows what it gives as people type.
     ...(formulaOf(field) ? { computed: true, formula: formulaOf(field) } : {}),

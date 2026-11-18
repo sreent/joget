@@ -117,6 +117,8 @@ export const RecordOut = z.object({
   masked: z.array(z.string()).optional(),
   /** The files the values name, by ID. */
   files: z.record(z.string(), z.object({ name: z.string(), contentType: z.string(), size: z.number().int() })).optional(),
+  /** The titles of the records the values refer to, by ID, of those the caller may read. */
+  titles: z.record(z.string(), z.string()).optional(),
 });
 
 export const PageOut = z.object({ records: z.array(RecordOut), nextCursor: z.string().nullable() });

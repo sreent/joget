@@ -889,6 +889,65 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     expect(records[0].values).toMatchObject({ total: 150, with_tax: 163.5 });
   });
 
+  it('links a claim to several trips: the form finds them by title, and the claim links to each', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await page.getByLabel('Name').fill('Claims for trips');
+    await page.getByLabel('Start from').selectOption('expenses');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const tripsId = page.url().split('/apps/')[1]!.split('/')[0]!;
+
+    // Trips, and claims that are for several of them: many to many.
+    await page.getByLabel('New entity').fill('Trip');
+    await page.getByRole('button', { name: 'Add entity' }).click();
+    await page.getByLabel('Plural label').fill('Trips');
+    await page.getByRole('button', { name: /^Expense claim/ }).click();
+    await page.getByLabel('Type of the new field').selectOption('reference');
+    await page.getByRole('button', { name: 'Add field' }).click();
+    const field = panel(page, 'Field');
+    await field.getByLabel('Label', { exact: true }).fill('Trips');
+    await field.getByLabel('Name', { exact: true }).fill('trips');
+    await field.getByLabel('Name', { exact: true }).blur();
+    await field.getByLabel('Links to', { exact: true }).selectOption('trip');
+    await field.getByLabel('Several trips, not one').check();
+    // On the claim form, which its action now takes.
+    await page.getByRole('link', { name: 'Forms', exact: true }).click();
+    await page.getByRole('button', { name: 'Add Trips to the form' }).click();
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${tripsId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'trips')).toMatchObject({ type: 'reference', entity: 'trip', multiple: true });
+    expect(saved.actions.submit_claim.input).toContain('trips');
+    for (const title of ['Tokyo summit', 'Penang retreat']) {
+      await t.app.inject({ method: 'POST', url: `/v1/apps/${tripsId}/entities/trip/records`, cookies: alice.cookies, payload: { values: { title } } });
+    }
+
+    // The form finds trips by their titles, and shows those chosen.
+    await page.goto(`${BASE}/studio/apps/${tripsId}/new/claim_form`);
+    await page.getByLabel('Title').fill('Two trips in one');
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-02');
+    await page.getByLabel('Receipt 1, Merchant').fill('Hotel Okura');
+    await page.getByLabel('Receipt 1, Category').selectOption('hotel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('300');
+    await page.getByLabel('Trips', { exact: true }).fill('tok');
+    await page.getByRole('option', { name: 'Tokyo summit' }).click();
+    await page.getByLabel('Trips', { exact: true }).fill('PEN');
+    await page.getByRole('option', { name: 'Penang retreat' }).click();
+    const chosen = page.getByRole('list', { name: 'Trips: chosen' });
+    await visible(chosen.getByText('Tokyo summit'));
+    await visible(chosen.getByText('Penang retreat'));
+    await shot(page, '32-pick-several-trips');
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByRole('heading', { name: 'Two trips in one' }));
+    await shot(page, '33-claim-for-two-trips');
+
+    // The claim names each trip by its title, and opens it.
+    await page.getByRole('link', { name: 'Tokyo summit' }).click();
+    await visible(page.getByRole('heading', { name: 'Tokyo summit' }));
+  });
+
   it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);

@@ -102,7 +102,7 @@ export function describeCondition(definition: Definition, entity: string, condit
 
 // Where a value can come from
 
-type ValueKind = 'text' | 'multi' | 'number' | 'boolean' | 'date' | 'datetime' | 'person' | 'record' | 'file' | 'id';
+type ValueKind = 'text' | 'multi' | 'number' | 'boolean' | 'date' | 'datetime' | 'person' | 'record' | 'records' | 'file' | 'id';
 
 function kindOfField(field: Field): ValueKind | null {
   switch (field.type) {
@@ -122,7 +122,7 @@ function kindOfField(field: Field): ValueKind | null {
     case 'user':
       return 'person';
     case 'reference':
-      return 'record';
+      return field.multiple ? 'records' : 'record';
     case 'file':
       return 'file';
     case 'lines':
@@ -156,7 +156,7 @@ export function valueSources(definition: Definition, entity: string, target?: Fi
   const wanted = target === 'number' || target === 'date' ? target : kindOfField(target);
   return all
     .filter((source) => {
-      if (target !== 'number' && target !== 'date' && target.type === 'reference') return source.kind === 'record' && source.entity === target.entity;
+      if (target !== 'number' && target !== 'date' && target.type === 'reference') return source.kind === (target.multiple ? 'records' : 'record') && source.entity === target.entity;
       return source.kind === wanted || (wanted === 'date' && source.kind === 'datetime');
     })
     .map(({ ref, label }) => ({ ref, label }));

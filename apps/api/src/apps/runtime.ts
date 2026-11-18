@@ -22,13 +22,18 @@ import {
   grantsFor,
   insertHistory,
   insertRecord,
+  isSortableKind,
   linesFieldsOf,
   linesWritten,
+  listsOf,
+  lockRecords,
   parseLines,
   parseRecord,
   Provenance,
   recordValues,
+  refersToMany,
   rollupValues,
+  selectHeld,
   selectHistory,
   stepsFlow,
   selectLines,
@@ -334,7 +339,9 @@ function decodeCursor(cursor: string, kinds: readonly ValueKind[]): FieldValue[]
         return typeof value === 'string' && !Number.isNaN(Date.parse(value));
       case 'text':
         return typeof value === 'string' && !value.includes('\u0000');
+      // Lists don't sort, so no cursor holds one.
       case 'text[]':
+      case 'uuid[]':
         return false;
     }
   };
@@ -494,14 +501,23 @@ export class AppRuntime {
       readonly cursor?: string;
       readonly limit: number;
       readonly id?: string;
+      /** Text the records' titles contain, as a picker finds a record. */
+      readonly search?: string;
     },
   ): Promise<Page> {
     const entity = this.entity(loaded, entityName);
     const decision = options.decision ?? (await this.decide(request, auth, loaded, 'record.read', entityName));
+    let search: { readonly field: string; readonly text: string } | undefined;
+    if (options.search !== undefined) {
+      if (!entity.titleField) throw badRequest('no_title', `${entity.pluralLabel} have no title to search`);
+      // A search on a field some records hide would tell what it holds.
+      this.#requireVisible(decision, [entity.titleField], 'search');
+      search = { field: entity.titleField, text: options.search };
+    }
     const fields = entityFields(entity);
     for (const sort of options.sort ?? []) {
       const info = fields.get(sort.field);
-      if (!info || info.kind === 'text[]') throw badRequest('invalid_sort', `Can't sort by ${sort.field}`);
+      if (!info || !isSortableKind(info.kind)) throw badRequest('invalid_sort', `Can't sort by ${sort.field}`);
     }
     this.#requireVisible(decision, (options.sort ?? []).map((s) => s.field), 'sort by');
     if (options.where && options.where !== true) {
@@ -516,6 +532,7 @@ export class AppRuntime {
       where: options.where !== undefined ? [options.where] : [],
       ...(options.sort ? { sort: options.sort } : {}),
       ...(options.id ? { id: options.id } : {}),
+      ...(search ? { search } : {}),
       limit: options.limit + 1,
     };
     const shape = selectRecords(base);
@@ -540,6 +557,7 @@ export class AppRuntime {
       return this.project(loaded, entity, record, applicable, options.fields, lines);
     });
     await this.#withFiles(loaded, entity, records);
+    await this.#withTitles(auth, loaded, entity, records);
     const last = parsed.at(-1)?.record;
     return { records, nextCursor: rows.length > options.limit && last ? encodeCursor(cursorOf(last, query.sortKeys)) : null };
   }
@@ -690,6 +708,9 @@ export class AppRuntime {
       }
       throw error;
     }
+    // After the row is written or gone, so that a record can hold itself, and so that the lock on a deleted row is held.
+    if (write.operation === 'delete') await this.#refuseIfHeld(tx, loaded, write.entityName, write.before!.id);
+    else await this.#lockListed(tx, loaded, entity, write.values, write.lines);
     const before = write.before ? recordValues(write.before) : null;
     const changes: Record<string, HistoryChange> = diffRecords(entity, before, after ? recordValues(after) : null, write.provenance ?? {});
     const record = (after ?? write.before)!;
@@ -747,6 +768,7 @@ export class AppRuntime {
     const lines = wanted.length ? await withAppTransaction(this.#ctx.pool, loaded.env, 'records', (tx) => this.#readLines(tx, loaded, [record.id], wanted)) : undefined;
     const out = this.project(loaded, entity, record, grants, undefined, lines);
     await this.#withFiles(loaded, entity, [out]);
+    await this.#withTitles(auth, loaded, entity, [out], inside);
     return out;
   }
 
@@ -770,6 +792,100 @@ export class AppRuntime {
       const own = Object.fromEntries(this.#fileIds(loaded, entity, record).flatMap((id) => (described[id] ? [[id, described[id]]] : [])));
       if (Object.keys(own).length) (record as { files?: Record<string, FileInfo> }).files = own;
     }
+  }
+
+  /** The records a record refers to, as the caller sees it: by its references, one or several, and its lines'. */
+  #referenceIds(loaded: LoadedApp, entity: StoredEntity, record: { readonly values?: Readonly<Record<string, unknown>> | undefined }): Array<{ readonly entity: string; readonly id: string }> {
+    const values = record.values ?? {};
+    const of = (fields: readonly StoredEntity['fields'][number][], from: Readonly<Record<string, unknown>>) =>
+      fields.flatMap((field) => {
+        if (field.type !== 'reference') return [];
+        const value = from[field.name];
+        const ids = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+        return ids.filter((id): id is string => typeof id === 'string').map((id) => ({ entity: field.entity, id }));
+      });
+    return [
+      ...of(entity.fields, values),
+      ...linesFieldsOf(entity).flatMap((field) => {
+        const lines = values[field.name];
+        const lineFields = loaded.definition.entities[field.entity]!.fields;
+        return Array.isArray(lines) ? lines.flatMap((line) => (typeof line === 'object' && line !== null ? of(lineFields, line as Record<string, unknown>) : [])) : [];
+      }),
+    ];
+  }
+
+  /**
+   * Add the titles of the records that records refer to, by ID, as the caller may read them: a
+   * record the caller can't read, or whose title its role hides, has no title here.
+   */
+  async #withTitles(auth: AuthContext, loaded: LoadedApp, entity: StoredEntity, records: RecordOut[], inside = false): Promise<void> {
+    const wanted = new Map<string, Set<string>>();
+    for (const record of records) for (const { entity: target, id } of this.#referenceIds(loaded, entity, record)) wanted.set(target, (wanted.get(target) ?? new Set()).add(id));
+    const titles = new Map<string, string>();
+    for (const [target, ids] of wanted) {
+      const about = loaded.definition.entities[target];
+      const titleField = about?.titleField;
+      if (!about || !titleField) continue;
+      const read = await this.#readGrants(auth, loaded, target, inside);
+      if (!read) continue;
+      const query = selectRecords({
+        names: this.#names(loaded),
+        entity: about,
+        fields: [titleField],
+        grants: read.grants.map((grant) => grant.filter),
+        exclude: read.exclude.map((exclusion) => exclusion.when),
+        where: [{ in: [{ ref: 'record.id' }, [...ids]] }],
+      });
+      const rows = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => (await tx.query(query.text, query.values)).rows);
+      for (const row of rows) {
+        const { record, flags } = parseRecord(about, row, query.flagGrants.length);
+        const applicable = read.grants.filter((grant, index) => {
+          const flag = query.flagGrants.indexOf(index);
+          return flag === -1 ? grant.filter === true : flags[flag];
+        });
+        if (fieldAccess(applicable.map((grant) => grant.grant), titleField) !== 'full') continue;
+        const title = titleText(about.fields.find((field) => field.name === titleField), record.values[titleField]);
+        if (title) titles.set(record.id, title);
+      }
+    }
+    if (!titles.size) return;
+    for (const record of records) {
+      const own = Object.fromEntries(this.#referenceIds(loaded, entity, record).flatMap(({ id }) => (titles.has(id) ? [[id, titles.get(id)!]] : [])));
+      if (Object.keys(own).length) (record as { titles?: Record<string, string> }).titles = own;
+    }
+  }
+
+  /** Lists of records take only records that exist, and keep them until the write commits, as a foreign key would. */
+  async #lockListed(tx: AppTransaction, loaded: LoadedApp, entity: StoredEntity, values: RecordValues, lines: Readonly<Record<string, { readonly next: readonly LineValues[] }>> = {}): Promise<void> {
+    const wanted = new Map<string, Set<string>>();
+    const add = (fields: readonly StoredEntity['fields'][number][], from: Readonly<Record<string, unknown>>) => {
+      for (const field of fields) {
+        const value = from[field.name];
+        if (field.type !== 'reference' || !refersToMany(field) || !Array.isArray(value)) continue;
+        for (const id of value) if (typeof id === 'string') wanted.set(field.entity, (wanted.get(field.entity) ?? new Set()).add(id));
+      }
+    };
+    add(entity.fields, values);
+    for (const [name, { next }] of Object.entries(lines)) {
+      const field = entity.fields.find((f) => f.name === name);
+      if (field?.type !== 'lines') continue;
+      const lineFields = loaded.definition.entities[field.entity]!.fields;
+      for (const line of next) add(lineFields, line.values);
+    }
+    for (const [target, ids] of wanted) {
+      const query = lockRecords(this.#names(loaded), loaded.definition.entities[target]!, [...ids]);
+      const found = new Set((await tx.query(query.text, query.values)).rows.map((row) => row['id'] as string));
+      const missing = [...ids].filter((id) => !found.has(id));
+      if (missing.length) throw unprocessable('unknown_reference', 'A reference points at a record that does not exist', { missing });
+    }
+  }
+
+  /** A record stays while a list of records holds it, as a foreign key keeps a record another refers to. */
+  async #refuseIfHeld(tx: AppTransaction, loaded: LoadedApp, entityName: string, id: string): Promise<void> {
+    const lists = listsOf(loaded.definition, entityName);
+    if (!lists.length) return;
+    const query = selectHeld(this.#names(loaded), lists, id);
+    if ((await tx.query(query.text, query.values)).rows[0]?.['held']) throw conflict('record_referenced', 'Other records still refer to this one');
   }
 
   /**
@@ -1065,10 +1181,12 @@ export class AppRuntime {
    * On a page about one record, a block of the records that refer to it: the condition that keeps
    * only those. It narrows what the block shows; the caller's own permissions still decide.
    */
-  #referringTo(block: { readonly of?: string | undefined }, record: string | undefined, filter: Condition | undefined): Condition | undefined {
+  #referringTo(loaded: LoadedApp, block: { readonly entity: string; readonly of?: string | undefined }, record: string | undefined, filter: Condition | undefined): Condition | undefined {
     if (block.of === undefined) return filter;
     if (!record) throw unprocessable('record_required', 'This block shows the records that refer to one record: give its ID');
-    const of: Condition = { eq: [{ ref: `record.${block.of}` }, record] };
+    const field = this.entity(loaded, block.entity).fields.find((f) => f.name === block.of);
+    // A list of records refers to each record it holds.
+    const of: Condition = field && refersToMany(field) ? { in: [record, { ref: `record.${block.of}` }] } : { eq: [{ ref: `record.${block.of}` }, record] };
     return filter ? { all: [filter, of] } : of;
   }
 
@@ -1079,7 +1197,7 @@ export class AppRuntime {
    */
   async runSummary(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, page: string, path: string, decision: AllowedQuery, record?: string): Promise<SummaryOut> {
     const block = this.summaryBlock(loaded, page, path);
-    const filter = this.#referringTo(block, record, block.filter);
+    const filter = this.#referringTo(loaded, block, record, block.filter);
     return this.#summarize(auth, loaded, {
       entity: block.entity,
       measure: block.measure,
@@ -1194,7 +1312,7 @@ export class AppRuntime {
     input: { readonly decision: AllowedQuery; readonly cursor?: string; readonly record?: string },
   ): Promise<Page> {
     const block = this.listBlock(loaded, page, path);
-    const filter = this.#referringTo(block, input.record, block.filter);
+    const filter = this.#referringTo(loaded, block, input.record, block.filter);
     const where = filter ? partialEvaluate(filter, { principal: principalEnv(auth), input: {}, context: {} }, ['record']) : true;
     if (where === false) return { records: [], nextCursor: null };
     const entity = this.entity(loaded, block.entity);
@@ -1969,4 +2087,11 @@ function lineSources(provenance: Readonly<Record<string, Provenance>> | undefine
       return match && match[1] === field ? [[`${Number(match[2])}.${match[3]}`, source]] : [];
     }),
   );
+}
+
+/** A record's title as text: a choice's label, a list joined. */
+function titleText(field: StoredEntity['fields'][number] | undefined, value: FieldValue | undefined): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  const label = (v: string) => (field?.type === 'choice' ? (field.options.find((option) => option.value === v)?.label ?? v) : v);
+  return Array.isArray(value) ? value.map(label).join(', ') : label(String(value));
 }

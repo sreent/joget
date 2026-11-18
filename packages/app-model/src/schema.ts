@@ -124,8 +124,14 @@ const ChoiceField = z.strictObject({
   default: z.union([OptionValue, z.array(OptionValue).max(200)]).optional(),
 });
 
-/** A link to a record of another entity in the same app. */
-const ReferenceField = z.strictObject({ ...fieldCommon, type: z.literal('reference'), entity: Name });
+/** A link to a record of another entity in the same app, or to several. */
+const ReferenceField = z.strictObject({
+  ...fieldCommon,
+  type: z.literal('reference'),
+  entity: Name,
+  /** Several records, each once, in the order given, such as the people of a project's team: many to many. */
+  multiple: z.boolean().optional(),
+});
 
 /** A person in the directory, for example who a request is assigned to. */
 const UserField = z.strictObject({
