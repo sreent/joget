@@ -15,11 +15,14 @@ export function ModelCanvas({
   entity,
   field,
   onPick,
+  onAddField,
 }: {
   definition: Definition;
   entity: string | null;
   field: number | null;
   onPick: (entity: string, field?: number) => void;
+  /** Add a field to an entity, and open it; without it, the canvas only shows. */
+  onAddField?: ((entity: string) => void) | undefined;
 }) {
   const laid = useMemo(() => layoutModel(definition), [definition]);
   const triangle = (head: { x: number; y: number; dir: 'left' | 'right' }) =>
@@ -70,6 +73,14 @@ export function ModelCanvas({
                     </li>
                   );
                 })}
+                {onAddField ? (
+                  <li style={{ height: ROW_H }}>
+                    <button type="button" className="flex w-full items-center gap-2 border-0 bg-transparent p-0 text-left text-sm text-accent" aria-label={`Add a field to ${spec.label}`} onClick={() => onAddField(box.entity)}>
+                      <span className="fd-type">+</span>
+                      <span>Add a field</span>
+                    </button>
+                  </li>
+                ) : null}
               </ul>
             </div>
           );

@@ -64,7 +64,8 @@ export function layoutModel(definition: Definition): { readonly boxes: ModelBox[
   for (const name of names) {
     const c = column.get(name)!;
     const y = heights.get(c) ?? MARGIN;
-    const height = HEAD_H + LIST_PAD + Math.max(1, definition.entities[name]!.fields.length) * ROW_H;
+    // A row for each field, and one more that adds a field.
+    const height = HEAD_H + LIST_PAD + (definition.entities[name]!.fields.length + 1) * ROW_H;
     boxes.push({ entity: name, x: MARGIN + c * (BOX_W + COLUMN_GAP), y, height });
     heights.set(c, y + height + ROW_GAP);
   }

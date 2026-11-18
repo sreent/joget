@@ -58,6 +58,14 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
   // How the flow shows: as its canvas or as a list; and, for a flow that waits, as designed or live.
   const [show, setShow] = useState<'canvas' | 'list'>('canvas');
   const [liveOn, setLiveOn] = useState(false);
+  // The frames folded to one box, on the flow on show.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const fold = (path: string) =>
+    setFolded((now) => {
+      const next = new Set(now);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
   const name = chosen && flows[chosen] ? chosen : (names[0] ?? null);
   const flow = name ? flows[name] : undefined;
   const waits = Boolean(flow && flowWaits(flow, definition.flows));
@@ -85,6 +93,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
               value={name ?? ''}
               onChange={(event) => {
                 setChosen(event.target.value);
+                setFolded(new Set());
                 select(null);
               }}
             >
@@ -150,6 +159,8 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
             selected={selected}
             readOnly={readOnly}
             live={liveNow}
+            folded={folded}
+            onFold={fold}
             onSelect={select}
             onShow={setShow}
             onInsert={(place) => {
@@ -227,7 +238,15 @@ function insideLoop(flow: AppFlow, list: string): boolean {
 
 type Place = { list: string; index: number };
 type Live = FlowLive['steps'][number];
-type NodeData = { node: CanvasNode; selected: boolean; readOnly: boolean; live?: Live | undefined; onInsert: (place: Place) => void; onSelect: (path: string) => void };
+type NodeData = {
+  node: CanvasNode;
+  selected: boolean;
+  readOnly: boolean;
+  live?: Live | undefined;
+  onInsert: (place: Place) => void;
+  onSelect: (path: string) => void;
+  onFold: (path: string) => void;
+};
 type FlowNode = Node<NodeData>;
 type WireData = { edge: CanvasEdge; readOnly: boolean; onInsert: (place: Place) => void };
 
@@ -258,7 +277,7 @@ function StepNode({ data }: NodeProps<FlowNode>) {
   const type = node.step!.type;
   return (
     <div className={cx('logic-step', node.tone, selected && 'chosen')} data-testid={`flow-step-${node.path}`}>
-      <Icon name={STEP_ICONS[type] ?? 'settings'} />
+      <Icon name={STEP_ICONS[type] ?? FRAME_ICONS[type] ?? 'settings'} />
       <span className="logic-kind">{node.kindLabel}</span>
       <span className="logic-words" title={node.label}>
         {node.label}
@@ -282,6 +301,20 @@ function StepNode({ data }: NodeProps<FlowNode>) {
         </span>
       ) : null}
       <LiveChip live={data.live} />
+      {node.folded ? (
+        <button
+          type="button"
+          className="nodrag absolute top-1 right-1 rounded-sm border-0 bg-transparent px-1 text-xs text-muted hover:text-text"
+          aria-label={`Unfold ${node.label}`}
+          title="Unfold"
+          onClick={(event) => {
+            event.stopPropagation();
+            data.onFold(node.path!);
+          }}
+        >
+          ⤢
+        </button>
+      ) : null}
       <Handles />
     </div>
   );
@@ -346,6 +379,15 @@ function FrameNode({ data }: NodeProps<FlowNode>) {
         <Icon name={FRAME_ICONS[node.step?.type ?? 'each'] ?? 'sync'} />
         {node.label}
         {node.about ? <span className="note"> · {node.about}</span> : null}
+      </button>
+      <button
+        type="button"
+        className="nodrag absolute -top-3 right-3 rounded-sm border border-line bg-surface px-1.5 text-xs leading-5 text-muted hover:text-text"
+        aria-label={`Fold ${node.label}`}
+        title="Fold to one box"
+        onClick={() => data.onFold(node.path!)}
+      >
+        ⤡
       </button>
       <LiveChip live={data.live} />
     </div>
@@ -444,11 +486,13 @@ function FlowCanvas(props: {
   selected: string | null;
   readOnly: boolean;
   live: FlowLive | undefined;
+  folded: ReadonlySet<string>;
+  onFold: (path: string) => void;
   onSelect: (path: string | null) => void;
   onShow: (show: 'canvas' | 'list') => void;
   onInsert: (place: Place) => void;
 }) {
-  const { definition, flow, selected, readOnly, live, onSelect, onInsert } = props;
+  const { definition, flow, selected, readOnly, live, folded, onFold, onSelect, onInsert } = props;
   const liveAt = useMemo(() => new Map((live?.steps ?? []).map((step) => [step.path, step])), [live]);
   // The flow wraps at the canvas's own width, so its rows fit at full size.
   const [box, setBox] = useState<HTMLDivElement | null>(null);
@@ -460,7 +504,7 @@ function FlowCanvas(props: {
     observer.observe(box);
     return () => observer.disconnect();
   }, [box]);
-  const laid = useMemo(() => layoutFlow(definition, flow, width), [definition, flow, width]);
+  const laid = useMemo(() => layoutFlow(definition, flow, width, folded), [definition, flow, width, folded]);
   // As steps come and go, the view fits the flow again: a new step is never out of sight.
   const [view, setView] = useState<ReactFlowInstance<FlowNode, Edge<WireData>> | null>(null);
   useEffect(() => {
@@ -470,7 +514,7 @@ function FlowCanvas(props: {
     id: node.id,
     type: node.kind,
     position: { x: node.x, y: node.y },
-    data: { node, selected: node.path !== undefined && node.path === selected, readOnly, live: node.id === node.path ? liveAt.get(node.id) : undefined, onInsert, onSelect },
+    data: { node, selected: node.path !== undefined && node.path === selected, readOnly, live: node.id === node.path ? liveAt.get(node.id) : undefined, onInsert, onSelect, onFold },
     draggable: false,
     connectable: false,
     selectable: false,

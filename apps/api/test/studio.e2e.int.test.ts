@@ -130,6 +130,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(panel(page, 'Field').getByLabel('Label', { exact: true }));
     expect(await panel(page, 'Field').getByLabel('Label', { exact: true }).inputValue()).toBe('Journey');
     await shot(page, '2b-data-model');
+    // A field added on the canvas opens beside it, to set.
+    await model.getByRole('button', { name: 'Add a field to Receipt' }).click();
+    expect(await panel(page, 'Field').getByLabel('Label', { exact: true }).inputValue()).toBe('New text');
+    await page.getByRole('button', { name: 'Discard' }).click();
     await page.getByRole('button', { name: 'List', exact: true }).click();
   });
 
@@ -563,6 +567,11 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(canvas.getByText('if it fails', { exact: true }));
     await visible(canvas.getByText('line.amount is more than 100', { exact: true }));
     await shot(page, '26-flow-canvas');
+    // A frame folds to one box, which says how many steps it holds, and unfolds again.
+    await canvas.getByRole('button', { name: 'Fold For each line in claim.lines' }).click();
+    await visible(canvas.getByTestId('flow-step-steps[1]').getByText('2 steps inside'));
+    await hidden(canvas.getByText('line.amount is more than 100', { exact: true }));
+    await canvas.getByRole('button', { name: 'Unfold For each line in claim.lines' }).click();
     // A step opens beside the canvas, and sees the loop's item.
     await canvas.getByText('line.amount is more than 100', { exact: true }).click();
     const step = page.getByRole('region', { name: 'Step' });

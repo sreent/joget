@@ -478,6 +478,8 @@ export interface CanvasNode {
   /** A wait's icon, and where its words go. */
   readonly icon?: WaitIcon;
   readonly caption?: 'above' | 'below';
+  /** A frame folded to one box, which unfolds again. */
+  readonly folded?: boolean;
 }
 
 export interface CanvasEdge {
@@ -549,6 +551,8 @@ interface Piece {
 interface Ctx {
   readonly definition: Definition;
   readonly entity?: string | undefined;
+  /** The paths of the frames folded to one box. */
+  readonly folded: ReadonlySet<string>;
 }
 
 const add = ([x, y]: Pt, dx: number, dy: number): Pt => [x + dx, y + dy];
@@ -835,6 +839,11 @@ function stepPiece(c: Ctx, step: FlowStep, path: string): Piece {
     const said = waitWords(definition, step.for, c.entity);
     return waitPiece({ id: path, path, step, label: said.words, ...(said.about ? { about: said.about } : {}), icon: said.icon, caption: 'above' });
   }
+  if ((step.type === 'each' || step.type === 'try' || step.type === 'first_of' || step.type === 'all_at_once') && c.folded.has(path)) {
+    // A folded frame is one box, which says how many steps it holds.
+    const inner = labelledLists(definition, step, path, c.entity).reduce((sum, list) => sum + flowSteps(list.steps).length, 0);
+    return boxPiece({ id: path, path, step, kindLabel: words.kind, label: words.words, about: `${inner} step${inner === 1 ? '' : 's'} inside`, folded: true });
+  }
   if (step.type === 'each' || step.type === 'try' || step.type === 'first_of' || step.type === 'all_at_once') {
     // A frame round steps: a loop's, those an error handler guards, or ways in rows.
     const rows =
@@ -957,18 +966,26 @@ function savesBefore(flow: AppFlow, definition: Definition, nodes: readonly Canv
   return new Set(
     nodes.flatMap((node) => {
       const step = node.step;
-      if (!step || node.id !== node.path) return [];
-      if (step.type === 'task' || step.type === 'wait' || (step.type === 'call' && stepWaits(step, definition.flows))) return [node.id];
-      if (step.type === 'first_of') return [`${node.path}:in`];
-      return [];
+      if (!step || node.id !== node.path || !savesAt(step, definition)) return [];
+      return [step.type === 'first_of' && !node.folded ? `${node.path}:in` : node.id];
     }),
   );
 }
 
+/** Whether a flow saves before a step: a person's task, a wait, the first of several, or a run of a flow that waits. */
+function savesAt(step: FlowStep, definition: Definition): boolean {
+  return step.type === 'task' || step.type === 'wait' || step.type === 'first_of' || (step.type === 'call' && stepWaits(step, definition.flows));
+}
+
 /** Lay a flow out for the canvas: left to right, and in rows where it's longer than the width given. */
-export function layoutFlow(definition: Definition, flow: AppFlow, maxWidth = 980): { readonly nodes: CanvasNode[]; readonly edges: CanvasEdge[]; readonly width: number; readonly height: number } {
+export function layoutFlow(
+  definition: Definition,
+  flow: AppFlow,
+  maxWidth = 980,
+  folded: ReadonlySet<string> = new Set(),
+): { readonly nodes: CanvasNode[]; readonly edges: CanvasEdge[]; readonly width: number; readonly height: number } {
   wires = 0;
-  const c: Ctx = { definition, entity: flowSubject(flow)?.entity };
+  const c: Ctx = { definition, entity: flowSubject(flow)?.entity, folded };
   const inputs = Object.keys(flow.input);
   const start: Piece = {
     width: RING,
@@ -996,18 +1013,22 @@ export function layoutFlow(definition: Definition, flow: AppFlow, maxWidth = 980
       },
     });
   }
-  // Rows: pieces go on until the next would pass the width, then the flow wraps.
+  // Rows: pieces go on until the next would pass the width, then the flow wraps. A flow that waits
+  // wraps where it saves, where it can, so that each row is one stretch of work.
+  const savesHere = (item: { index?: number }) => item.index !== undefined && savesAt(flow.steps[item.index]!, definition);
+  const reach = (row: typeof pieces, first: boolean) => row.reduce((x, item) => x + item.piece.width + GAP, MARGIN + (first ? 0 : 36));
   const rows: Array<typeof pieces> = [[]];
-  let x = MARGIN;
   for (const item of pieces) {
     const row = rows[rows.length - 1]!;
-    if (row.length && x + item.piece.width > maxWidth) {
-      rows.push([item]);
-      x = MARGIN + 36 + item.piece.width + GAP;
-    } else {
+    if (!row.length || reach(row, rows.length === 1) + item.piece.width <= maxWidth) {
       row.push(item);
-      x += item.piece.width + GAP;
+      continue;
     }
+    const at = row.findLastIndex((each, i) => i > 0 && savesHere(each));
+    const next = at > 0 ? row.splice(at) : [];
+    rows.push(next);
+    if (next.length && reach(next, false) + item.piece.width > maxWidth) rows.push([item]);
+    else rows[rows.length - 1]!.push(item);
   }
   const nodes: CanvasNode[] = [];
   const all: Wire[] = [];

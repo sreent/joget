@@ -337,4 +337,26 @@ describe('the flow canvas', () => {
     expect(liveWords({ waiting: 1, stuck: 0, since: '2026-11-17T11:59:00Z' }, now)).toBe('1 waiting · 1 minute');
     expect(liveWords({ waiting: 1, stuck: 0, since: '2026-11-17T11:59:50Z' }, now)).toBe('1 waiting · under a minute');
   });
+
+  it('wraps a flow that waits where it saves, and folds a frame to one box', () => {
+    const definition = leave();
+    const flow = definition.flows!['leave_approval']!;
+    const set = (i: number): FlowStep => ({ type: 'change', record: 'leave', values: { reason: `Step ${i}` } });
+    const steps: FlowStep[] = [set(1), set(2), { type: 'wait', for: { duration: 'P1D' } }, set(3), set(4), set(5), set(6)];
+    const waits = { ...definition, flows: { leave_approval: { ...flow, steps } } };
+    const { nodes } = layoutFlow(waits, waits.flows.leave_approval, 1000);
+    const at = (id: string) => nodes.find((node) => node.id === id)!;
+    // The row breaks before the wait, though more would fit on it: the wait starts the next row.
+    expect(at('steps[2]').y).toBeGreaterThan(at('steps[1]').y);
+    expect(at('steps[2]').x).toBeLessThan(at('steps[1]').x);
+    expect(at('steps[1]').y).toBe(at('steps[0]').y);
+
+    const loop: FlowStep = { type: 'each', in: 'leave.lines', as: 'line', steps: [set(7), set(8)] };
+    const looped = { ...definition, flows: { leave_approval: { ...flow, steps: [loop] } } };
+    const open = layoutFlow(looped, looped.flows.leave_approval, 5000);
+    expect(open.nodes.find((node) => node.id === 'steps[0]')!.kind).toBe('frame');
+    const shut = layoutFlow(looped, looped.flows.leave_approval, 5000, new Set(['steps[0]']));
+    expect(shut.nodes.find((node) => node.id === 'steps[0]')).toMatchObject({ kind: 'step', folded: true, about: '2 steps inside' });
+    expect(shut.nodes.some((node) => node.id === 'steps[0].steps[0]')).toBe(false);
+  });
 });

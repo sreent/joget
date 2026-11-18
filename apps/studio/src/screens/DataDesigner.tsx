@@ -99,6 +99,12 @@ export function DataDesigner({ definition, onChange }: Props) {
             setSelected(name);
             setField(index ?? null);
           }}
+          onAddField={(name) => {
+            const result = addField(definition, name);
+            onChange(result.definition);
+            setSelected(name);
+            setField(result.index);
+          }}
         />
       ) : entity && entityName ? (
         <EntityPanel
