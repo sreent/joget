@@ -4,11 +4,13 @@ import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, ty
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
+import { useProblems } from '../components/problems.js';
 import { DateShift, DurationInput } from '../components/duration.js';
 import { Icon, type IconName } from '../components/icon.js';
 import { Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { recordChoices, type RefChoice } from '../model/conditions.js';
 import {
+  problemsByStep,
   addFlow,
   canWait,
   flowEntities,
@@ -90,6 +92,9 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
     refetchInterval: 10_000,
   });
   const liveNow = waits && liveOn ? live.data : undefined;
+  // The draft's problems in this flow, by the step each is about.
+  const problems = useProblems();
+  const byStep = useMemo(() => (flow && name ? problemsByStep(flow, name, problems) : new Map<string, string[]>()), [flow, name, problems]);
   const select = (path: string | null) => {
     setSelected(path);
     setAdding(null);
@@ -158,6 +163,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
             selected={selected}
             readOnly={readOnly}
             live={liveNow}
+            problems={byStep}
             onSelect={select}
             onShow={setShow}
             onInsert={(place) => {
@@ -173,6 +179,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
             selected={selected}
             readOnly={readOnly}
             live={liveNow}
+            problems={byStep}
             folded={folded}
             onFold={fold}
             onSelect={select}
@@ -208,6 +215,7 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
               definition={definition}
               name={name}
               path={selected}
+              problems={byStep.get(selected) ?? []}
               readOnly={readOnly}
               onChange={onChange}
               onRemoved={() => select(null)}
@@ -259,6 +267,8 @@ type NodeData = {
   selected: boolean;
   readOnly: boolean;
   live?: Live | undefined;
+  /** What the checks find wrong with the step, as the builder changes it. */
+  problems?: readonly string[] | undefined;
   onInsert: (place: Place) => void;
   onSelect: (path: string) => void;
   onFold: (path: string) => void;
@@ -319,6 +329,7 @@ function StepNode({ data }: NodeProps<FlowNode>) {
         </span>
       ) : null}
       <LiveChip live={data.live} />
+      <ProblemCount problems={data.problems} />
       {node.folded ? (
         <button
           type="button"
@@ -348,6 +359,7 @@ function DecisionNode({ data }: NodeProps<FlowNode>) {
           <strong>{node.label}</strong>
         </span>
       ) : null}
+      <ProblemCount problems={data.problems} />
       <Handles />
     </div>
   );
@@ -377,8 +389,20 @@ function WaitNode({ data }: NodeProps<FlowNode>) {
         {node.about ? <span>{node.about}</span> : null}
       </span>
       <LiveChip live={data.live} />
+      <ProblemCount problems={data.problems} />
       <Handles />
     </div>
+  );
+}
+
+/** In a step's corner, as Ocean's LogicNode draws it: how many problems the checks find in it, each said when pointed at. */
+function ProblemCount({ problems }: { problems: readonly string[] | undefined }) {
+  if (!problems?.length) return null;
+  const words = problems.length === 1 ? '1 problem' : `${problems.length} problems`;
+  return (
+    <span className="flow-problems" role="img" aria-label={`${words}: ${problems.join('; ')}`} title={problems.join('\n')}>
+      {problems.length}
+    </span>
   );
 }
 
@@ -417,6 +441,7 @@ function FrameNode({ data }: NodeProps<FlowNode>) {
         ⤡
       </button>
       <LiveChip live={data.live} />
+      <ProblemCount problems={data.problems} />
     </div>
   );
 }
@@ -513,6 +538,7 @@ function FlowCanvas(props: {
   selected: string | null;
   readOnly: boolean;
   live: FlowLive | undefined;
+  problems: ReadonlyMap<string, string[]>;
   folded: ReadonlySet<string>;
   onFold: (path: string) => void;
   onSelect: (path: string | null) => void;
@@ -541,7 +567,16 @@ function FlowCanvas(props: {
     id: node.id,
     type: node.kind,
     position: { x: node.x, y: node.y },
-    data: { node, selected: node.path !== undefined && node.path === selected, readOnly, live: node.id === node.path ? liveAt.get(node.id) : undefined, onInsert, onSelect, onFold },
+    data: {
+      node,
+      selected: node.path !== undefined && node.path === selected,
+      readOnly,
+      live: node.id === node.path ? liveAt.get(node.id) : undefined,
+      problems: node.id === node.path && node.path !== undefined ? props.problems.get(node.path) : undefined,
+      onInsert,
+      onSelect,
+      onFold,
+    },
     draggable: false,
     connectable: false,
     selectable: false,
@@ -607,6 +642,7 @@ function FlowListing(props: {
   selected: string | null;
   readOnly: boolean;
   live: FlowLive | undefined;
+  problems: ReadonlyMap<string, string[]>;
   onSelect: (path: string | null) => void;
   onShow: (show: 'canvas' | 'list') => void;
   onInsert: (place: Place) => void;
@@ -634,6 +670,9 @@ function FlowListing(props: {
                 </span>
               </span>
               {now ? <span className="flow-row-end">{liveWords(now)}</span> : null}
+              {props.problems.get(path)?.length ? (
+                <span className="flow-row-end text-bad">{props.problems.get(path)!.length === 1 ? '1 problem' : `${props.problems.get(path)!.length} problems`}</span>
+              ) : null}
             </button>
             {labelledLists(definition, step, path, entity).map((inner) => (
               <div key={inner.path} className="ms-6 grid gap-1">
@@ -722,7 +761,17 @@ const ANY_VALUE: readonly ValueMode[] = ['fixed', 'field', 'calc', 'join', 'pers
 /** The ways to give words: what a notice says. */
 const TEXT_VALUE: readonly ValueMode[] = ['fixed', 'field', 'join', 'text', 'first', 'choose'];
 
-function StepEditor(props: { definition: Definition; name: string; path: string; readOnly: boolean; onChange: (definition: Definition) => void; onRemoved: () => void; onMoved: (path: string) => void; onClosed: () => void }) {
+function StepEditor(props: {
+  definition: Definition;
+  name: string;
+  path: string;
+  problems: readonly string[];
+  readOnly: boolean;
+  onChange: (definition: Definition) => void;
+  onRemoved: () => void;
+  onMoved: (path: string) => void;
+  onClosed: () => void;
+}) {
   const { definition, name, path, readOnly, onChange } = props;
   const flow = definition.flows![name]!;
   const step = stepAt(flow, path)!;
@@ -735,6 +784,15 @@ function StepEditor(props: { definition: Definition; name: string; path: string;
 
   return (
     <Card className="grid gap-4 p-4" aria-label="Step">
+      {props.problems.length ? (
+        <Notice tone="bad">
+          <ul className="m-0 grid gap-1 pl-4">
+            {props.problems.map((problem, i) => (
+              <li key={i}>{problem}</li>
+            ))}
+          </ul>
+        </Notice>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="m-0 text-base font-semibold">{STEP_NAMES[step.type]}</h3>
         {readOnly ? null : (

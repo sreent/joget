@@ -1,7 +1,9 @@
 import { ConnectionsDesigner, IntegrationSecrets, WebhooksDesigner } from './IntegrationDesigner.js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { validateDefinition, type StoredDefinition } from '@platform/app-model';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../api.js';
+import { ProblemsBadge, ProblemsContext, ProblemsList } from '../components/problems.js';
 import { Badge, Button, Checkbox, cx, Dialog, Notice } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
 import { Link, type BuildTab } from '../router.js';
@@ -88,10 +90,67 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
   const composing = useQuery({ queryKey: ['compose'], queryFn: api.composeEnabled, staleTime: Infinity });
   const [chat, setChat] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
+  // What undo goes back to, and what redo goes forward to: the drafts before and after this one.
+  const [past, setPast] = useState<Definition[]>([]);
+  const [future, setFuture] = useState<Definition[]>([]);
+  const lastEdit = useRef(0);
+  // The draft's problems, found as it changes, and whether their list is open.
+  const [problems, setProblems] = useState<Issue[]>([]);
+  const [showProblems, setShowProblems] = useState(false);
 
   useEffect(() => {
     if (saved.data) setDraft(normalize(saved.data.definition));
   }, [saved.data]);
+
+  /** A change to the draft, which undo takes back. Changes close together, as typing makes them, are one. */
+  const edit = (next: Definition) => {
+    if (!draft || next === draft) return;
+    const now = Date.now();
+    if (now - lastEdit.current > TYPING) setPast((list) => [...list.slice(1 - HISTORY), draft]);
+    lastEdit.current = now;
+    setFuture([]);
+    setDraft(next);
+  };
+  const undo = () => {
+    const previous = past.at(-1);
+    if (!previous || !draft) return;
+    setPast(past.slice(0, -1));
+    setFuture([draft, ...future]);
+    setDraft(previous);
+    lastEdit.current = 0;
+  };
+  const redo = () => {
+    const [next, ...rest] = future;
+    if (!next || !draft) return;
+    setFuture(rest);
+    setPast([...past, draft]);
+    setDraft(next);
+    lastEdit.current = 0;
+  };
+  // Ctrl or Cmd with Z undoes, and with Shift, or Y, redoes; in a text box, the box's own undo works instead.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z' && !event.shiftKey) undo();
+      else if (key === 'y' || (key === 'z' && event.shiftKey)) redo();
+      else return;
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+  // The checks the server runs as the draft saves, run here as it changes, a moment after the last change.
+  useEffect(() => {
+    if (!draft || !saved.data) return;
+    const previous = saved.data.definition;
+    const timer = window.setTimeout(() => {
+      const result = validateDefinition(draft, isStored(previous) ? previous : undefined);
+      setProblems(result.ok ? [] : result.issues.map(({ path, message }) => ({ path, message })));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [draft, saved.data]);
 
   const dirty = !!draft && !!saved.data && JSON.stringify(draft) !== JSON.stringify(normalize(saved.data.definition));
   useEffect(() => {
@@ -156,6 +215,17 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
         <div className="flex items-center gap-2">
           {team ? <Badge tone="accent">Team app</Badge> : null}
           <Badge>revision {saved.data.revision}</Badge>
+          {team ? null : <ProblemsBadge count={problems.length} open={showProblems} onToggle={() => setShowProblems(!showProblems)} />}
+          {team ? null : (
+            <>
+              <Button size="sm" variant="ghost" disabled={!past.length || chatBusy} onClick={undo} aria-keyshortcuts="Control+Z Meta+Z">
+                Undo
+              </Button>
+              <Button size="sm" variant="ghost" disabled={!future.length || chatBusy} onClick={redo} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
+                Redo
+              </Button>
+            </>
+          )}
           {canChat ? (
             <Button aria-expanded={chat} onClick={() => setChat(!chat)}>
               {chat ? 'Hide the chat' : 'Build by chat'}
@@ -169,6 +239,7 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
         </div>
       </div>
 
+      {showProblems && problems.length && !team ? <ProblemsList appId={appId} definition={draft} problems={problems} /> : null}
       {app.workingCopyOf ? <WorkingCopyBar app={app} dirty={dirty} /> : null}
       {app.movedTo ? <MovedNotice movedTo={app.movedTo} /> : null}
 
@@ -219,19 +290,21 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
       {/* While the chat works, the designers wait: its draft replaces the one it was given. */}
       <fieldset disabled={team || chatBusy} className="m-0 min-w-0 border-0 p-0">
         <div className="@container">
-        {tab === 'data' ? <DataDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'forms' ? <FormDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'pages' ? <PagesDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'menu' ? <MenuDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'rules' ? <RulesDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'actions' ? <ActionsDesigner appId={appId} definition={draft} onChange={setDraft} /> : null}
-        {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'cards' ? <CardsDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'roles' ? <RolesDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={setDraft} readOnly={team || chatBusy} dirty={dirty} {...(item ? { open: item } : {})} /> : null}
-        {tab === 'connections' ? <ConnectionsDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'webhooks' ? <WebhooksDesigner definition={draft} onChange={setDraft} /> : null}
-        {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={setDraft} /> : null}
+        <ProblemsContext.Provider value={problems}>
+        {tab === 'data' ? <DataDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'forms' ? <FormDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'pages' ? <PagesDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'menu' ? <MenuDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'rules' ? <RulesDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'actions' ? <ActionsDesigner appId={appId} definition={draft} onChange={edit} /> : null}
+        {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'cards' ? <CardsDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'roles' ? <RolesDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'flows' ? <FlowsDesigner appId={appId} definition={draft} onChange={edit} readOnly={team || chatBusy} dirty={dirty} {...(item ? { open: item } : {})} /> : null}
+        {tab === 'connections' ? <ConnectionsDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'webhooks' ? <WebhooksDesigner definition={draft} onChange={edit} /> : null}
+        {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={edit} /> : null}
+        </ProblemsContext.Provider>
         </div>
       </fieldset>
       {/* Secrets are each environment's, for what is saved: whoever manages connections keeps them, a team app's too. */}
@@ -251,7 +324,7 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
               <span className="text-muted">{app.workingCopyOf ? 'They apply to your working copy once saved; submit them for review after.' : 'They apply to your sandbox once saved.'}</span>
             </p>
             <div className="flex gap-2">
-              <Button onClick={() => setDraft(normalize(saved.data.definition))} disabled={chatBusy}>
+              <Button onClick={() => edit(normalize(saved.data.definition))} disabled={chatBusy}>
                 Discard
               </Button>
               <Button variant="primary" onClick={() => check.mutate()} disabled={check.isPending || chatBusy}>
@@ -315,9 +388,19 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
       {canChat ? (
         // Beside the designers on a wide screen; over them on a narrow one. Hidden, it keeps the conversation.
         <aside hidden={!chat} className="fixed inset-0 z-30 bg-page p-2 xl:sticky xl:inset-auto xl:top-[4.5rem] xl:z-auto xl:h-[calc(100vh-9.5rem)] xl:bg-transparent xl:p-0">
-          <ComposePanel appId={appId} definition={draft} onDraft={setDraft} onBusy={setChatBusy} onClose={() => setChat(false)} />
+          <ComposePanel appId={appId} definition={draft} onDraft={edit} onBusy={setChatBusy} onClose={() => setChat(false)} />
         </aside>
       ) : null}
     </div>
   );
+}
+
+/** Changes closer together than this are one step to undo, as when someone types. */
+const TYPING = 800;
+/** How many steps undo can go back. */
+const HISTORY = 100;
+
+/** A definition as saved: each entity and field has its ID, which keeps renames apart from new names. */
+function isStored(definition: Definition): definition is Definition & StoredDefinition {
+  return Object.values(definition.entities).every((entity) => entity.id !== undefined && entity.fields.every((field) => field.id !== undefined));
 }

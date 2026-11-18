@@ -110,6 +110,27 @@ function withFlow(definition: Definition, name: string, change: (flow: AppFlow) 
 const withSteps = (definition: Definition, name: string, list: string, change: (steps: FlowStep[]) => FlowStep[]) =>
   withFlow(definition, name, (flow) => ({ ...flow, steps: changeList(flow.steps, 'steps', list, change) }));
 
+/**
+ * A flow's problems by the step each is about: the deepest step its path names, such as
+ * `steps[2].then[0]` for a problem at `flows.claim.steps[2].then[0].values.total`. Problems about
+ * the flow itself, such as its input, are under the empty path.
+ */
+export function problemsByStep(flow: AppFlow, name: string, problems: ReadonlyArray<{ readonly path: string; readonly message: string }>): Map<string, string[]> {
+  const prefix = `flows.${name}.`;
+  const out = new Map<string, string[]>();
+  for (const problem of problems) {
+    if (!problem.path.startsWith(prefix)) continue;
+    const rest = problem.path.slice(prefix.length);
+    let at = '';
+    for (const match of rest.matchAll(/\]/g)) {
+      const candidate = rest.slice(0, match.index + 1);
+      if (stepAt(flow, candidate)) at = candidate;
+    }
+    out.set(at, [...(out.get(at) ?? []), problem.message]);
+  }
+  return out;
+}
+
 export function insertStep(definition: Definition, name: string, list: string, index: number, step: FlowStep): Definition {
   return withSteps(definition, name, list, (steps) => [...steps.slice(0, index), step, ...steps.slice(index)]);
 }

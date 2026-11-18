@@ -512,3 +512,24 @@ describe('rules and review cards', () => {
     expect(table!.rows[1]!.cells[3]!.source).toEqual({ source: 'document', document: 'receipt.jpg' });
   });
 });
+
+describe('problems in plain words', () => {
+  it("says what the schema finds wrong as a builder reads it, not as zod writes it", () => {
+    const draft = structuredClone(EXPENSE_APP) as unknown as Record<string, any>;
+    draft.entities.expense_claim.label = '';
+    draft.entities.expense_claim.colour = 'red';
+    draft.entities.expense_claim.fields[0].maxLength = 'long';
+    draft.actions.submit_claim.confirm = 'maybe';
+    const result = validateDefinition(draft);
+    expect(result.ok).toBe(false);
+    const messages = result.ok ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        "entities.expense_claim.label: This can't be empty",
+        'entities.expense_claim: Not a setting here: colour',
+        'entities.expense_claim.fields[0].maxLength: Expected a number',
+        'actions.submit_claim.confirm: Expected one of: none, preview, review',
+      ]),
+    );
+  });
+});

@@ -36,6 +36,7 @@ interface Locator {
 }
 interface Page extends Locator {
   goto(url: string): Promise<unknown>;
+  keyboard: { press(key: string): Promise<void> };
   url(): string;
   waitForURL(url: RegExp): Promise<void>;
   getByText(text: string, options?: { exact?: boolean }): Locator;
@@ -981,6 +982,38 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.getByRole('cell', { name: 'Tokyo summit' }));
     await visible(page.getByRole('cell', { name: 'Penang retreat' }));
     await shot(page, '35-imported-trips');
+  });
+
+  it('marks a problem on its step as the builder makes it, and undoes and redoes changes', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await page.getByLabel('Name').fill('Claims to check');
+    await page.getByLabel('Start from').selectOption('expenses');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const checkId = page.url().split('/apps/')[1]!.split('/')[0]!;
+    await visible(page.getByText('No problems', { exact: true }));
+
+    // A check with no message: the checks find it as the draft changes, and the step says so.
+    await page.goto(`${BASE}/studio/apps/${checkId}/build/flows/check_approval`);
+    await page.getByTestId('flow-step-steps[0]').click();
+    await page.getByRole('region', { name: 'Step' }).getByLabel('Message', { exact: true }).fill('');
+    await visible(page.getByTestId('flow-step-steps[0]').getByRole('img', { name: /^1 problem/ }));
+    await page.getByRole('button', { name: '1 problem', exact: true }).click();
+    await visible(page.getByRole('region', { name: 'Problems' }).getByRole('link', { name: 'Flows: Check the approval' }));
+    await shot(page, '36-a-problem-on-its-step');
+
+    // Undo takes the change back, and redo makes it again; so do the keys, outside a text box.
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await visible(page.getByText('No problems', { exact: true }));
+    await hidden(page.getByText('Unsaved changes.'));
+    await page.getByRole('button', { name: 'Redo', exact: true }).click();
+    await visible(page.getByRole('button', { name: '1 problem', exact: true }));
+    await page.getByRole('heading', { name: 'Claims to check' }).click();
+    await page.keyboard.press('Control+z');
+    await visible(page.getByText('No problems', { exact: true }));
+    await page.keyboard.press('Control+Shift+z');
+    await visible(page.getByRole('button', { name: '1 problem', exact: true }));
   });
 
   it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {

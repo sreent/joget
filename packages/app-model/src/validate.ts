@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
 import {
   entityFields,
@@ -63,7 +62,43 @@ const ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 export { mapRefs } from './condition-refs.js';
 
 export function newId(): string {
-  return [...randomBytes(10)].map((byte) => ID_ALPHABET[byte % ID_ALPHABET.length]).join('');
+  // Web Crypto, so that the studio can check a draft in the browser as the server does.
+  return [...globalThis.crypto.getRandomValues(new Uint8Array(10))].map((byte) => ID_ALPHABET[byte % ID_ALPHABET.length]).join('');
+}
+
+const TYPE_WORDS: Readonly<Record<string, string>> = { string: 'text', number: 'a number', int: 'a whole number', boolean: 'yes or no', object: 'a group of settings', array: 'a list' };
+
+/** What the schema finds wrong, in plain words: its own messages are for programmers. A message a rule of the schema gives itself stays as it is. */
+export function plainMessage(issue: { readonly code: string; readonly message: string }): string {
+  const { code } = issue;
+  // What else each kind of issue carries, such as a minimum, without a cast.
+  const fields = new Map<string, unknown>(Object.entries(issue));
+  const origin = typeof fields.get('origin') === 'string' ? String(fields.get('origin')) : '';
+  const unit = origin === 'string' ? ' characters' : '';
+  if (code === 'too_small') {
+    const minimum = Number(fields.get('minimum'));
+    if (origin === 'string' && minimum === 1) return "This can't be empty";
+    if (origin === 'array' && minimum === 1) return 'This needs at least one';
+    return fields.get('inclusive') === false ? `More than ${minimum}${unit}` : `At least ${minimum}${unit}`;
+  }
+  if (code === 'too_big') {
+    const maximum = Number(fields.get('maximum'));
+    return fields.get('inclusive') === false ? `Less than ${maximum}${unit}` : `At most ${maximum}${unit}`;
+  }
+  if (code === 'invalid_type') {
+    // A value that is missing altogether is one that is required.
+    if (/received undefined$/.test(issue.message)) return 'This is required';
+    const expected = String(fields.get('expected') ?? '');
+    return TYPE_WORDS[expected] ? `Expected ${TYPE_WORDS[expected]}` : issue.message;
+  }
+  const values = fields.get('values');
+  if (code === 'invalid_value' && Array.isArray(values)) {
+    const words = values.map((value: unknown) => String(value));
+    return words.length === 1 ? `Expected ${words[0]}` : `Expected one of: ${words.join(', ')}`;
+  }
+  const keys = fields.get('keys');
+  if (code === 'unrecognized_keys' && Array.isArray(keys)) return `Not a setting here: ${keys.join(', ')}`;
+  return issue.message;
 }
 
 function formatPath(path: readonly PropertyKey[]): string {
@@ -79,7 +114,7 @@ function formatPath(path: readonly PropertyKey[]): string {
 export function validateDefinition(input: unknown, previous?: StoredDefinition, generateId: () => string = newId): ValidationResult {
   const parsed = AppDefinition.safeParse(input);
   if (!parsed.success) {
-    return { ok: false, issues: parsed.error.issues.map((issue) => ({ path: formatPath(issue.path), message: issue.message })) };
+    return { ok: false, issues: parsed.error.issues.map((issue) => ({ path: formatPath(issue.path), message: plainMessage(issue) })) };
   }
   const issues: Issue[] = [];
   const notes: string[] = [];

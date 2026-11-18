@@ -13,6 +13,7 @@ import {
   liveWords,
   moveStep,
   newStep,
+  problemsByStep,
   removeFlow,
   removeStep,
   recipientWords,
@@ -84,6 +85,25 @@ describe('editing flows', () => {
     expect(stepAt(flow, 'steps[0].steps[1].else[0]')).toMatchObject({ type: 'create', entity: 'budget' });
     expect(listAt(flow, 'steps[1].steps')).toBeUndefined();
     expect(stepAt(flow, 'steps[9]')).toBeUndefined();
+  });
+
+  it('finds the step each problem is about: the deepest step its path names', () => {
+    const flow = spend(app());
+    const problems = [
+      { path: 'flows.record_spend.steps[0].steps[1].then[0].values.spent', message: 'a' },
+      { path: 'flows.record_spend.steps[0].steps[1].when', message: 'b' },
+      { path: 'flows.record_spend.steps[0].steps[1].then[0].values.left', message: 'c' },
+      { path: 'flows.record_spend.input.claim', message: 'd' },
+      { path: 'flows.other.steps[0]', message: 'e' },
+      { path: 'entities.budget.fields[0]', message: 'f' },
+    ];
+    expect(problemsByStep(flow, 'record_spend', problems)).toEqual(
+      new Map([
+        ['steps[0].steps[1].then[0]', ['a', 'c']],
+        ['steps[0].steps[1]', ['b']],
+        ['', ['d']],
+      ]),
+    );
   });
 
   it('inserts, replaces, moves and removes steps where their paths say', () => {
