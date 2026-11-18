@@ -7,7 +7,11 @@ import type { FieldValue, RecordLines, RecordValues } from './values.js';
 /** Where a value came from (design §6.2). Without it, review turns into rubber-stamping. */
 export const Provenance = z.discriminatedUnion('source', [
   /** Read from a document, such as a receipt, optionally with the place on it. */
-  z.strictObject({ source: z.literal('document'), document: z.string().trim().min(1).max(500).optional(), location: z.string().trim().min(1).max(200).optional() }),
+  z.strictObject({
+    source: z.literal('document'),
+    document: z.string().trim().min(1).max(500).optional(),
+    location: z.string().trim().min(1).max(200).optional(),
+  }),
   /** Inferred by the agent, for example from a calendar entry. */
   z.strictObject({ source: z.literal('agent'), note: z.string().trim().min(1).max(500).optional() }),
   /** Entered or edited by the person. */
@@ -66,7 +70,13 @@ export interface FileInfo {
 }
 
 /** How a value reads to a person. A file reads as its name, if known. */
-export function displayValue(definition: StoredDefinition, entity: string, field: string, value: FieldValue, files: Readonly<Record<string, FileInfo>> = {}): string {
+export function displayValue(
+  definition: StoredDefinition,
+  entity: string,
+  field: string,
+  value: FieldValue,
+  files: Readonly<Record<string, FileInfo>> = {},
+): string {
   if (value === null) return '—';
   const declared = definition.entities[entity]?.fields.find((f) => f.name === field);
   if (declared?.type === 'file') return typeof value === 'string' && files[value] ? files[value].name : 'A file';
@@ -115,19 +125,28 @@ export function buildCard(input: {
     if (!lines || !input.lines?.[of]) return [];
     const lineEntity = definition.entities[lines.entity]!;
     const declared = columns.flatMap((name) => lineEntity.fields.filter((f) => f.name === name));
-    return [{
-      field: of,
-      label: lines.label,
-      columns: declared.map((f) => ({ name: f.name, label: f.label, type: f.type })),
-      rows: input.lines[of]!.map((line, index) => ({
-        id: line.id,
-        cells: declared.map((f) => {
-          const value = line.values[f.name] ?? null;
-          const source = input.provenance?.[`${of}[${index}].${f.name}`];
-          return { name: f.name, label: f.label, type: f.type, value, display: displayValue(definition, lines.entity, f.name, value, input.files), ...(source ? { source } : {}) };
-        }),
-      })),
-    }];
+    return [
+      {
+        field: of,
+        label: lines.label,
+        columns: declared.map((f) => ({ name: f.name, label: f.label, type: f.type })),
+        rows: input.lines[of]!.map((line, index) => ({
+          id: line.id,
+          cells: declared.map((f) => {
+            const value = line.values[f.name] ?? null;
+            const source = input.provenance?.[`${of}[${index}].${f.name}`];
+            return {
+              name: f.name,
+              label: f.label,
+              type: f.type,
+              value,
+              display: displayValue(definition, lines.entity, f.name, value, input.files),
+              ...(source ? { source } : {}),
+            };
+          }),
+        })),
+      },
+    ];
   });
   return {
     title: titleTemplate.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g, (_, name: string) => displayValue(definition, entity, name, values[name] ?? null)),
@@ -138,14 +157,16 @@ export function buildCard(input: {
       if (!info) return [];
       const value = values[name] ?? null;
       const source = input.provenance?.[name];
-      return [{
-        name,
-        label: info.field?.label ?? name,
-        type: info.field?.type ?? ('system' as const),
-        value,
-        display: displayValue(definition, entity, name, value, input.files),
-        ...(source ? { source } : {}),
-      }];
+      return [
+        {
+          name,
+          label: info.field?.label ?? name,
+          type: info.field?.type ?? ('system' as const),
+          value,
+          display: displayValue(definition, entity, name, value, input.files),
+          ...(source ? { source } : {}),
+        },
+      ];
     }),
     responses: ['approve', 'edit', 'reject'],
   };

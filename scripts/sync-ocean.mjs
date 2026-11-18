@@ -5,7 +5,7 @@
 //
 //   node scripts/sync-ocean.mjs ../ocean
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,8 +33,13 @@ const fonts = readdirSync(join(from, 'fonts')).sort();
 for (const file of fonts) copyFileSync(join(from, 'fonts', file), join(design, 'fonts', file));
 
 // The icons, as the markup inside each <svg>, for pages that draw them inline.
-const icons = readdirSync(join(from, 'icons')).filter((file) => file.endsWith('.svg')).sort();
-const inner = (file) => readFileSync(join(from, 'icons', file), 'utf8').replace(/^<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
+const icons = readdirSync(join(from, 'icons'))
+  .filter((file) => file.endsWith('.svg'))
+  .sort();
+const inner = (file) =>
+  readFileSync(join(from, 'icons', file), 'utf8')
+    .replace(/^<svg[^>]*>/, '')
+    .replace(/<\/svg>\s*$/, '');
 writeFileSync(
   join(design, 'src/icons.ts'),
   `// Ocean's icons, from sreent/ocean at ${commit}, taken by scripts/sync-ocean.mjs: the markup inside\n` +

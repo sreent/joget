@@ -9,7 +9,9 @@ import { BLOCK_PATH, type Page, type PageBlock, type TabBlock } from './schema.j
 /** Each block of a page with its path: the blocks that tabs hold too, but not the tabs themselves. */
 export function pageBlocks(page: Pick<Page, 'blocks'>): Array<{ readonly block: TabBlock; readonly path: string }> {
   return page.blocks.flatMap((block, index) =>
-    block.type === 'tabs' ? block.tabs.flatMap((tab, t) => tab.blocks.map((inner, i) => ({ block: inner, path: `${index}.${t}.${i}` }))) : [{ block, path: String(index) }],
+    block.type === 'tabs'
+      ? block.tabs.flatMap((tab, t) => tab.blocks.map((inner, i) => ({ block: inner, path: `${index}.${t}.${i}` })))
+      : [{ block, path: String(index) }],
   );
 }
 

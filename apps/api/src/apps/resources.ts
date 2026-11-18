@@ -1,5 +1,5 @@
 import type { Resource, ScopeRef } from '@platform/authz';
-import { isLoaded, type AppRef, type EnvironmentRow, type LoadedApp } from './catalog.js';
+import { type AppRef, type EnvironmentRow, isLoaded, type LoadedApp } from './catalog.js';
 
 type EnvKind = EnvironmentRow['kind'];
 

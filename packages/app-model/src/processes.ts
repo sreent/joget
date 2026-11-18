@@ -1,6 +1,16 @@
-import { CLOCK, evaluateCondition, type Condition, type ConditionEnv } from '@platform/authz';
+import { CLOCK, type Condition, type ConditionEnv, evaluateCondition } from '@platform/authz';
 import type { StoredDefinition } from './fields.js';
-import { DURATION_PATTERN, type BoundaryEventElement, type CatchEventElement, type Process, type ProcessElement, type ProcessElementType, type Raised, type Timer, type VoteRule } from './schema.js';
+import {
+  type BoundaryEventElement,
+  type CatchEventElement,
+  DURATION_PATTERN,
+  type Process,
+  type ProcessElement,
+  type ProcessElementType,
+  type Raised,
+  type Timer,
+  type VoteRule,
+} from './schema.js';
 import { conditionRecord, type RecordValues } from './values.js';
 
 /*
@@ -97,7 +107,11 @@ export type RepeatableElement = Extract<ProcessElement, { repeat?: unknown }>;
 
 /** Whether an element can repeat. */
 export function canRepeat(element: ProcessElement | undefined): element is RepeatableElement {
-  return element !== undefined && 'name' in element && (element.type.endsWith('Task') || element.type === 'task' || element.type === 'subProcess' || element.type === 'callActivity');
+  return (
+    element !== undefined &&
+    'name' in element &&
+    (element.type.endsWith('Task') || element.type === 'task' || element.type === 'subProcess' || element.type === 'callActivity')
+  );
 }
 
 /** Whether an element is an ad hoc sub-process. */
@@ -162,10 +176,12 @@ export function eventSubCatcher(
  */
 export function plainStartOf(process: Process): string | undefined {
   const starts = startEventsOf(process);
-  return starts.find((id) => {
-    const element = process.elements[id];
-    return element?.type === 'startEvent' && !element.actions.length && !element.timer && !element.condition && !element.signal;
-  }) ?? starts[0];
+  return (
+    starts.find((id) => {
+      const element = process.elements[id];
+      return element?.type === 'startEvent' && !element.actions.length && !element.timer && !element.condition && !element.signal;
+    }) ?? starts[0]
+  );
 }
 
 /** A start event of the process itself that starts on its own: on a record's date or a time after it is created, or when a condition comes to hold. */
@@ -182,7 +198,9 @@ export function automaticStarts(definition: Pick<StoredDefinition, 'processes'>,
     model.entity !== entity
       ? []
       : Object.entries(model.elements).flatMap(([element, el]) =>
-          el.type === 'startEvent' && !el.in && (el.timer || el.condition) ? [{ process, element, ...(el.timer ? { timer: el.timer } : {}), ...(el.condition ? { condition: el.condition } : {}) }] : [],
+          el.type === 'startEvent' && !el.in && (el.timer || el.condition)
+            ? [{ process, element, ...(el.timer ? { timer: el.timer } : {}), ...(el.condition ? { condition: el.condition } : {}) }]
+            : [],
         ),
   );
 }
@@ -195,7 +213,15 @@ export function automaticStarts(definition: Pick<StoredDefinition, 'processes'>,
 export function addDuration(at: Date, duration: string, sign: 1 | -1 = 1): Date {
   const match = DURATION_PATTERN.exec(duration);
   if (!match) throw new Error(`Not an ISO 8601 duration: ${duration}`);
-  const [years, months, weeks, days, hours, minutes, seconds] = match.slice(1).map((part) => Number(part ?? 0)) as [number, number, number, number, number, number, number];
+  const [years, months, weeks, days, hours, minutes, seconds] = match.slice(1).map((part) => Number(part ?? 0)) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
   const out = new Date(at.getTime());
   if (years || months) {
     const day = out.getUTCDate();
@@ -257,7 +283,9 @@ export function flowsOut(process: Process, graph: ProcessGraph, id: string, stat
     });
     if (taken) return { ok: true, flows: [taken] };
     const fallback = out.find((flowId) => process.flows[flowId]!.default);
-    return fallback ? { ok: true, flows: [fallback] } : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
+    return fallback
+      ? { ok: true, flows: [fallback] }
+      : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
   }
   if (element.type === 'inclusiveGateway' || element.type === 'complexGateway') {
     // Every flow whose condition holds, or else the default.
@@ -268,13 +296,17 @@ export function flowsOut(process: Process, graph: ProcessGraph, id: string, stat
     });
     if (taken.length) return { ok: true, flows: taken };
     const fallback = out.find((flowId) => process.flows[flowId]!.default);
-    return fallback ? { ok: true, flows: [fallback] } : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
+    return fallback
+      ? { ok: true, flows: [fallback] }
+      : { ok: false, message: `${elementName(process, id)}: no flow's condition holds, and it has no default flow` };
   }
   if (element.type === 'userTask' || element.type === 'businessRuleTask') {
     const named = out.filter((flowId) => process.flows[flowId]!.outcome !== undefined);
     if (!named.length) return { ok: true, flows: out };
     const taken = named.filter((flowId) => process.flows[flowId]!.outcome === outcome);
-    return taken.length ? { ok: true, flows: taken } : { ok: false, message: `${elementName(process, id)}: no flow leads on from the outcome ${outcome ?? '(none)'}` };
+    return taken.length
+      ? { ok: true, flows: taken }
+      : { ok: false, message: `${elementName(process, id)}: no flow leads on from the outcome ${outcome ?? '(none)'}` };
   }
   return { ok: true, flows: out };
 }
@@ -290,7 +322,9 @@ export function linkTarget(process: Process, id: string): string | undefined {
   const element = process.elements[id];
   if (element?.type !== 'intermediateThrowEvent' || element.link === undefined) return undefined;
   const scope = scopeOf(process, id);
-  return Object.entries(process.elements).find(([other, candidate]) => candidate.type === 'intermediateCatchEvent' && candidate.link === element.link && scopeOf(process, other) === scope)?.[0];
+  return Object.entries(process.elements).find(
+    ([other, candidate]) => candidate.type === 'intermediateCatchEvent' && candidate.link === element.link && scopeOf(process, other) === scope,
+  )?.[0];
 }
 
 /** Every element a token at an element could still reach, through flows, links and the events on a task's boundary. */
@@ -322,7 +356,9 @@ export function reachable(process: Process, graph: ProcessGraph, from: string): 
 }
 
 /** What an event waits for: a time, an action saved on the record (a message), a condition on the record, an error, an escalation, a cancel, or a link. */
-export function eventKind(event: CatchEventElement | BoundaryEventElement): 'timer' | 'message' | 'error' | 'condition' | 'link' | 'escalation' | 'cancel' | 'signal' {
+export function eventKind(
+  event: CatchEventElement | BoundaryEventElement,
+): 'timer' | 'message' | 'error' | 'condition' | 'link' | 'escalation' | 'cancel' | 'signal' {
   if (event.signal !== undefined) return 'signal';
   if (event.message) return 'message';
   if (event.condition) return 'condition';
@@ -336,7 +372,8 @@ export function eventKind(event: CatchEventElement | BoundaryEventElement): 'tim
 export const raisedCode = (raised: Raised | undefined): string | undefined => (raised === undefined || raised === true ? undefined : raised.code);
 
 /** Whether a catch takes a throw: a catch without a code takes all; one with a code, only the throws of that code. */
-export const catches = (catcher: Raised | undefined, thrown: string | undefined): boolean => catcher !== undefined && (catcher === true || catcher.code === thrown);
+export const catches = (catcher: Raised | undefined, thrown: string | undefined): boolean =>
+  catcher !== undefined && (catcher === true || catcher.code === thrown);
 
 /** The event on a host's boundary that catches an error or an escalation of a code: the one for that code first, then one for all. */
 export function catcherOn(process: Process, graph: ProcessGraph, host: string, kind: 'error' | 'escalation', code: string | undefined): string | undefined {
@@ -351,7 +388,9 @@ export function catcherOn(process: Process, graph: ProcessGraph, host: string, k
 /** The start events of the app's processes about an entity that a signal starts. */
 export function signalStarts(definition: Pick<StoredDefinition, 'processes'>, signal: string, entity: string): ProcessStart[] {
   return Object.entries(definition.processes ?? {}).flatMap(([process, model]) =>
-    model.entity !== entity ? [] : Object.entries(model.elements).flatMap(([element, el]) => (el.type === 'startEvent' && !el.in && el.signal === signal ? [{ process, element }] : [])),
+    model.entity !== entity
+      ? []
+      : Object.entries(model.elements).flatMap(([element, el]) => (el.type === 'startEvent' && !el.in && el.signal === signal ? [{ process, element }] : [])),
   );
 }
 
@@ -360,7 +399,9 @@ export function caughtSignals(process: Process): string[] {
   return [
     ...new Set(
       Object.values(process.elements).flatMap((element) =>
-        (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'startEvent') && element.signal !== undefined ? [element.signal] : [],
+        (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent' || element.type === 'startEvent') && element.signal !== undefined
+          ? [element.signal]
+          : [],
       ),
     ),
   ];
@@ -368,7 +409,13 @@ export function caughtSignals(process: Process): string[] {
 
 /** The signals that a process throws: at throw events and end events. */
 export function thrownSignals(process: Process): string[] {
-  return [...new Set(Object.values(process.elements).flatMap((element) => ((element.type === 'intermediateThrowEvent' || element.type === 'endEvent') && element.signal !== undefined ? [element.signal] : [])))];
+  return [
+    ...new Set(
+      Object.values(process.elements).flatMap((element) =>
+        (element.type === 'intermediateThrowEvent' || element.type === 'endEvent') && element.signal !== undefined ? [element.signal] : [],
+      ),
+    ),
+  ];
 }
 
 /** The actions whose commit a process waits for at a message: at a catch event, a receive task, or on a boundary. */
@@ -399,7 +446,9 @@ export function sentMessages(process: Process): Array<{ readonly element: string
 /** The start events of the app's processes that an action starts. */
 export function startsOf(definition: Pick<StoredDefinition, 'processes'>, action: string): ProcessStart[] {
   return Object.entries(definition.processes ?? {}).flatMap(([process, model]) =>
-    Object.entries(model.elements).flatMap(([element, el]) => (el.type === 'startEvent' && !el.in && el.actions.includes(action) ? [{ process, element }] : [])),
+    Object.entries(model.elements).flatMap(([element, el]) =>
+      el.type === 'startEvent' && !el.in && el.actions.includes(action) ? [{ process, element }] : [],
+    ),
   );
 }
 
@@ -430,10 +479,14 @@ export function processWork(process: Process): {
   readonly calls: readonly string[];
   readonly scripts: readonly string[];
 } {
-  const tasks = Object.values(process.elements).filter((element): element is Extract<ProcessElement, { type: 'serviceTask' }> => element.type === 'serviceTask');
+  const tasks = Object.values(process.elements).filter(
+    (element): element is Extract<ProcessElement, { type: 'serviceTask' }> => element.type === 'serviceTask',
+  );
   const undoes = Object.values(process.elements).flatMap((element) => ('undo' in element && element.undo ? [element.undo] : []));
   return {
-    actions: [...new Set([...tasks.flatMap((task) => (task.action ? [task.action] : [])), ...sentMessages(process).map((message) => message.action), ...undoes])],
+    actions: [
+      ...new Set([...tasks.flatMap((task) => (task.action ? [task.action] : [])), ...sentMessages(process).map((message) => message.action), ...undoes]),
+    ],
     flows: [...new Set(tasks.flatMap((task) => (task.flow ? [task.flow.flow] : [])))],
     calls: [...new Set(Object.values(process.elements).flatMap((element) => (element.type === 'callActivity' ? [element.process] : [])))],
     scripts: Object.values(process.elements).flatMap((element) => (element.type === 'scriptTask' ? [element.name] : [])),

@@ -80,7 +80,12 @@ export function noticeRoutes(notices: Notices): FastifyPluginAsyncZod {
       '/v1/me/notices/settings',
       {
         config: { access: { kind: 'authenticated' } },
-        schema: { tags: ['notices'], summary: 'Turn notices by email on or off. In the app, they always come', body: z.object({ email: z.boolean() }), response: { 200: Settings } },
+        schema: {
+          tags: ['notices'],
+          summary: 'Turn notices by email on or off. In the app, they always come',
+          body: z.object({ email: z.boolean() }),
+          response: { 200: Settings },
+        },
       },
       async (request) => notices.setEmail(person(requireAuth(request)), request.body.email),
     );

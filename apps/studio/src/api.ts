@@ -2,23 +2,34 @@ import type {
   AppSummary,
   ChangeRequest,
   ChangeRequestSummary,
+  ComposeReply,
+  ComposeRequest,
   Definition,
   Deployment,
   EnvironmentInfo,
   FileInfo,
   FlowCase,
+  FlowLive,
+  FlowRunResult,
   HistoryEntry,
   ImportResult,
-  TestsRun,
+  IntegrationStatus,
   Me,
+  Notice,
+  NoticeSettings,
   Person,
   Plan,
+  ProcessInstance,
   RecordOut,
   Release,
   Revision,
+  SecretState,
   Share,
   Space,
-  UiManifest, ProcessInstance, Task, ComposeReply, ComposeRequest, FlowLive, FlowRunResult, Notice, NoticeSettings, IntegrationStatus, SecretState } from './types.js';
+  Task,
+  TestsRun,
+  UiManifest,
+} from './types.js';
 
 /** An error from the API, with its machine-readable code and details. */
 export class ApiError extends Error {
@@ -103,7 +114,13 @@ export async function uploadFile(target: string | AppAt, file: File): Promise<Fi
     body: file,
   });
   const data = (await response.json().catch(() => ({}))) as { error?: string; message?: string; details?: unknown } & FileInfo & { id: string };
-  if (!response.ok) throw new ApiError(response.status, data.error ?? 'error', response.status === 413 ? 'The file is too big' : (data.message ?? response.statusText), data.details);
+  if (!response.ok)
+    throw new ApiError(
+      response.status,
+      data.error ?? 'error',
+      response.status === 413 ? 'The file is too big' : (data.message ?? response.statusText),
+      data.details,
+    );
   return data;
 }
 const records = (target: string | AppAt, entity: string) => `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/records`;
@@ -138,18 +155,24 @@ export const api = {
   unshare: (id: string, shareId: string) => call<void>('DELETE', `${app(id)}/shares/${encodeURIComponent(shareId)}`),
   ui: (target: string | AppAt) => call<UiManifest>('GET', `${app(at(target).id)}/ui${envParams(target)}`),
   records: (target: string | AppAt, entity: string, cursor?: string) =>
-    call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`),
+    call<{ records: RecordOut[]; nextCursor: string | null }>(
+      'GET',
+      `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`,
+    ),
   /** Run the app's saved tests, each in a transaction that is undone. */
   runTests: (target: string | AppAt, only?: string[]) => call<TestsRun>('POST', `${app(at(target).id)}/tests/run${envParams(target)}`, only ? { only } : {}),
   /** Bring records in from CSV: all of its lines, or none. A dry run checks it and writes nothing. */
-  importRecords: (target: string | AppAt, entity: string, body: { csv: string; name?: string; dryRun: boolean }) => call<ImportResult>('POST', `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/import${envParams(target)}`, body),
+  importRecords: (target: string | AppAt, entity: string, body: { csv: string; name?: string; dryRun: boolean }) =>
+    call<ImportResult>('POST', `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/import${envParams(target)}`, body),
   /** Where the records the person can read are taken out as CSV. */
   exportUrl: (target: string | AppAt, entity: string) => `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/export${envParams(target)}`,
   /** Records whose titles contain some text, for a picker: those the person may read. */
   searchRecords: (target: string | AppAt, entity: string, search: string) =>
     call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '20', search })}`),
-  record: (target: string | AppAt, entity: string, recordId: string) => call<RecordOut>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`),
-  createRecord: (target: string | AppAt, entity: string, values: Record<string, unknown>) => call<RecordOut>('POST', `${records(target, entity)}${envParams(target)}`, { values }),
+  record: (target: string | AppAt, entity: string, recordId: string) =>
+    call<RecordOut>('GET', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`),
+  createRecord: (target: string | AppAt, entity: string, values: Record<string, unknown>) =>
+    call<RecordOut>('POST', `${records(target, entity)}${envParams(target)}`, { values }),
   updateRecord: (target: string | AppAt, entity: string, recordId: string, values: Record<string, unknown>, version: number) =>
     call<RecordOut>('PATCH', `${records(target, entity)}/${encodeURIComponent(recordId)}${envParams(target)}`, { values, version }),
   pageRecords: (target: string | AppAt, page: string, block: string, cursor?: string, record?: string) =>
@@ -178,9 +201,12 @@ export const api = {
   // People's tasks, and the flows that wait on records (design §6.10, §6.11).
   tasks: (status: 'open' | 'closed' = 'open') => call<{ tasks: Task[] }>('GET', `/v1/me/tasks?status=${status}`),
   integration: (target: string | AppAt) => call<IntegrationStatus>('GET', `${app(at(target).id)}/connections${envParams(target)}`),
-  setConnectionSecret: (target: string | AppAt, name: string, value: string) => call<SecretState>('PUT', `${app(at(target).id)}/connections/${encodeURIComponent(name)}/secret${envParams(target)}`, { value }),
-  clearConnectionSecret: (target: string | AppAt, name: string) => call<SecretState>('DELETE', `${app(at(target).id)}/connections/${encodeURIComponent(name)}/secret${envParams(target)}`),
-  makeWebhookKey: (target: string | AppAt, name: string) => call<{ key: string; url: string; setAt: string }>('POST', `${app(at(target).id)}/webhooks/${encodeURIComponent(name)}/secret${envParams(target)}`),
+  setConnectionSecret: (target: string | AppAt, name: string, value: string) =>
+    call<SecretState>('PUT', `${app(at(target).id)}/connections/${encodeURIComponent(name)}/secret${envParams(target)}`, { value }),
+  clearConnectionSecret: (target: string | AppAt, name: string) =>
+    call<SecretState>('DELETE', `${app(at(target).id)}/connections/${encodeURIComponent(name)}/secret${envParams(target)}`),
+  makeWebhookKey: (target: string | AppAt, name: string) =>
+    call<{ key: string; url: string; setAt: string }>('POST', `${app(at(target).id)}/webhooks/${encodeURIComponent(name)}/secret${envParams(target)}`),
   notices: (unread: boolean) => call<{ notices: Notice[]; unread: number }>('GET', `/v1/me/notices?unread=${unread}&limit=100`),
   unreadNotices: () => call<{ unread: number }>('GET', '/v1/me/notices/unread'),
   readNotices: (which: { ids: string[] } | { upTo: string }) => call<{ unread: number }>('POST', '/v1/me/notices/read', which),
@@ -195,7 +221,10 @@ export const api = {
   claimTask: (id: string) => call<Task>('POST', `/v1/tasks/${encodeURIComponent(id)}/claim`),
   reassignTask: (id: string, userId: string) => call<Task>('POST', `/v1/tasks/${encodeURIComponent(id)}/reassign`, { userId }),
   cover: (userId: string) =>
-    call<{ id: string; department: string | null; managerId: string | null; coverId: string | null; coverUntil: string | null }>('GET', `/v1/people/${encodeURIComponent(userId)}/directory`),
+    call<{ id: string; department: string | null; managerId: string | null; coverId: string | null; coverUntil: string | null }>(
+      'GET',
+      `/v1/people/${encodeURIComponent(userId)}/directory`,
+    ),
   setCover: (coverId: string | null, until?: string) =>
     call<{ coverId: string | null; coverUntil: string | null }>('PUT', '/v1/me/cover', { coverId, ...(coverId && until ? { until } : {}) }),
   recordProcesses: (target: string | AppAt, entity: string, recordId: string) =>
@@ -209,13 +238,16 @@ export const api = {
     call<{ cases: FlowCase[] }>('GET', `${app(at(target).id)}/flows/${encodeURIComponent(flow)}/live/cases${envParams(target, { path })}`),
   processInstances: (target: string | AppAt, stuck = false) =>
     call<{ instances: ProcessInstance[] }>('GET', `${app(at(target).id)}/process-instances${envParams(target, stuck ? { stuck: 'true' } : {})}`),
-  retryInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/retry${envParams(target)}`),
-  cancelInstance: (target: string | AppAt, id: string) => call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/cancel${envParams(target)}`),
+  retryInstance: (target: string | AppAt, id: string) =>
+    call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/retry${envParams(target)}`),
+  cancelInstance: (target: string | AppAt, id: string) =>
+    call<ProcessInstance>('POST', `${app(at(target).id)}/process-instances/${encodeURIComponent(id)}/cancel${envParams(target)}`),
 
   // Governed delivery for team apps.
   spaces: () => call<{ spaces: Space[] }>('GET', '/v1/spaces'),
   workingCopy: (teamId: string) => call<{ app: AppSummary; created: boolean; sampleRecords: number }>('POST', `${app(teamId)}/working-copy`),
-  promote: (appId: string, body: { spaceId: string; name?: string }) => call<{ app: AppSummary; changeRequest: ChangeRequest }>('POST', `${app(appId)}/promote`, body),
+  promote: (appId: string, body: { spaceId: string; name?: string }) =>
+    call<{ app: AppSummary; changeRequest: ChangeRequest }>('POST', `${app(appId)}/promote`, body),
   sync: (copyId: string, confirmDestructive: boolean) =>
     call<{ plan: Plan | null; app: AppSummary }>('POST', `${app(copyId)}/sync${confirmDestructive ? '?confirmDestructive=true' : ''}`),
   submit: (copyId: string, body: { title?: string; description?: string }) => call<ChangeRequest>('POST', `${app(copyId)}/submit`, body),

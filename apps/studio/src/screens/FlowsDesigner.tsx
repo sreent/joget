@@ -1,20 +1,31 @@
-import { flowSubject, flowWaits, type AppFlow, type FlowStep, type FlowType, type Several, type VarKind, type WaitFor } from '@platform/app-model';
+import { type AppFlow, type FlowStep, type FlowType, flowSubject, flowWaits, type Several, type VarKind, type WaitFor } from '@platform/app-model';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { BaseEdge, EdgeLabelRenderer, Handle, Position, ReactFlow, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { api, ApiError } from '../api.js';
+import {
+  BaseEdge,
+  type Edge,
+  EdgeLabelRenderer,
+  type EdgeProps,
+  Handle,
+  type Node,
+  type NodeChange,
+  type NodeProps,
+  Position,
+  ReactFlow,
+  type ReactFlowInstance,
+} from '@xyflow/react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { ApiError, api } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
-import { useProblems } from '../components/problems.js';
 import { DateShift, DurationInput } from '../components/duration.js';
 import { Icon, type IconName } from '../components/icon.js';
+import { useProblems } from '../components/problems.js';
 import { Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
-import { recordChoices, type RefChoice } from '../model/conditions.js';
+import { type RefChoice, recordChoices } from '../model/conditions.js';
 import {
-  splitPath,
-  moveStepTo,
-  canMoveTo,
-  problemsByStep,
   addFlow,
+  type CanvasEdge,
+  type CanvasNode,
+  canMoveTo,
   canWait,
   flowEntities,
   insertStep,
@@ -22,27 +33,28 @@ import {
   layoutFlow,
   listChoices,
   liveWords,
-  startsWords,
   moveStep,
+  moveStepTo,
   newStep,
+  problemsByStep,
   recordVariables,
   removeFlow,
   removeStep,
   replaceStep,
-  scopeAt,
   STEP_GROUPS,
   STEP_NAMES,
+  type StepType,
+  scopeAt,
+  splitPath,
+  startsWords,
   stepAt,
   stepWords,
   typeText,
   updateActionsOf,
   updateFlow,
   variableChoices,
-  type CanvasEdge,
-  type CanvasNode,
-  type StepType,
 } from '../model/flows.js';
-import { isWorkedOut, type Definition, type Field as FieldDef, type FlowLive } from '../types.js';
+import { type Definition, type Field as FieldDef, type FlowLive, isWorkedOut } from '../types.js';
 import { FlowCases } from './FlowCases.js';
 import { HowItStarts } from './FlowStarts.js';
 import { CallServiceFields } from './ServiceStep.js';
@@ -188,7 +200,11 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
               </button>
             </div>
           ) : null}
-          {liveNow ? <span className="text-xs text-muted">{liveNow.running} running{dirty ? ' · as saved' : ''}</span> : null}
+          {liveNow ? (
+            <span className="text-xs text-muted">
+              {liveNow.running} running{dirty ? ' · as saved' : ''}
+            </span>
+          ) : null}
           {readOnly ? null : (
             <form
               className="flex gap-2"
@@ -202,7 +218,13 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
                 setLabel('');
               }}
             >
-              <TextInput aria-label="New flow" className="w-56" placeholder="New flow, e.g. Record the spend" value={label} onChange={(e) => setLabel(e.target.value)} />
+              <TextInput
+                aria-label="New flow"
+                className="w-56"
+                placeholder="New flow, e.g. Record the spend"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+              />
               <Button type="submit" disabled={!label.trim()}>
                 Add flow
               </Button>
@@ -247,7 +269,8 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
         ) : (
           <div className="flow grid h-[40rem] place-items-center p-6">
             <EmptyState title="Add a flow to design it">
-              A flow is what happens in an app: it finds, creates and changes records, decides and loops, as a Mendix microflow does. It can wait for people and for time too. Actions run flows, and so can roles, through the API.
+              A flow is what happens in an app: it finds, creates and changes records, decides and loops, as a Mendix microflow does. It can wait for people and
+              for time too. Actions run flows, and so can roles, through the API.
             </EmptyState>
           </div>
         )}
@@ -428,7 +451,10 @@ function StepNode({ data }: NodeProps<FlowNode>) {
 function DecisionNode({ data }: NodeProps<FlowNode>) {
   const { node, selected } = data;
   return (
-    <div className={cx('logic-decision', node.kind === 'merge' && 'merge', selected && 'chosen')} data-testid={node.path ? `flow-step-${node.path}` : undefined}>
+    <div
+      className={cx('logic-decision', node.kind === 'merge' && 'merge', selected && 'chosen')}
+      data-testid={node.path ? `flow-step-${node.path}` : undefined}
+    >
       <i />
       {node.kind === 'decision' ? (
         <span className="logic-caption above">
@@ -444,7 +470,11 @@ function DecisionNode({ data }: NodeProps<FlowNode>) {
 function RingNode({ data }: NodeProps<FlowNode>) {
   const { node, selected } = data;
   return (
-    <div className={cx('logic-ring', node.kind === 'end' && 'end', selected && 'ring-2 ring-focus')} role="img" aria-label={node.about ? `${node.label}: ${node.about}` : node.label}>
+    <div
+      className={cx('logic-ring', node.kind === 'end' && 'end', selected && 'ring-2 ring-focus')}
+      role="img"
+      aria-label={node.about ? `${node.label}: ${node.about}` : node.label}
+    >
       <span className="logic-caption below">
         <strong>{node.label}</strong>
         {node.about ? <span>{node.about}</span> : null}
@@ -458,7 +488,12 @@ function RingNode({ data }: NodeProps<FlowNode>) {
 function WaitNode({ data }: NodeProps<FlowNode>) {
   const { node, selected } = data;
   return (
-    <div className={cx('logic-ring wait', selected && 'ring-2 ring-focus')} role="img" aria-label={node.about ? `${node.label}: ${node.about}` : node.label} data-testid={`flow-wait-${node.id}`}>
+    <div
+      className={cx('logic-ring wait', selected && 'ring-2 ring-focus')}
+      role="img"
+      aria-label={node.about ? `${node.label}: ${node.about}` : node.label}
+      data-testid={`flow-wait-${node.id}`}
+    >
       <Icon name={node.icon ?? 'clock'} />
       <span className={cx('logic-caption', node.caption ?? 'above')}>
         <strong>{node.label}</strong>
@@ -539,7 +574,10 @@ function FrameNode({ data }: NodeProps<FlowNode>) {
 
 function SlotNode({ data }: NodeProps<FlowNode>) {
   return (
-    <div className={cx('grid h-full w-full place-items-center rounded-md border border-dashed', data.drop ? 'border-accent bg-accent-soft' : 'border-line-strong')} data-testid={`flow-slot-${data.node.list}`}>
+    <div
+      className={cx('grid h-full w-full place-items-center rounded-md border border-dashed', data.drop ? 'border-accent bg-accent-soft' : 'border-line-strong')}
+      data-testid={`flow-slot-${data.node.list}`}
+    >
       <Handles />
       {data.readOnly ? (
         <span className="text-xs text-faint">No steps</span>
@@ -592,7 +630,10 @@ function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
           <button
             type="button"
             // Each arrow's "+" shows while the pointer is over the canvas, so the flow reads calmly otherwise.
-            className={cx('logic-add nodrag nopan opacity-0 transition-opacity group-hover/canvas:opacity-70 hover:!opacity-100 focus-visible:!opacity-100', drop && 'drop')}
+            className={cx(
+              'logic-add nodrag nopan opacity-0 transition-opacity group-hover/canvas:opacity-70 hover:!opacity-100 focus-visible:!opacity-100',
+              drop && 'drop',
+            )}
             style={{ left: edge.insert.x, top: edge.insert.y, pointerEvents: 'all' }}
             aria-label={`Add a step at ${edge.insert.list}[${edge.insert.index}]`}
             title="Add a step here"
@@ -606,7 +647,17 @@ function WireEdge({ data }: EdgeProps<Edge<WireData>>) {
   );
 }
 
-const NODE_TYPES = { step: StepNode, decision: DecisionNode, merge: DecisionNode, start: RingNode, end: RingNode, frame: FrameNode, slot: SlotNode, port: PortNode, wait: WaitNode };
+const NODE_TYPES = {
+  step: StepNode,
+  decision: DecisionNode,
+  merge: DecisionNode,
+  start: RingNode,
+  end: RingNode,
+  frame: FrameNode,
+  slot: SlotNode,
+  port: PortNode,
+  wait: WaitNode,
+};
 const EDGE_TYPES = { wire: WireEdge };
 
 /** Canvas or List: the choice of views, at the right of the canvas's foot and at the top of the list. */
@@ -663,7 +714,9 @@ function FlowCanvas(props: {
   const places = useMemo(
     () => [
       ...laid.edges.flatMap((edge) => (edge.insert ? [{ list: edge.insert.list, index: edge.insert.index, x: edge.insert.x, y: edge.insert.y }] : [])),
-      ...laid.nodes.flatMap((node) => (node.kind === 'slot' && node.list ? [{ list: node.list, index: 0, x: node.x + node.width / 2, y: node.y + node.height / 2 }] : [])),
+      ...laid.nodes.flatMap((node) =>
+        node.kind === 'slot' && node.list ? [{ list: node.list, index: 0, x: node.x + node.width / 2, y: node.y + node.height / 2 }] : [],
+      ),
     ],
     [laid],
   );
@@ -671,11 +724,13 @@ function FlowCanvas(props: {
     let best: { place: Place; distance: number } | null = null;
     for (const place of places) {
       const distance = Math.hypot(place.x - x, place.y - y);
-      if (distance <= DROP_RADIUS && (!best || distance < best.distance) && canMoveTo(path, place)) best = { place: { list: place.list, index: place.index }, distance };
+      if (distance <= DROP_RADIUS && (!best || distance < best.distance) && canMoveTo(path, place))
+        best = { place: { list: place.list, index: place.index }, distance };
     }
     return best?.place ?? null;
   };
-  const movable = (node: (typeof laid.nodes)[number]) => !readOnly && node.path !== undefined && node.id === node.path && (node.kind === 'step' || node.kind === 'wait' || node.kind === 'decision');
+  const movable = (node: (typeof laid.nodes)[number]) =>
+    !readOnly && node.path !== undefined && node.id === node.path && (node.kind === 'step' || node.kind === 'wait' || node.kind === 'decision');
   const nodes: FlowNode[] = laid.nodes.map((node) => ({
     id: node.id,
     type: node.kind,
@@ -743,8 +798,7 @@ function FlowCanvas(props: {
         }}
         onPaneClick={() => onSelect(null)}
         proOptions={{ hideAttribution: true }}
-      >
-      </ReactFlow>
+      ></ReactFlow>
       <div className="flow-tools">
         <button type="button" aria-label="Zoom in" onClick={() => void view?.zoomIn()}>
           +
@@ -799,7 +853,13 @@ function FlowListing(props: {
         const now = liveAt.get(path);
         return (
           <li key={path} className="grid gap-1">
-            <button type="button" className={cx('flow-row', words.tone)} aria-expanded={selected === path} onClick={() => onSelect(path)} data-testid={`flow-row-${path}`}>
+            <button
+              type="button"
+              className={cx('flow-row', words.tone)}
+              aria-expanded={selected === path}
+              onClick={() => onSelect(path)}
+              data-testid={`flow-row-${path}`}
+            >
               <Icon name={iconOf(step)} />
               <span className="flow-row-text">
                 <span className="flow-row-name">{words.words}</span>
@@ -810,7 +870,9 @@ function FlowListing(props: {
               </span>
               {now ? <span className="flow-row-end">{liveWords(now)}</span> : null}
               {props.problems.get(path)?.length ? (
-                <span className="flow-row-end text-bad">{props.problems.get(path)!.length === 1 ? '1 problem' : `${props.problems.get(path)!.length} problems`}</span>
+                <span className="flow-row-end text-bad">
+                  {props.problems.get(path)!.length === 1 ? '1 problem' : `${props.problems.get(path)!.length} problems`}
+                </span>
               ) : null}
             </button>
             {labelledLists(definition, step, path, entity).map((inner) => (
@@ -818,7 +880,13 @@ function FlowListing(props: {
                 <span className="text-xs font-semibold text-muted">{inner.label}</span>
                 {inner.steps.length ? rows(inner.steps, inner.path) : null}
                 {readOnly ? null : (
-                  <Button size="sm" variant="ghost" className="justify-self-start" aria-label={`Add a step at ${inner.path}[${inner.steps.length}]`} onClick={() => onInsert({ list: inner.path, index: inner.steps.length })}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="justify-self-start"
+                    aria-label={`Add a step at ${inner.path}[${inner.steps.length}]`}
+                    onClick={() => onInsert({ list: inner.path, index: inner.steps.length })}
+                  >
                     + Add a step
                   </Button>
                 )}
@@ -845,7 +913,13 @@ function FlowListing(props: {
         <h2>Its steps, in order</h2>
         {flow.steps.length ? rows(flow.steps, 'steps') : <p className="m-0 text-sm text-faint">No steps yet.</p>}
         {readOnly ? null : (
-          <Button size="sm" variant="ghost" className="justify-self-start" aria-label={`Add a step at steps[${flow.steps.length}]`} onClick={() => onInsert({ list: 'steps', index: flow.steps.length })}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="justify-self-start"
+            aria-label={`Add a step at steps[${flow.steps.length}]`}
+            onClick={() => onInsert({ list: 'steps', index: flow.steps.length })}
+          >
             + Add a step
           </Button>
         )}
@@ -856,7 +930,19 @@ function FlowListing(props: {
 
 // ---- Adding and editing steps
 
-function AddStep({ waits, copied, onAdd, onPaste, onCancel }: { waits: boolean; copied: string | null; onAdd: (type: StepType) => void; onPaste: () => void; onCancel: () => void }) {
+function AddStep({
+  waits,
+  copied,
+  onAdd,
+  onPaste,
+  onCancel,
+}: {
+  waits: boolean;
+  copied: string | null;
+  onAdd: (type: StepType) => void;
+  onPaste: () => void;
+  onCancel: () => void;
+}) {
   return (
     <Card className="grid gap-3 p-4">
       <div className="flex items-center justify-between">
@@ -881,7 +967,9 @@ function AddStep({ waits, copied, onAdd, onPaste, onCancel }: { waits: boolean; 
             ))}
           </div>
           {group.waits && !waits ? (
-            <p className="m-0 text-xs text-muted">A flow waits on one record, and not inside a loop or an error handler: give the flow one input, a record, in its settings.</p>
+            <p className="m-0 text-xs text-muted">
+              A flow waits on one record, and not inside a loop or an error handler: give the flow one input, a record, in its settings.
+            </p>
           ) : null}
         </div>
       ))}
@@ -945,10 +1033,20 @@ function StepEditor(props: {
         <h3 className="m-0 text-base font-semibold">{STEP_NAMES[step.type]}</h3>
         {readOnly ? null : (
           <div className="flex gap-1">
-            <Button size="sm" variant="ghost" aria-label="Move the step up" onClick={() => (onChange(moveStep(definition, name, path, -1)), props.onMoved(`${base}[${Math.max(0, index - 1)}]`))}>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Move the step up"
+              onClick={() => (onChange(moveStep(definition, name, path, -1)), props.onMoved(`${base}[${Math.max(0, index - 1)}]`))}
+            >
               ↑
             </Button>
-            <Button size="sm" variant="ghost" aria-label="Move the step down" onClick={() => (onChange(moveStep(definition, name, path, 1)), props.onMoved(`${base}[${index + 1}]`))}>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Move the step down"
+              onClick={() => (onChange(moveStep(definition, name, path, 1)), props.onMoved(`${base}[${index + 1}]`))}
+            >
               ↓
             </Button>
             <Button size="sm" variant="ghost" onClick={props.onCopy} aria-keyshortcuts="Control+C Meta+C">
@@ -1039,7 +1137,19 @@ function StepFields(props: {
       return (
         <>
           <VarName label="Variable" value={step.var} onChange={(value) => set({ ...step, var: value })} />
-          <Field label="Value">{() => <ValueEditor definition={definition} entity="" label="Value" value={step.value} from={sources} only={ANY_VALUE} onChange={(value) => set({ ...step, value })} />}</Field>
+          <Field label="Value">
+            {() => (
+              <ValueEditor
+                definition={definition}
+                entity=""
+                label="Value"
+                value={step.value}
+                from={sources}
+                only={ANY_VALUE}
+                onChange={(value) => set({ ...step, value })}
+              />
+            )}
+          </Field>
         </>
       );
     case 'find':
@@ -1068,7 +1178,16 @@ function StepFields(props: {
           <VarName label="Keep them in" value={step.var} onChange={(value) => set({ ...step, var: value })} />
           {step.first ? null : (
             <Field label="At most">
-              {(id) => <TextInput id={id} type="number" min={1} max={1000} value={step.limit} onChange={(e) => set({ ...step, limit: Math.max(1, Math.min(1000, Number(e.target.value) || 1)) })} />}
+              {(id) => (
+                <TextInput
+                  id={id}
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={step.limit}
+                  onChange={(e) => set({ ...step, limit: Math.max(1, Math.min(1000, Number(e.target.value) || 1)) })}
+                />
+              )}
             </Field>
           )}
         </>
@@ -1095,7 +1214,15 @@ function StepFields(props: {
       return (
         <>
           {recordPicker(step.record, (record) => set({ ...step, record, values: {} }))}
-          {entityOf(step.record) ? <ValuesEditor definition={definition} entity={entityOf(step.record)!} values={step.values} sources={sources} onChange={(values) => set({ ...step, values })} /> : null}
+          {entityOf(step.record) ? (
+            <ValuesEditor
+              definition={definition}
+              entity={entityOf(step.record)!}
+              values={step.values}
+              sources={sources}
+              onChange={(values) => set({ ...step, values })}
+            />
+          ) : null}
         </>
       );
     case 'delete':
@@ -1126,7 +1253,16 @@ function StepFields(props: {
               </Select>
             )}
           </Field>
-          {lineEntity?.type === 'lines' ? <ValuesEditor definition={definition} entity={lineEntity.entity} line values={step.values} sources={sources} onChange={(values) => set({ ...step, values })} /> : null}
+          {lineEntity?.type === 'lines' ? (
+            <ValuesEditor
+              definition={definition}
+              entity={lineEntity.entity}
+              line
+              values={step.values}
+              sources={sources}
+              onChange={(values) => set({ ...step, values })}
+            />
+          ) : null}
         </>
       );
     }
@@ -1138,21 +1274,53 @@ function StepFields(props: {
         </>
       );
     case 'if':
-      return <ConditionEditor label="If" value={step.when} choices={variables} compareWith={[THE_PERSON, ...variables]} onChange={(when) => set({ ...step, when: when ?? step.when })} />;
+      return (
+        <ConditionEditor
+          label="If"
+          value={step.when}
+          choices={variables}
+          compareWith={[THE_PERSON, ...variables]}
+          onChange={(when) => set({ ...step, when: when ?? step.when })}
+        />
+      );
     case 'repeat':
       return (
         <>
-          <ConditionEditor label="Repeat while" value={step.while} choices={variables} compareWith={[THE_PERSON, ...variables]} onChange={(when) => set({ ...step, while: when ?? step.while })} />
+          <ConditionEditor
+            label="Repeat while"
+            value={step.while}
+            choices={variables}
+            compareWith={[THE_PERSON, ...variables]}
+            onChange={(when) => set({ ...step, while: when ?? step.while })}
+          />
           <Field label="At most" hint="It stops after this many times, even if the condition still holds.">
-            {(id) => <TextInput id={id} type="number" min={1} max={100} className="w-24" value={step.max} onChange={(e) => set({ ...step, max: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })} />}
+            {(id) => (
+              <TextInput
+                id={id}
+                type="number"
+                min={1}
+                max={100}
+                className="w-24"
+                value={step.max}
+                onChange={(e) => set({ ...step, max: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })}
+              />
+            )}
           </Field>
-          <p className="m-0 text-xs text-muted">It checks the condition before each time round. In a flow that waits, its steps can wait, and the condition reads the record.</p>
+          <p className="m-0 text-xs text-muted">
+            It checks the condition before each time round. In a flow that waits, its steps can wait, and the condition reads the record.
+          </p>
         </>
       );
     case 'check':
       return (
         <>
-          <ConditionEditor label="It must hold that" value={step.assert} choices={variables} compareWith={[THE_PERSON, ...variables]} onChange={(assert) => set({ ...step, assert: assert ?? step.assert })} />
+          <ConditionEditor
+            label="It must hold that"
+            value={step.assert}
+            choices={variables}
+            compareWith={[THE_PERSON, ...variables]}
+            onChange={(assert) => set({ ...step, assert: assert ?? step.assert })}
+          />
           <Field label="Message">{(id) => <TextInput id={id} value={step.message} onChange={(e) => set({ ...step, message: e.target.value })} />}</Field>
           <Field label="When it doesn't hold">
             {(id) => (
@@ -1186,10 +1354,21 @@ function StepFields(props: {
           </Field>
           {callee
             ? Object.entries(callee.input).map(([input, type]) => (
-                <InputValue key={input} definition={definition} input={input} type={type} value={step.input[input]} scope={scope} sources={sources} onChange={(value) => set({ ...step, input: { ...step.input, [input]: value } })} />
+                <InputValue
+                  key={input}
+                  definition={definition}
+                  input={input}
+                  type={type}
+                  value={step.input[input]}
+                  scope={scope}
+                  sources={sources}
+                  onChange={(value) => set({ ...step, input: { ...step.input, [input]: value } })}
+                />
               ))
             : null}
-          {callee?.output ? <VarName label="Keep its result in" value={step.var ?? ''} onChange={(value) => set({ ...step, var: value || undefined })} /> : null}
+          {callee?.output ? (
+            <VarName label="Keep its result in" value={step.var ?? ''} onChange={(value) => set({ ...step, var: value || undefined })} />
+          ) : null}
         </>
       );
     }
@@ -1209,7 +1388,17 @@ function StepFields(props: {
           {listPicker('Of', step.of, (of) => set({ ...step, of, field: undefined }))}
           <Field label="Work out">
             {(id) => (
-              <Select id={id} value={step.op} onChange={(e) => set({ ...step, op: e.target.value as typeof step.op, ...(e.target.value === 'count' ? { field: undefined } : { field: step.field ?? numberFields[0]?.name }) })}>
+              <Select
+                id={id}
+                value={step.op}
+                onChange={(e) =>
+                  set({
+                    ...step,
+                    op: e.target.value as typeof step.op,
+                    ...(e.target.value === 'count' ? { field: undefined } : { field: step.field ?? numberFields[0]?.name }),
+                  })
+                }
+              >
                 <option value="count">How many</option>
                 <option value="sum">The total of</option>
                 <option value="avg">The average of</option>
@@ -1238,9 +1427,20 @@ function StepFields(props: {
     case 'return': {
       const flow = definition.flows?.[name];
       const output = flow?.output;
-      if (flow && flowWaits(flow, definition.flows)) return <p className="m-0 text-sm text-muted">The flow ends here, and so does each of its ways that still runs.</p>;
+      if (flow && flowWaits(flow, definition.flows))
+        return <p className="m-0 text-sm text-muted">The flow ends here, and so does each of its ways that still runs.</p>;
       if (!output) return <p className="m-0 text-sm text-muted">The flow ends here. It gives no result: give it one in its settings.</p>;
-      return <InputValue definition={definition} input="Result" type={output} value={step.value} scope={scope} sources={sources} onChange={(value) => set({ ...step, value })} />;
+      return (
+        <InputValue
+          definition={definition}
+          input="Result"
+          type={output}
+          value={step.value}
+          scope={scope}
+          sources={sources}
+          onChange={(value) => set({ ...step, value })}
+        />
+      );
     }
     case 'task':
       return <TaskFields definition={definition} name={name} step={step} set={set} />;
@@ -1249,21 +1449,50 @@ function StepFields(props: {
     case 'call_service':
       return <CallServiceFields definition={definition} step={step} sources={sources} set={set} />;
     case 'wait':
-      return <WaitForEditor definition={definition} name={name} label="Wait for" variables={variables} value={step.for} onChange={(wait) => set({ ...step, for: wait })} />;
+      return (
+        <WaitForEditor
+          definition={definition}
+          name={name}
+          label="Wait for"
+          variables={variables}
+          value={step.for}
+          onChange={(wait) => set({ ...step, for: wait })}
+        />
+      );
     case 'first_of':
       return (
         <>
-          <p className="m-0 text-sm text-muted">The flow waits for all of these at once. The first that happens takes its way, and the others no longer wait.</p>
+          <p className="m-0 text-sm text-muted">
+            The flow waits for all of these at once. The first that happens takes its way, and the others no longer wait.
+          </p>
           {step.ways.map((way, index) => (
             <fieldset key={index} className="m-0 grid gap-2 rounded-md border border-line p-3">
               <legend className="px-1 text-sm text-muted">Way {index + 1}</legend>
-              <WaitForEditor definition={definition} name={name} label={`Way ${index + 1} waits for`} variables={variables} value={way.for} onChange={(wait) => set({ ...step, ways: step.ways.map((each, i) => (i === index ? { ...each, for: wait } : each)) })} />
-              <Button size="sm" variant="ghost" className="justify-self-start" disabled={step.ways.length <= 2} onClick={() => set({ ...step, ways: step.ways.filter((_, i) => i !== index) })}>
+              <WaitForEditor
+                definition={definition}
+                name={name}
+                label={`Way ${index + 1} waits for`}
+                variables={variables}
+                value={way.for}
+                onChange={(wait) => set({ ...step, ways: step.ways.map((each, i) => (i === index ? { ...each, for: wait } : each)) })}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                className="justify-self-start"
+                disabled={step.ways.length <= 2}
+                onClick={() => set({ ...step, ways: step.ways.filter((_, i) => i !== index) })}
+              >
                 Remove way {index + 1}
               </Button>
             </fieldset>
           ))}
-          <Button size="sm" className="justify-self-start" disabled={step.ways.length >= 10} onClick={() => set({ ...step, ways: [...step.ways, { for: { duration: 'P1D' }, steps: [] }] })}>
+          <Button
+            size="sm"
+            className="justify-self-start"
+            disabled={step.ways.length >= 10}
+            onClick={() => set({ ...step, ways: [...step.ways, { for: { duration: 'P1D' }, steps: [] }] })}
+          >
             Add a way
           </Button>
         </>
@@ -1277,12 +1506,22 @@ function StepFields(props: {
               <span>
                 Way {index + 1}: {way.steps.length ? `${way.steps.length} step${way.steps.length > 1 ? 's' : ''}` : 'no steps yet'}
               </span>
-              <Button size="sm" variant="ghost" disabled={step.ways.length <= 2} onClick={() => set({ ...step, ways: step.ways.filter((_, i) => i !== index) })}>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={step.ways.length <= 2}
+                onClick={() => set({ ...step, ways: step.ways.filter((_, i) => i !== index) })}
+              >
                 Remove way {index + 1}
               </Button>
             </div>
           ))}
-          <Button size="sm" className="justify-self-start" disabled={step.ways.length >= 10} onClick={() => set({ ...step, ways: [...step.ways, { steps: [] }] })}>
+          <Button
+            size="sm"
+            className="justify-self-start"
+            disabled={step.ways.length >= 10}
+            onClick={() => set({ ...step, ways: [...step.ways, { steps: [] }] })}
+          >
             Add a way
           </Button>
         </>
@@ -1295,7 +1534,9 @@ function StepFields(props: {
 /** A duration set with a number and a unit, or its ISO 8601 text when it has another shape. */
 /** The user fields of the record a flow that waits is about: whom its tasks can go to. */
 function peopleOf(definition: Definition, entity: string | undefined): Array<{ name: string; label: string }> {
-  return (entity ? (definition.entities[entity]?.fields ?? []) : []).filter((field) => field.type === 'user').map((field) => ({ name: field.name, label: field.label }));
+  return (entity ? (definition.entities[entity]?.fields ?? []) : [])
+    .filter((field) => field.type === 'user')
+    .map((field) => ({ name: field.name, label: field.label }));
 }
 
 type TaskStep = Extract<FlowStep, { type: 'task' }>;
@@ -1311,11 +1552,18 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
   const people = peopleOf(definition, entity);
   const actions = updateActionsOf(definition, entity);
   const cards = Object.entries(definition.cards).filter(([, card]) => card.entity === entity);
-  const assignee = !step.assignee ? '' : 'field' in step.assignee ? `field:${step.assignee.field}` : `manager:${step.assignee.managerOf}:${step.assignee.levels}`;
-  const outcome = (index: number, change: (outcome: TaskStep['outcomes'][number]) => TaskStep['outcomes'][number]) => set({ ...step, outcomes: step.outcomes.map((each, i) => (i === index ? change(each) : each)) });
+  const assignee = !step.assignee
+    ? ''
+    : 'field' in step.assignee
+      ? `field:${step.assignee.field}`
+      : `manager:${step.assignee.managerOf}:${step.assignee.levels}`;
+  const outcome = (index: number, change: (outcome: TaskStep['outcomes'][number]) => TaskStep['outcomes'][number]) =>
+    set({ ...step, outcomes: step.outcomes.map((each, i) => (i === index ? change(each) : each)) });
   return (
     <>
-      <Field label="What the inbox calls it">{(id) => <TextInput id={id} value={step.label} onChange={(e) => set({ ...step, label: e.target.value })} />}</Field>
+      <Field label="What the inbox calls it">
+        {(id) => <TextInput id={id} value={step.label} onChange={(e) => set({ ...step, label: e.target.value })} />}
+      </Field>
       <Field label="Done by people with the role" hint="A role grants; whom the task goes to only narrows it.">
         {(id) => (
           <Select id={id} value={step.role} onChange={(e) => set({ ...step, role: e.target.value })}>
@@ -1330,7 +1578,12 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
           </Select>
         )}
       </Field>
-      <SeveralEditor several={step.several} outcomes={step.outcomes} people={people} onChange={(several) => set(several ? { ...without(step, 'assignee'), several } : without(step, 'several'))} />
+      <SeveralEditor
+        several={step.several}
+        outcomes={step.outcomes}
+        people={people}
+        onChange={(several) => set(several ? { ...without(step, 'assignee'), several } : without(step, 'several'))}
+      />
       {step.several ? null : (
         <Field label="Goes to">
           {(id) => (
@@ -1368,7 +1621,11 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
       {step.assignee || step.several ? null : (
         <Field label="In the department of" hint="Only people with the role in that department see and decide the task.">
           {(id) => (
-            <Select id={id} value={step.department?.of ?? ''} onChange={(e) => set(e.target.value ? { ...step, department: { of: e.target.value } } : without(step, 'department'))}>
+            <Select
+              id={id}
+              value={step.department?.of ?? ''}
+              onChange={(e) => set(e.target.value ? { ...step, department: { of: e.target.value } } : without(step, 'department'))}
+            >
               <option value="">Any department</option>
               {people.map((person) => (
                 <option key={person.name} value={person.name}>
@@ -1386,12 +1643,25 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
         {step.outcomes.map((each, index) => (
           <div key={each.name} className="grid gap-1.5 rounded-md bg-sunken p-2">
             <div className="flex gap-2">
-              <TextInput aria-label={`Outcome ${index + 1}`} value={each.label} onChange={(e) => outcome(index, (current) => ({ ...current, label: e.target.value }))} />
-              <Button size="sm" variant="ghost" disabled={step.outcomes.length === 1} onClick={() => set({ ...step, outcomes: step.outcomes.filter((_, i) => i !== index) })}>
+              <TextInput
+                aria-label={`Outcome ${index + 1}`}
+                value={each.label}
+                onChange={(e) => outcome(index, (current) => ({ ...current, label: e.target.value }))}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={step.outcomes.length === 1}
+                onClick={() => set({ ...step, outcomes: step.outcomes.filter((_, i) => i !== index) })}
+              >
                 Remove
               </Button>
             </div>
-            <Select aria-label={`What ${each.label} runs`} value={each.action ?? ''} onChange={(e) => outcome(index, (current) => (e.target.value ? { ...current, action: e.target.value } : without(current, 'action')))}>
+            <Select
+              aria-label={`What ${each.label} runs`}
+              value={each.action ?? ''}
+              onChange={(e) => outcome(index, (current) => (e.target.value ? { ...current, action: e.target.value } : without(current, 'action')))}
+            >
               <option value="">Runs no action</option>
               {actions.map((action) => (
                 <option key={action} value={action}>
@@ -1418,7 +1688,11 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
         <legend className="px-1 text-sm text-muted">Reminders</legend>
         {(step.reminders ?? []).map((reminder, index) => (
           <div key={index} className="flex items-end gap-2">
-            <DurationInput label={`Reminder ${index + 1} after`} value={reminder.after} onChange={(after) => set({ ...step, reminders: (step.reminders ?? []).map((each, i) => (i === index ? { ...each, after } : each)) })} />
+            <DurationInput
+              label={`Reminder ${index + 1} after`}
+              value={reminder.after}
+              onChange={(after) => set({ ...step, reminders: (step.reminders ?? []).map((each, i) => (i === index ? { ...each, after } : each)) })}
+            />
             <Button
               size="sm"
               variant="ghost"
@@ -1432,16 +1706,33 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
             </Button>
           </div>
         ))}
-        <p className="m-0 text-xs text-muted">A reminder's steps run while the task still waits, a time after it opens. They hang below the task on the canvas.</p>
-        <Button size="sm" className="justify-self-start" disabled={(step.reminders?.length ?? 0) >= 3} onClick={() => set({ ...step, reminders: [...(step.reminders ?? []), { after: 'P1D', steps: [] }] })}>
+        <p className="m-0 text-xs text-muted">
+          A reminder's steps run while the task still waits, a time after it opens. They hang below the task on the canvas.
+        </p>
+        <Button
+          size="sm"
+          className="justify-self-start"
+          disabled={(step.reminders?.length ?? 0) >= 3}
+          onClick={() => set({ ...step, reminders: [...(step.reminders ?? []), { after: 'P1D', steps: [] }] })}
+        >
           Add a reminder
         </Button>
       </fieldset>
-      <Checkbox label="It has a deadline" checked={Boolean(step.deadline)} onChange={(on) => set(on ? { ...step, deadline: { after: 'P3D', steps: [] } } : without(step, 'deadline'))} />
+      <Checkbox
+        label="It has a deadline"
+        checked={Boolean(step.deadline)}
+        onChange={(on) => set(on ? { ...step, deadline: { after: 'P3D', steps: [] } } : without(step, 'deadline'))}
+      />
       {step.deadline ? (
         <>
-          <DurationInput label="The task ends after" value={step.deadline.after} onChange={(after) => set({ ...step, deadline: { ...step.deadline!, after } })} />
-          <p className="m-0 text-xs text-muted">Once that time passes, the task leaves the inbox, and the flow goes on by the deadline's way, below the task.</p>
+          <DurationInput
+            label="The task ends after"
+            value={step.deadline.after}
+            onChange={(after) => set({ ...step, deadline: { ...step.deadline!, after } })}
+          />
+          <p className="m-0 text-xs text-muted">
+            Once that time passes, the task leaves the inbox, and the flow goes on by the deadline's way, below the task.
+          </p>
         </>
       ) : null}
       <Field label="Review card">
@@ -1463,7 +1754,15 @@ function TaskFields({ definition, name, step, set }: { definition: Definition; n
 type InformStep = Extract<FlowStep, { type: 'inform' }>;
 
 /** Whom a notice goes to, what it says, the record it is about, and whether it goes by email too. */
-function InformFields(props: { definition: Definition; name: string; step: InformStep; scope: ReadonlyMap<string, VarKind>; sources: ValueSources; variables: RefChoice[]; set: (step: FlowStep) => void }) {
+function InformFields(props: {
+  definition: Definition;
+  name: string;
+  step: InformStep;
+  scope: ReadonlyMap<string, VarKind>;
+  sources: ValueSources;
+  variables: RefChoice[];
+  set: (step: FlowStep) => void;
+}) {
   const { definition, name, step, scope, sources, variables, set } = props;
   const waits = flowWaits(definition.flows![name]!, definition.flows);
   const records = recordVariables(scope);
@@ -1477,7 +1776,11 @@ function InformFields(props: { definition: Definition; name: string; step: Infor
     ]),
   ];
   const valueOf = (recipient: InformStep['to'][number]) =>
-    'role' in recipient ? `role:${recipient.role}` : recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person ? `person:${recipient.person.ref}` : '';
+    'role' in recipient
+      ? `role:${recipient.role}`
+      : recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person
+        ? `person:${recipient.person.ref}`
+        : '';
   const recipientOf = (value: string): InformStep['to'][number] => (value.startsWith('role:') ? { role: value.slice(5) } : { person: { ref: value.slice(7) } });
   const change = (index: number, value: string) => set({ ...step, to: step.to.map((each, i) => (i === index ? recipientOf(value) : each)) });
   return (
@@ -1509,21 +1812,52 @@ function InformFields(props: { definition: Definition; name: string; step: Infor
                 </Select>
               )}
             </Field>
-            <Button size="sm" variant="ghost" aria-label={`Remove whom it tells ${index + 1}`} disabled={step.to.length <= 1} onClick={() => set({ ...step, to: step.to.filter((_, i) => i !== index) })}>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label={`Remove whom it tells ${index + 1}`}
+              disabled={step.to.length <= 1}
+              onClick={() => set({ ...step, to: step.to.filter((_, i) => i !== index) })}
+            >
               ✕
             </Button>
           </div>
         ))}
-        <Button size="sm" className="justify-self-start" disabled={step.to.length >= 10} onClick={() => set({ ...step, to: [...step.to, step.to[0] ?? { role: Object.keys(definition.roles)[0] ?? '' }] })}>
+        <Button
+          size="sm"
+          className="justify-self-start"
+          disabled={step.to.length >= 10}
+          onClick={() => set({ ...step, to: [...step.to, step.to[0] ?? { role: Object.keys(definition.roles)[0] ?? '' }] })}
+        >
           Tell someone else too
         </Button>
         <p className="m-0 text-xs text-muted">Only people the app is shared with hear it. A role means everyone who holds it.</p>
       </fieldset>
       <Field label="What it says first" hint="Its title in the app, and the email's subject.">
-        {() => <ValueEditor definition={definition} entity="" label="Title" value={step.title} from={sources} only={TEXT_VALUE} onChange={(title) => set({ ...step, title })} />}
+        {() => (
+          <ValueEditor
+            definition={definition}
+            entity=""
+            label="Title"
+            value={step.title}
+            from={sources}
+            only={TEXT_VALUE}
+            onChange={(title) => set({ ...step, title })}
+          />
+        )}
       </Field>
       <Field label="What it says after">
-        {() => <ValueEditor definition={definition} entity="" label="Message" value={step.message ?? ''} from={sources} only={TEXT_VALUE} onChange={(message) => set(message === '' ? without(step, 'message') : { ...step, message })} />}
+        {() => (
+          <ValueEditor
+            definition={definition}
+            entity=""
+            label="Message"
+            value={step.message ?? ''}
+            from={sources}
+            only={TEXT_VALUE}
+            onChange={(message) => set(message === '' ? without(step, 'message') : { ...step, message })}
+          />
+        )}
       </Field>
       <Field label="About the record" hint="The notice links to it.">
         {(id) => (
@@ -1544,23 +1878,37 @@ function InformFields(props: { definition: Definition; name: string; step: Infor
             <Select id={id} value={step.teams ?? ''} onChange={(e) => set(e.target.value ? { ...step, teams: e.target.value } : without(step, 'teams'))}>
               <option value="">No channel</option>
               {Object.entries(definition.connections ?? {}).flatMap(([connection, spec]) =>
-                spec.kind === 'teams' ? [
-                  <option key={connection} value={connection}>
-                    {spec.label}
-                  </option>,
-                ] : [],
+                spec.kind === 'teams'
+                  ? [
+                      <option key={connection} value={connection}>
+                        {spec.label}
+                      </option>,
+                    ]
+                  : [],
               )}
             </Select>
           )}
         </Field>
       ) : null}
-      {step.email || step.teams ? <p className="m-0 text-xs text-muted">Email and Teams leave the app, so a field that holds personal data stays out of what they say.</p> : null}
+      {step.email || step.teams ? (
+        <p className="m-0 text-xs text-muted">Email and Teams leave the app, so a field that holds personal data stays out of what they say.</p>
+      ) : null}
     </>
   );
 }
 
 /** Several people decide a task, each with a vote: who votes, in turn or at once, and what decides it. */
-function SeveralEditor({ several, outcomes, people, onChange }: { several: Several | undefined; outcomes: TaskStep['outcomes']; people: ReadonlyArray<{ name: string; label: string }>; onChange: (several: Several | undefined) => void }) {
+function SeveralEditor({
+  several,
+  outcomes,
+  people,
+  onChange,
+}: {
+  several: Several | undefined;
+  outcomes: TaskStep['outcomes'];
+  people: ReadonlyArray<{ name: string; label: string }>;
+  onChange: (several: Several | undefined) => void;
+}) {
   const voters = several?.people;
   const decide = several?.decide;
   return (
@@ -1570,7 +1918,15 @@ function SeveralEditor({ several, outcomes, people, onChange }: { several: Sever
         label="Several people decide, each with a vote"
         checked={Boolean(several)}
         onChange={(on) =>
-          onChange(on ? { people: { everyone: true }, sequential: false, decide: outcomes.length > 1 ? { count: 'all', outcome: outcomes[0]!.name, otherwise: outcomes[1]!.name } : { first: true } } : undefined)
+          onChange(
+            on
+              ? {
+                  people: { everyone: true },
+                  sequential: false,
+                  decide: outcomes.length > 1 ? { count: 'all', outcome: outcomes[0]!.name, otherwise: outcomes[1]!.name } : { first: true },
+                }
+              : undefined,
+          )
         }
       />
       {several && voters && decide ? (
@@ -1582,7 +1938,12 @@ function SeveralEditor({ several, outcomes, people, onChange }: { several: Sever
                 value={'everyone' in voters ? 'everyone' : 'fields' in voters ? 'fields' : `line:${voters.lineOf}`}
                 onChange={(e) => {
                   const value = e.target.value;
-                  const next: Several['people'] = value === 'everyone' ? { everyone: true } : value === 'fields' ? { fields: people.slice(0, 2).map((person) => person.name) } : { lineOf: value.slice('line:'.length), levels: 2 };
+                  const next: Several['people'] =
+                    value === 'everyone'
+                      ? { everyone: true }
+                      : value === 'fields'
+                        ? { fields: people.slice(0, 2).map((person) => person.name) }
+                        : { lineOf: value.slice('line:'.length), levels: 2 };
                   onChange({ ...several, people: next });
                 }}
               >
@@ -1604,7 +1965,9 @@ function SeveralEditor({ several, outcomes, people, onChange }: { several: Sever
                   key={person.name}
                   label={`The record's ${person.label.toLowerCase()}`}
                   checked={voters.fields.includes(person.name)}
-                  onChange={(on) => onChange({ ...several, people: { fields: on ? [...voters.fields, person.name] : voters.fields.filter((field) => field !== person.name) } })}
+                  onChange={(on) =>
+                    onChange({ ...several, people: { fields: on ? [...voters.fields, person.name] : voters.fields.filter((field) => field !== person.name) } })
+                  }
                 />
               ))
             : null}
@@ -1640,7 +2003,14 @@ function SeveralEditor({ several, outcomes, people, onChange }: { several: Sever
 }
 
 /** What a wait waits for: a time, a date of the record, an action on it, a condition on it, or a signal. */
-function WaitForEditor(props: { definition: Definition; name: string; label: string; variables: RefChoice[]; value: WaitFor; onChange: (wait: WaitFor) => void }) {
+function WaitForEditor(props: {
+  definition: Definition;
+  name: string;
+  label: string;
+  variables: RefChoice[];
+  value: WaitFor;
+  onChange: (wait: WaitFor) => void;
+}) {
   const { definition, name, label, variables, value, onChange } = props;
   const entity = flowSubject(definition.flows![name]!)?.entity;
   const dates = (entity ? (definition.entities[entity]?.fields ?? []) : []).filter((field) => field.type === 'date' || field.type === 'datetime');
@@ -1700,7 +2070,15 @@ function WaitForEditor(props: { definition: Definition; name: string; label: str
           )}
         </Field>
       ) : null}
-      {'condition' in value ? <ConditionEditor label="Until it holds that" value={value.condition} choices={variables} compareWith={variables} onChange={(condition) => onChange({ condition: condition ?? value.condition })} /> : null}
+      {'condition' in value ? (
+        <ConditionEditor
+          label="Until it holds that"
+          value={value.condition}
+          choices={variables}
+          compareWith={variables}
+          onChange={(condition) => onChange({ condition: condition ?? value.condition })}
+        />
+      ) : null}
       {'signal' in value ? (
         <Field label="The signal" hint="An operator, or another flow, throws it by name.">
           {(id) => <TextInput id={id} className="font-mono" value={value.signal} onChange={(e) => onChange({ signal: e.target.value.trim() })} />}
@@ -1711,7 +2089,15 @@ function WaitForEditor(props: { definition: Definition; name: string; label: str
 }
 
 /** A value for an input or a result: a value, or a variable that holds a record or a list of the type. */
-function InputValue(props: { definition: Definition; input: string; type: FlowType; value: FlowStep extends never ? never : unknown; scope: ReadonlyMap<string, VarKind>; sources: ValueSources; onChange: (value: never) => void }) {
+function InputValue(props: {
+  definition: Definition;
+  input: string;
+  type: FlowType;
+  value: FlowStep extends never ? never : unknown;
+  scope: ReadonlyMap<string, VarKind>;
+  sources: ValueSources;
+  onChange: (value: never) => void;
+}) {
   const { definition, input, type, scope, sources } = props;
   const onChange = props.onChange as (value: unknown) => void;
   if (type.type === 'record' || type.type === 'list') {
@@ -1736,13 +2122,30 @@ function InputValue(props: { definition: Definition; input: string; type: FlowTy
   }
   return (
     <Field label={`${input} (${typeText(definition, type)})`}>
-      {() => <ValueEditor definition={definition} entity="" label={input} value={(props.value ?? null) as never} from={sources} only={ANY_VALUE} onChange={(value) => onChange(value)} />}
+      {() => (
+        <ValueEditor
+          definition={definition}
+          entity=""
+          label={input}
+          value={(props.value ?? null) as never}
+          from={sources}
+          only={ANY_VALUE}
+          onChange={(value) => onChange(value)}
+        />
+      )}
     </Field>
   );
 }
 
 /** Values for a record's fields: the fields a flow can write, each with where its value comes from. */
-function ValuesEditor(props: { definition: Definition; entity: string; line?: boolean; values: Readonly<Record<string, unknown>>; sources: ValueSources; onChange: (values: Record<string, never>) => void }) {
+function ValuesEditor(props: {
+  definition: Definition;
+  entity: string;
+  line?: boolean;
+  values: Readonly<Record<string, unknown>>;
+  sources: ValueSources;
+  onChange: (values: Record<string, never>) => void;
+}) {
   const { definition, entity, values, sources } = props;
   const onChange = props.onChange as (values: Record<string, unknown>) => void;
   const fields = (definition.entities[entity]?.fields ?? []).filter((field) => field.type !== 'lines' && field.type !== 'file' && !isWorkedOut(field));
@@ -1766,7 +2169,15 @@ function ValuesEditor(props: { definition: Definition; entity: string; line?: bo
                 ✕
               </Button>
             </div>
-            <ValueEditor definition={definition} entity="" {...(target ? { target } : {})} label={target?.label ?? field} value={value as never} from={sources} onChange={(next) => onChange({ ...values, [field]: next })} />
+            <ValueEditor
+              definition={definition}
+              entity=""
+              {...(target ? { target } : {})}
+              label={target?.label ?? field}
+              value={value as never}
+              from={sources}
+              onChange={(next) => onChange({ ...values, [field]: next })}
+            />
           </div>
         );
       })}
@@ -1816,12 +2227,29 @@ function typeOf(value: string, entity: string): FlowType {
   return { type: value as Exclude<FlowType['type'], 'record' | 'list'> };
 }
 
-function TypePicker({ definition, label, value, onChange, none }: { definition: Definition; label: string; value: FlowType | undefined; onChange: (value: FlowType | undefined) => void; none?: string }) {
+function TypePicker({
+  definition,
+  label,
+  value,
+  onChange,
+  none,
+}: {
+  definition: Definition;
+  label: string;
+  value: FlowType | undefined;
+  onChange: (value: FlowType | undefined) => void;
+  none?: string;
+}) {
   const entities = flowEntities(definition);
   const entity = value && (value.type === 'record' || value.type === 'list') ? value.entity : (entities[0] ?? '');
   return (
     <div className="flex flex-wrap gap-2">
-      <Select aria-label={label} className="w-auto" value={value?.type ?? ''} onChange={(e) => onChange(e.target.value ? typeOf(e.target.value, entity) : undefined)}>
+      <Select
+        aria-label={label}
+        className="w-auto"
+        value={value?.type ?? ''}
+        onChange={(e) => onChange(e.target.value ? typeOf(e.target.value, entity) : undefined)}
+      >
         {none ? <option value="">{none}</option> : null}
         {TYPES.map((type) => (
           <option key={type.value} value={type.value}>
@@ -1842,13 +2270,27 @@ function TypePicker({ definition, label, value, onChange, none }: { definition: 
   );
 }
 
-function FlowSettings({ definition, name, readOnly, onChange, onRemove }: { definition: Definition; name: string; readOnly: boolean; onChange: (definition: Definition) => void; onRemove: () => void }) {
+function FlowSettings({
+  definition,
+  name,
+  readOnly,
+  onChange,
+  onRemove,
+}: {
+  definition: Definition;
+  name: string;
+  readOnly: boolean;
+  onChange: (definition: Definition) => void;
+  onRemove: () => void;
+}) {
   const flow = definition.flows![name]!;
   const [input, setInput] = useState('');
   return (
     <Card className="grid gap-3 p-4" aria-label="Flow">
       <h3 className="m-0 text-base font-semibold">Flow</h3>
-      <Field label="Label">{(id) => <TextInput id={id} value={flow.label} onChange={(e) => onChange(updateFlow(definition, name, { label: e.target.value }))} />}</Field>
+      <Field label="Label">
+        {(id) => <TextInput id={id} value={flow.label} onChange={(e) => onChange(updateFlow(definition, name, { label: e.target.value }))} />}
+      </Field>
       <Field label="What it does" hint="For builders and reviewers.">
         {(id) => (
           <textarea
@@ -1866,17 +2308,33 @@ function FlowSettings({ definition, name, readOnly, onChange, onRemove }: { defi
             <div className="flex items-center justify-between gap-2">
               <code className="text-sm">{key}</code>
               {readOnly ? null : (
-                <Button size="sm" variant="ghost" aria-label={`Remove the input ${key}`} onClick={() => onChange(updateFlow(definition, name, { input: Object.fromEntries(Object.entries(flow.input).filter(([k]) => k !== key)) }))}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Remove the input ${key}`}
+                  onClick={() => onChange(updateFlow(definition, name, { input: Object.fromEntries(Object.entries(flow.input).filter(([k]) => k !== key)) }))}
+                >
                   ✕
                 </Button>
               )}
             </div>
-            <TypePicker definition={definition} label={`Input ${key}`} value={type} onChange={(next) => next && onChange(updateFlow(definition, name, { input: { ...flow.input, [key]: next } }))} />
+            <TypePicker
+              definition={definition}
+              label={`Input ${key}`}
+              value={type}
+              onChange={(next) => next && onChange(updateFlow(definition, name, { input: { ...flow.input, [key]: next } }))}
+            />
           </div>
         ))}
         {readOnly ? null : (
           <div className="flex gap-2">
-            <TextInput aria-label="New input" className="w-40 font-mono" placeholder="e.g. claim" value={input} onChange={(e) => setInput(e.target.value.trim())} />
+            <TextInput
+              aria-label="New input"
+              className="w-40 font-mono"
+              placeholder="e.g. claim"
+              value={input}
+              onChange={(e) => setInput(e.target.value.trim())}
+            />
             <Button
               size="sm"
               disabled={!/^[a-z][a-z0-9_]{0,62}$/.test(input) || input in flow.input}
@@ -1891,7 +2349,17 @@ function FlowSettings({ definition, name, readOnly, onChange, onRemove }: { defi
         )}
       </div>
       {flowWaits(flow, definition.flows) ? null : (
-        <Field label="Result">{() => <TypePicker definition={definition} label="Result" value={flow.output} none="No result" onChange={(output) => onChange(updateFlow(definition, name, { output }))} />}</Field>
+        <Field label="Result">
+          {() => (
+            <TypePicker
+              definition={definition}
+              label="Result"
+              value={flow.output}
+              none="No result"
+              onChange={(output) => onChange(updateFlow(definition, name, { output }))}
+            />
+          )}
+        </Field>
       )}
       {readOnly ? null : (
         <Button variant="danger" className="justify-self-start" onClick={onRemove}>
@@ -1909,7 +2377,9 @@ function EarlierProcesses({ definition, readOnly, onChange }: { definition: Defi
   return (
     <Card className="grid gap-2 p-4" aria-label="Processes from before">
       <h3 className="m-0 text-base font-semibold">Processes from before</h3>
-      <p className="m-0 text-sm text-muted">This app has processes from before flows could wait. They still run, but a3t no longer draws them: rebuild each as a flow that waits, then remove it.</p>
+      <p className="m-0 text-sm text-muted">
+        This app has processes from before flows could wait. They still run, but a3t no longer draws them: rebuild each as a flow that waits, then remove it.
+      </p>
       {processes.map(([name, process]) => (
         <div key={name} className="flex items-center justify-between gap-2 text-sm">
           <span>{process.label}</span>
@@ -1919,7 +2389,12 @@ function EarlierProcesses({ definition, readOnly, onChange }: { definition: Defi
               variant="danger"
               onClick={() => {
                 const rest = Object.fromEntries(Object.entries(definition.processes ?? {}).filter(([other]) => other !== name));
-                const roles = Object.fromEntries(Object.entries(definition.roles).map(([role, spec]) => [role, spec.processes ? { ...spec, processes: spec.processes.filter((each) => each !== name) } : spec]));
+                const roles = Object.fromEntries(
+                  Object.entries(definition.roles).map(([role, spec]) => [
+                    role,
+                    spec.processes ? { ...spec, processes: spec.processes.filter((each) => each !== name) } : spec,
+                  ]),
+                );
                 onChange({ ...definition, processes: rest, roles });
               }}
             >
@@ -1942,7 +2417,14 @@ function TryFlow({ appId, definition, name, flow, dirty }: { appId: string; defi
           const raw = input[key] ?? '';
           if (type.type === 'number') return [key, Number(raw)];
           if (type.type === 'boolean') return [key, raw === 'true'];
-          if (type.type === 'list') return [key, raw.split(',').map((id) => id.trim()).filter(Boolean)];
+          if (type.type === 'list')
+            return [
+              key,
+              raw
+                .split(',')
+                .map((id) => id.trim())
+                .filter(Boolean),
+            ];
           return [key, raw];
         }),
       );
@@ -1956,7 +2438,15 @@ function TryFlow({ appId, definition, name, flow, dirty }: { appId: string; defi
       {dirty ? <Notice tone="warn">Save your changes first: trying runs the saved flow.</Notice> : null}
       {Object.entries(flow.input).map(([key, type]) =>
         type.type === 'record' ? (
-          <RecordPick key={key} appId={appId} definition={definition} input={key} entity={type.entity} value={input[key] ?? ''} onChange={(value) => setInput({ ...input, [key]: value })} />
+          <RecordPick
+            key={key}
+            appId={appId}
+            definition={definition}
+            input={key}
+            entity={type.entity}
+            value={input[key] ?? ''}
+            onChange={(value) => setInput({ ...input, [key]: value })}
+          />
         ) : (
           <Field key={key} label={`${key} (${typeText(definition, type)})`} hint={type.type === 'list' ? 'Record IDs, separated by commas.' : undefined}>
             {(id) => <TextInput id={id} value={input[key] ?? ''} onChange={(e) => setInput({ ...input, [key]: e.target.value })} />}
@@ -1988,7 +2478,21 @@ function TryFlow({ appId, definition, name, flow, dirty }: { appId: string; defi
   );
 }
 
-function RecordPick({ appId, definition, input, entity, value, onChange }: { appId: string; definition: Definition; input: string; entity: string; value: string; onChange: (value: string) => void }) {
+function RecordPick({
+  appId,
+  definition,
+  input,
+  entity,
+  value,
+  onChange,
+}: {
+  appId: string;
+  definition: Definition;
+  input: string;
+  entity: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
   const records = useQuery({ queryKey: ['records', appId, entity, 'pick'], queryFn: () => api.records(appId, entity) });
   const titleField = definition.entities[entity]?.titleField;
   return (

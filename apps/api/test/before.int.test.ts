@@ -1,7 +1,7 @@
 import { EXPENSE_APP } from '@platform/app-model';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * The flow an action runs before it saves, end to end (design §6.2): it checks the record, sets
@@ -30,7 +30,9 @@ async function inject(options: InjectOptions, expected?: number) {
 
 async function claim(session: Session, title: string, amounts: number[], iban: string | null = 'SG11 BOB') {
   const lines = amounts.map((amount, i) => line(`Shop ${i + 1}`, 'travel', amount));
-  return (await inject({ method: 'POST', url: run('submit_claim'), ...as(session), payload: { values: { title, lines, ...(iban ? { iban } : {}) } } }, 201)).json().record;
+  return (
+    await inject({ method: 'POST', url: run('submit_claim'), ...as(session), payload: { values: { title, lines, ...(iban ? { iban } : {}) } } }, 201)
+  ).json().record;
 }
 
 /** Change the app's definition, as its builder does. */
@@ -38,7 +40,12 @@ async function redefine(edit: (definition: Record<string, any>) => void) {
   const current = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json();
   const definition = structuredClone(current.definition);
   edit(definition);
-  return (await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), headers: { 'if-match': `"${current.revision}"` }, payload: { definition } }, 200)).json().plan;
+  return (
+    await inject(
+      { method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), headers: { 'if-match': `"${current.revision}"` }, payload: { definition } },
+      200,
+    )
+  ).json().plan;
 }
 
 /** The example, with its approval checks: nobody approves their own claim, and a large claim needs a bank account. */
@@ -63,7 +70,10 @@ function withChecks() {
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
-  const created = await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withChecks() } }, 201);
+  const created = await inject(
+    { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withChecks() } },
+    201,
+  );
   appId = created.json().app.id;
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'carol@example.com', role: 'approver' } }, 201);
@@ -88,19 +98,30 @@ describe('the flow an action runs before it saves', () => {
   it('stop people approving their own claims, and take the branch for a large one', async () => {
     const own = await claim(alice, 'My own trip', [40]);
     const refused = await inject({ method: 'POST', url: run('approve_claim'), ...as(alice), payload: { recordId: own.id } }, 422);
-    expect(refused.json()).toMatchObject({ error: 'rule_failed', message: "You can't approve your own claim", details: { findings: [{ rule: 'flows.check_approval.steps[0]', severity: 'error' }] } });
+    expect(refused.json()).toMatchObject({
+      error: 'rule_failed',
+      message: "You can't approve your own claim",
+      details: { findings: [{ rule: 'flows.check_approval.steps[0]', severity: 'error' }] },
+    });
     expect((await inject({ method: 'GET', url: `${records()}/${own.id}`, ...as(alice) }, 200)).json().values.status).toBe('submitted');
 
     const large = await claim(bob, 'Conference', [900, 600], null);
     const stopped = await inject({ method: 'POST', url: run('approve_claim'), ...as(carol), payload: { recordId: large.id } }, 422);
-    expect(stopped.json()).toMatchObject({ error: 'rule_failed', message: 'A large claim needs a bank account', details: { findings: [{ rule: 'flows.check_approval.steps[2].then[0]', fields: ['iban'] }] } });
+    expect(stopped.json()).toMatchObject({
+      error: 'rule_failed',
+      message: 'A large claim needs a bank account',
+      details: { findings: [{ rule: 'flows.check_approval.steps[2].then[0]', fields: ['iban'] }] },
+    });
     const paid = await claim(bob, 'Workshop', [900, 600]);
     await inject({ method: 'POST', url: run('approve_claim'), ...as(carol), payload: { recordId: paid.id } }, 200);
   });
 
   it("seal the flow's result into an agent's proposal, and write it only when the person approves", async () => {
     const submitted = await claim(bob, 'Kuala Lumpur', [120]);
-    const response = await inject({ method: 'POST', url: '/v1/me/tokens', ...as(carol), payload: { name: 'agent', scopes: ['app.run', 'action.run', 'query.run'], expiresInDays: 7 } }, 201);
+    const response = await inject(
+      { method: 'POST', url: '/v1/me/tokens', ...as(carol), payload: { name: 'agent', scopes: ['app.run', 'action.run', 'query.run'], expiresInDays: 7 } },
+      201,
+    );
     const agent = response.json().token as string;
     const rpc = async (method: string, params: Record<string, unknown> = {}) =>
       (await inject({ method: 'POST', url: '/mcp', ...bearer(agent), payload: { jsonrpc: '2.0', id: 1, method, params } }, 200)).json().result;
@@ -111,7 +132,10 @@ describe('the flow an action runs before it saves', () => {
     expect((await inject({ method: 'GET', url: `${records()}/${submitted.id}`, ...as(carol) }, 200)).json().values.approver).toBeNull();
 
     await inject({ method: 'POST', url: `/v1/proposals/${proposed.proposal.id}/approve`, ...as(carol), payload: { digest: proposed.proposal.digest } }, 200);
-    expect((await inject({ method: 'GET', url: `${records()}/${submitted.id}`, ...as(carol) }, 200)).json().values).toMatchObject({ status: 'approved', approver: carol.userId });
+    expect((await inject({ method: 'GET', url: `${records()}/${submitted.id}`, ...as(carol) }, 200)).json().values).toMatchObject({
+      status: 'approved',
+      approver: carol.userId,
+    });
   });
 
   it('shape a new record: set a value and add a line, whose total the record shows', async () => {
@@ -149,7 +173,11 @@ describe('the flow an action runs before it saves', () => {
         steps: [
           { type: 'total', var: 'count', of: 'claim.lines', op: 'count' },
           { type: 'total', var: 'largest', of: 'claim.lines', op: 'max', field: 'amount' },
-          { type: 'change', record: 'claim', values: { trip: { concat: [{ ref: 'claim.title' }, ': ', { ref: 'count' }, ' lines, up to ', { ref: 'largest' }] } } },
+          {
+            type: 'change',
+            record: 'claim',
+            values: { trip: { concat: [{ ref: 'claim.title' }, ': ', { ref: 'count' }, ' lines, up to ', { ref: 'largest' }] } },
+          },
           {
             type: 'try',
             steps: [
@@ -187,7 +215,9 @@ describe('the flow an action runs before it saves', () => {
         { type: 'set', field: 'approver', value: { ref: 'principal.id' } },
       ];
     });
-    expect(plan.notes).toContain('The steps of Approve an expense claim are now the flow Approve an expense claim: before it saves, which runs before it saves');
+    expect(plan.notes).toContain(
+      'The steps of Approve an expense claim are now the flow Approve an expense claim: before it saves, which runs before it saves',
+    );
     const saved = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json().definition;
     expect(saved.actions.approve_claim).not.toHaveProperty('steps');
     expect(saved.actions.approve_claim.before).toEqual({ flow: 'approve_claim_before', input: { expense_claim: { ref: 'record' } } });

@@ -1,5 +1,15 @@
+import {
+  canonicalValue,
+  compileCondition,
+  EXPENSE_APP,
+  entityFields,
+  environmentNames,
+  planMigration,
+  SqlBuilder,
+  type StoredDefinition,
+  validateDefinition,
+} from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { canonicalValue, compileCondition, entityFields, environmentNames, EXPENSE_APP, planMigration, SqlBuilder, validateDefinition, type StoredDefinition } from '@platform/app-model';
 
 /** References to several records (design §6.1): many to many, as a list of IDs the platform keeps true. */
 
@@ -56,7 +66,7 @@ describe('a reference to several records', () => {
       }),
     );
     expect(issues).toEqual([
-      'entities.expense_claim.titleField: trips holds several records, so it can\'t name a record',
+      "entities.expense_claim.titleField: trips holds several records, so it can't name a record",
       'rules.known_trip.assert: trips holds records: look for one by its ID',
       'rules.one_trip.assert: trips holds several records: test it with "in"',
     ]);
@@ -83,7 +93,13 @@ describe('a reference to several records', () => {
     const table = `"${names.schema}"."e_${single.entities['expense_claim']!.id}"`;
     const field = single.entities['expense_claim']!.fields.find((f) => f.name === 'trips')!;
     const up = planMigration(single, many, names);
-    expect(up.steps).toEqual([expect.objectContaining({ kind: 'retype_field', destructive: false, description: 'Let expense_claim.trips hold several records; each record keeps the one it has' })]);
+    expect(up.steps).toEqual([
+      expect.objectContaining({
+        kind: 'retype_field',
+        destructive: false,
+        description: 'Let expense_claim.trips hold several records; each record keeps the one it has',
+      }),
+    ]);
     expect(up.statements.slice(0, 4)).toEqual([
       `alter table ${table} add column "f_${field.id}_list" uuid[]`,
       `update ${table} set "f_${field.id}_list" = array["f_${field.id}"] where "f_${field.id}" is not null`,

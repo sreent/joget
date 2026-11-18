@@ -1,12 +1,12 @@
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { LEAVE_APP } from '@platform/app-model';
 import { auditEvents } from '@platform/db';
 import { and, desc, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
-import { createServer, type IncomingMessage, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { webhookSignature } from '../src/integration/routes.js';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Integration (design §6.13). A flow calls a service through a connection, with the secret its
@@ -50,19 +50,31 @@ async function leaveApp(name: string, edit: (definition: Record<string, any>) =>
     input: { leave: { type: 'record', entity: 'leave_request' } },
     output: { type: 'number' },
     steps: [
-      { type: 'call_service', connection: 'payroll', path: { concat: ['/balances/', { ref: 'leave.manager' }] }, query: { kind: { ref: 'leave.kind' } }, results: { days_left: { from: 'data.days', type: 'number' } } },
+      {
+        type: 'call_service',
+        connection: 'payroll',
+        path: { concat: ['/balances/', { ref: 'leave.manager' }] },
+        query: { kind: { ref: 'leave.kind' } },
+        results: { days_left: { from: 'data.days', type: 'number' } },
+      },
       { type: 'return', value: { ref: 'days_left' } },
     ],
   };
   edit(definition);
-  const app = (await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } }, 201)).app.id;
+  const app = (await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } }, 201))
+    .app.id;
   await inject({ method: 'POST', url: `/v1/apps/${app}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'manager' } }, 201);
   return app;
 }
 const ask = async (app: string) =>
   (
     await json(
-      { method: 'POST', url: `/v1/apps/${app}/actions/request_leave/run`, ...as(alice), payload: { values: { kind: 'annual', starts: '2026-12-21', ends: '2026-12-24', days: 4, manager: bob.userId } } },
+      {
+        method: 'POST',
+        url: `/v1/apps/${app}/actions/request_leave/run`,
+        ...as(alice),
+        payload: { values: { kind: 'annual', starts: '2026-12-21', ends: '2026-12-24', days: 4, manager: bob.userId } },
+      },
       201,
     )
   ).record.id as string;
@@ -89,17 +101,29 @@ afterAll(async () => {
 });
 
 describe('integration', () => {
-  it("calls a service with the secret its environment keeps, and keeps what the answer says", async () => {
+  it('calls a service with the secret its environment keeps, and keeps what the answer says', async () => {
     const app = await leaveApp('Leave, with payroll');
     const id = await ask(app);
     // No secret yet: the call can't prove who the app is.
-    expect(await run(app, 'balance', { leave: id }, 422)).toMatchObject({ error: 'secret_missing', message: 'Payroll has no secret in this environment: its admins set it first' });
+    expect(await run(app, 'balance', { leave: id }, 422)).toMatchObject({
+      error: 'secret_missing',
+      message: 'Payroll has no secret in this environment: its admins set it first',
+    });
     // Bob uses the app, and manages none of its connections.
     await inject({ method: 'PUT', url: `/v1/apps/${app}/connections/payroll/secret`, ...as(bob), payload: { value: 'tok-123' } }, 403);
-    expect(await json({ method: 'PUT', url: `/v1/apps/${app}/connections/payroll/secret`, ...as(alice), payload: { value: 'tok-123' } }, 200)).toMatchObject({ set: true });
+    expect(await json({ method: 'PUT', url: `/v1/apps/${app}/connections/payroll/secret`, ...as(alice), payload: { value: 'tok-123' } }, 200)).toMatchObject({
+      set: true,
+    });
     const listed = await json({ method: 'GET', url: `/v1/apps/${app}/connections`, ...as(alice) }, 200);
     expect(listed.connections).toEqual([
-      { name: 'payroll', kind: 'service', label: 'Payroll', host: base.slice('http://'.length), needsSecret: true, secret: { set: true, setAt: expect.any(String) } },
+      {
+        name: 'payroll',
+        kind: 'service',
+        label: 'Payroll',
+        host: base.slice('http://'.length),
+        needsSecret: true,
+        secret: { set: true, setAt: expect.any(String) },
+      },
       { name: 'team_channel', kind: 'teams', label: 'The team channel', host: null, needsSecret: true, secret: { set: false, setAt: null } },
     ]);
     expect(JSON.stringify(listed)).not.toContain('tok-123');
@@ -136,7 +160,10 @@ describe('integration', () => {
     await inject({ method: 'PUT', url: `/v1/apps/${app}/connections/payroll/secret`, ...as(alice), payload: { value: 'tok-123' } }, 200);
     const id = await ask(app);
     heard.length = 0;
-    expect(await run(app, 'book', { leave: id }, 200, true)).toMatchObject({ dryRun: true, findings: [{ message: "Trying it didn't call Payroll: a POST changes something there for real" }] });
+    expect(await run(app, 'book', { leave: id }, 200, true)).toMatchObject({
+      dryRun: true,
+      findings: [{ message: "Trying it didn't call Payroll: a POST changes something there for real" }],
+    });
     expect(heard).toEqual([]);
     await run(app, 'book', { leave: id }, 200);
     expect(heard).toEqual([expect.objectContaining({ method: 'POST', url: '/api/bookings', body: '{"days":4}' })]);
@@ -159,12 +186,19 @@ describe('integration', () => {
     const path = new URL(made.url).pathname;
     const body = JSON.stringify({ booking: { leave_id: id, note: 'Booked by payroll' } });
     const now = String(Math.floor(Date.now() / 1000));
-    const signed = (timestamp: string, signature: string) => ({ 'content-type': 'application/json', 'x-a3t-timestamp': timestamp, 'x-a3t-signature': signature });
+    const signed = (timestamp: string, signature: string) => ({
+      'content-type': 'application/json',
+      'x-a3t-timestamp': timestamp,
+      'x-a3t-signature': signature,
+    });
     await inject({ method: 'POST', url: path, headers: { 'content-type': 'application/json' }, payload: body }, 401);
     await inject({ method: 'POST', url: path, headers: signed(now, webhookSignature('a guess', now, body)), payload: body }, 401);
     const old = String(Math.floor(Date.now() / 1000) - 3600);
     await inject({ method: 'POST', url: path, headers: signed(old, webhookSignature(made.key, old, body)), payload: body }, 401);
-    expect(await json({ method: 'POST', url: path, headers: signed(now, webhookSignature(made.key, now, body)), payload: body }, 200)).toEqual({ output: null, findings: [] });
+    expect(await json({ method: 'POST', url: path, headers: signed(now, webhookSignature(made.key, now, body)), payload: body }, 200)).toEqual({
+      output: null,
+      findings: [],
+    });
     const record = await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200);
     expect(record.values.reason).toBe('Booked by payroll');
     const history = await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}/history`, ...as(alice) }, 200);
@@ -177,7 +211,16 @@ describe('integration', () => {
       definition['flows'].tell_team = {
         label: 'Tell the team',
         input: { leave: { type: 'record', entity: 'leave_request' } },
-        steps: [{ type: 'inform', to: [{ role: 'manager' }], title: { concat: ['Leave asked for: ', { ref: 'leave.days' }, ' days'] }, about: 'leave', email: false, teams: 'team_channel' }],
+        steps: [
+          {
+            type: 'inform',
+            to: [{ role: 'manager' }],
+            title: { concat: ['Leave asked for: ', { ref: 'leave.days' }, ' days'] },
+            about: 'leave',
+            email: false,
+            teams: 'team_channel',
+          },
+        ],
       };
     });
     await inject({ method: 'PUT', url: `/v1/apps/${app}/connections/team_channel/secret`, ...as(alice), payload: { value: 'ftp://nowhere' } }, 422);

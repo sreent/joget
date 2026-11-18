@@ -1,19 +1,19 @@
+import { AppDefinition, appRoleName, EXPENSE_APP, NAME_PATTERN } from '@platform/app-model';
 import type { Decision, Resource } from '@platform/authz';
-import { appRoleName, AppDefinition, EXPENSE_APP, NAME_PATTERN } from '@platform/app-model';
-import { appEnvironments, appRevisions, apps, bindings, changeRequests, releases, spaces, type Executor } from '@platform/db';
+import { appEnvironments, appRevisions, apps, bindings, changeRequests, type Executor, releases, spaces } from '@platform/db';
 import { and, desc, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { checkAnyPermission } from '../access/check.js';
-import { describeBindings, BindingOut } from '../access/describe.js';
+import { BindingOut, describeBindings } from '../access/describe.js';
 import { loadSpace, spaceResource } from '../access/resources.js';
 import { once, requireAuth, requireSession, requireUser } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { HttpError, notFound, unprocessable } from '../errors.js';
-import { changeRequestRequired, type AppBuilder } from './builder.js';
-import { envSelector, isLoaded, isTeamApp, type AppRef, type EnvironmentRow, type LoadedApp } from './catalog.js';
+import { type AppBuilder, changeRequestRequired } from './builder.js';
+import { type AppRef, type EnvironmentRow, envSelector, isLoaded, isTeamApp, type LoadedApp } from './catalog.js';
 import { appResource, environmentResource } from './resources.js';
 import type { AppRuntime } from './runtime.js';
 import { AppOut, AppParams, EnvironmentOut, EnvQuery, PlanOut, TestsOut } from './schemas.js';
@@ -35,10 +35,14 @@ export async function describeEnvironments(db: Executor, rows: readonly Environm
   const requestIds = rows.flatMap((row) => (row.changeRequestId ? [row.changeRequestId] : []));
   const numbers = new Map<string, number>();
   if (releaseIds.length) {
-    for (const row of await db.select({ id: releases.id, number: releases.number }).from(releases).where(inArray(releases.id, releaseIds))) numbers.set(row.id, row.number);
+    for (const row of await db.select({ id: releases.id, number: releases.number }).from(releases).where(inArray(releases.id, releaseIds)))
+      numbers.set(row.id, row.number);
   }
   if (requestIds.length) {
-    for (const row of await db.select({ id: changeRequests.id, number: changeRequests.number }).from(changeRequests).where(inArray(changeRequests.id, requestIds))) {
+    for (const row of await db
+      .select({ id: changeRequests.id, number: changeRequests.number })
+      .from(changeRequests)
+      .where(inArray(changeRequests.id, requestIds))) {
       numbers.set(row.id, row.number);
     }
   }
@@ -124,7 +128,10 @@ export async function describeApp(ctx: AppContext, runtime: AppRuntime, auth: Au
 
   let workingCopyOf: AppOutput['workingCopyOf'] = null;
   if (ref.app.workingCopyOf) {
-    const [teamApp] = await ctx.db.select({ id: apps.id, name: apps.name, revision: apps.currentRevision }).from(apps).where(eq(apps.id, ref.app.workingCopyOf));
+    const [teamApp] = await ctx.db
+      .select({ id: apps.id, name: apps.name, revision: apps.currentRevision })
+      .from(apps)
+      .where(eq(apps.id, ref.app.workingCopyOf));
     const [open] = await ctx.db
       .select({ id: changeRequests.id, number: changeRequests.number })
       .from(changeRequests)
@@ -161,7 +168,10 @@ export async function describeApp(ctx: AppContext, runtime: AppRuntime, auth: Au
       const [to] = await ctx.db.select({ appId: apps.id, name: apps.name }).from(apps).where(eq(apps.id, ref.app.movedTo));
       movedTo = to ?? null;
     } else {
-      const [to] = await ctx.db.select({ appId: apps.id, name: apps.name }).from(apps).where(and(eq(apps.promotedFrom, ref.app.id), eq(apps.status, 'active')));
+      const [to] = await ctx.db
+        .select({ appId: apps.id, name: apps.name })
+        .from(apps)
+        .where(and(eq(apps.promotedFrom, ref.app.id), eq(apps.status, 'active')));
       if (to) {
         const [cr] = await ctx.db
           .select({ id: changeRequests.id, number: changeRequests.number, status: changeRequests.status })
@@ -201,9 +211,13 @@ export async function visibleApps(ctx: AppContext, runtime: AppRuntime, auth: Au
   const held = await ctx.policy.bindingsFor(auth.principal);
   const spaceIds = held.filter((b) => b.scope.type === 'space').map((b) => b.scope.id);
   const envIds = held.filter((b) => b.scope.type === 'env').map((b) => b.scope.id);
-  const personal = auth.actor.type === 'user'
-    ? await ctx.db.select({ id: spaces.id }).from(spaces).where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)))
-    : [];
+  const personal =
+    auth.actor.type === 'user'
+      ? await ctx.db
+          .select({ id: spaces.id })
+          .from(spaces)
+          .where(and(eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, auth.actor.id)))
+      : [];
   const inSpaces = [...spaceIds, ...personal.map((s) => s.id)];
   const candidates = await ctx.db
     .selectDistinct({ id: apps.id })
@@ -217,9 +231,7 @@ export async function visibleApps(ctx: AppContext, runtime: AppRuntime, auth: Au
       ),
     );
   const described = await Promise.all(candidates.map(async ({ id }) => describeApp(ctx, runtime, auth, await ctx.apps.ref(id)).catch(() => null)));
-  return described
-    .filter((app): app is AppOutput => app !== null && (app.access.build || app.access.run))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  return described.filter((app): app is AppOutput => app !== null && (app.access.build || app.access.run)).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** The environment a request names with `?env=`: Prod, Staging or a preview's ID. */
@@ -302,7 +314,11 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
       '/v1/apps',
       {
         config: { access: { kind: 'authenticated' } },
-        schema: { tags: ['apps'], summary: 'Apps you can build or use, including those shared with you', response: { 200: z.object({ apps: z.array(AppOut) }) } },
+        schema: {
+          tags: ['apps'],
+          summary: 'Apps you can build or use, including those shared with you',
+          response: { 200: z.object({ apps: z.array(AppOut) }) },
+        },
       },
       async (request) => ({ apps: await visibleApps(ctx, runtime, requireAuth(request)) }),
     );
@@ -320,7 +336,9 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         const described = await describeApp(ctx, runtime, auth, await theRef(request));
         if (!described.access.build && !described.access.run) {
           // The same audited refusal an access rule gives.
-          await checkAnyPermission(ctx, request, auth, ['app.read', 'app.run'], appResource(ctx.org.id, await theView(request)), { policy: await viewPolicy(request) });
+          await checkAnyPermission(ctx, request, auth, ['app.read', 'app.run'], appResource(ctx.org.id, await theView(request)), {
+            policy: await viewPolicy(request),
+          });
         }
         return described;
       },
@@ -363,7 +381,7 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         config: { access: buildRule('app.edit') },
         schema: {
           tags: ['apps'],
-          summary: "Rename an app or change its description",
+          summary: 'Rename an app or change its description',
           params: AppParams,
           body: z.object({ name: z.string().trim().min(1).max(100).optional(), description: z.string().trim().max(2000).nullable().optional() }),
           response: { 200: AppOut },
@@ -378,7 +396,10 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         };
         const now = ctx.now();
         await ctx.db.transaction(async (tx) => {
-          await tx.update(apps).set({ ...changes, updatedAt: now }).where(eq(apps.id, ref.app.id));
+          await tx
+            .update(apps)
+            .set({ ...changes, updatedAt: now })
+            .where(eq(apps.id, ref.app.id));
           await recordAudit(tx, auditScopeFor(request, ctx.org.id, now), {
             action: 'app.update',
             target: { type: 'app', id: ref.app.id, name: ref.app.name },
@@ -483,7 +504,8 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
         config: { access: buildRule('app.edit') },
         schema: {
           tags: ['apps'],
-          summary: 'Save a new definition. In a personal sandbox it applies at once; a change that deletes data needs confirmDestructive. Team apps change through change requests',
+          summary:
+            'Save a new definition. In a personal sandbox it applies at once; a change that deletes data needs confirmDestructive. Team apps change through change requests',
           params: AppParams,
           querystring: z.object({ confirmDestructive: z.enum(['true', 'false']).optional() }),
           body: DefinitionBody,
@@ -525,13 +547,26 @@ export function appRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
       async (request) => {
         const ref = await theRef(request);
         const rows = await ctx.db
-          .select({ revision: appRevisions.revision, digest: appRevisions.digest, type: appRevisions.createdByType, id: appRevisions.createdBy, at: appRevisions.createdAt, summary: appRevisions.summary })
+          .select({
+            revision: appRevisions.revision,
+            digest: appRevisions.digest,
+            type: appRevisions.createdByType,
+            id: appRevisions.createdBy,
+            at: appRevisions.createdAt,
+            summary: appRevisions.summary,
+          })
           .from(appRevisions)
           .where(and(eq(appRevisions.appId, ref.app.id), isNull(appRevisions.changeRequestId)))
           .orderBy(desc(appRevisions.revision))
           .limit(200);
         return {
-          revisions: rows.map((row) => ({ revision: row.revision, digest: row.digest, createdBy: { type: row.type, id: row.id }, createdAt: row.at.toISOString(), summary: row.summary })),
+          revisions: rows.map((row) => ({
+            revision: row.revision,
+            digest: row.digest,
+            createdBy: { type: row.type, id: row.id },
+            createdAt: row.at.toISOString(),
+            summary: row.summary,
+          })),
         };
       },
     );

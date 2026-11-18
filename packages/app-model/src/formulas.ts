@@ -1,8 +1,8 @@
 import type { Condition } from '@platform/authz';
-import { evaluateExpression, expressionRefs, operandsOf, operatorOf, type Expression, type ExpressionOperator } from './expressions.js';
-import { entityFields, formulaOf, type FieldInfo, type StoredEntity, type StoredField, type ValueKind } from './fields.js';
+import { type Expression, type ExpressionOperator, evaluateExpression, expressionRefs, operandsOf, operatorOf } from './expressions.js';
+import { entityFields, type FieldInfo, formulaOf, type StoredEntity, type StoredField, type ValueKind } from './fields.js';
 import { compileCondition, ident, SqlBuilder } from './sql.js';
-import { canonicalValue, fitValue, type FieldValue, type RecordValues, type ValueIssue } from './values.js';
+import { canonicalValue, type FieldValue, fitValue, type RecordValues, type ValueIssue } from './values.js';
 
 /*
  * Formulas (design §6.1): a field the platform works out from the record's own fields each time the
@@ -42,7 +42,11 @@ export function formulaFields(entity: Pick<StoredEntity, 'fields'>): StoredField
  * worked out, such as one that divides by zero, gives nothing. A value its field can't hold is an
  * issue, as an entered value would be.
  */
-export function withFormulas(entity: StoredEntity, values: RecordValues, options: { readonly line?: boolean } = {}): { readonly values: Record<string, FieldValue>; readonly issues: ValueIssue[] } {
+export function withFormulas(
+  entity: StoredEntity,
+  values: RecordValues,
+  options: { readonly line?: boolean } = {},
+): { readonly values: Record<string, FieldValue>; readonly issues: ValueIssue[] } {
   const out: Record<string, FieldValue> = { ...values };
   const ordered = formulaFields(entity);
   if (!ordered.length) return { values: out, issues: [] };
@@ -147,7 +151,12 @@ export function formulaSql(expression: Expression, fields: ReadonlyMap<string, F
         return { sql: `concat(${parts.map(textOf).join(', ')})`, kind: 'text' };
       case 'coalesce': {
         const kind = parts.find((part) => part.kind !== 'null')?.kind ?? 'null';
-        const filled = (part: Part) => (part.kind === 'text' ? `nullif(${part.sql}, '')` : part.kind === 'text[]' || part.kind === 'uuid[]' ? `nullif(${part.sql}, '{}'::${part.kind})` : part.sql);
+        const filled = (part: Part) =>
+          part.kind === 'text'
+            ? `nullif(${part.sql}, '')`
+            : part.kind === 'text[]' || part.kind === 'uuid[]'
+              ? `nullif(${part.sql}, '{}'::${part.kind})`
+              : part.sql;
         return { sql: `coalesce(${parts.map(filled).join(', ')})`, kind };
       }
       case 'if': {
@@ -158,7 +167,11 @@ export function formulaSql(expression: Expression, fields: ReadonlyMap<string, F
         if (a.kind === 'null') return { sql: 'null', kind: 'null' };
         // A date moves by whole days, rounded half up as JavaScript rounds; a time by the exact
         // amount, in UTC so that a change of clocks doesn't count, and to the millisecond.
-        if (a.kind === 'datetime') return { sql: `(date_trunc('milliseconds', (${a.sql}) at time zone 'UTC' + (${b.sql})::numeric * interval '1 day') at time zone 'UTC')`, kind: 'datetime' };
+        if (a.kind === 'datetime')
+          return {
+            sql: `(date_trunc('milliseconds', (${a.sql}) at time zone 'UTC' + (${b.sql})::numeric * interval '1 day') at time zone 'UTC')`,
+            kind: 'datetime',
+          };
         return { sql: `(${a.sql} + floor((${b.sql})::numeric + 0.5)::int)`, kind: 'date' };
       case 'days_between':
         if (a.kind === 'null' || b.kind === 'null') return { sql: 'null::numeric', kind: 'number' };
@@ -187,7 +200,8 @@ export function formulaUpdates(entity: StoredEntity, table: string, options: { r
       const bounds = [field.min !== undefined ? `v < ${field.min}` : null, field.max !== undefined ? `v > ${field.max}` : null].filter(Boolean);
       if (bounds.length) value = `(select case when ${bounds.join(' or ')} then null else v end from (select ${value} as v) as worked)`;
     } else if (field.type === 'date') value = part.kind === 'datetime' ? `((${value}) at time zone 'UTC')::date` : `(${value})::date`;
-    else if (field.type === 'text') value = `(select case when char_length(v) > ${field.maxLength} then null else v end from (select (${part.kind === 'text' ? value : textOf(part)}) as v) as worked)`;
+    else if (field.type === 'text')
+      value = `(select case when char_length(v) > ${field.maxLength} then null else v end from (select (${part.kind === 'text' ? value : textOf(part)}) as v) as worked)`;
     return `update ${table} as r set ${ident(info.column)} = ${value}`;
   });
 }

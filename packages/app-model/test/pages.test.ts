@@ -1,5 +1,5 @@
+import { blockAt, diffDefinitions, EXPENSE_APP, mergeDefinitions, pageBlocks, type StoredDefinition, validateDefinition } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { blockAt, diffDefinitions, EXPENSE_APP, mergeDefinitions, pageBlocks, validateDefinition, type StoredDefinition } from '@platform/app-model';
 
 const ids = () => {
   let n = 0;
@@ -56,11 +56,13 @@ describe('pages and the menu', () => {
     ]);
   });
 
-  it('refuse an action that takes input as a row action, as it can\'t run in one click', () => {
+  it("refuse an action that takes input as a row action, as it can't run in one click", () => {
     const broken = example();
     broken.actions.approve_claim.input = ['status'];
     delete broken.actions.approve_claim.set.status;
-    expect(issuesOf(broken)).toEqual(['pages.to_approve.blocks[1].actions: approve_claim takes input, so it can\'t run in one click: open it from a form instead']);
+    expect(issuesOf(broken)).toEqual([
+      "pages.to_approve.blocks[1].actions: approve_claim takes input, so it can't run in one click: open it from a form instead",
+    ]);
   });
 
   it('check that buttons, menu items and page roles name what exists', () => {
@@ -115,14 +117,25 @@ describe('pages and the menu', () => {
 
     const rival = structuredClone(base) as any;
     rival.navigation.home = 'to_approve';
-    expect(mergeDefinitions(base, head, valid(rival, base))).toEqual({ ok: false, conflicts: [{ section: 'navigation', name: 'menu', ours: 'changed', theirs: 'changed' }] });
+    expect(mergeDefinitions(base, head, valid(rival, base))).toEqual({
+      ok: false,
+      conflicts: [{ section: 'navigation', name: 'menu', ours: 'changed', theirs: 'changed' }],
+    });
   });
 });
 
 /** The example with trips: each claim may refer to a trip, and a page about one trip shows its claims. */
 function withTrips() {
   const draft = example();
-  draft.entities.trip = { label: 'Trip', pluralLabel: 'Trips', titleField: 'name', fields: [{ name: 'name', label: 'Name', type: 'text', required: true }, { name: 'starts', label: 'Starts', type: 'date' }] };
+  draft.entities.trip = {
+    label: 'Trip',
+    pluralLabel: 'Trips',
+    titleField: 'name',
+    fields: [
+      { name: 'name', label: 'Name', type: 'text', required: true },
+      { name: 'starts', label: 'Starts', type: 'date' },
+    ],
+  };
   draft.entities.expense_claim.fields.push({ name: 'for_trip', label: 'For trip', type: 'reference', entity: 'trip' });
   draft.pages.trip_page = {
     label: 'Trip',
@@ -138,7 +151,11 @@ function withTrips() {
       },
     ],
   };
-  draft.pages.claim_page = { label: 'Claim', record: { entity: 'expense_claim' }, blocks: [{ type: 'fields', fields: ['title', 'trip', 'lines', 'total', 'status'], actions: ['approve_claim'] }] };
+  draft.pages.claim_page = {
+    label: 'Claim',
+    record: { entity: 'expense_claim' },
+    blocks: [{ type: 'fields', fields: ['title', 'trip', 'lines', 'total', 'status'], actions: ['approve_claim'] }],
+  };
   draft.pages.my_claims.blocks[1].open = 'claim_page';
   return draft;
 }
@@ -146,7 +163,10 @@ function withTrips() {
 describe('pages about one record', () => {
   it('show its fields, the records that refer to it, in tabs, and open from a row', () => {
     const definition = valid(withTrips());
-    expect(definition.pages['trip_page']).toMatchObject({ record: { entity: 'trip' }, blocks: [{ type: 'fields' }, { type: 'tabs', tabs: [{ label: 'Claims' }, { label: 'Spent' }] }] });
+    expect(definition.pages['trip_page']).toMatchObject({
+      record: { entity: 'trip' },
+      blocks: [{ type: 'fields' }, { type: 'tabs', tabs: [{ label: 'Claims' }, { label: 'Spent' }] }],
+    });
     expect(pageBlocks(definition.pages['trip_page']!).map((each) => `${each.path} ${each.block.type}`)).toEqual(['0 fields', '1.0.0 list', '1.1.0 stat']);
     expect(blockAt(definition.pages['trip_page']!, '1.0.0')).toMatchObject({ type: 'list', of: 'for_trip' });
     expect(blockAt(definition.pages['trip_page']!, '1')).toMatchObject({ type: 'tabs' });
@@ -164,7 +184,7 @@ describe('pages about one record', () => {
     draft.pages.my_claims.blocks[0].buttons.push({ page: 'claim_page' });
     draft.navigation.items.push({ page: 'trip_page' });
     expect(issuesOf(draft)).toEqual([
-      'pages.my_claims.blocks[0].buttons[1]: claim_page is about one record, so a list\'s row opens it, not a button',
+      "pages.my_claims.blocks[0].buttons[1]: claim_page is about one record, so a list's row opens it, not a button",
       'pages.my_claims.blocks[2]: Only a page about one record shows its fields: say which entity the page is about',
       'pages.my_claims.blocks[3].of: Only a page about one record shows the records that refer to it',
       'pages.trip_page.blocks[0].fields: No field named colour',

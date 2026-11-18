@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import { useEffect, useId, useRef, useState } from 'react';
-import { api, ApiError } from '../api.js';
+import { ApiError, api } from '../api.js';
 import { Button, Notice } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
 import type { ComposeAttachment, ComposeReply, Definition } from '../types.js';
@@ -43,7 +43,10 @@ interface Asked {
 /** What the chat said before, as text: files go once, so a turn says which it had. */
 function historyOf(turns: readonly Said[]): Asked['history'] {
   return turns.slice(-MAX_HISTORY).map((turn) => {
-    const notes = [turn.files?.length ? `(Files given here, not sent again: ${turn.files.join(', ')}.)` : '', turn.undone ? '(The builder undid this change.)' : ''].filter(Boolean);
+    const notes = [
+      turn.files?.length ? `(Files given here, not sent again: ${turn.files.join(', ')}.)` : '',
+      turn.undone ? '(The builder undid this change.)' : '',
+    ].filter(Boolean);
     return { role: turn.role, text: [turn.text, ...notes].join('\n\n').slice(0, MAX_TURN_TEXT) };
   });
 }
@@ -113,7 +116,13 @@ export function ComposePanel({
       ids.current += 1;
       setTurns((list) => [
         ...list,
-        { id: ids.current, role: 'assistant', text: reply.reply, stopped: reply.stopped, ...(after ? { change: { before: asked.before, after, edits: reply.edits, problems: reply.problems } } : {}) },
+        {
+          id: ids.current,
+          role: 'assistant',
+          text: reply.reply,
+          stopped: reply.stopped,
+          ...(after ? { change: { before: asked.before, after, edits: reply.edits, problems: reply.problems } } : {}),
+        },
       ]);
     },
     onError: (error, asked) => {
@@ -172,13 +181,23 @@ export function ComposePanel({
       <div ref={conversation} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {turns.length === 0 ? (
           <div className="grid gap-2 text-sm text-muted">
-            <p className="m-0">Say what the app needs: a field, a form, a page, a rule or a step in a process. Add a photo of a paper form or a PDF of a process if it helps.</p>
-            <p className="m-0">The chat changes your draft with your organization's AI model. It sees the app's design and your files, never its records. Nothing is saved until you review and save the draft.</p>
+            <p className="m-0">
+              Say what the app needs: a field, a form, a page, a rule or a step in a process. Add a photo of a paper form or a PDF of a process if it helps.
+            </p>
+            <p className="m-0">
+              The chat changes your draft with your organization's AI model. It sees the app's design and your files, never its records. Nothing is saved until
+              you review and save the draft.
+            </p>
           </div>
         ) : null}
         <ol role="log" aria-label="The conversation" className="m-0 grid list-none gap-3 p-0">
           {turns.map((turn) => (
-            <li key={turn.id} className={turn.role === 'user' ? 'ml-8 justify-self-end rounded-lg bg-accent-soft px-3 py-2 text-sm' : 'mr-8 rounded-lg bg-sunken px-3 py-2 text-sm'}>
+            <li
+              key={turn.id}
+              className={
+                turn.role === 'user' ? 'ml-8 justify-self-end rounded-lg bg-accent-soft px-3 py-2 text-sm' : 'mr-8 rounded-lg bg-sunken px-3 py-2 text-sm'
+              }
+            >
               <span className="sr-only">{turn.role === 'user' ? 'You: ' : 'The chat: '}</span>
               <p className="m-0 whitespace-pre-wrap">{turn.text}</p>
               {turn.files?.length ? <p className="m-0 mt-1 text-xs text-muted">With {turn.files.join(', ')}</p> : null}
@@ -192,7 +211,9 @@ export function ComposePanel({
                       </Button>
                     ) : null}
                   </div>
-                  {turn.change.problems && !turn.undone ? <span className="text-warn">The checks still find {count(turn.change.problems, 'problem')}: review the draft to see them.</span> : null}
+                  {turn.change.problems && !turn.undone ? (
+                    <span className="text-warn">The checks still find {count(turn.change.problems, 'problem')}: review the draft to see them.</span>
+                  ) : null}
                 </div>
               ) : null}
               {turn.stopped && STOPPED[turn.stopped] ? <p className="m-0 mt-1 text-xs text-warn">{STOPPED[turn.stopped]}</p> : null}
@@ -232,7 +253,12 @@ export function ComposePanel({
             {files.map((file, i) => (
               <li key={`${file.name}-${i}`} className="flex items-center gap-1 rounded-sm bg-sunken px-2 py-0.5 text-xs">
                 {file.name}
-                <button type="button" className="text-muted hover:text-text" aria-label={`Remove ${file.name}`} onClick={() => setFiles(files.filter((_, at) => at !== i))}>
+                <button
+                  type="button"
+                  className="text-muted hover:text-text"
+                  aria-label={`Remove ${file.name}`}
+                  onClick={() => setFiles(files.filter((_, at) => at !== i))}
+                >
                   ×
                 </button>
               </li>

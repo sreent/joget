@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, useEffect, useId, useRef } from 'react';
 
 /** Small building blocks in Ocean (via the Tailwind theme in styles.css). */
 
@@ -96,7 +96,19 @@ export function Notice({ tone, children }: { tone: 'bad' | 'warn' | 'good'; chil
 }
 
 /** A modal dialog on the platform's <dialog>, which traps focus and closes on Escape. */
-export function Dialog({ open, title, onClose, children, actions }: { open: boolean; title: string; onClose: () => void; children: ReactNode; actions: ReactNode }) {
+export function Dialog({
+  open,
+  title,
+  onClose,
+  children,
+  actions,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  actions: ReactNode;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -105,7 +117,12 @@ export function Dialog({ open, title, onClose, children, actions }: { open: bool
     if (!open && dialog.open) dialog.close();
   }, [open]);
   return (
-    <dialog ref={ref} onClose={onClose} className="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-lg border border-line bg-surface p-0 text-text shadow-raised" aria-labelledby="dialog-title">
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      className="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-lg border border-line bg-surface p-0 text-text shadow-raised"
+      aria-labelledby="dialog-title"
+    >
       <div className="grid gap-4 p-5">
         <h2 id="dialog-title" className="m-0 text-lg font-semibold">
           {title}

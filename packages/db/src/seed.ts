@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { MANAGED_GUARDRAILS, MANAGED_PERMISSION_SETS, MANAGED_ROLES } from '@platform/authz';
 import { asc, eq, sql } from 'drizzle-orm';
-import { SCHEMA_LOCK_KEY, type Database } from './client.js';
+import { type Database, SCHEMA_LOCK_KEY } from './client.js';
 import { guardrails, orgs, permissionSetGrants, permissionSets, rolePermissionSets, roles } from './schema.js';
 
 /**

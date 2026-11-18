@@ -1,7 +1,7 @@
 import { LEAVE_APP } from '@platform/app-model';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Flows that wait (design §6.11). The leave template's flow puts the decision in the inbox of the
@@ -34,8 +34,14 @@ async function leaveApp(name: string, edit: (definition: Record<string, any>) =>
     actions: [],
   };
   edit(definition);
-  const started = await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } }, 201);
-  for (const [subject, role] of [['bob', 'manager'], ['carol', 'hr']] as const) {
+  const started = await json(
+    { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } },
+    201,
+  );
+  for (const [subject, role] of [
+    ['bob', 'manager'],
+    ['carol', 'hr'],
+  ] as const) {
     await inject({ method: 'POST', url: `/v1/apps/${started.app.id}/shares`, ...as(alice), payload: { email: `${subject}@example.com`, role } }, 201);
   }
   return started.app.id;
@@ -52,10 +58,14 @@ const ask = (app: string) =>
     201,
   );
 const inbox = async (session: Session) => (await json({ method: 'GET', url: '/v1/me/tasks?status=open', ...as(session) }, 200)).tasks;
-const taskOn = async (session: Session, recordId: string, name: string) => (await inbox(session)).find((task: { recordId: string; name: string }) => task.recordId === recordId && task.name === name);
-const processOf = async (app: string, recordId: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}/processes`, ...as(alice) }, 200)).instances[0];
-const recordOf = async (app: string, recordId: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}`, ...as(alice) }, 200)).values;
-const complete = (session: Session, taskId: string, outcome: string) => json({ method: 'POST', url: `/v1/tasks/${taskId}/complete`, ...as(session), payload: { outcome } }, 200);
+const taskOn = async (session: Session, recordId: string, name: string) =>
+  (await inbox(session)).find((task: { recordId: string; name: string }) => task.recordId === recordId && task.name === name);
+const processOf = async (app: string, recordId: string) =>
+  (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}/processes`, ...as(alice) }, 200)).instances[0];
+const recordOf = async (app: string, recordId: string) =>
+  (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}`, ...as(alice) }, 200)).values;
+const complete = (session: Session, taskId: string, outcome: string) =>
+  json({ method: 'POST', url: `/v1/tasks/${taskId}/complete`, ...as(session), payload: { outcome } }, 200);
 /** Let the timers fire that are due this much later. The clock goes back after, so that sessions stay signed in. */
 async function later(ms: number): Promise<void> {
   const was = t.clock.offsetMs;
@@ -78,7 +88,9 @@ afterAll(async () => {
 
 describe('a flow that waits', () => {
   it('puts the decision in the inbox of the manager the request names, and ends once it is made', async () => {
-    const app = (await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name: 'Leave', template: 'leave' } }, 201)).app.id;
+    const app = (
+      await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name: 'Leave', template: 'leave' } }, 201)
+    ).app.id;
     await inject({ method: 'POST', url: `/v1/apps/${app}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'manager' } }, 201);
     const asked = await ask(app);
 
@@ -93,7 +105,11 @@ describe('a flow that waits', () => {
       card: 'leave_review',
     });
     // The record shows the step its flow waits at, by the step's path.
-    expect(await processOf(app, asked.record.id)).toMatchObject({ process: 'leave_approval', status: 'running', waiting: [{ element: 'steps_0', name: 'Decide on the leave' }] });
+    expect(await processOf(app, asked.record.id)).toMatchObject({
+      process: 'leave_approval',
+      status: 'running',
+      waiting: [{ element: 'steps_0', name: 'Decide on the leave' }],
+    });
     // Live, the flow's canvas counts the cases at each step: for whoever runs the app, not for a manager.
     await ask(app);
     const live = await json({ method: 'GET', url: `/v1/apps/${app}/flows/leave_approval/live`, ...as(alice) }, 200);
@@ -124,7 +140,10 @@ describe('a flow that waits', () => {
           type: 'first_of',
           ways: [
             { for: { action: 'reject_leave' }, steps: [{ type: 'return' }] },
-            { for: { condition: { eq: [{ ref: 'leave.status' }, 'approved'] } }, steps: [{ type: 'change', record: 'leave', values: { reason: 'Approved, and covered' } }] },
+            {
+              for: { condition: { eq: [{ ref: 'leave.status' }, 'approved'] } },
+              steps: [{ type: 'change', record: 'leave', values: { reason: 'Approved, and covered' } }],
+            },
           ],
         },
       ];
@@ -173,10 +192,16 @@ describe('a flow that waits', () => {
     });
     const asked = await ask(app);
     expect(await processOf(app, asked.record.id)).toBeUndefined();
-    const refused = await json({ method: 'POST', url: `/v1/apps/${app}/flows/leave_approval/run`, ...as(bob), payload: { input: { leave: asked.record.id } } }, 409);
+    const refused = await json(
+      { method: 'POST', url: `/v1/apps/${app}/flows/leave_approval/run`, ...as(bob), payload: { input: { leave: asked.record.id } } },
+      409,
+    );
     expect(refused).toMatchObject({ error: 'flow_waits' });
     await inject({ method: 'POST', url: `/v1/apps/${app}/processes/leave_approval/start`, ...as(carol), payload: { recordId: asked.record.id } }, 403);
-    const started = await json({ method: 'POST', url: `/v1/apps/${app}/processes/leave_approval/start`, ...as(bob), payload: { recordId: asked.record.id } }, 201);
+    const started = await json(
+      { method: 'POST', url: `/v1/apps/${app}/processes/leave_approval/start`, ...as(bob), payload: { recordId: asked.record.id } },
+      201,
+    );
     expect(started).toMatchObject({ process: 'leave_approval', waiting: [{ element: 'steps_0', name: 'Decide on the leave' }] });
   });
 
@@ -184,7 +209,10 @@ describe('a flow that waits', () => {
     const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
     definition['flows'].leave_approval.steps.unshift({ type: 'set', var: 'asked_on', value: { today: true } });
     definition['flows'].leave_approval.steps.push({ type: 'change', record: 'leave', values: { decided_on: { ref: 'asked_on' } } });
-    const refused = await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave, kept', definition } }, 422);
+    const refused = await json(
+      { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave, kept', definition } },
+      422,
+    );
     expect(refused.details.issues).toEqual([
       {
         path: 'flows.leave_approval.steps[2].values.decided_on',

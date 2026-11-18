@@ -5,11 +5,11 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { checkPermission } from '../access/check.js';
 import { once, requireAuth, requireUser } from '../access/rules.js';
-import { isTeamApp, type AppRef } from '../apps/catalog.js';
+import { type AppRef, isTeamApp } from '../apps/catalog.js';
 import { appResource, environmentResource } from '../apps/resources.js';
 import { describeApp, describeEnvironments, NO_AUTHOR } from '../apps/routes.js';
 import type { AppRuntime } from '../apps/runtime.js';
-import { TestsOut, AppOut, AppParams, EnvironmentOut, PlanOut } from '../apps/schemas.js';
+import { AppOut, AppParams, EnvironmentOut, PlanOut, TestsOut } from '../apps/schemas.js';
 import type { AppContext } from '../context.js';
 import { unprocessable } from '../errors.js';
 import type { ChangeRequestRow, Delivery, DeploymentRow, ReleaseRow } from './service.js';
@@ -144,7 +144,8 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
     });
   const theCr = (request: FastifyRequest) => once(request, 'cr', () => delivery.changeRequest((request.params as { changeRequestId: string }).changeRequestId));
   const crTeam = (request: FastifyRequest) => once(request, 'crTeam', async () => ctx.apps.ref((await theCr(request)).appId));
-  const theDeployment = (request: FastifyRequest) => once(request, 'deployment', () => delivery.deployment((request.params as { deploymentId: string }).deploymentId));
+  const theDeployment = (request: FastifyRequest) =>
+    once(request, 'deployment', () => delivery.deployment((request.params as { deploymentId: string }).deploymentId));
   const deploymentResource = async (request: FastifyRequest) => {
     const deployment = await theDeployment(request);
     const team = await ctx.apps.ref(deployment.appId);
@@ -155,7 +156,11 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
     action,
     resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theTeamApp(request)),
   });
-  const onCr = (action: string) => ({ kind: 'permission' as const, action, resource: async (request: FastifyRequest) => appResource(ctx.org.id, await crTeam(request)) });
+  const onCr = (action: string) => ({
+    kind: 'permission' as const,
+    action,
+    resource: async (request: FastifyRequest) => appResource(ctx.org.id, await crTeam(request)),
+  });
 
   const describeCr = async (cr: ChangeRequestRow): Promise<z.infer<typeof ChangeRequestOut>> => {
     const reviews = await delivery.reviewsOf(cr);
@@ -231,7 +236,12 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
           digest: row.digest,
           destructive: row.destructive,
           notes: row.notes,
-          changes: (contents.changes ?? []).map((change) => ({ id: change.id, number: change.number, title: change.title, author: person(names, change.authorId)! })),
+          changes: (contents.changes ?? []).map((change) => ({
+            id: change.id,
+            number: change.number,
+            title: change.title,
+            author: person(names, change.authorId)!,
+          })),
           steps: contents.steps ?? [],
           createdBy: row.createdByType === 'user' ? person(names, row.createdBy) : null,
           createdAt: row.createdAt.toISOString(),
@@ -247,7 +257,12 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
   const describeDeployments = async (rows: readonly DeploymentRow[]): Promise<Array<z.infer<typeof DeploymentOut>>> => {
     const releaseIds = [...new Set(rows.flatMap((row) => [row.releaseId, ...(row.fromReleaseId ? [row.fromReleaseId] : [])]))];
     const numbers = new Map(
-      releaseIds.length ? (await ctx.db.select({ id: releases.id, number: releases.number }).from(releases).where(inArray(releases.id, releaseIds))).map((r) => [r.id, r.number]) : [],
+      releaseIds.length
+        ? (await ctx.db.select({ id: releases.id, number: releases.number }).from(releases).where(inArray(releases.id, releaseIds))).map((r) => [
+            r.id,
+            r.number,
+          ])
+        : [],
     );
     const approvals = new Map(await Promise.all(rows.map(async (row) => [row.id, await delivery.approvalsOf(row)] as const)));
     const authors = new Map(await Promise.all(rows.map(async (row) => [row.id, row.kind === 'deploy' ? await delivery.authorsOf(row) : []] as const)));
@@ -300,7 +315,9 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
         const auth = requireUser(request);
         const source = await ctx.apps.load((await theRef(request)).app.id);
         const { appId, changeRequest } = await delivery.promote(request, auth, source, request.body);
-        return reply.status(201).send({ app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(appId)), changeRequest: await describeCr(changeRequest) });
+        return reply
+          .status(201)
+          .send({ app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(appId)), changeRequest: await describeCr(changeRequest) });
       },
     );
 
@@ -341,7 +358,9 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
       async (request) => {
         const auth = requireUser(request);
         const { copy } = await theCopy(request);
-        const { plan } = await delivery.sync(request, auth, await ctx.apps.load(copy.app.id), { confirmDestructive: request.query.confirmDestructive === 'true' });
+        const { plan } = await delivery.sync(request, auth, await ctx.apps.load(copy.app.id), {
+          confirmDestructive: request.query.confirmDestructive === 'true',
+        });
         return { plan, app: await describeApp(ctx, runtime, auth, await ctx.apps.ref(copy.app.id)) };
       },
     );
@@ -363,7 +382,10 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
       async (request, reply) => {
         const auth = requireUser(request);
         const { copy } = await theCopy(request);
-        const before = await ctx.db.select({ id: changeRequests.id }).from(changeRequests).where(and(eq(changeRequests.workingCopyId, copy.app.id), eq(changeRequests.status, 'open')));
+        const before = await ctx.db
+          .select({ id: changeRequests.id })
+          .from(changeRequests)
+          .where(and(eq(changeRequests.workingCopyId, copy.app.id), eq(changeRequests.status, 'open')));
         const cr = await delivery.submit(request, auth, await ctx.apps.load(copy.app.id), {
           ...(request.body.title ? { title: request.body.title } : {}),
           ...(request.body.description !== undefined ? { description: request.body.description } : {}),
@@ -419,7 +441,7 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
         config: { access: onCr('app.read') },
         schema: {
           tags: ['delivery'],
-          summary: "The definitions a change request compares: its base on the main line, and its head",
+          summary: 'The definitions a change request compares: its base on the main line, and its head',
           params: CrParams,
           response: { 200: z.object({ base: z.record(z.string(), z.unknown()), head: z.record(z.string(), z.unknown()) }) },
         },
@@ -495,7 +517,12 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
       '/v1/apps/:appId/releases',
       {
         config: { access: onTeamApp(['app.read', 'deploy.read']) },
-        schema: { tags: ['delivery'], summary: "A team app's releases, newest first, each checked against its signature", params: AppParams, response: { 200: z.object({ releases: z.array(ReleaseOut) }) } },
+        schema: {
+          tags: ['delivery'],
+          summary: "A team app's releases, newest first, each checked against its signature",
+          params: AppParams,
+          response: { 200: z.object({ releases: z.array(ReleaseOut) }) },
+        },
       },
       async (request) => {
         const team = await theTeamApp(request);
@@ -585,7 +612,13 @@ export function deliveryRoutes(ctx: AppContext, delivery: Delivery, runtime: App
           confirmDestructive: request.body.confirmDestructive,
         });
         if (request.body.execute && deployment.status === 'approved') {
-          await checkPermission(ctx, request, auth, 'deploy.execute', environmentResource(ctx.org.id, team, deployment.environmentKind, await ctx.apps.environment(team, deployment.environmentKind)));
+          await checkPermission(
+            ctx,
+            request,
+            auth,
+            'deploy.execute',
+            environmentResource(ctx.org.id, team, deployment.environmentKind, await ctx.apps.environment(team, deployment.environmentKind)),
+          );
           deployment = await delivery.execute(request, auth, deployment);
         }
         return reply.status(201).send((await describeDeployments([deployment]))[0]!);

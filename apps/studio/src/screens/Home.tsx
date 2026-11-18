@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError } from '../api.js';
+import { ApiError, api } from '../api.js';
 import { Badge, Button, Card, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { Link, navigate } from '../router.js';
 import type { Me } from '../types.js';
@@ -66,7 +66,9 @@ export function Home({ me }: { me: Me }) {
                 {app.description ? <p className="m-0 text-sm text-muted">{app.description}</p> : null}
                 <div className="flex gap-2">
                   <Link to={{ name: 'build', appId: app.id, tab: 'data' }} className="no-underline">
-                    <Button variant="primary" tabIndex={-1}>Build</Button>
+                    <Button variant="primary" tabIndex={-1}>
+                      Build
+                    </Button>
                   </Link>
                   <Link to={{ name: 'use', appId: app.id }} className="no-underline">
                     <Button tabIndex={-1}>Open</Button>
@@ -97,7 +99,9 @@ export function Home({ me }: { me: Me }) {
                       </div>
                       <div className="flex gap-2">
                         <Link to={{ name: 'build', appId: app.id, tab: 'delivery' }} className="no-underline">
-                          <Button variant="primary" tabIndex={-1}>Delivery</Button>
+                          <Button variant="primary" tabIndex={-1}>
+                            Delivery
+                          </Button>
                         </Link>
                         {prod ? (
                           <Link to={{ name: 'use', appId: app.id }} className="no-underline">
@@ -144,7 +148,11 @@ export function Home({ me }: { me: Me }) {
                   <Card className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="m-0 font-semibold">{app.name}</h3>
-                      <div className="mt-1 flex gap-1">{app.access.roles.map((role) => <Badge key={role}>{role}</Badge>)}</div>
+                      <div className="mt-1 flex gap-1">
+                        {app.access.roles.map((role) => (
+                          <Badge key={role}>{role}</Badge>
+                        ))}
+                      </div>
                     </div>
                     <Link to={{ name: 'use', appId: app.id }} className="no-underline">
                       <Button tabIndex={-1}>Open</Button>
@@ -167,10 +175,22 @@ export function Home({ me }: { me: Me }) {
           }}
         >
           <Field label="Name" hint={start === 'blank' ? undefined : 'Leave it empty to keep the name it comes with.'}>
-            {(id) => <TextInput id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder={template?.name ?? 'Expense claims'} required={start === 'blank'} maxLength={100} />}
+            {(id) => (
+              <TextInput
+                id={id}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={template?.name ?? 'Expense claims'}
+                required={start === 'blank'}
+                maxLength={100}
+              />
+            )}
           </Field>
           {teamSpaces.length ? (
-            <Field label="Where" hint={inTeam ? 'A team app starts empty. Build it in your working copy, then submit it for review.' : 'Your personal space: you edit it live.'}>
+            <Field
+              label="Where"
+              hint={inTeam ? 'A team app starts empty. Build it in your working copy, then submit it for review.' : 'Your personal space: you edit it live.'}
+            >
               {(id) => (
                 <Select id={id} value={where} onChange={(e) => setWhere(e.target.value)}>
                   <option value="mine">My space</option>
@@ -183,7 +203,10 @@ export function Home({ me }: { me: Me }) {
               )}
             </Field>
           ) : null}
-          <Field label="Start from" hint={template?.description ?? (start === 'file' ? 'A definition someone downloaded from a3t. No data comes with it.' : undefined)}>
+          <Field
+            label="Start from"
+            hint={template?.description ?? (start === 'file' ? 'A definition someone downloaded from a3t. No data comes with it.' : undefined)}
+          >
             {(id) => (
               <Select id={id} value={start} onChange={(e) => setStart(e.target.value)}>
                 <option value="blank">A blank app</option>
@@ -221,7 +244,9 @@ export function Home({ me }: { me: Me }) {
               )}
             </Field>
           ) : null}
-          {inTeam && start !== 'blank' ? <p className="m-0 text-xs text-muted">In a team space, it arrives as a change request, for the space to review.</p> : null}
+          {inTeam && start !== 'blank' ? (
+            <p className="m-0 text-xs text-muted">In a team space, it arrives as a change request, for the space to review.</p>
+          ) : null}
           {fileError ? <Notice tone="bad">{fileError}</Notice> : null}
           {create.error ? <Notice tone="bad">{create.error instanceof ApiError ? create.error.message : 'Something went wrong'}</Notice> : null}
           <Button type="submit" variant="primary" disabled={!ready || create.isPending || !me.personalSpaceId}>

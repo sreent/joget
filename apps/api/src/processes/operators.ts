@@ -16,10 +16,18 @@ import type { ProcessEngine, TaskView } from './engine.js';
 
 export type Operation = 'ops.monitor.read' | 'ops.job.retry' | 'process.admin';
 
-const actionsFor = (loaded: LoadedApp, operation: Operation): string[] => (loaded.space.kind === 'personal' && operation !== 'process.admin' ? ['app.edit'] : [operation]);
+const actionsFor = (loaded: LoadedApp, operation: Operation): string[] =>
+  loaded.space.kind === 'personal' && operation !== 'process.admin' ? ['app.edit'] : [operation];
 
 /** Refuse unless the caller may do the operation on the app, with the audited refusal of an access rule. */
-export async function requireOperator(ctx: AppContext, runtime: AppRuntime, request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, operation: Operation): Promise<void> {
+export async function requireOperator(
+  ctx: AppContext,
+  runtime: AppRuntime,
+  request: FastifyRequest,
+  auth: AuthContext,
+  loaded: LoadedApp,
+  operation: Operation,
+): Promise<void> {
   await checkAnyPermission(ctx, request, auth, actionsFor(loaded, operation), appResource(ctx.org.id, loaded), { policy: await runtime.policy(loaded) });
 }
 

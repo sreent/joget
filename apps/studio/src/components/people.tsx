@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useId, useState, type KeyboardEvent } from 'react';
+import { type KeyboardEvent, useId, useState } from 'react';
 import { api } from '../api.js';
 import type { Person } from '../types.js';
 import { cx, TextInput } from './ui.js';
@@ -78,7 +78,15 @@ export function PersonPicker({ id, value, onChange, label }: { id: string; value
         onKeyDown={onKeyDown}
         onBlur={() => setText(null)}
       />
-      <ul id={listId} role="listbox" aria-label="People" className={cx('absolute z-10 mt-1 w-full list-none overflow-auto rounded-md border border-line bg-surface p-1 shadow-raised', options.length ? 'grid max-h-64 gap-0.5' : 'hidden')}>
+      <ul
+        id={listId}
+        role="listbox"
+        aria-label="People"
+        className={cx(
+          'absolute z-10 mt-1 w-full list-none overflow-auto rounded-md border border-line bg-surface p-1 shadow-raised',
+          options.length ? 'grid max-h-64 gap-0.5' : 'hidden',
+        )}
+      >
         {options.map((person, i) => (
           <li
             key={person.id}

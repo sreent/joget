@@ -1,5 +1,5 @@
+import { type Expression, evaluateExpression, isExpression } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { evaluateExpression, isExpression, type Expression } from '@platform/app-model';
 
 const scope = {
   record: { starts: '2026-11-18', ends: '2026-11-25', at: '2026-11-18T09:30:00.000Z', title: '  Trip to Bangkok  ', kind: 'unpaid', days: 3, note: null },

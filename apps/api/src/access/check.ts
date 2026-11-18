@@ -10,7 +10,14 @@ export interface CheckOptions {
   readonly context?: Record<string, unknown>;
 }
 
-async function deny(ctx: AppContext, request: FastifyRequest, action: string, resource: Resource, reasons: Decision['reasons'], tested = false): Promise<never> {
+async function deny(
+  ctx: AppContext,
+  request: FastifyRequest,
+  action: string,
+  resource: Resource,
+  reasons: Decision['reasons'],
+  tested = false,
+): Promise<never> {
   // The person a test acts as is no one: what a test is refused is its result, not an attempt to log.
   if (tested) throw forbidden('forbidden', `You are not allowed to ${action} here`, { action, reasons });
   await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, ctx.now()), {

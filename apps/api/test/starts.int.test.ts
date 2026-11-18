@@ -1,7 +1,7 @@
 import { LEAVE_APP } from '@platform/app-model';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Flows that start by themselves (design §6.11). A flow that waits starts on a record as the
@@ -28,8 +28,14 @@ async function leaveApp(name: string, edit: (definition: Record<string, any>) =>
   const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
   definition['roles'].hr = { label: 'HR', description: 'Tells payroll about leave.', entities: { leave_request: { read: true } }, actions: [] };
   edit(definition);
-  const started = await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } }, 201);
-  for (const [subject, role] of [['bob', 'manager'], ['carol', 'hr']] as const) {
+  const started = await json(
+    { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } },
+    201,
+  );
+  for (const [subject, role] of [
+    ['bob', 'manager'],
+    ['carol', 'hr'],
+  ] as const) {
     await inject({ method: 'POST', url: `/v1/apps/${started.app.id}/shares`, ...as(alice), payload: { email: `${subject}@example.com`, role } }, 201);
   }
   return started.app.id;
@@ -48,10 +54,14 @@ const ask = async (app: string, reason = 'Holiday') =>
     )
   ).record.id as string;
 const inbox = async (session: Session) => (await json({ method: 'GET', url: '/v1/me/tasks?status=open', ...as(session) }, 200)).tasks;
-const tasksOn = async (session: Session, recordId: string, name: string) => (await inbox(session)).filter((task: { recordId: string; name: string }) => task.recordId === recordId && task.name === name);
-const processesOf = async (app: string, recordId: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}/processes`, ...as(alice) }, 200)).instances;
-const recordOf = async (app: string, recordId: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}`, ...as(alice) }, 200)).values;
-const complete = (session: Session, taskId: string, outcome: string) => json({ method: 'POST', url: `/v1/tasks/${taskId}/complete`, ...as(session), payload: { outcome } }, 200);
+const tasksOn = async (session: Session, recordId: string, name: string) =>
+  (await inbox(session)).filter((task: { recordId: string; name: string }) => task.recordId === recordId && task.name === name);
+const processesOf = async (app: string, recordId: string) =>
+  (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}/processes`, ...as(alice) }, 200)).instances;
+const recordOf = async (app: string, recordId: string) =>
+  (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}`, ...as(alice) }, 200)).values;
+const complete = (session: Session, taskId: string, outcome: string) =>
+  json({ method: 'POST', url: `/v1/tasks/${taskId}/complete`, ...as(session), payload: { outcome } }, 200);
 /** Let the timers fire, and the scheduled flows run, that are due at a time. The clock goes back after, so that sessions stay signed in. */
 async function at(time: string | number): Promise<void> {
   const was = t.clock.offsetMs;
@@ -95,7 +105,9 @@ describe('a flow that starts by itself', () => {
     });
     const id = await ask(app);
     // No action starts the approval: the record's creation does.
-    expect(await processesOf(app, id)).toMatchObject([{ process: 'leave_approval', status: 'running', waiting: [{ element: 'steps_0', name: 'Decide on the leave' }] }]);
+    expect(await processesOf(app, id)).toMatchObject([
+      { process: 'leave_approval', status: 'running', waiting: [{ element: 'steps_0', name: 'Decide on the leave' }] },
+    ]);
     const [task] = await tasksOn(bob, id, 'Decide on the leave');
     expect(task).toBeDefined();
 
@@ -191,7 +203,10 @@ describe('a flow on a schedule', () => {
     expect(Date.parse(after.schedule.lastRunAt)).toBeGreaterThan(next.getTime());
 
     // Once at each time: the same time again runs nothing.
-    await inject({ method: 'PATCH', url: `/v1/apps/${app}/entities/leave_request/records/${first}`, ...as(alice), payload: { values: { reason: 'Back again' } } }, 200);
+    await inject(
+      { method: 'PATCH', url: `/v1/apps/${app}/entities/leave_request/records/${first}`, ...as(alice), payload: { values: { reason: 'Back again' } } },
+      200,
+    );
     await at(around(120_000));
     expect(await recordOf(app, first)).toMatchObject({ reason: 'Back again' });
 
@@ -205,9 +220,15 @@ describe('a flow on a schedule', () => {
   it('refuses a schedule on a flow that waits, or that needs input', async () => {
     const definition = structuredClone(LEAVE_APP) as unknown as Record<string, any>;
     definition['flows'].leave_approval.schedule = { every: 'day', at: '07:00' };
-    const refused = await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave, at seven', definition } }, 422);
+    const refused = await json(
+      { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave, at seven', definition } },
+      422,
+    );
     expect(refused.details.issues).toEqual([
-      { path: 'flows.leave_approval.schedule', message: 'A flow that waits keeps its place on one record, so it starts on records, not on a schedule: say how in its starts' },
+      {
+        path: 'flows.leave_approval.schedule',
+        message: 'A flow that waits keeps its place on one record, so it starts on records, not on a schedule: say how in its starts',
+      },
     ]);
   });
 });

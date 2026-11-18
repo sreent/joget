@@ -1,4 +1,4 @@
-import { flowSubject, flowWaits, kindOfType, scheduleWords, WEEKDAYS, type FlowStart, type Schedule } from '@platform/app-model';
+import { type FlowStart, flowSubject, flowWaits, kindOfType, type Schedule, scheduleWords, WEEKDAYS } from '@platform/app-model';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api.js';
 import { ConditionEditor } from '../components/condition.js';
@@ -42,7 +42,8 @@ export function HowItStarts({
       <h3 className="m-0 text-base font-semibold">How it starts</h3>
       {waits ? (
         <p className="m-0 text-sm text-muted">
-          This flow waits for people and for time, so it keeps its place on one {entity?.label.toLowerCase() ?? 'record'}. A bar on the canvas marks each place where it saves before it waits.
+          This flow waits for people and for time, so it keeps its place on one {entity?.label.toLowerCase() ?? 'record'}. A bar on the canvas marks each place
+          where it saves before it waits.
         </p>
       ) : null}
       {actions.length ? (
@@ -53,8 +54,9 @@ export function HowItStarts({
       ) : null}
       {shaping.length ? (
         <p className="m-0 text-sm">
-          {shaping.map((action) => action.label).join(', ')} run{shaping.length === 1 ? 's' : ''} it before {shaping.length === 1 ? 'it saves its' : 'they save their'} record, and for{' '}
-          {shaping.length === 1 ? 'its' : 'their'} previews: it checks the record and changes it, and changes nothing else.
+          {shaping.map((action) => action.label).join(', ')} run{shaping.length === 1 ? 's' : ''} it before{' '}
+          {shaping.length === 1 ? 'it saves its' : 'they save their'} record, and for {shaping.length === 1 ? 'its' : 'their'} previews: it checks the record
+          and changes it, and changes nothing else.
         </p>
       ) : null}
       {roles.length ? (
@@ -67,16 +69,29 @@ export function HowItStarts({
       ) : shaping.length ? null : (
         <ScheduleEditor appId={appId} definition={definition} name={name} readOnly={readOnly} dirty={dirty} onChange={(schedule) => update({ schedule })} />
       )}
-      {!actions.length && !shaping.length && !roles.length && !flow.starts?.length && !flow.schedule ? <Notice tone="warn">Nothing starts it yet: have an action run it, let a role run it, or let it start by itself.</Notice> : null}
+      {!actions.length && !shaping.length && !roles.length && !flow.starts?.length && !flow.schedule ? (
+        <Notice tone="warn">Nothing starts it yet: have an action run it, let a role run it, or let it start by itself.</Notice>
+      ) : null}
     </Card>
   );
 }
 
 type StartKind = 'created' | 'created_after' | 'date' | 'condition' | 'signal';
-const kindOf = (start: FlowStart): StartKind => ('created' in start ? (start.after ? 'created_after' : 'created') : 'date' in start ? 'date' : 'condition' in start ? 'condition' : 'signal');
+const kindOf = (start: FlowStart): StartKind =>
+  'created' in start ? (start.after ? 'created_after' : 'created') : 'date' in start ? 'date' : 'condition' in start ? 'condition' : 'signal';
 
 /** How a flow that waits starts by itself on a record: as the record is created, on a date of it, when a condition comes to hold, or on a signal. */
-function StartsEditor({ definition, name, readOnly, onChange }: { definition: Definition; name: string; readOnly: boolean; onChange: (starts: FlowStart[] | undefined) => void }) {
+function StartsEditor({
+  definition,
+  name,
+  readOnly,
+  onChange,
+}: {
+  definition: Definition;
+  name: string;
+  readOnly: boolean;
+  onChange: (starts: FlowStart[] | undefined) => void;
+}) {
   const flow = definition.flows![name]!;
   const subject = flowSubject(flow);
   if (!subject) return null;
@@ -123,7 +138,9 @@ function StartsEditor({ definition, name, readOnly, onChange }: { definition: De
               ✕
             </Button>
           </div>
-          {'created' in start && start.after ? <DurationInput label="How long after" value={start.after} onChange={(after) => change(index, { created: true, after })} /> : null}
+          {'created' in start && start.after ? (
+            <DurationInput label="How long after" value={start.after} onChange={(after) => change(index, { created: true, after })} />
+          ) : null}
           {'date' in start ? (
             <>
               <Field label="The date">
@@ -140,7 +157,15 @@ function StartsEditor({ definition, name, readOnly, onChange }: { definition: De
               <DateShift label="When" value={start} onChange={(shift) => change(index, { date: start.date, ...shift })} />
             </>
           ) : null}
-          {'condition' in start ? <ConditionEditor label="When a change makes it hold that" value={start.condition} choices={choices} compareWith={choices} onChange={(condition) => change(index, { condition: condition ?? start.condition })} /> : null}
+          {'condition' in start ? (
+            <ConditionEditor
+              label="When a change makes it hold that"
+              value={start.condition}
+              choices={choices}
+              compareWith={choices}
+              onChange={(condition) => change(index, { condition: condition ?? start.condition })}
+            />
+          ) : null}
           {'signal' in start ? (
             <Field label="The signal" hint="An operator, or another flow, throws it for the record.">
               {(id) => <TextInput id={id} className="font-mono" value={start.signal} onChange={(e) => change(index, { signal: e.target.value.trim() })} />}
@@ -148,7 +173,11 @@ function StartsEditor({ definition, name, readOnly, onChange }: { definition: De
           ) : null}
         </div>
       ))}
-      {starts.length ? null : <p className="m-0 text-xs text-muted">It can start on each record by itself too: as the record is created, on a date of it, or when a condition on it comes to hold.</p>}
+      {starts.length ? null : (
+        <p className="m-0 text-xs text-muted">
+          It can start on each record by itself too: as the record is created, on a date of it, or when a condition on it comes to hold.
+        </p>
+      )}
       <Button size="sm" className="justify-self-start" disabled={starts.length >= 5} onClick={() => onChange([...starts, { created: true }])}>
         Add a way it starts by itself
       </Button>
@@ -182,24 +211,44 @@ function every(schedule: Schedule, to: Schedule['every']): Schedule {
 }
 
 /** A flow that needs no input runs on a schedule, with the app's authority; once saved, when it runs next. */
-function ScheduleEditor(props: { appId: string; definition: Definition; name: string; readOnly: boolean; dirty: boolean; onChange: (schedule: Schedule | undefined) => void }) {
+function ScheduleEditor(props: {
+  appId: string;
+  definition: Definition;
+  name: string;
+  readOnly: boolean;
+  dirty: boolean;
+  onChange: (schedule: Schedule | undefined) => void;
+}) {
   const { appId, definition, name, readOnly, dirty, onChange } = props;
   const flow = definition.flows![name]!;
   const schedule = flow.schedule;
   // When it runs next, as saved: asked again after each save.
-  const planned = useQuery({ queryKey: ['flow-live', appId, name, 'schedule', dirty], queryFn: () => api.flowLive(appId, name), enabled: Boolean(schedule) && !dirty });
-  if (Object.keys(flow.input).length && !schedule) return <p className="m-0 text-xs text-muted">A flow with input can't run on a schedule: there is nobody to give it its input.</p>;
+  const planned = useQuery({
+    queryKey: ['flow-live', appId, name, 'schedule', dirty],
+    queryFn: () => api.flowLive(appId, name),
+    enabled: Boolean(schedule) && !dirty,
+  });
+  if (Object.keys(flow.input).length && !schedule)
+    return <p className="m-0 text-xs text-muted">A flow with input can't run on a schedule: there is nobody to give it its input.</p>;
   const day = (value: string) => (value === 'last' ? 'last' : Math.min(28, Math.max(1, Number(value) || 1)));
   const next = dirty ? undefined : planned.data?.schedule;
   return (
     <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3" disabled={readOnly}>
       <legend className="px-1 text-sm text-muted">On a schedule</legend>
-      <Checkbox label="It runs by itself, on a schedule" checked={Boolean(schedule)} onChange={(on) => onChange(on ? { every: 'weekday', at: '07:00' } : undefined)} />
+      <Checkbox
+        label="It runs by itself, on a schedule"
+        checked={Boolean(schedule)}
+        onChange={(on) => onChange(on ? { every: 'weekday', at: '07:00' } : undefined)}
+      />
       {schedule ? (
         <>
           <Field label="How often">
             {(id) => (
-              <Select id={id} value={schedule.every} onChange={(e) => onChange(every(schedule, EVERY.find((each) => each.value === e.target.value)?.value ?? 'day'))}>
+              <Select
+                id={id}
+                value={schedule.every}
+                onChange={(e) => onChange(every(schedule, EVERY.find((each) => each.value === e.target.value)?.value ?? 'day'))}
+              >
                 {EVERY.map((each) => (
                   <option key={each.value} value={each.value}>
                     {each.label}
@@ -211,7 +260,11 @@ function ScheduleEditor(props: { appId: string; definition: Definition; name: st
           {schedule.every === 'week' ? (
             <Field label="On">
               {(id) => (
-                <Select id={id} value={schedule.on ?? 'monday'} onChange={(e) => onChange({ ...schedule, on: WEEKDAYS.find((weekday) => weekday === e.target.value) ?? 'monday' })}>
+                <Select
+                  id={id}
+                  value={schedule.on ?? 'monday'}
+                  onChange={(e) => onChange({ ...schedule, on: WEEKDAYS.find((weekday) => weekday === e.target.value) ?? 'monday' })}
+                >
                   {WEEKDAYS.map((weekday) => (
                     <option key={weekday} value={weekday}>
                       {weekday.charAt(0).toUpperCase() + weekday.slice(1)}
@@ -250,13 +303,27 @@ function ScheduleEditor(props: { appId: string; definition: Definition; name: st
               )}
             </Field>
           ) : (
-            <Field label="At">{(id) => <TextInput id={id} type="time" className="w-32" value={schedule.at} onChange={(e) => /^\d{2}:\d{2}$/.test(e.target.value) && onChange({ ...schedule, at: e.target.value })} />}</Field>
+            <Field label="At">
+              {(id) => (
+                <TextInput
+                  id={id}
+                  type="time"
+                  className="w-32"
+                  value={schedule.at}
+                  onChange={(e) => /^\d{2}:\d{2}$/.test(e.target.value) && onChange({ ...schedule, at: e.target.value })}
+                />
+              )}
+            </Field>
           )}
           {schedule.every === 'hour' ? null : (
             <Field label="Time zone" hint="The time of day is the zone's own, in summer and in winter.">
               {(id) =>
                 ZONES.length ? (
-                  <Select id={id} value={schedule.zone ?? 'UTC'} onChange={(e) => onChange(e.target.value === 'UTC' ? (({ zone: _, ...rest }) => rest)(schedule) : { ...schedule, zone: e.target.value })}>
+                  <Select
+                    id={id}
+                    value={schedule.zone ?? 'UTC'}
+                    onChange={(e) => onChange(e.target.value === 'UTC' ? (({ zone: _, ...rest }) => rest)(schedule) : { ...schedule, zone: e.target.value })}
+                  >
                     <option value="UTC">UTC</option>
                     {ZONES.filter((zone) => zone !== 'UTC').map((zone) => (
                       <option key={zone} value={zone}>

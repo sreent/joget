@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { EXPENSE_APP, LEAVE_APP } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 import type { Definition } from '../types.js';
 import { BOX_W, fieldNote, fieldTag, layoutModel, rowY } from './datamodel.js';
 import { normalize } from './edit.js';
@@ -12,7 +12,14 @@ describe('the data model canvas', () => {
     const { boxes, arrows } = layoutModel(definition);
     const at = (entity: string) => boxes.find((box) => box.entity === entity)!;
     expect(at('expense_line').x).toBeGreaterThan(at('expense_claim').x + BOX_W);
-    expect(arrows).toEqual([expect.objectContaining({ from: { entity: 'expense_claim', field: 'lines' }, to: 'expense_line', kind: 'lines', label: expect.objectContaining({ text: 'its lines' }) })]);
+    expect(arrows).toEqual([
+      expect.objectContaining({
+        from: { entity: 'expense_claim', field: 'lines' },
+        to: 'expense_line',
+        kind: 'lines',
+        label: expect.objectContaining({ text: 'its lines' }),
+      }),
+    ]);
     // The arrow leaves from the row of its field.
     const lines = definition.entities['expense_claim']!.fields.findIndex((field) => field.name === 'lines');
     expect(arrows[0]!.d.startsWith(`M${at('expense_claim').x + BOX_W} ${rowY(at('expense_claim'), lines)}`)).toBe(true);

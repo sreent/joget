@@ -1,6 +1,6 @@
 import { uuidv7 } from '@platform/audit';
 import { isKnownPermissionPattern } from '@platform/authz';
-import { apiTokens, serviceAccounts, spaces, type Executor } from '@platform/db';
+import { apiTokens, type Executor, serviceAccounts, spaces } from '@platform/db';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
@@ -83,9 +83,10 @@ export function toServiceAccountOut(row: typeof serviceAccounts.$inferSelect): z
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
     disabledAt: row.disabledAt?.toISOString() ?? null,
-    agent: row.agentScopes && row.agentApprovedAt && row.agentApprovedBy
-      ? { scopes: row.agentScopes, approvedAt: row.agentApprovedAt.toISOString(), approvedBy: row.agentApprovedBy }
-      : null,
+    agent:
+      row.agentScopes && row.agentApprovedAt && row.agentApprovedBy
+        ? { scopes: row.agentScopes, approvedAt: row.agentApprovedAt.toISOString(), approvedBy: row.agentApprovedBy }
+        : null,
   };
 }
 

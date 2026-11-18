@@ -155,7 +155,8 @@ export function cellValue(field: StoredField | 'owner', text: string): CellValue
       // The checks say what a date or a time must look like.
       return { ok: true, value: trimmed };
     case 'choice': {
-      const option = (part: string) => field.options.find((o) => o.value.toLowerCase() === part.toLowerCase() || o.label.toLowerCase() === part.toLowerCase())?.value;
+      const option = (part: string) =>
+        field.options.find((o) => o.value.toLowerCase() === part.toLowerCase() || o.label.toLowerCase() === part.toLowerCase())?.value;
       if (!field.multiple) {
         const value = option(trimmed);
         return value ? { ok: true, value } : { ok: false, message: `Expected one of: ${field.options.map((o) => o.label).join(', ')}` };

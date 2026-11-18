@@ -1,5 +1,5 @@
+import { addDuration, nextRun, type Schedule, scheduleWords, timerFiresAt } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { addDuration, nextRun, scheduleWords, timerFiresAt, type Schedule } from '@platform/app-model';
 
 const at = (iso: string) => new Date(iso);
 const next = (schedule: Partial<Schedule> & Pick<Schedule, 'every'>, after: string) => nextRun({ at: '00:00', ...schedule }, at(after)).toISOString();
@@ -17,7 +17,7 @@ describe('a schedule', () => {
     expect(next({ every: 'month', day: 1 }, '2026-12-01T00:00:00Z')).toBe('2027-01-01T00:00:00.000Z');
   });
 
-  it("keeps to the wall clock of its time zone, in summer and in winter", () => {
+  it('keeps to the wall clock of its time zone, in summer and in winter', () => {
     const london: Schedule = { every: 'day', at: '07:30', zone: 'Europe/London' };
     expect(nextRun(london, at('2026-07-01T00:00:00Z')).toISOString()).toBe('2026-07-01T06:30:00.000Z');
     expect(nextRun(london, at('2026-12-01T00:00:00Z')).toISOString()).toBe('2026-12-01T07:30:00.000Z');

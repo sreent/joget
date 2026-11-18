@@ -1,4 +1,4 @@
-import { createElement, useSyncExternalStore, type AnchorHTMLAttributes, type ReactNode } from 'react';
+import { type AnchorHTMLAttributes, createElement, type ReactNode, useSyncExternalStore } from 'react';
 
 /**
  * The studio's pages. Building needs `app.read`; using an app needs only `app.run`. A team app has
@@ -40,11 +40,34 @@ export type Route =
   | { readonly name: 'use'; readonly appId: string; readonly page?: string; readonly recordId?: string; readonly appPage?: string; readonly env?: string };
 
 const BASE = '/studio';
-const TABS: readonly BuildTab[] = ['delivery', 'changes', 'data', 'forms', 'pages', 'menu', 'rules', 'actions', 'queries', 'cards', 'roles', 'flows', 'connections', 'webhooks', 'share', 'history', 'tests', 'advanced'];
+const TABS: readonly BuildTab[] = [
+  'delivery',
+  'changes',
+  'data',
+  'forms',
+  'pages',
+  'menu',
+  'rules',
+  'actions',
+  'queries',
+  'cards',
+  'roles',
+  'flows',
+  'connections',
+  'webhooks',
+  'share',
+  'history',
+  'tests',
+  'advanced',
+];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function parse(pathname: string, search = ''): Route {
-  const parts = pathname.replace(/^\/studio\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  const parts = pathname
+    .replace(/^\/studio\/?/, '')
+    .split('/')
+    .filter(Boolean)
+    .map(decodeURIComponent);
   if (parts[0] === 'changes' && parts[1]) return { name: 'change', changeRequestId: parts[1] };
   if (parts[0] === 'tasks') return { name: 'tasks' };
   if (parts[0] === 'notices') return { name: 'notices' };
@@ -56,7 +79,8 @@ export function parse(pathname: string, search = ''): Route {
   }
   const env = new URLSearchParams(search).get('env');
   // An app's page is /pages/<name>. A name is never a UUID, so a record of an entity called "pages" is still reachable.
-  if (parts[2] === 'pages' && parts[3] && !UUID.test(parts[3])) return { name: 'use', appId, appPage: parts[3], ...(parts[4] ? { recordId: parts[4] } : {}), ...(env ? { env } : {}) };
+  if (parts[2] === 'pages' && parts[3] && !UUID.test(parts[3]))
+    return { name: 'use', appId, appPage: parts[3], ...(parts[4] ? { recordId: parts[4] } : {}), ...(env ? { env } : {}) };
   return { name: 'use', appId, ...(parts[2] ? { page: parts[2] } : {}), ...(parts[3] ? { recordId: parts[3] } : {}), ...(env ? { env } : {}) };
 }
 
@@ -75,7 +99,10 @@ export function href(route: Route): string {
     case 'use': {
       // A page about one record names its record after the page.
       const parts = route.appPage ? ['pages', route.appPage, route.recordId] : [route.page, route.recordId];
-      const path = [`${BASE}/apps/${encodeURIComponent(route.appId)}`, ...parts].filter(Boolean).map((p, i) => (i ? encodeURIComponent(p!) : p)).join('/');
+      const path = [`${BASE}/apps/${encodeURIComponent(route.appId)}`, ...parts]
+        .filter(Boolean)
+        .map((p, i) => (i ? encodeURIComponent(p!) : p))
+        .join('/');
       return route.env ? `${path}?env=${encodeURIComponent(route.env)}` : path;
     }
   }

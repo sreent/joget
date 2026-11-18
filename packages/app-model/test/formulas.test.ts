@@ -1,5 +1,5 @@
+import { EXPENSE_APP, environmentNames, formulaFields, planMigration, type StoredDefinition, validateDefinition, withFormulas } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { environmentNames, EXPENSE_APP, formulaFields, planMigration, validateDefinition, withFormulas, type StoredDefinition } from '@platform/app-model';
 
 /** Formulas (design §6.1): fields the platform works out from a record's own fields, and stores. */
 
@@ -37,7 +37,12 @@ export const withFormulasApp = () =>
       { name: 'receipts', label: 'Receipts', type: 'number', rollup: { count: 'lines' } },
       { name: 'claimed_on', label: 'Claimed on', type: 'date' },
       { name: 'pay_by', label: 'Pay by', type: 'date', formula: { add_days: [ref('claimed_on'), 30] } },
-      { name: 'heading', label: 'Heading', type: 'text', formula: { concat: [ref('title'), ': ', { coalesce: [ref('trip'), 'no trip'] }, ', SGD ', ref('total')] } },
+      {
+        name: 'heading',
+        label: 'Heading',
+        type: 'text',
+        formula: { concat: [ref('title'), ': ', { coalesce: [ref('trip'), 'no trip'] }, ', SGD ', ref('total')] },
+      },
       { name: 'large', label: 'Large', type: 'boolean', formula: { if: [{ gt: [ref('total'), 1000] }, true, false] } },
     );
   });
@@ -54,7 +59,11 @@ describe('formulas', () => {
   });
 
   it('give nothing where a value is missing or a division has nothing to divide by', () => {
-    expect(withFormulas(claim, { title: 'Empty', total: 0, receipts: 0, claimed_on: null }).values).toMatchObject({ with_tax: 0, per_line: null, pay_by: null });
+    expect(withFormulas(claim, { title: 'Empty', total: 0, receipts: 0, claimed_on: null }).values).toMatchObject({
+      with_tax: 0,
+      per_line: null,
+      pay_by: null,
+    });
   });
 
   it("work out a line's values, without the noise of binary numbers", () => {
@@ -77,12 +86,17 @@ describe('formulas', () => {
           { name: 'g', label: 'G', type: 'number', formula: ref('f') },
           { name: 'h', label: 'H', type: 'number', required: true, formula: 1 },
           { name: 'i', label: 'I', type: 'text', formula: { concat: [ref('owner'), '!'] } },
-          { name: 'j', label: 'J', type: 'boolean', formula: { if: [{ lt: [ref('total'), 0] }, { if: [{ gt: [ref('updated_at'), { now: -1 }] }, true, false] }, false] } },
+          {
+            name: 'j',
+            label: 'J',
+            type: 'boolean',
+            formula: { if: [{ lt: [ref('total'), 0] }, { if: [{ gt: [ref('updated_at'), { now: -1 }] }, true, false] }, false] },
+          },
         );
       }),
     );
     expect(issues).toEqual([
-      'entities.expense_claim.fields[7].formula: A formula can\'t use upper yet',
+      "entities.expense_claim.fields[7].formula: A formula can't use upper yet",
       "entities.expense_claim.fields[8].formula: principal.id: a formula reads the record's own fields, not the person who writes it",
       "entities.expense_claim.fields[9].formula: A formula can't read today or now: once stored, its value would go stale",
       "entities.expense_claim.fields[10].formula: record.lines: a formula can't read lines one by one. Add a rollup, such as a total, and read that",
@@ -101,7 +115,9 @@ describe('formulas', () => {
     const next = structuredClone(first) as any;
     next.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'total').name = 'sum';
     const renamed = valid(next, first);
-    expect(renamed.entities['expense_claim']!.fields.find((f) => f.name === 'with_tax')).toMatchObject({ formula: { round: [{ mul: [{ ref: 'record.sum' }, 1.09] }, 2] } });
+    expect(renamed.entities['expense_claim']!.fields.find((f) => f.name === 'with_tax')).toMatchObject({
+      formula: { round: [{ mul: [{ ref: 'record.sum' }, 1.09] }, 2] },
+    });
   });
 
   it("are worked out for existing records once they're new or change: lines first, then rollups, then records", () => {

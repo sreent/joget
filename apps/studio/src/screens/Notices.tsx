@@ -118,7 +118,9 @@ export function Notices() {
           })}
         </ol>
       ) : (
-        <EmptyState title={unreadOnly ? 'Nothing unread' : 'No notices yet'}>{unreadOnly ? 'What reaches you shows here, by record.' : 'When a flow tells you something, or a task comes to you, it shows here.'}</EmptyState>
+        <EmptyState title={unreadOnly ? 'Nothing unread' : 'No notices yet'}>
+          {unreadOnly ? 'What reaches you shows here, by record.' : 'When a flow tells you something, or a task comes to you, it shows here.'}
+        </EmptyState>
       )}
     </div>
   );

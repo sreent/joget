@@ -3,7 +3,7 @@ import { auditEvents } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Phase 1's exit criterion, end to end: a person builds an app in their personal space and shares
@@ -49,7 +49,10 @@ afterAll(async () => {
 
 describe('building an app in a personal space', () => {
   it('creates the app and its sandbox from a definition', async () => {
-    const created = await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } }, 201);
+    const created = await inject(
+      { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } },
+      201,
+    );
     const body = created.json();
     appId = body.app.id;
     expect(body.app).toMatchObject({ handle: 'expenses', revision: 1, access: { build: true, run: true, share: true } });
@@ -59,9 +62,12 @@ describe('building an app in a personal space', () => {
     ]);
   });
 
-  it('starts team apps empty, and refuses other people\'s personal spaces', async () => {
+  it("starts team apps empty, and refuses other people's personal spaces", async () => {
     const team = await inject({ method: 'POST', url: '/v1/spaces', ...as(alice), payload: { name: 'Finance', coOwnerUserIds: [carol.userId] } }, 201);
-    const refused = await inject({ method: 'POST', url: `/v1/spaces/${team.json().id}/apps`, ...as(alice), payload: { name: 'Team app', definition: EXPENSE_APP } }, 422);
+    const refused = await inject(
+      { method: 'POST', url: `/v1/spaces/${team.json().id}/apps`, ...as(alice), payload: { name: 'Team app', definition: EXPENSE_APP } },
+      422,
+    );
     expect(refused.json().error).toBe('team_app_starts_empty');
     const created = await inject({ method: 'POST', url: `/v1/spaces/${team.json().id}/apps`, ...as(alice), payload: { name: 'Team app' } }, 201);
     expect(created.json().app).toMatchObject({ kind: 'team', revision: 1, environment: null, environments: [], access: { build: true, run: false } });
@@ -69,8 +75,19 @@ describe('building an app in a personal space', () => {
   });
 
   it('runs the rules on the server, on every line, whatever the client', async () => {
-    const zero = await inject({ method: 'POST', url: records(), ...as(alice), payload: { values: { title: 'Lunch', lines: [line('Cafe', 'meals', 12), line('Free lunch', 'meals', 0)] } } }, 422);
-    expect(zero.json()).toMatchObject({ error: 'rule_failed', details: { findings: [{ rule: 'positive_amount', fields: ['lines[1].amount'], line: { field: 'lines', index: 1 } }] } });
+    const zero = await inject(
+      {
+        method: 'POST',
+        url: records(),
+        ...as(alice),
+        payload: { values: { title: 'Lunch', lines: [line('Cafe', 'meals', 12), line('Free lunch', 'meals', 0)] } },
+      },
+      422,
+    );
+    expect(zero.json()).toMatchObject({
+      error: 'rule_failed',
+      details: { findings: [{ rule: 'positive_amount', fields: ['lines[1].amount'], line: { field: 'lines', index: 1 } }] },
+    });
     const typo = await inject({ method: 'POST', url: records(), ...as(alice), payload: { values: { title: 'Taxi', lines: [line('Grab', 'taxi', 12)] } } }, 422);
     expect(typo.json().details.issues).toEqual([expect.objectContaining({ field: 'lines[0].category', code: 'invalid_option' })]);
     const none = await inject({ method: 'POST', url: records(), ...as(alice), payload: { values: { title: 'Nothing' } } }, 422);
@@ -78,24 +95,49 @@ describe('building an app in a personal space', () => {
   });
 
   it('lets the owner use their own app fully, and works out the total', async () => {
-    const created = await inject({
-      method: 'POST',
-      url: records(),
-      ...as(alice),
-      payload: { values: { title: 'Conference', iban: 'SG00 ALICE', total: 1, lines: [line('Ticket', 'travel', 450)] } },
-    }, 422);
+    const created = await inject(
+      {
+        method: 'POST',
+        url: records(),
+        ...as(alice),
+        payload: { values: { title: 'Conference', iban: 'SG00 ALICE', total: 1, lines: [line('Ticket', 'travel', 450)] } },
+      },
+      422,
+    );
     expect(created.json().details.issues).toEqual([expect.objectContaining({ field: 'total', code: 'not_writable' })]);
-    const ok = await inject({ method: 'POST', url: records(), ...as(alice), payload: { values: { title: 'Conference', iban: 'SG00 ALICE', lines: [line('Ticket', 'travel', 450), line('Taxi', 'travel', 0.1), line('Bus', 'travel', 0.2)] } } }, 201);
+    const ok = await inject(
+      {
+        method: 'POST',
+        url: records(),
+        ...as(alice),
+        payload: {
+          values: { title: 'Conference', iban: 'SG00 ALICE', lines: [line('Ticket', 'travel', 450), line('Taxi', 'travel', 0.1), line('Bus', 'travel', 0.2)] },
+        },
+      },
+      201,
+    );
     const record = ok.json();
-    expect(record).toMatchObject({ version: 1, owner: alice.userId, values: { title: 'Conference', status: 'draft', iban: 'SG00 ALICE', total: 450.3 }, masked: [] });
-    expect(record.values.lines.map((l: { merchant: string; id: string }) => [l.merchant, typeof l.id])).toEqual([['Ticket', 'string'], ['Taxi', 'string'], ['Bus', 'string']]);
+    expect(record).toMatchObject({
+      version: 1,
+      owner: alice.userId,
+      values: { title: 'Conference', status: 'draft', iban: 'SG00 ALICE', total: 450.3 },
+      masked: [],
+    });
+    expect(record.values.lines.map((l: { merchant: string; id: string }) => [l.merchant, typeof l.id])).toEqual([
+      ['Ticket', 'string'],
+      ['Taxi', 'string'],
+      ['Bus', 'string'],
+    ]);
   });
 
   it('carries renames through without touching data, and holds back changes that delete it', async () => {
     const current = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json();
     const definition = structuredClone(current.definition);
     definition.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'trip').name = 'journey';
-    const saved = await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), headers: { 'if-match': '"1"' }, payload: { definition } }, 200);
+    const saved = await inject(
+      { method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), headers: { 'if-match': '"1"' }, payload: { definition } },
+      200,
+    );
     expect(saved.json().plan).toMatchObject({ revision: 2, destructive: false, steps: [{ kind: 'rename_field' }] });
     expect(saved.json().plan.notes).toEqual(['Updated references for the rename expense_claim.trip → journey']);
 
@@ -107,7 +149,9 @@ describe('building an app in a personal space', () => {
     expect(saved2.definition.actions.submit_claim.input).toContain('journey');
     const dropping = structuredClone(saved2.definition);
     dropping.entities.expense_claim.fields = dropping.entities.expense_claim.fields.filter((f: { name: string }) => f.name !== 'approver');
-    dropping.flows.check_approval.steps = dropping.flows.check_approval.steps.filter((step: { values?: object }) => !(step.values && 'approver' in step.values));
+    dropping.flows.check_approval.steps = dropping.flows.check_approval.steps.filter(
+      (step: { values?: object }) => !(step.values && 'approver' in step.values),
+    );
     dropping.roles.approver.entities.expense_claim.update.fields = { include: ['status'] };
     const held = await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), payload: { definition: dropping } }, 409);
     expect(held.json()).toMatchObject({ error: 'destructive_change', details: { plan: { destructive: true, steps: [{ kind: 'drop_field', records: 0 }] } } });
@@ -121,7 +165,10 @@ describe('sharing with colleagues', () => {
   it('shares the app with two colleagues, in different roles', async () => {
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'carol@example.com', role: 'approver' } }, 201);
-    const again = await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 409);
+    const again = await inject(
+      { method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } },
+      409,
+    );
     expect(again.json().error).toBe('already_shared');
     const shares = (await inject({ method: 'GET', url: `/v1/apps/${appId}/shares`, ...as(alice) }, 200)).json().shares;
     expect(shares.map((s: { appRoleId: string }) => s.appRoleId.split(':').at(-1))).toEqual(['requester', 'approver']);
@@ -129,7 +176,9 @@ describe('sharing with colleagues', () => {
 
   it('lets colleagues use the app, but not build or reshare it', async () => {
     const listed = (await inject({ method: 'GET', url: '/v1/apps', ...as(bob) }, 200)).json().apps;
-    expect(listed).toEqual([expect.objectContaining({ id: appId, access: { build: false, run: true, share: false, edit: false, compose: false, roles: ['requester'] } })]);
+    expect(listed).toEqual([
+      expect.objectContaining({ id: appId, access: { build: false, run: true, share: false, edit: false, compose: false, roles: ['requester'] } }),
+    ]);
     await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(bob) }, 403);
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(bob), payload: { email: 'carol@example.com', role: 'requester' } }, 403);
   });
@@ -141,7 +190,13 @@ describe('sharing with colleagues', () => {
     expect(bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'total')).toMatchObject({ computed: true, create: false, read: 'full' });
     const lines = bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'lines');
     expect(lines).toMatchObject({ type: 'lines', create: true, lines: { max: 50, label: 'Receipt' } });
-    expect(lines.lines.fields.map((f: { name: string; create: boolean }) => `${f.name}:${f.create}`)).toEqual(['date:true', 'merchant:true', 'category:true', 'amount:true', 'receipt:true']);
+    expect(lines.lines.fields.map((f: { name: string; create: boolean }) => `${f.name}:${f.create}`)).toEqual([
+      'date:true',
+      'merchant:true',
+      'category:true',
+      'amount:true',
+      'receipt:true',
+    ]);
     // Lines are part of a claim, never a page of their own.
     expect(Object.keys(bobs.entities)).toEqual(['expense_claim']);
     expect(Object.keys(bobs.actions)).toEqual(['submit_claim']);
@@ -154,12 +209,15 @@ describe('sharing with colleagues', () => {
   });
 
   it('shows each person only the records and fields their role allows', async () => {
-    const submitted = await inject({
-      method: 'POST',
-      url: `/v1/apps/${appId}/actions/submit_claim/run`,
-      ...as(bob),
-      payload: { values: { title: 'Taxi to the airport', journey: 'Singapore', lines: [line('Comfort', 'travel', 32.4)], iban: 'SG11 BOB' } },
-    }, 201);
+    const submitted = await inject(
+      {
+        method: 'POST',
+        url: `/v1/apps/${appId}/actions/submit_claim/run`,
+        ...as(bob),
+        payload: { values: { title: 'Taxi to the airport', journey: 'Singapore', lines: [line('Comfort', 'travel', 32.4)], iban: 'SG11 BOB' } },
+      },
+      201,
+    );
     expect(submitted.json()).toMatchObject({ status: 'done', record: { owner: bob.userId, values: { status: 'submitted', iban: 'SG11 BOB', total: 32.4 } } });
 
     const mine = (await inject({ method: 'GET', url: records(), ...as(bob) }, 200)).json().records;
@@ -178,11 +236,13 @@ describe('sharing with colleagues', () => {
     const edit = await inject({ method: 'PATCH', url: `${records()}/${forApproval[0].id}`, ...as(carol), payload: { values: { title: 'Cheaper' } } }, 403);
     expect(edit.json().error).toBe('not_allowed');
     // Alice's draft is invisible to Carol, so it doesn't exist as far as she can tell.
-    const aliceDraft = (await inject({ method: 'GET', url: records(), ...as(alice) }, 200)).json().records.find((r: { owner: string }) => r.owner === alice.userId);
+    const aliceDraft = (await inject({ method: 'GET', url: records(), ...as(alice) }, 200))
+      .json()
+      .records.find((r: { owner: string }) => r.owner === alice.userId);
     await inject({ method: 'PATCH', url: `${records()}/${aliceDraft.id}`, ...as(carol), payload: { values: { status: 'approved' } } }, 404);
   });
 
-  it('gives each person the pages and menu their role uses, and runs a page\'s list under their permissions', async () => {
+  it("gives each person the pages and menu their role uses, and runs a page's list under their permissions", async () => {
     const ui = async (session: Session) => (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(session) }, 200)).json();
     const [alices, bobs, carols] = [await ui(alice), await ui(bob), await ui(carol)];
     // The builder holds none of the app's roles, so sees every page; each colleague sees the pages for their role.
@@ -218,7 +278,9 @@ describe('sharing with colleagues', () => {
     expect(bobs.pages.my_claims.blocks[1].actions).toEqual([]);
 
     const rows = async (session: Session, page: string, block: number) =>
-      (await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/${page}/blocks/${block}/records`, ...as(session) }, 200)).json().records as Array<{ values: Record<string, unknown> }>;
+      (await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/${page}/blocks/${block}/records`, ...as(session) }, 200)).json().records as Array<{
+        values: Record<string, unknown>;
+      }>;
     // "To approve" is the submitted claims that Carol may read; "My claims" is whoever asks.
     expect((await rows(carol, 'to_approve', 1)).map((record) => record.values['title'])).toEqual(['Taxi to the airport']);
     expect((await rows(bob, 'my_claims', 1)).map((record) => record.values['title'])).toEqual(['Taxi to the airport']);
@@ -229,12 +291,25 @@ describe('sharing with colleagues', () => {
     await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/nowhere/blocks/1/records`, ...as(bob) }, 404);
   });
 
-  it('works out a dashboard\'s numbers over what each person may read, and never over what their role hides', async () => {
+  it("works out a dashboard's numbers over what each person may read, and never over what their role hides", async () => {
     const summary = async (session: Session, block: number, expected = 200) =>
       (await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/spending/blocks/${block}/summary`, ...as(session) }, expected)).json();
     const carols = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(carol) }, 200)).json();
-    expect(carols.pages.spending.blocks.map((block: { type: string; path: string }) => `${block.type}:${block.path}`)).toEqual(['stat:0', 'stat:1', 'stat:2', 'chart:3', 'chart:4']);
-    expect(carols.pages.spending.blocks[3]).toMatchObject({ title: 'Spending by category (SGD)', show: 'bar', width: 'half', op: 'sum', decimals: 2, group: { label: 'Category', kind: 'value' } });
+    expect(carols.pages.spending.blocks.map((block: { type: string; path: string }) => `${block.type}:${block.path}`)).toEqual([
+      'stat:0',
+      'stat:1',
+      'stat:2',
+      'chart:3',
+      'chart:4',
+    ]);
+    expect(carols.pages.spending.blocks[3]).toMatchObject({
+      title: 'Spending by category (SGD)',
+      show: 'bar',
+      width: 'half',
+      op: 'sum',
+      decimals: 2,
+      group: { label: 'Category', kind: 'value' },
+    });
     expect(carols.pages.spending.blocks[4]).toMatchObject({ show: 'column', group: { label: 'Date', kind: 'period', period: 'month' } });
 
     // Bob's taxi claim is the one submitted claim; Alice's is a draft, which Carol can't read.
@@ -253,9 +328,15 @@ describe('sharing with colleagues', () => {
     await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/my_claims/blocks/1/summary`, ...as(bob) }, 404);
   });
 
-  it('refuses a number over a field a role masks, and leaves it off that person\'s page', async () => {
+  it("refuses a number over a field a role masks, and leaves it off that person's page", async () => {
     const { revision, definition } = (await inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, ...as(alice) }, 200)).json();
-    definition.pages.spending.blocks.push({ type: 'chart', title: 'By bank account', entity: 'expense_claim', measure: { op: 'count' }, group: { field: 'iban' } });
+    definition.pages.spending.blocks.push({
+      type: 'chart',
+      title: 'By bank account',
+      entity: 'expense_claim',
+      measure: { op: 'count' },
+      group: { field: 'iban' },
+    });
     await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, ...as(alice), payload: { definition, baseRevision: revision } }, 200);
     // Carol sees bank accounts masked, so the chart isn't on her page, and its numbers are refused.
     const carols = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(carol) }, 200)).json();
@@ -270,7 +351,7 @@ describe('sharing with colleagues', () => {
     });
   });
 
-  it('runs actions under the caller\'s record permissions, and keeps the history', async () => {
+  it("runs actions under the caller's record permissions, and keeps the history", async () => {
     const claim = (await inject({ method: 'GET', url: records(), ...as(carol) }, 200)).json().records[0];
     const approved = await inject({ method: 'POST', url: `/v1/apps/${appId}/actions/approve_claim/run`, ...as(carol), payload: { recordId: claim.id } }, 200);
     expect(approved.json()).toMatchObject({ status: 'done', record: { version: 2, values: { status: 'approved' } } });
@@ -301,7 +382,10 @@ describe('sharing with colleagues', () => {
 
   it('keeps personal apps private from org admins', async () => {
     // Alice is an org owner, yet Bob's personal app is his alone.
-    const bobs = await inject({ method: 'POST', url: `/v1/spaces/${bob.personalSpaceId}/apps`, ...as(bob), payload: { name: 'Side project', definition: EXPENSE_APP } }, 201);
+    const bobs = await inject(
+      { method: 'POST', url: `/v1/spaces/${bob.personalSpaceId}/apps`, ...as(bob), payload: { name: 'Side project', definition: EXPENSE_APP } },
+      201,
+    );
     // Org roles carry no record permissions at all, and org grants would stop at the personal-space boundary anyway.
     const denied = await inject({ method: 'GET', url: `/v1/apps/${bobs.json().app.id}/entities/expense_claim/records`, ...as(alice) }, 403);
     expect(denied.json().details.reasons).toEqual([{ kind: 'no_matching_grant' }]);
@@ -316,7 +400,10 @@ describe('agents propose, people approve', () => {
   it('publishes what the person may do as MCP tools', async () => {
     // Errands, not raw tables: the agent can run actions and queries, and touch records only through them.
     agentToken = await mintPat(bob, ['app.run', 'action.run', 'query.run']);
-    const direct = await inject({ method: 'POST', url: records(), ...bearer(agentToken), payload: { values: { title: 'Sneaky', lines: [line('Shop', 'meals', 5)] } } }, 403);
+    const direct = await inject(
+      { method: 'POST', url: records(), ...bearer(agentToken), payload: { values: { title: 'Sneaky', lines: [line('Shop', 'meals', 5)] } } },
+      403,
+    );
     expect(direct.json().details.reasons).toEqual([{ kind: 'outside_token_scope' }]);
     await inject({ method: 'GET', url: records(), ...bearer(agentToken) }, 403);
     const init = await rpc(agentToken, '/mcp', 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
@@ -334,18 +421,27 @@ describe('agents propose, people approve', () => {
     ]);
     const submit = tools.find((tool) => tool.name === 'expenses__submit_claim')!;
     const lines = submit.inputSchema.properties.values.properties.lines;
-    expect(lines).toMatchObject({ type: 'array', minItems: 1, maxItems: 50, items: { required: ['date', 'merchant', 'category', 'amount'], additionalProperties: false } });
+    expect(lines).toMatchObject({
+      type: 'array',
+      minItems: 1,
+      maxItems: 50,
+      items: { required: ['date', 'merchant', 'category', 'amount'], additionalProperties: false },
+    });
     expect(lines.items.properties.category).toMatchObject({ type: 'string', enum: ['travel', 'hotel', 'meals'] });
     expect(submit.inputSchema.properties.values.required).toEqual(['title', 'lines']);
   });
 
   it('answers questions that total and group, over only the records the person may read', async () => {
     // Bob's own receipts, worked out here, as the query should.
-    const mine = (await inject({ method: 'GET', url: records(), ...as(bob) }, 200)).json().records as Array<{ owner: string; values: { lines: Array<{ category: string; amount: number; date: string }> } }>;
+    const mine = (await inject({ method: 'GET', url: records(), ...as(bob) }, 200)).json().records as Array<{
+      owner: string;
+      values: { lines: Array<{ category: string; amount: number; date: string }> };
+    }>;
     const year = new Date().toISOString().slice(0, 4);
     const totals = new Map<string, number>();
     for (const record of mine.filter((r) => r.owner === bob.userId)) {
-      for (const l of record.values.lines.filter((l) => l.date.startsWith(year))) totals.set(l.category, Number(((totals.get(l.category) ?? 0) + l.amount).toFixed(2)));
+      for (const l of record.values.lines.filter((l) => l.date.startsWith(year)))
+        totals.set(l.category, Number(((totals.get(l.category) ?? 0) + l.amount).toFixed(2)));
     }
     const expected = [...totals].sort((a, b) => b[1] - a[1]).map(([key, value]) => ({ key, value }));
     expect(expected.length).toBeGreaterThan(0);
@@ -363,7 +459,7 @@ describe('agents propose, people approve', () => {
     expect(call.result.structuredContent).toEqual(answered);
   });
 
-  it('turns an agent\'s action into a proposal, with the rule findings and where each value came from', async () => {
+  it("turns an agent's action into a proposal, with the rule findings and where each value came from", async () => {
     const call = await rpc(agentToken, '/mcp', 'tools/call', {
       name: 'expenses__submit_claim',
       arguments: {
@@ -382,9 +478,12 @@ describe('agents propose, people approve', () => {
     expect(mine.map((r: { values: { title: string } }) => r.values.title)).not.toContain('Singapore trip');
   });
 
-  it('never lets the agent approve, even with the person\'s own token', async () => {
+  it("never lets the agent approve, even with the person's own token", async () => {
     const proposal = (await inject({ method: 'GET', url: `/v1/proposals/${proposalId}`, ...bearer(agentToken) }, 200)).json();
-    const attempt = await inject({ method: 'POST', url: `/v1/proposals/${proposalId}/approve`, ...bearer(agentToken), payload: { digest: proposal.digest } }, 403);
+    const attempt = await inject(
+      { method: 'POST', url: `/v1/proposals/${proposalId}/approve`, ...bearer(agentToken), payload: { digest: proposal.digest } },
+      403,
+    );
     expect(attempt.json().error).toBe('session_required');
     await inject({ method: 'GET', url: `/v1/proposals/${proposalId}`, ...as(carol) }, 404);
   });
@@ -424,13 +523,16 @@ describe('agents propose, people approve', () => {
       'lines[2][category]': '',
       'lines[2][amount]': '',
     });
-    const revised = await inject({
-      method: 'POST',
-      url: `/review/${proposalId}/revise`,
-      ...as(bob),
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      payload: form.toString(),
-    }, 303);
+    const revised = await inject(
+      {
+        method: 'POST',
+        url: `/review/${proposalId}/revise`,
+        ...as(bob),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: form.toString(),
+      },
+      303,
+    );
     const next = String(revised.headers.location).split('/').at(-1)!;
     expect(next).not.toBe(proposalId);
     const old = (await inject({ method: 'GET', url: `/v1/proposals/${proposalId}`, ...as(bob) }, 200)).json();
@@ -446,13 +548,16 @@ describe('agents propose, people approve', () => {
     const wrong = await inject({ method: 'POST', url: `/v1/proposals/${proposalId}/approve`, ...as(bob), payload: { digest: 'not-the-digest' } }, 409);
     expect(wrong.json().error).toBe('digest_mismatch');
 
-    const approved = await inject({
-      method: 'POST',
-      url: `/review/${proposalId}/approve`,
-      ...as(bob),
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      payload: new URLSearchParams({ digest: proposal.digest }).toString(),
-    }, 303);
+    const approved = await inject(
+      {
+        method: 'POST',
+        url: `/review/${proposalId}/approve`,
+        ...as(bob),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams({ digest: proposal.digest }).toString(),
+      },
+      303,
+    );
     expect(approved.headers.location).toBe(`/review/${proposalId}`);
     const done = (await inject({ method: 'GET', url: `/v1/proposals/${proposalId}`, ...as(bob) }, 200)).json();
     expect(done).toMatchObject({ status: 'approved', resultRecordId: expect.any(String) });
@@ -461,7 +566,9 @@ describe('agents propose, people approve', () => {
     expect(record).toMatchObject({ owner: bob.userId, values: { title: 'Singapore trip', total: 272.4, status: 'submitted' } });
     // The lines are the ones Bob saw, with the IDs the proposal gave them.
     const sealed = (await inject({ method: 'GET', url: `/v1/proposals/${proposalId}`, ...as(bob) }, 200)).json();
-    expect(record.values.lines.map((l: { id: string; amount: number }) => [l.id, l.amount])).toEqual(sealed.card.tables[0].rows.map((row: { id: string }, i: number) => [row.id, [240, 32.4][i]]));
+    expect(record.values.lines.map((l: { id: string; amount: number }) => [l.id, l.amount])).toEqual(
+      sealed.card.tables[0].rows.map((row: { id: string }, i: number) => [row.id, [240, 32.4][i]]),
+    );
     const history = (await inject({ method: 'GET', url: `${records()}/${record.id}/history`, ...as(bob) }, 200)).json().history;
     const sources = Object.fromEntries(history[0].changes.map((c: { field: string; source?: { source: string } }) => [c.field, c.source?.source ?? null]));
     expect(sources).toMatchObject({ journey: 'agent', title: null });
@@ -473,7 +580,10 @@ describe('agents propose, people approve', () => {
     const twice = await inject({ method: 'POST', url: `/v1/proposals/${proposalId}/approve`, ...as(bob), payload: { digest: proposal.digest } }, 409);
     expect(twice.json().error).toBe('not_pending');
 
-    const audit = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.appId, appId), eq(auditEvents.action, 'record.create')));
+    const audit = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.appId, appId), eq(auditEvents.action, 'record.create')));
     const fromProposal = audit.find((event) => (event.reason as { proposal?: string } | null)?.proposal === proposalId);
     expect(fromProposal).toBeDefined();
     expect(fromProposal!.changes).toEqual({ fields: expect.arrayContaining(['lines', 'title', 'total']) });
@@ -492,15 +602,32 @@ describe('agents propose, people approve', () => {
 
 describe('lines', () => {
   it('changes only what is sent, keeps the order, and records every change', async () => {
-    const created = (await inject({ method: 'POST', url: records(), ...as(alice), payload: { values: { title: 'Week in Penang', lines: [line('Hotel', 'hotel', 200), line('Taxi', 'travel', 20), line('Dinner', 'meals', 40)] } } }, 201)).json();
+    const created = (
+      await inject(
+        {
+          method: 'POST',
+          url: records(),
+          ...as(alice),
+          payload: { values: { title: 'Week in Penang', lines: [line('Hotel', 'hotel', 200), line('Taxi', 'travel', 20), line('Dinner', 'meals', 40)] } },
+        },
+        201,
+      )
+    ).json();
     const [hotel, taxi] = created.values.lines;
     // Keep the taxi, cheaper; drop dinner; add a ferry; put the taxi first.
-    const updated = await inject({
-      method: 'PATCH',
-      url: `${records()}/${created.id}`,
-      ...as(alice),
-      payload: { version: 1, values: { lines: [{ id: taxi.id, amount: 18 }, { id: hotel.id }, line('Ferry', 'travel', 12)] }, provenance: { 'lines[0].amount': { source: 'person' } } },
-    }, 200);
+    const updated = await inject(
+      {
+        method: 'PATCH',
+        url: `${records()}/${created.id}`,
+        ...as(alice),
+        payload: {
+          version: 1,
+          values: { lines: [{ id: taxi.id, amount: 18 }, { id: hotel.id }, line('Ferry', 'travel', 12)] },
+          provenance: { 'lines[0].amount': { source: 'person' } },
+        },
+      },
+      200,
+    );
     const record = updated.json();
     expect(record).toMatchObject({ version: 2, values: { total: 230 } });
     expect(record.values.lines.map((l: { merchant: string; amount: number }) => `${l.merchant} ${l.amount}`)).toEqual(['Taxi 18', 'Hotel 200', 'Ferry 12']);
@@ -519,7 +646,15 @@ describe('lines', () => {
     // Sending the same lines again changes nothing.
     const same = await inject({ method: 'PATCH', url: `${records()}/${created.id}`, ...as(alice), payload: { values: { lines: record.values.lines } } }, 200);
     expect(same.json().version).toBe(2);
-    const unknown = await inject({ method: 'PATCH', url: `${records()}/${created.id}`, ...as(alice), payload: { values: { lines: [{ id: '0193a7c4-0000-7000-8000-000000000999', amount: 1 }] } } }, 422);
+    const unknown = await inject(
+      {
+        method: 'PATCH',
+        url: `${records()}/${created.id}`,
+        ...as(alice),
+        payload: { values: { lines: [{ id: '0193a7c4-0000-7000-8000-000000000999', amount: 1 }] } },
+      },
+      422,
+    );
     expect(unknown.json().details.issues).toEqual([expect.objectContaining({ field: 'lines[0].id' })]);
   });
 
@@ -555,7 +690,10 @@ describe('building with an AI client', () => {
     const current = (await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'get_definition', arguments: { app_id: appId } })).result.structuredContent;
     const definition = structuredClone(current.definition);
     definition.entities.expense_claim.fields.push({ name: 'project_code', label: 'Project code', type: 'text', maxLength: 20 });
-    const added = await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'apply_change', arguments: { app_id: appId, definition, base_revision: current.revision } });
+    const added = await rpc(builderToken, '/mcp/build', 'tools/call', {
+      name: 'apply_change',
+      arguments: { app_id: appId, definition, base_revision: current.revision },
+    });
     expect(added.result.isError).toBeUndefined();
     expect(added.result.structuredContent.plan).toMatchObject({ steps: [{ kind: 'add_field' }] });
 
@@ -568,12 +706,16 @@ describe('building with an AI client', () => {
     expect(held.result).toMatchObject({ isError: true, structuredContent: { error: 'destructive_change' } });
     expect(held.result.structuredContent.details.plan.steps).toEqual([expect.objectContaining({ kind: 'drop_field', records: 2 })]);
 
-    const asToken = await inject({ method: 'PUT', url: `/v1/apps/${appId}/definition?confirmDestructive=true`, ...bearer(builderToken), payload: { definition: dropping } }, 403);
+    const asToken = await inject(
+      { method: 'PUT', url: `/v1/apps/${appId}/definition?confirmDestructive=true`, ...bearer(builderToken), payload: { definition: dropping } },
+      403,
+    );
     expect(asToken.json().error).toBe('session_required');
   });
 
   it('changes a definition with small edits: checked first, and saved on request', async () => {
-    const edit = (args: Record<string, unknown>) => rpc(builderToken, '/mcp/build', 'tools/call', { name: 'edit_definition', arguments: { app_id: appId, ...args } });
+    const edit = (args: Record<string, unknown>) =>
+      rpc(builderToken, '/mcp/build', 'tools/call', { name: 'edit_definition', arguments: { app_id: appId, ...args } });
     const fieldsNow = async () => {
       const current = (await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'get_definition', arguments: { app_id: appId } })).result.structuredContent;
       return { revision: current.revision, names: current.definition.entities.expense_claim.fields.map((field: { name: string }) => field.name) };
@@ -589,15 +731,24 @@ describe('building with an AI client', () => {
     expect((await fieldsNow()).names).toContain('cost_centre');
 
     // An edit that leads nowhere changes nothing, and one that the checks refuse names the problem.
-    expect((await edit({ edits: [{ op: 'replace', path: '/entities/nothing/label', value: 'x' }] })).result).toMatchObject({ isError: true, structuredContent: { error: 'edit_failed' } });
-    expect((await edit({ edits: [{ op: 'replace', path: '/entities/expense_claim/label', value: '' }] })).result).toMatchObject({ isError: true, structuredContent: { error: 'invalid_definition' } });
+    expect((await edit({ edits: [{ op: 'replace', path: '/entities/nothing/label', value: 'x' }] })).result).toMatchObject({
+      isError: true,
+      structuredContent: { error: 'edit_failed' },
+    });
+    expect((await edit({ edits: [{ op: 'replace', path: '/entities/expense_claim/label', value: '' }] })).result).toMatchObject({
+      isError: true,
+      structuredContent: { error: 'invalid_definition' },
+    });
   });
 
   it("runs the app's tests, and says how many passed", async () => {
     const run = (args: Record<string, unknown>) => rpc(builderToken, '/mcp/build', 'tools/call', { name: 'run_tests', arguments: { app_id: appId, ...args } });
     expect((await run({})).result.structuredContent).toEqual({ passed: 0, failed: 0, results: [] });
     const test = { label: 'No receipts, no claim', when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } }, then: { outcome: 'refused' } };
-    const edited = await rpc(builderToken, '/mcp/build', 'tools/call', { name: 'edit_definition', arguments: { app_id: appId, edits: [{ op: 'add', path: '/tests', value: { no_receipts: test } }], apply: true } });
+    const edited = await rpc(builderToken, '/mcp/build', 'tools/call', {
+      name: 'edit_definition',
+      arguments: { app_id: appId, edits: [{ op: 'add', path: '/tests', value: { no_receipts: test } }], apply: true },
+    });
     expect(edited.result.isError).toBeUndefined();
     const ran = await run({ only: ['no_receipts'] });
     expect(ran.result.content[0].text).toMatch(/^1 passed, 0 failed\./);
@@ -628,7 +779,15 @@ describe('the look', () => {
 describe('guardrails', () => {
   it('make a frozen space read-only for everyone, data included', async () => {
     await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/freeze`, ...as(alice), payload: { reason: 'Audit' } }, 200);
-    const refused = await inject({ method: 'POST', url: `/v1/apps/${appId}/actions/submit_claim/run`, ...as(bob), payload: { values: { title: 'Lunch', lines: [line('Cafe', 'meals', 18)] } } }, 403);
+    const refused = await inject(
+      {
+        method: 'POST',
+        url: `/v1/apps/${appId}/actions/submit_claim/run`,
+        ...as(bob),
+        payload: { values: { title: 'Lunch', lines: [line('Cafe', 'meals', 18)] } },
+      },
+      403,
+    );
     expect(refused.json().details.reasons).toEqual([expect.objectContaining({ kind: 'denied_by_guardrail', guardrailId: 'gr.space.frozen-read-only' })]);
     // Reading still works.
     await inject({ method: 'GET', url: records(), ...as(bob) }, 200);

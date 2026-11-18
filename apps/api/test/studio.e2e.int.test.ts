@@ -1,8 +1,8 @@
 import { createRequire } from 'node:module';
 import { EXPENSE_APP } from '@platform/app-model';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
-import { callTool, modelMessage, say, scriptedModel, type ScriptedModel } from './scripted-model.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
+import { callTool, modelMessage, type ScriptedModel, say, scriptedModel } from './scripted-model.js';
 
 /**
  * The studio in a real browser, end to end: build an app from the example, rename a field, save,
@@ -106,12 +106,22 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   const panel = (page: Page, heading: string): Locator => page.locator('section', { has: page.getByRole('heading', { name: heading, exact: true }) });
   /** Each test makes its own app, so that it runs alone or in any order. */
   const newApp = async (session: Session, name: string, template = 'expenses'): Promise<string> => {
-    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${session.personalSpaceId}/apps/import`, cookies: session.cookies, payload: { name, template } });
+    const created = await t.app.inject({
+      method: 'POST',
+      url: `/v1/spaces/${session.personalSpaceId}/apps/import`,
+      cookies: session.cookies,
+      payload: { name, template },
+    });
     expect(created.statusCode, created.body).toBe(201);
     return created.json().app.id;
   };
   /** A claim the person submits through the API: a receipt for each line, all on one day. */
-  const submitClaim = async (session: Session, appId: string, title: string, lines: ReadonlyArray<{ merchant: string; category: string; amount: number }>): Promise<{ id: string }> => {
+  const submitClaim = async (
+    session: Session,
+    appId: string,
+    title: string,
+    lines: ReadonlyArray<{ merchant: string; category: string; amount: number }>,
+  ): Promise<{ id: string }> => {
     const values = { title, lines: lines.map((line) => ({ date: '2026-11-02', ...line })) };
     const done = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/actions/submit_claim/run`, cookies: session.cookies, payload: { values } });
     expect(done.statusCode, done.body).toBe(201);
@@ -196,7 +206,9 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByLabel('Receipt 1, Category').selectOption('travel');
     await page.getByLabel('Receipt 1, Amount (SGD)').fill('32.40');
     // The receipt uploads as soon as it's picked, and shows as a link to it.
-    await page.getByLabel('Receipt 1, Receipt').setInputFiles({ name: 'taxi.jpg', mimeType: 'image/jpeg', buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(2048, 9)]) });
+    await page
+      .getByLabel('Receipt 1, Receipt')
+      .setInputFiles({ name: 'taxi.jpg', mimeType: 'image/jpeg', buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(2048, 9)]) });
     await visible(page.getByRole('link', { name: /taxi\.jpg/ }));
     await page.getByRole('button', { name: 'Add a line' }).click();
     await page.getByLabel('Receipt 2, Date').fill('2026-11-03');
@@ -226,7 +238,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
 
   it('lets the person correct a line an agent proposed, on the review page, and approve it', async () => {
     const appId = await newApp(alice, 'Expenses, proposed');
-    const token = await t.app.inject({ method: 'POST', url: '/v1/me/tokens', cookies: alice.cookies, payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } });
+    const token = await t.app.inject({
+      method: 'POST',
+      url: '/v1/me/tokens',
+      cookies: alice.cookies,
+      payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 },
+    });
     const run = await t.app.inject({
       method: 'POST',
       url: `/v1/apps/${appId}/actions/submit_claim/run`,
@@ -250,9 +267,14 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(page, '9-review-approved');
   });
 
-  it("shows a colleague only what their role allows, in dark mode too", async () => {
+  it('shows a colleague only what their role allows, in dark mode too', async () => {
     const appId = await newApp(alice, 'Expenses, shared');
-    const share = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'requester' } });
+    const share = await t.app.inject({
+      method: 'POST',
+      url: `/v1/apps/${appId}/shares`,
+      cookies: alice.cookies,
+      payload: { email: 'bob@example.com', role: 'requester' },
+    });
     expect(share.statusCode, share.body).toBe(201);
     const page = await open(bob, 'dark');
     await page.goto(`${BASE}/studio/apps/${appId}`);
@@ -348,7 +370,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(page, '16-page');
 
     // An approver gets the page for approvers, and approves from its list in one click.
-    const share = await t.app.inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, cookies: alice.cookies, payload: { email: 'carol@example.com', role: 'approver' } });
+    const share = await t.app.inject({
+      method: 'POST',
+      url: `/v1/apps/${appId}/shares`,
+      cookies: alice.cookies,
+      payload: { email: 'carol@example.com', role: 'approver' },
+    });
     expect(share.statusCode, share.body).toBe(201);
     const approver = await open(carol);
     await approver.goto(`${BASE}/studio/apps/${appId}`);
@@ -501,7 +528,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(builder.getByTestId('flow-step-steps[0]').getByText('1 waiting', { exact: false }));
     await shot(builder, '16a-flow-live');
     // The count opens its cases, each by its record.
-    await builder.getByTestId('flow-step-steps[0]').getByRole('button', { name: /show the cases$/ }).click();
+    await builder
+      .getByTestId('flow-step-steps[0]')
+      .getByRole('button', { name: /show the cases$/ })
+      .click();
     const cases = builder.getByRole('region', { name: 'Cases at this step' });
     await visible(cases.getByText('Waiting for', { exact: false }));
     await visible(cases.getByRole('link'));
@@ -526,7 +556,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
 
   it('starts a flow that waits by itself, reminds while a task waits, repeats steps, and runs a flow on a schedule', async () => {
     // Its own app, so that it runs whatever ran before it.
-    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave, by itself', template: 'leave' } });
+    const created = await t.app.inject({
+      method: 'POST',
+      url: `/v1/spaces/${alice.personalSpaceId}/apps/import`,
+      cookies: alice.cookies,
+      payload: { name: 'Leave, by itself', template: 'leave' },
+    });
     expect(created.statusCode, created.body).toBe(201);
     const leaveId = created.json().app.id as string;
     const page = await open(alice);
@@ -594,7 +629,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('tells people from a flow, and each reads their notices', async () => {
-    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave, told', template: 'leave' } });
+    const created = await t.app.inject({
+      method: 'POST',
+      url: `/v1/spaces/${alice.personalSpaceId}/apps/import`,
+      cookies: alice.cookies,
+      payload: { name: 'Leave, told', template: 'leave' },
+    });
     expect(created.statusCode, created.body).toBe(201);
     const leaveId = created.json().app.id as string;
     await t.app.inject({ method: 'POST', url: `/v1/apps/${leaveId}/shares`, cookies: alice.cookies, payload: { email: 'bob@example.com', role: 'manager' } });
@@ -630,7 +670,9 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await shot(manager, '16c-notices');
     await group.getByRole('button', { name: /^Mark read/ }).click();
     await hidden(group);
-    const task = (await t.app.inject({ method: 'GET', url: '/v1/me/tasks?status=open', cookies: bob.cookies })).json().tasks.find((each: { recordId: string }) => each.recordId === asked.json().record.id);
+    const task = (await t.app.inject({ method: 'GET', url: '/v1/me/tasks?status=open', cookies: bob.cookies }))
+      .json()
+      .tasks.find((each: { recordId: string }) => each.recordId === asked.json().record.id);
     const done = await t.app.inject({ method: 'POST', url: `/v1/tasks/${task.id}/complete`, cookies: bob.cookies, payload: { outcome: 'approve' } });
     expect(done.statusCode, done.body).toBe(200);
 
@@ -643,7 +685,12 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
   });
 
   it('connects to a service, keeps its secret, calls it from a flow, and makes a webhook key', async () => {
-    const created = await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, cookies: alice.cookies, payload: { name: 'Leave, connected', template: 'leave' } });
+    const created = await t.app.inject({
+      method: 'POST',
+      url: `/v1/spaces/${alice.personalSpaceId}/apps/import`,
+      cookies: alice.cookies,
+      payload: { name: 'Leave, connected', template: 'leave' },
+    });
     expect(created.statusCode, created.body).toBe(201);
     const leaveId = created.json().app.id as string;
     const page = await open(alice);
@@ -697,7 +744,13 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(keys.getByText('Its key, shown this once', { exact: false }));
     await shot(page, '24c-webhooks');
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${leaveId}/definition`, cookies: alice.cookies })).json().definition;
-    expect(saved.connections.payroll).toEqual({ kind: 'service', label: 'Payroll', url: 'https://payroll.example.com/api', auth: { type: 'bearer' }, personalData: false });
+    expect(saved.connections.payroll).toEqual({
+      kind: 'service',
+      label: 'Payroll',
+      url: 'https://payroll.example.com/api',
+      auth: { type: 'bearer' },
+      personalData: false,
+    });
     expect(saved.webhooks.from_payroll).toMatchObject({ label: 'From payroll', flow: 'check_the_balance' });
   });
 
@@ -781,13 +834,25 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
           type: 'each',
           in: 'claim.lines',
           as: 'line',
-          steps: [{ type: 'if', when: { gt: [{ ref: 'line.amount' }, 100] }, then: [{ type: 'set', var: 'big', value: { add: [{ ref: 'big' }, 1] } }], else: [] }],
+          steps: [
+            { type: 'if', when: { gt: [{ ref: 'line.amount' }, 100] }, then: [{ type: 'set', var: 'big', value: { add: [{ ref: 'big' }, 1] } }], else: [] },
+          ],
         },
-        { type: 'try', steps: [{ type: 'change', record: 'claim', values: { title: { concat: [{ ref: 'claim.title' }, ' (checked)'] } } }], catch: [], rollback: true },
+        {
+          type: 'try',
+          steps: [{ type: 'change', record: 'claim', values: { title: { concat: [{ ref: 'claim.title' }, ' (checked)'] } } }],
+          catch: [],
+          rollback: true,
+        },
         { type: 'check', assert: { lt: [{ ref: 'big' }, 5] }, message: 'Many receipts are over 100', severity: 'warning' },
       ],
     };
-    const put = await t.app.inject({ method: 'PUT', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies, payload: { definition: current.definition, baseRevision: current.revision } });
+    const put = await t.app.inject({
+      method: 'PUT',
+      url: `/v1/apps/${appId}/definition`,
+      cookies: alice.cookies,
+      payload: { definition: current.definition, baseRevision: current.revision },
+    });
     expect(put.statusCode, put.body).toBe(200);
 
     const page = await open(alice);
@@ -845,7 +910,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${stepsId}/definition`, cookies: alice.cookies })).json().definition;
     expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'iban').requiredWhen).toEqual({ gt: [{ ref: 'record.total' }, 1000] });
-    expect(saved.forms.claim_form).toMatchObject({ layout: 'steps', sections: [{}, {}, { fields: [{ field: 'iban', visibleWhen: { gt: [{ ref: 'record.total' }, 1000] } }] }] });
+    expect(saved.forms.claim_form).toMatchObject({
+      layout: 'steps',
+      sections: [{}, {}, { fields: [{ field: 'iban', visibleWhen: { gt: [{ ref: 'record.total' }, 1000] } }] }],
+    });
 
     // The person fills it in a step at a time, and each step is checked before the next.
     await page.goto(`${BASE}/studio/apps/${stepsId}/new/claim_form`);
@@ -917,8 +985,14 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByRole('button', { name: /^Save as revision/ }).click();
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${taxId}/definition`, cookies: alice.cookies })).json().definition;
-    expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'with_tax')).toMatchObject({ formula: { mul: [{ ref: 'record.total' }, 1.09] }, decimals: 2, required: false });
-    expect(saved.forms.claim_form.sections.flatMap((s: { fields: unknown[] }) => s.fields)).toContainEqual(expect.objectContaining({ field: 'with_tax', readOnly: true }));
+    expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'with_tax')).toMatchObject({
+      formula: { mul: [{ ref: 'record.total' }, 1.09] },
+      decimals: 2,
+      required: false,
+    });
+    expect(saved.forms.claim_form.sections.flatMap((s: { fields: unknown[] }) => s.fields)).toContainEqual(
+      expect.objectContaining({ field: 'with_tax', readOnly: true }),
+    );
 
     // As people type, the form works it out as the platform will; the platform stores it.
     await page.goto(`${BASE}/studio/apps/${taxId}/new/claim_form`);
@@ -964,7 +1038,11 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByRole('button', { name: /^Save as revision/ }).click();
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${tripsId}/definition`, cookies: alice.cookies })).json().definition;
-    expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'trips')).toMatchObject({ type: 'reference', entity: 'trip', multiple: true });
+    expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'trips')).toMatchObject({
+      type: 'reference',
+      entity: 'trip',
+      multiple: true,
+    });
     expect(saved.actions.submit_claim.input).toContain('trips');
     for (const title of ['Tokyo summit', 'Penang retreat']) {
       await t.app.inject({ method: 'POST', url: `/v1/apps/${tripsId}/entities/trip/records`, cookies: alice.cookies, payload: { values: { title } } });
@@ -1003,10 +1081,25 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
       fields: [
         { name: 'name', label: 'Name', type: 'text', required: true },
         { name: 'budget', label: 'Budget', type: 'number', decimals: 2, min: 0 },
-        { name: 'kind', label: 'Kind', type: 'choice', options: [{ value: 'client', label: 'Client visit' }, { value: 'team', label: 'Team offsite' }] },
+        {
+          name: 'kind',
+          label: 'Kind',
+          type: 'choice',
+          options: [
+            { value: 'client', label: 'Client visit' },
+            { value: 'team', label: 'Team offsite' },
+          ],
+        },
       ],
     };
-    const tripsApp = (await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, cookies: alice.cookies, payload: { name: 'Trips from a file', definition: draft } })).json().app.id;
+    const tripsApp = (
+      await t.app.inject({
+        method: 'POST',
+        url: `/v1/spaces/${alice.personalSpaceId}/apps`,
+        cookies: alice.cookies,
+        payload: { name: 'Trips from a file', definition: draft },
+      })
+    ).json().app.id;
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${tripsApp}/trip`);
     await page.getByRole('button', { name: 'Bring in from a file' }).click();
@@ -1124,7 +1217,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByRole('button', { name: /^Save as revision/ }).click();
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${testedId}/definition`, cookies: alice.cookies })).json().definition;
-    expect(saved.tests.no_receipts_no_claim).toMatchObject({ when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } }, then: { outcome: 'refused' } });
+    expect(saved.tests.no_receipts_no_claim).toMatchObject({
+      when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } },
+      then: { outcome: 'refused' },
+    });
 
     // It runs on the saved app, and passes.
     await page.getByRole('button', { name: 'Run the tests' }).click();
@@ -1158,7 +1254,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await page.getByRole('button', { name: /^Save as revision/ }).click();
     await hidden(page.getByText('Unsaved changes.'));
     const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${appId}/definition`, cookies: alice.cookies })).json().definition;
-    expect(saved.pages.claim).toMatchObject({ record: { entity: 'expense_claim' }, blocks: [{ type: 'fields' }, { type: 'tabs', tabs: [{ label: 'Money', blocks: [{}, { type: 'stat' }] }, { label: 'Notes' }] }] });
+    expect(saved.pages.claim).toMatchObject({
+      record: { entity: 'expense_claim' },
+      blocks: [{ type: 'fields' }, { type: 'tabs', tabs: [{ label: 'Money', blocks: [{}, { type: 'stat' }] }, { label: 'Notes' }] }],
+    });
     expect(saved.pages.my_claims.blocks[1].open).toBe('claim');
 
     // In the app, the row opens the page about that claim: its fields, and its tabs.
@@ -1192,7 +1291,10 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     // With a photo of the paper form, the chat adds the field to the draft, and the designers show it.
     model.requests.length = 0;
     const costCentre = { op: 'add', path: '/entities/expense_claim/fields/-', value: { name: 'cost_centre', label: 'Cost centre', type: 'text' } };
-    model.reply(modelMessage([callTool('edit_definition', { edits: [costCentre] })], 'tool_use'), modelMessage([say('I added a Cost centre field to claims.')]));
+    model.reply(
+      modelMessage([callTool('edit_definition', { edits: [costCentre] })], 'tool_use'),
+      modelMessage([say('I added a Cost centre field to claims.')]),
+    );
     await chat.getByLabel('Add a picture or PDF').setInputFiles({ name: 'paper-form.png', mimeType: 'image/png', buffer: Buffer.from(PIXEL, 'base64') });
     await visible(chat.getByRole('button', { name: 'Remove paper-form.png' }));
     await chat.getByRole('button', { name: 'Send' }).click();

@@ -108,7 +108,14 @@ export interface ChangeRequest extends ChangeRequestSummary {
   changes: Array<{ section: string; name: string; change: 'added' | 'removed' | 'changed'; from?: string; details: string[] }>;
   behind: boolean;
   conflicts: Array<{ section: string; name: string; ours: string; theirs: string }>;
-  reviews: Array<{ id: string; reviewer: PersonRef; verdict: 'approve' | 'request_changes' | 'comment'; comment: string | null; createdAt: string; current: boolean }>;
+  reviews: Array<{
+    id: string;
+    reviewer: PersonRef;
+    verdict: 'approve' | 'request_changes' | 'comment';
+    comment: string | null;
+    createdAt: string;
+    current: boolean;
+  }>;
   approvals: { required: number; approvedBy: PersonRef[]; changesRequestedBy: PersonRef[]; ready: boolean };
   preview: { environmentId: string } | null;
   mergedAt: string | null;
@@ -237,7 +244,14 @@ export interface UiForm {
   layout: 'page' | 'steps';
   sections: Array<{
     title?: string;
-    fields: Array<{ field: string; label?: string; help?: string; width: 'full' | 'half'; readOnly: boolean; visibleWhen?: Definition['rules'][string]['assert'] }>;
+    fields: Array<{
+      field: string;
+      label?: string;
+      help?: string;
+      width: 'full' | 'half';
+      readOnly: boolean;
+      visibleWhen?: Definition['rules'][string]['assert'];
+    }>;
   }>;
 }
 

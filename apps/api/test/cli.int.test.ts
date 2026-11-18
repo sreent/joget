@@ -1,7 +1,7 @@
-import { run, type Io } from '@platform/cli';
+import { type Io, run } from '@platform/cli';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * ambit against a real API: a builder starts an app from a template and exports it; a team's
@@ -23,7 +23,8 @@ async function inject(options: InjectOptions, expected?: number) {
 }
 
 async function token(session: Session, scopes: string[]): Promise<string> {
-  return (await inject({ method: 'POST', url: '/v1/me/tokens', cookies: session.cookies, payload: { name: 'ambit', scopes, expiresInDays: 1 } }, 201)).json().token;
+  return (await inject({ method: 'POST', url: '/v1/me/tokens', cookies: session.cookies, payload: { name: 'ambit', scopes, expiresInDays: 1 } }, 201)).json()
+    .token;
 }
 
 /** ambit, as one person's command line: its HTTP goes to the test server, its files stay in memory. */
@@ -39,7 +40,10 @@ function ambit(apiToken: string) {
         headers: Object.fromEntries(new Headers(init?.headers)),
         ...(init?.body ? { payload: String(init.body) } : {}),
       });
-      return new Response(response.body, { status: response.statusCode, headers: { 'content-type': String(response.headers['content-type'] ?? 'application/json') } });
+      return new Response(response.body, {
+        status: response.statusCode,
+        headers: { 'content-type': String(response.headers['content-type'] ?? 'application/json') },
+      });
     },
     out: (text) => out.push(text),
     err: (text) => err.push(text),
@@ -62,9 +66,23 @@ function ambit(apiToken: string) {
 beforeAll(async () => {
   t = await startTestApp();
   [alice, carol, dave, erin] = [await t.login('alice'), await t.login('carol'), await t.login('dave'), await t.login('erin')];
-  spaceId = (await inject({ method: 'POST', url: '/v1/spaces', cookies: alice.cookies, payload: { name: 'Finance', coOwnerUserIds: [dave.userId] } }, 201)).json().id;
-  for (const [session, roleId] of [[carol, 'space.builder'], [dave, 'space.reviewer'], [erin, 'space.release_manager']] as const) {
-    await inject({ method: 'POST', url: '/v1/bindings', cookies: alice.cookies, payload: { principal: { type: 'user', id: session.userId }, roleId, scope: { type: 'space', id: spaceId } } }, 201);
+  spaceId = (
+    await inject({ method: 'POST', url: '/v1/spaces', cookies: alice.cookies, payload: { name: 'Finance', coOwnerUserIds: [dave.userId] } }, 201)
+  ).json().id;
+  for (const [session, roleId] of [
+    [carol, 'space.builder'],
+    [dave, 'space.reviewer'],
+    [erin, 'space.release_manager'],
+  ] as const) {
+    await inject(
+      {
+        method: 'POST',
+        url: '/v1/bindings',
+        cookies: alice.cookies,
+        payload: { principal: { type: 'user', id: session.userId }, roleId, scope: { type: 'space', id: spaceId } },
+      },
+      201,
+    );
   }
 });
 

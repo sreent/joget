@@ -1,4 +1,4 @@
-import { lookup, type LookupAddress } from 'node:dns';
+import { type LookupAddress, lookup } from 'node:dns';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP } from 'node:net';
@@ -77,10 +77,14 @@ export function hostAllowed(config: Pick<Config, 'OUTBOUND_HOSTS'>, host: string
 }
 
 /** Make a guarded call. Rejects with an OutboundError when the call can't be made, or doesn't finish. */
-export function send(config: Pick<Config, 'OUTBOUND_HOSTS' | 'OUTBOUND_PRIVATE_HOSTS' | 'OUTBOUND_ALLOW_HTTP' | 'SERVICE_TIMEOUT_SECONDS'>, call: OutboundRequest): Promise<OutboundAnswer> {
+export function send(
+  config: Pick<Config, 'OUTBOUND_HOSTS' | 'OUTBOUND_PRIVATE_HOSTS' | 'OUTBOUND_ALLOW_HTTP' | 'SERVICE_TIMEOUT_SECONDS'>,
+  call: OutboundRequest,
+): Promise<OutboundAnswer> {
   const { url } = call;
   const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && config.OUTBOUND_ALLOW_HTTP)) return Promise.reject(new OutboundError('A service is called over https'));
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && config.OUTBOUND_ALLOW_HTTP))
+    return Promise.reject(new OutboundError('A service is called over https'));
   if (!hostAllowed(config, host)) return Promise.reject(new OutboundError(`This installation doesn't allow calls to ${host}`));
   const privateAllowed = names(config.OUTBOUND_PRIVATE_HOSTS).includes(host);
   const family = isIP(host);
@@ -117,7 +121,9 @@ export function send(config: Pick<Config, 'OUTBOUND_HOSTS' | 'OUTBOUND_PRIVATE_H
           }
           chunks.push(chunk);
         });
-        answer.on('end', () => resolve({ status: answer.statusCode ?? 0, contentType: String(answer.headers['content-type'] ?? ''), text: Buffer.concat(chunks).toString('utf8') }));
+        answer.on('end', () =>
+          resolve({ status: answer.statusCode ?? 0, contentType: String(answer.headers['content-type'] ?? ''), text: Buffer.concat(chunks).toString('utf8') }),
+        );
         answer.on('error', (error) => reject(error instanceof OutboundError ? error : new OutboundError('The answer broke off')));
       },
     );

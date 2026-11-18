@@ -1,8 +1,6 @@
-import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  environmentNames,
   EXPENSE_APP,
+  environmentNames,
   insertRecord,
   parseLines,
   parseRecord,
@@ -10,13 +8,15 @@ import {
   provisionEnvironment,
   recomputeRollups,
   rollupValues,
+  type StoredDefinition,
   selectLines,
   selectRecords,
   validateDefinition,
   withFormulas,
   writeLines,
-  type StoredDefinition,
 } from '@platform/app-model';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
  * Formulas in a real PostgreSQL: records written before their formulas existed get them from the
@@ -57,7 +57,12 @@ beforeAll(async () => {
     { name: 'receipts', label: 'Receipts', type: 'number', rollup: { count: 'lines' } },
     { name: 'claimed_on', label: 'Claimed on', type: 'date' },
     { name: 'pay_by', label: 'Pay by', type: 'date', formula: { add_days: [ref('claimed_on'), 30] } },
-    { name: 'heading', label: 'Heading', type: 'text', formula: { concat: [ref('title'), ': ', { coalesce: [ref('trip'), 'no trip'] }, ', SGD ', ref('total'), ', ', ref('claimed_on')] } },
+    {
+      name: 'heading',
+      label: 'Heading',
+      type: 'text',
+      formula: { concat: [ref('title'), ': ', { coalesce: [ref('trip'), 'no trip'] }, ', SGD ', ref('total'), ', ', ref('claimed_on')] },
+    },
     { name: 'large', label: 'Large', type: 'boolean', formula: { if: [{ gt: [ref('total'), 1000] }, true, false] } },
     { name: 'days', label: 'Days to pay', type: 'number', formula: { days_between: [ref('claimed_on'), ref('pay_by')] } },
     { name: 'left_at', label: 'Left at', type: 'datetime' },
@@ -77,9 +82,18 @@ beforeAll(async () => {
   const claims = definition.entities['expense_claim']!;
   const lines = definition.entities['expense_line']!;
   for (const [n, input] of inputs.entries()) {
-    const insert = insertRecord(names, claims, { id: id(n + 1), owner: ALICE, actor: ALICE, at: '2026-11-15T00:00:00.000Z', values: { title: input.title, trip: input.trip, claimed_on: input.claimed_on, left_at: input.left_at, status: 'submitted' } });
+    const insert = insertRecord(names, claims, {
+      id: id(n + 1),
+      owner: ALICE,
+      actor: ALICE,
+      at: '2026-11-15T00:00:00.000Z',
+      values: { title: input.title, trip: input.trip, claimed_on: input.claimed_on, left_at: input.left_at, status: 'submitted' },
+    });
     await client.query(insert.text, insert.values as unknown[]);
-    const next = input.amounts.map((amount, i) => ({ id: id((n + 1) * 100 + i), values: { date: '2026-10-03', merchant: 'Shop', category: 'hotel', amount, receipt: null } }));
+    const next = input.amounts.map((amount, i) => ({
+      id: id((n + 1) * 100 + i),
+      values: { date: '2026-10-03', merchant: 'Shop', category: 'hotel', amount, receipt: null },
+    }));
     for (const statement of writeLines(names, lines, id(n + 1), [], next)) await client.query(statement.text, statement.values as unknown[]);
   }
   for (const statement of recomputeRollups(definition, names)) await client.query(statement);
@@ -96,15 +110,29 @@ describe('formulas in PostgreSQL', () => {
     const lineEntity = definition.entities['expense_line']!;
     const select = selectRecords({ names, entity: claims, fields: claims.fields.filter((f) => f.type !== 'lines').map((f) => f.name), grants: [true] });
     const stored = (await client.query(select.text, select.values as unknown[])).rows.map((row) => parseRecord(claims, row).record);
-    const lineRows = selectLines(names, lineEntity, stored.map((record) => record.id));
+    const lineRows = selectLines(
+      names,
+      lineEntity,
+      stored.map((record) => record.id),
+    );
     const storedLines = parseLines(lineEntity, (await client.query(lineRows.text, lineRows.values as unknown[])).rows);
     expect(stored).toHaveLength(inputs.length);
     for (const record of stored) {
       const input = inputs[Number(record.id.slice(-1)) - 1]!;
       // As the platform writes: a line's formulas, then the rollups, then the record's formulas.
-      const lines = input.amounts.map((amount) => ({ id: null, values: withFormulas(lineEntity, { date: '2026-10-03', merchant: 'Shop', category: 'hotel', amount, receipt: null }, { line: true }).values }));
+      const lines = input.amounts.map((amount) => ({
+        id: null,
+        values: withFormulas(lineEntity, { date: '2026-10-03', merchant: 'Shop', category: 'hotel', amount, receipt: null }, { line: true }).values,
+      }));
       const rollups = rollupValues(definition, 'expense_claim', { lines }).values;
-      const expected = withFormulas(claims, { title: input.title, trip: input.trip, claimed_on: input.claimed_on, left_at: input.left_at, status: 'submitted', ...rollups });
+      const expected = withFormulas(claims, {
+        title: input.title,
+        trip: input.trip,
+        claimed_on: input.claimed_on,
+        left_at: input.left_at,
+        status: 'submitted',
+        ...rollups,
+      });
       expect(expected.issues).toEqual([]);
       for (const name of ['total', 'receipts', 'with_tax', 'per_line', 'pay_by', 'heading', 'large', 'days', 'back_at', 'left_on', 'waited', 'note']) {
         expect(record.values[name], `${input.title}: ${name}`).toEqual(expected.values[name]);

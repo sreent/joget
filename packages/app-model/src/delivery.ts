@@ -1,9 +1,9 @@
 import type { PermissionGrant } from '@platform/authz';
-import type { StoredDefinition, StoredEntity } from './fields.js';
-import { compileAppPolicy, covers, fieldAccess, type FieldAccess } from './roles.js';
 import { conditionText } from './condition-text.js';
+import type { StoredDefinition, StoredEntity } from './fields.js';
 import { flowWork } from './flows.js';
 import { processWork } from './processes.js';
+import { compileAppPolicy, covers, type FieldAccess, fieldAccess } from './roles.js';
 import { scheduleWords } from './schedules.js';
 import type { Action, AppFlow, ConfirmationLevel, Connection, ConnectionAuth, Process, Query } from './schema.js';
 import { flowSubject, startWords } from './waiting.js';
@@ -27,7 +27,21 @@ function stable(value: unknown): string {
 const same = (a: unknown, b: unknown): boolean => stable(a) === stable(b);
 
 /** The parts of a definition, each a map of named artifacts. The menu is one artifact on its own. */
-export const DEFINITION_SECTIONS = ['entities', 'rules', 'actions', 'queries', 'cards', 'forms', 'roles', 'pages', 'processes', 'flows', 'connections', 'webhooks', 'tests'] as const;
+export const DEFINITION_SECTIONS = [
+  'entities',
+  'rules',
+  'actions',
+  'queries',
+  'cards',
+  'forms',
+  'roles',
+  'pages',
+  'processes',
+  'flows',
+  'connections',
+  'webhooks',
+  'tests',
+] as const;
 export type DefinitionSection = (typeof DEFINITION_SECTIONS)[number] | 'navigation';
 /** The parts that came later: a definition without them leaves them out, so that its digest stays as it was. */
 const LATER_SECTIONS: ReadonlySet<DefinitionSection> = new Set(['processes', 'flows', 'connections', 'webhooks', 'tests']);
@@ -84,7 +98,8 @@ function entityChanges(before: StoredEntity, after: StoredEntity): string[] {
   const { fields: oldFields, ...oldSettings } = before;
   const { fields: newFields, ...newSettings } = after;
   if (oldSettings.label !== newSettings.label) details.push(`Label is now ${newSettings.label}`);
-  if (oldSettings.titleField !== newSettings.titleField) details.push(newSettings.titleField ? `Records are now named by ${newSettings.titleField}` : 'Records are no longer named by a field');
+  if (oldSettings.titleField !== newSettings.titleField)
+    details.push(newSettings.titleField ? `Records are now named by ${newSettings.titleField}` : 'Records are no longer named by a field');
   if (oldSettings.history !== newSettings.history) details.push(newSettings.history ? 'History is now kept' : 'History is no longer kept');
   const { label: _l1, titleField: _t1, history: _h1, ...oldRest } = oldSettings;
   const { label: _l2, titleField: _t2, history: _h2, ...newRest } = newSettings;
@@ -169,7 +184,8 @@ export function accessChanges(base: StoredDefinition, head: StoredDefinition): A
   const labelOf = (permission: string, target: string): string => {
     if (permission === 'action.run') return head.actions[target]?.label ?? base.actions[target]?.label ?? target;
     if (permission === 'query.run') return head.queries[target]?.label ?? base.queries[target]?.label ?? target;
-    if (permission === 'process.start') return head.processes?.[target]?.label ?? base.processes?.[target]?.label ?? head.flows?.[target]?.label ?? base.flows?.[target]?.label ?? target;
+    if (permission === 'process.start')
+      return head.processes?.[target]?.label ?? base.processes?.[target]?.label ?? head.flows?.[target]?.label ?? base.flows?.[target]?.label ?? target;
     if (permission === 'flow.run') return head.flows?.[target]?.label ?? base.flows?.[target]?.label ?? target;
     return (entityById(head, target) ?? entityById(base, target))?.label ?? target;
   };
@@ -216,7 +232,11 @@ export function accessChanges(base: StoredDefinition, head: StoredDefinition): A
         if (permission === 'record.read') {
           const was = oldName === undefined ? 'hidden' : fieldAccess([b], oldName);
           const is = fieldAccess([h], name);
-          if (ACCESS_RANK[is] > ACCESS_RANK[was]) add('gains', is === 'full' && was === 'masked' ? `now sees ${what}.${name} in full` : `can now see ${what}.${name}${is === 'masked' ? ', masked' : ''}`);
+          if (ACCESS_RANK[is] > ACCESS_RANK[was])
+            add(
+              'gains',
+              is === 'full' && was === 'masked' ? `now sees ${what}.${name} in full` : `can now see ${what}.${name}${is === 'masked' ? ', masked' : ''}`,
+            );
           else if (ACCESS_RANK[is] < ACCESS_RANK[was]) add('loses', is === 'masked' ? `now sees ${what}.${name} masked` : `can no longer see ${what}.${name}`);
         } else {
           const could = oldName !== undefined && covers(b, oldName);
@@ -254,7 +274,11 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
   for (const name of new Set([...Object.keys(base.actions), ...Object.keys(head.actions)])) {
     const [b, h] = [base.actions[name], head.actions[name]];
     if (!b && h) {
-      changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}, and ${CONFIRMATION_TEXT[h.confirm]}` });
+      changes.push({
+        tool: name,
+        change: 'added',
+        text: `New tool ${name}: ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}, and ${CONFIRMATION_TEXT[h.confirm]}`,
+      });
     } else if (b && !h) {
       changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
     } else if (b && h && !same(b, h)) {
@@ -263,7 +287,12 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
   }
   for (const name of new Set([...Object.keys(base.queries), ...Object.keys(head.queries)])) {
     const [b, h] = [base.queries[name], head.queries[name]];
-    if (!b && h) changes.push({ tool: name, change: 'added', text: `New tool ${name}: ${h.summary ? 'works out numbers from' : 'answers from'} ${entityLabel(h.entity)}` });
+    if (!b && h)
+      changes.push({
+        tool: name,
+        change: 'added',
+        text: `New tool ${name}: ${h.summary ? 'works out numbers from' : 'answers from'} ${entityLabel(h.entity)}`,
+      });
     else if (b && !h) changes.push({ tool: name, change: 'removed', text: `Agents can no longer call ${name}` });
     else if (b && h && !same(b, h)) for (const text of queryChanges(name, b, h, entityLabel)) changes.push({ tool: name, change: 'changed', text });
   }
@@ -274,7 +303,10 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       const starts = startingActions(h);
       const { actions, flows, calls, scripts } = processWork(h);
       const called = Object.values(headProcesses).some((other) => processWork(other).calls.includes(name));
-      const how = [...(starts.length ? [`${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it`] : []), ...automaticStarts(h).map((words) => `it starts by itself ${words}`)];
+      const how = [
+        ...(starts.length ? [`${starts.join(', ')} start${starts.length > 1 ? '' : 's'} it`] : []),
+        ...automaticStarts(h).map((words) => `it starts by itself ${words}`),
+      ];
       const texts = [
         `New process ${h.label}, on ${entityLabel(h.entity)}: ${how.length ? how.join('; ') : called ? 'another process calls it' : 'people start it by hand'}`,
         ...(actions.length ? [`It runs ${actions.join(', ')} by itself`] : []),
@@ -313,7 +345,11 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
     } else if (b && h && !same(b, h)) {
       const [before, after] = [flowWork(base, b), flowWork(head, h)];
       const texts: string[] = [];
-      const verbs = [['creates', 'creates'], ['changes', 'changes'], ['deletes', 'deletes']] as const;
+      const verbs = [
+        ['creates', 'creates'],
+        ['changes', 'changes'],
+        ['deletes', 'deletes'],
+      ] as const;
       for (const [key, verb] of verbs) {
         for (const entity of after[key]) if (!before[key].includes(entity)) texts.push(`${h.label} now ${verb} ${entityLabel(entity)}`);
         for (const entity of before[key]) if (!after[key].includes(entity)) texts.push(`${h.label} no longer ${verb} ${entityLabel(entity)}`);
@@ -323,8 +359,10 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
       for (const ask of after.asks) if (!before.asks.includes(ask)) texts.push(`${h.label} now waits for ${ask}`);
       for (const ask of before.asks) if (!after.asks.includes(ask)) texts.push(`${h.label} no longer waits for ${ask}`);
       for (const told of after.tells) if (!before.tells.includes(told)) texts.push(`${h.label} now tells ${told}`);
-      for (const connection of after.connects) if (!before.connects.includes(connection)) texts.push(`${h.label} now calls ${head.connections?.[connection]?.label ?? connection}`);
-      for (const connection of before.connects) if (!after.connects.includes(connection)) texts.push(`${h.label} no longer calls ${base.connections?.[connection]?.label ?? connection}`);
+      for (const connection of after.connects)
+        if (!before.connects.includes(connection)) texts.push(`${h.label} now calls ${head.connections?.[connection]?.label ?? connection}`);
+      for (const connection of before.connects)
+        if (!after.connects.includes(connection)) texts.push(`${h.label} no longer calls ${base.connections?.[connection]?.label ?? connection}`);
       for (const told of before.tells) if (!after.tells.includes(told)) texts.push(`${h.label} no longer tells ${told}`);
       const [startsBefore, startsAfter] = [startTexts(base, b), startTexts(head, h)];
       for (const start of startsAfter) if (!startsBefore.includes(start)) texts.push(`${h.label} now starts by itself ${start}`);
@@ -342,13 +380,20 @@ export function capabilityChanges(base: StoredDefinition, head: StoredDefinition
 
 /** How a service knows the app, in words. */
 function authWords(auth: ConnectionAuth): string {
-  return auth.type === 'none' ? 'no secret' : auth.type === 'bearer' ? 'a bearer token' : auth.type === 'basic' ? `the user ${auth.user} and a password` : `a key in ${auth.header}`;
+  return auth.type === 'none'
+    ? 'no secret'
+    : auth.type === 'bearer'
+      ? 'a bearer token'
+      : auth.type === 'basic'
+        ? `the user ${auth.user} and a password`
+        : `a key in ${auth.header}`;
 }
 
 /** What reviewers see of the systems an app talks to: where its data can go, and who can run its flows from outside. */
 function integrationChanges(base: StoredDefinition, head: StoredDefinition): CapabilityChange[] {
   const changes: CapabilityChange[] = [];
-  const host = (connection: Connection) => (connection.kind === 'service' ? (URL.canParse(connection.url) ? new URL(connection.url).host : connection.url) : 'Teams');
+  const host = (connection: Connection) =>
+    connection.kind === 'service' ? (URL.canParse(connection.url) ? new URL(connection.url).host : connection.url) : 'Teams';
   const [before, after] = [base.connections ?? {}, head.connections ?? {}];
   for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
     const [b, h] = [before[name], after[name]];
@@ -376,9 +421,16 @@ function integrationChanges(base: StoredDefinition, head: StoredDefinition): Cap
   for (const name of new Set([...Object.keys(hooksBefore), ...Object.keys(hooksAfter)])) {
     const [b, h] = [hooksBefore[name], hooksAfter[name]];
     const flowLabel = (definition: StoredDefinition, flow: string) => definition.flows?.[flow]?.label ?? flow;
-    if (!b && h) changes.push({ tool: name, change: 'added', text: `New webhook ${h.label}: other systems can run ${flowLabel(head, h.flow)}, with the app's authority` });
-    else if (b && !h) changes.push({ tool: name, change: 'removed', text: `${b.label} is removed: other systems can no longer run ${flowLabel(base, b.flow)}` });
-    else if (b && h && !same(b, h)) changes.push({ tool: name, change: 'changed', text: b.flow !== h.flow ? `${h.label} now runs ${flowLabel(head, h.flow)}` : `${h.label} takes its input from other places` });
+    if (!b && h)
+      changes.push({ tool: name, change: 'added', text: `New webhook ${h.label}: other systems can run ${flowLabel(head, h.flow)}, with the app's authority` });
+    else if (b && !h)
+      changes.push({ tool: name, change: 'removed', text: `${b.label} is removed: other systems can no longer run ${flowLabel(base, b.flow)}` });
+    else if (b && h && !same(b, h))
+      changes.push({
+        tool: name,
+        change: 'changed',
+        text: b.flow !== h.flow ? `${h.label} now runs ${flowLabel(head, h.flow)}` : `${h.label} takes its input from other places`,
+      });
   }
   return changes;
 }
@@ -437,7 +489,8 @@ function processChanges(b: Process, h: Process): string[] {
 
 function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: string) => string): string[] {
   const texts: string[] = [];
-  if (b.operation !== h.operation || b.entity !== h.entity) texts.push(`${name} now ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}`);
+  if (b.operation !== h.operation || b.entity !== h.entity)
+    texts.push(`${name} now ${h.operation === 'create' ? 'creates' : 'updates'} ${entityLabel(h.entity)}`);
   if (b.confirm !== h.confirm) {
     const less = CONFIRMATION_RANK[h.confirm] < CONFIRMATION_RANK[b.confirm];
     texts.push(`${name} now needs ${less ? 'less' : 'more'} confirmation: it ${CONFIRMATION_TEXT[h.confirm]}`);
@@ -448,9 +501,11 @@ function actionChanges(name: string, b: Action, h: Action, entityLabel: (name: s
   for (const field of Object.keys(b.set)) if (!(field in h.set)) texts.push(`${name} no longer sets ${field}`);
   if (!same(b.where, h.where)) texts.push(`${name} now applies to a different set of records`);
   if (!same(b.steps ?? [], h.steps ?? [])) texts.push(`${name} runs different steps`);
-  if (b.before?.flow !== h.before?.flow) texts.push(h.before ? `${name} now runs the flow ${h.before.flow} before it saves` : `${name} no longer runs the flow ${b.before!.flow} before it saves`);
+  if (b.before?.flow !== h.before?.flow)
+    texts.push(h.before ? `${name} now runs the flow ${h.before.flow} before it saves` : `${name} no longer runs the flow ${b.before!.flow} before it saves`);
   else if (!same(b.before, h.before)) texts.push(`${name} gives the flow it runs before it saves different input`);
-  if (b.flow?.flow !== h.flow?.flow) texts.push(h.flow ? `${name} now runs the flow ${h.flow.flow} once it saves` : `${name} no longer runs the flow ${b.flow!.flow}`);
+  if (b.flow?.flow !== h.flow?.flow)
+    texts.push(h.flow ? `${name} now runs the flow ${h.flow.flow} once it saves` : `${name} no longer runs the flow ${b.flow!.flow}`);
   else if (!same(b.flow, h.flow)) texts.push(`${name} gives its flow ${h.flow!.flow} different input`);
   if (b.description !== h.description) texts.push(`${name} has a new description, which agents read to choose it`);
   if (b.card !== h.card) texts.push(`${name} shows a different review card`);
@@ -476,7 +531,9 @@ function queryChanges(name: string, b: Query, h: Query, entityLabel: (name: stri
 export function lintDefinition(definition: StoredDefinition): string[] {
   const findings: string[] = [];
   const roles = Object.values(definition.roles);
-  const lines = new Set(Object.values(definition.entities).flatMap((entity) => entity.fields.flatMap((field) => (field.type === 'lines' ? [field.entity] : []))));
+  const lines = new Set(
+    Object.values(definition.entities).flatMap((entity) => entity.fields.flatMap((field) => (field.type === 'lines' ? [field.entity] : []))),
+  );
   if (Object.keys(definition.entities).length && !roles.length) findings.push('The app has no roles, so nobody can use it outside a preview');
   if (!roles.length) return findings;
   for (const [name, entity] of Object.entries(definition.entities)) {
@@ -492,7 +549,9 @@ export function lintDefinition(definition: StoredDefinition): string[] {
   const called = new Set(Object.values(definition.processes ?? {}).flatMap((process) => processWork(process).calls));
   for (const [name, process] of Object.entries(definition.processes ?? {})) {
     if (!startingActions(process).length && !automaticStarts(process).length && !roles.some((role) => role.processes?.includes(name)) && !called.has(name)) {
-      findings.push(`Nothing starts the process ${process.label}: no start event names an action, a timer, a condition or a signal, no role may start it, and no process calls it`);
+      findings.push(
+        `Nothing starts the process ${process.label}: no start event names an action, a timer, a condition or a signal, no role may start it, and no process calls it`,
+      );
     }
   }
   const runFlows = new Set([
@@ -521,7 +580,9 @@ export interface MergeConflict {
   readonly theirs: 'added' | 'removed' | 'changed';
 }
 
-export type MergeResult = { readonly ok: true; readonly definition: Record<string, unknown> } | { readonly ok: false; readonly conflicts: readonly MergeConflict[] };
+export type MergeResult =
+  | { readonly ok: true; readonly definition: Record<string, unknown> }
+  | { readonly ok: false; readonly conflicts: readonly MergeConflict[] };
 
 /**
  * A three-way merge at the artifact level (design §6.7): an artifact changed on one side only

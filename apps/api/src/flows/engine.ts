@@ -1,20 +1,20 @@
-import { uuidv7 } from '@platform/audit';
-import { CLOCK, evaluateCondition, partialEvaluate, type Condition } from '@platform/authz';
 import {
+  type AppFlow,
   conditionRecord,
   Draft,
-  evaluateExpression,
-  flowWaits,
-  recordLabel,
-  roundTo,
-  type AppFlow,
   type Expression,
   type ExpressionValue,
+  evaluateExpression,
   type FlowRun,
   type FlowStep,
   type FlowType,
+  flowWaits,
   type RecordValues,
+  recordLabel,
+  roundTo,
 } from '@platform/app-model';
+import { uuidv7 } from '@platform/audit';
+import { CLOCK, type Condition, evaluateCondition, partialEvaluate } from '@platform/authz';
 import { roleHolders } from '../access/holders.js';
 import { requirePerson } from '../access/rules.js';
 import type { LoadedApp } from '../apps/catalog.js';
@@ -23,7 +23,7 @@ import type { AppTransaction } from '../apps/transaction.js';
 import { recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
 import { HttpError, notFound, unprocessable } from '../errors.js';
-import { asKind, valueAt, type Services } from '../integration/services.js';
+import { asKind, type Services, valueAt } from '../integration/services.js';
 import type { Notices } from '../notices/service.js';
 
 /*
@@ -80,7 +80,9 @@ const isDrafted = (held: unknown): boolean => isObject(held) && (held as FlowRec
 /** Variables as conditions read them: an empty value counts as missing, as it does in a rule. */
 function present(vars: Readonly<Record<string, unknown>>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(vars).flatMap(([name, value]) => (value === null || value === undefined ? [] : [[name, isObject(value) ? conditionRecord(value as RecordValues) : value]])),
+    Object.entries(vars).flatMap(([name, value]) =>
+      value === null || value === undefined ? [] : [[name, isObject(value) ? conditionRecord(value as RecordValues) : value]],
+    ),
   );
 }
 
@@ -161,7 +163,13 @@ export class FlowEngine implements FlowHooks {
     const flow = run ? loaded.definition.flows?.[run.flow] : undefined;
     if (!run || (flow && flowWaits(flow, loaded.definition.flows))) return;
     const input = this.inputFrom(loaded, run, event.entity, event.record, event.principal);
-    await this.run(tx, loaded, run.flow, input, { writer: event.writer, principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action }, ...(event.dryRun ? { dryRun: true } : {}) });
+    await this.run(tx, loaded, run.flow, input, {
+      writer: event.writer,
+      principal: event.principal,
+      auth: event.auth,
+      trigger: { kind: 'action', name: event.action },
+      ...(event.dryRun ? { dryRun: true } : {}),
+    });
   }
 
   /**
@@ -174,8 +182,17 @@ export class FlowEngine implements FlowHooks {
     const run = action?.before;
     if (!action || !run) throw notFound('Flow');
     const person = event.principal['id'];
-    const draft = new Draft(loaded.definition, event.entity, event.record, event.lines, { now: event.now, person: typeof person === 'string' ? person : undefined });
-    const caller: FlowCaller = { writer: flowWriter(event.writer, run.flow), principal: event.principal, auth: event.auth, trigger: { kind: 'action', name: event.action }, ...(event.dryRun ? { dryRun: true } : {}) };
+    const draft = new Draft(loaded.definition, event.entity, event.record, event.lines, {
+      now: event.now,
+      person: typeof person === 'string' ? person : undefined,
+    });
+    const caller: FlowCaller = {
+      writer: flowWriter(event.writer, run.flow),
+      principal: event.principal,
+      auth: event.auth,
+      trigger: { kind: 'action', name: event.action },
+      ...(event.dryRun ? { dryRun: true } : {}),
+    };
     const state: State = {
       tx,
       loaded,
@@ -189,20 +206,40 @@ export class FlowEngine implements FlowHooks {
       told: { people: 0, left: 0 },
       draft: { draft, action: action.label, entity: event.entity },
     };
-    await this.#flow(state, run.flow, this.inputFrom(loaded, run, event.entity, event.record, event.principal, () => drafted(draft, event.entity)));
+    await this.#flow(
+      state,
+      run.flow,
+      this.inputFrom(loaded, run, event.entity, event.record, event.principal, () => drafted(draft, event.entity)),
+    );
     return {
       record: draft.record,
       lines: draft.lines,
       set: draft.set,
       linesAdded: draft.linesAdded,
-      findings: state.findings.map((finding) => ({ rule: `flows.${finding.flow}${finding.at ? `.${finding.at}` : ''}`, severity: 'warning', message: finding.message, fields: [...(finding.fields ?? [])] })),
+      findings: state.findings.map((finding) => ({
+        rule: `flows.${finding.flow}${finding.at ? `.${finding.at}` : ''}`,
+        severity: 'warning',
+        message: finding.message,
+        fields: [...(finding.fields ?? [])],
+      })),
     };
   }
 
   /** Run a flow in the caller's transaction, with its input worked out already: values, records and lists. */
   async run(tx: AppTransaction, loaded: LoadedApp, name: string, input: Readonly<Record<string, unknown>>, caller: FlowCaller): Promise<FlowResult> {
     const named: FlowCaller = { ...caller, writer: flowWriter(caller.writer, name) };
-    const state: State = { tx, loaded, caller: named, now: this.#ctx.now(), steps: 0, depth: 0, savepoints: 0, findings: [], writes: { created: 0, changed: 0, deleted: 0 }, told: { people: 0, left: 0 } };
+    const state: State = {
+      tx,
+      loaded,
+      caller: named,
+      now: this.#ctx.now(),
+      steps: 0,
+      depth: 0,
+      savepoints: 0,
+      findings: [],
+      writes: { created: 0, changed: 0, deleted: 0 },
+      told: { people: 0, left: 0 },
+    };
     const output = await this.#flow(state, name, input);
     const flow = loaded.definition.flows![name]!;
     await recordAudit(tx.db, named.writer.scope(state.now), {
@@ -320,9 +357,9 @@ export class FlowEngine implements FlowHooks {
     const holds = (condition: Condition) => evaluateCondition(condition, { ...present(frame.all()), principal: caller.principal, [CLOCK]: state.now });
     /** What a flow before its action saves may not do: anything but change the record that the action saves. */
     const shaping = state.draft;
-    const refuse = (what: string) =>
-      unprocessable('flow_failed', `${label}: it runs before ${shaping?.action ?? 'its action'} saves, so it ${what}`);
-    const values = (given: Readonly<Record<string, Expression>>) => Object.fromEntries(Object.entries(given).map(([field, expression]) => [field, value(expression)]));
+    const refuse = (what: string) => unprocessable('flow_failed', `${label}: it runs before ${shaping?.action ?? 'its action'} saves, so it ${what}`);
+    const values = (given: Readonly<Record<string, Expression>>) =>
+      Object.fromEntries(Object.entries(given).map(([field, expression]) => [field, value(expression)]));
     /** A value as words: for what a notice says, and where a call goes. */
     const words = (expression: Expression | undefined) => {
       const worked = expression === undefined ? null : value(expression);
@@ -340,8 +377,13 @@ export class FlowEngine implements FlowHooks {
         return;
       case 'find': {
         // What the condition says of the flow's variables is known now; what it says of the records goes to the database.
-        const residual = step.where ? partialEvaluate(step.where, { ...present(frame.all()), principal: caller.principal, [CLOCK]: state.now }, ['record']) : true;
-        const found = residual === false ? [] : await this.#runtime.flowFind(tx, loaded, step.entity, residual === true ? undefined : residual, step.sort ?? [], step.first ? 1 : step.limit);
+        const residual = step.where
+          ? partialEvaluate(step.where, { ...present(frame.all()), principal: caller.principal, [CLOCK]: state.now }, ['record'])
+          : true;
+        const found =
+          residual === false
+            ? []
+            : await this.#runtime.flowFind(tx, loaded, step.entity, residual === true ? undefined : residual, step.sort ?? [], step.first ? 1 : step.limit);
         const tagged = found.map((each) => tag(each, step.entity));
         frame.set(step.var, step.first ? (tagged[0] ?? null) : tagged);
         return;
@@ -377,7 +419,16 @@ export class FlowEngine implements FlowHooks {
           frame.set(step.record, drafted(shaping.draft, held[ENTITY]));
           return;
         }
-        const changed = await this.#runtime.flowChange(tx, loaded, caller.writer, caller.principal, held[ENTITY], String(held['id']), {}, { field: step.field, values: values(step.values) });
+        const changed = await this.#runtime.flowChange(
+          tx,
+          loaded,
+          caller.writer,
+          caller.principal,
+          held[ENTITY],
+          String(held['id']),
+          {},
+          { field: step.field, values: values(step.values) },
+        );
         state.writes.changed++;
         frame.set(step.record, tag(changed, held[ENTITY]));
         return;
@@ -424,7 +475,13 @@ export class FlowEngine implements FlowHooks {
             kind: 'inform',
             title: words(step.title),
             message: words(step.message),
-            about: about ? { entity: about[ENTITY], recordId: String(about['id']), label: recordLabel(loaded.definition.entities[about[ENTITY]] ?? { label: about[ENTITY], fields: [] }, about) } : null,
+            about: about
+              ? {
+                  entity: about[ENTITY],
+                  recordId: String(about['id']),
+                  label: recordLabel(loaded.definition.entities[about[ENTITY]] ?? { label: about[ENTITY], fields: [] }, about),
+                }
+              : null,
             to: [...people],
             email: step.email,
           },
@@ -435,7 +492,13 @@ export class FlowEngine implements FlowHooks {
         if (step.teams !== undefined) {
           const base = this.#ctx.config.PUBLIC_BASE_URL.replace(/\/$/, '');
           const link = about ? `${base}/studio/apps/${loaded.app.id}/${about[ENTITY]}/${String(about['id'])}` : null;
-          await this.#services.queuePost(tx.db, loaded, step.teams, { title: words(step.title) || 'A notice', message: words(step.message) || null, link }, state.now);
+          await this.#services.queuePost(
+            tx.db,
+            loaded,
+            step.teams,
+            { title: words(step.title) || 'A notice', message: words(step.message) || null, link },
+            state.now,
+          );
         }
         return;
       }

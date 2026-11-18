@@ -29,7 +29,15 @@ export function sniff(content: Buffer): FileType | null {
 export function cleanName(raw: string | undefined, type: FileType): string {
   const base = (raw ?? '').split(/[/\\]/).pop() ?? '';
   // eslint-disable-next-line no-control-regex
-  const cleaned = base.normalize('NFC').replace(/[\u0000-\u001f\u007f"<>]/g, '').replace(/\s+/g, ' ').trim();
-  const stem = cleaned.replace(/\.[^.]*$/, '').slice(0, 190).trim() || 'file';
+  const cleaned = base
+    .normalize('NFC')
+    .replace(/[\u0000-\u001f\u007f"<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const stem =
+    cleaned
+      .replace(/\.[^.]*$/, '')
+      .slice(0, 190)
+      .trim() || 'file';
   return `${stem}.${type.extension}`;
 }

@@ -3,7 +3,7 @@ import { auditEvents } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Data from other systems, end to end (design §6.1): records come in from CSV, each line a create
@@ -37,7 +37,15 @@ function withTrips() {
       { name: 'name', label: 'Name', type: 'text', required: true, unique: true },
       { name: 'budget', label: 'Budget', type: 'number', decimals: 2, min: 0 },
       { name: 'starts', label: 'Starts', type: 'date' },
-      { name: 'kind', label: 'Kind', type: 'choice', options: [{ value: 'client', label: 'Client visit' }, { value: 'team', label: 'Team offsite' }] },
+      {
+        name: 'kind',
+        label: 'Kind',
+        type: 'choice',
+        options: [
+          { value: 'client', label: 'Client visit' },
+          { value: 'team', label: 'Team offsite' },
+        ],
+      },
       { name: 'lead', label: 'Lead', type: 'user' },
       { name: 'with_tax', label: 'With tax', type: 'number', decimals: 2, formula: { mul: [{ ref: 'record.budget' }, 1.09] } },
       { name: 'related', label: 'Related trips', type: 'reference', entity: 'trip', multiple: true },
@@ -49,13 +57,17 @@ function withTrips() {
 
 const csv = (...lines: string[]) => lines.join('\n');
 async function names(): Promise<string[]> {
-  return ((await inject({ method: 'GET', url: trips(), ...as(alice) }, 200)).json().records as Array<{ values: { name: string } }>).map((r) => r.values.name).sort();
+  return ((await inject({ method: 'GET', url: trips(), ...as(alice) }, 200)).json().records as Array<{ values: { name: string } }>)
+    .map((r) => r.values.name)
+    .sort();
 }
 
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob] = [await t.login('alice'), await t.login('bob')];
-  appId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Trips', definition: withTrips() } }, 201)).json().app.id;
+  appId = (
+    await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Trips', definition: withTrips() } }, 201)
+  ).json().app.id;
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
 });
 
@@ -64,7 +76,11 @@ afterAll(async () => {
 });
 
 describe('bringing records in from CSV', () => {
-  const first = csv('Name,Budget,Starts,Kind,Lead,With tax,Colour', 'Tokyo summit,"1,200.00",2026-12-01,Client visit,BOB@example.com,999,red', 'Penang retreat,800,2027-01-15,team,,,');
+  const first = csv(
+    'Name,Budget,Starts,Kind,Lead,With tax,Colour',
+    'Tokyo summit,"1,200.00",2026-12-01,Client visit,BOB@example.com,999,red',
+    'Penang retreat,800,2027-01-15,team,,,',
+  );
 
   it('checks a file first: which field each column fills, and nothing written', async () => {
     const dry = (await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: first, name: 'trips.csv', dryRun: true } }, 200)).json();
@@ -86,7 +102,11 @@ describe('bringing records in from CSV', () => {
   });
 
   it('writes every line as a create: values as people write them, people by email, formulas worked out, history naming the file', async () => {
-    expect((await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: first, name: 'trips.csv' } }, 201)).json()).toMatchObject({ rows: 2, issues: [], created: 2 });
+    expect((await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: first, name: 'trips.csv' } }, 201)).json()).toMatchObject({
+      rows: 2,
+      issues: [],
+      created: 2,
+    });
     const records = (await inject({ method: 'GET', url: trips(), ...as(alice) }, 200)).json().records as Array<{ id: string; values: Record<string, unknown> }>;
     const tokyo = records.find((r) => r.values['name'] === 'Tokyo summit')!;
     expect(tokyo.values).toMatchObject({ budget: 1200, starts: '2026-12-01', kind: 'client', lead: bob.userId, with_tax: 1308 });
@@ -121,15 +141,23 @@ describe('bringing records in from CSV', () => {
       { row: 3, field: 'related', message: 'No trip you can see is titled Atlantis' },
     ]);
     await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: csv('Name,Related trips', 'Kyoto,Tokyo summit; Penang retreat') } }, 201);
-    const records = (await inject({ method: 'GET', url: trips(), ...as(alice) }, 200)).json().records as Array<{ id: string; values: Record<string, unknown>; titles?: Record<string, string> }>;
+    const records = (await inject({ method: 'GET', url: trips(), ...as(alice) }, 200)).json().records as Array<{
+      id: string;
+      values: Record<string, unknown>;
+      titles?: Record<string, string>;
+    }>;
     const kyoto = records.find((r) => r.values['name'] === 'Kyoto')!;
     expect(Object.values(kyoto.titles ?? {}).sort()).toEqual(['Penang retreat', 'Tokyo summit']);
   });
 
   it('needs the role to create the records, and refuses a file it can not read', async () => {
     await inject({ method: 'POST', url: importUrl(), ...as(bob), payload: { csv: csv('Name', 'Bali') } }, 403);
-    expect((await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: 'Name\n"Bali' } }, 422)).json()).toMatchObject({ error: 'invalid_csv' });
-    expect((await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: 'Colour\nred' } }, 422)).json()).toMatchObject({ error: 'no_columns' });
+    expect((await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: 'Name\n"Bali' } }, 422)).json()).toMatchObject({
+      error: 'invalid_csv',
+    });
+    expect((await inject({ method: 'POST', url: importUrl(), ...as(alice), payload: { csv: 'Colour\nred' } }, 422)).json()).toMatchObject({
+      error: 'no_columns',
+    });
   });
 });
 
@@ -145,7 +173,10 @@ describe('taking records out as CSV', () => {
     expect(tokyo).toContain(',Tokyo summit,1200,2026-12-01,Client visit,bob@example.com,1308,,alice@example.com,');
     expect(lines.find((line) => line.includes('Kyoto'))).toContain(',"Tokyo summit; Penang retreat",');
     expect(lines.some((line) => line.includes(`,"'=HYPERLINK(""http://example.com"")",`))).toBe(true);
-    const events = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'record.export'), eq(auditEvents.appId, appId)));
+    const events = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'record.export'), eq(auditEvents.appId, appId)));
     expect(events).toHaveLength(1);
     expect(events[0]!.reason).toMatchObject({ records: 4 });
   });

@@ -1,5 +1,5 @@
+import { EXPENSE_APP, type StoredDefinition, testMismatches, validateDefinition, withGivenIds } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { EXPENSE_APP, testMismatches, validateDefinition, withGivenIds, type StoredDefinition } from '@platform/app-model';
 
 /** The app's tests (design §6.7): records first, an action someone in a role runs, and what must come of it. */
 
@@ -81,8 +81,17 @@ describe("an app's tests", () => {
   });
 
   it('name the records they make first by their IDs as they run, and say where a record differs', () => {
-    const made = new Map([['tokyo', 'id-1'], ['penang', 'id-2']]);
-    expect(withGivenIds({ trip: { given: 'tokyo' }, trips: [{ given: 'penang' }, { given: 'tokyo' }], title: 'Taxi' }, made)).toEqual({ trip: 'id-1', trips: ['id-2', 'id-1'], title: 'Taxi' });
-    expect(testMismatches({ status: 'submitted', total: 25, trip: null }, { status: 'draft', total: 25 })).toEqual([{ field: 'status', expected: 'submitted', actual: 'draft' }]);
+    const made = new Map([
+      ['tokyo', 'id-1'],
+      ['penang', 'id-2'],
+    ]);
+    expect(withGivenIds({ trip: { given: 'tokyo' }, trips: [{ given: 'penang' }, { given: 'tokyo' }], title: 'Taxi' }, made)).toEqual({
+      trip: 'id-1',
+      trips: ['id-2', 'id-1'],
+      title: 'Taxi',
+    });
+    expect(testMismatches({ status: 'submitted', total: 25, trip: null }, { status: 'draft', total: 25 })).toEqual([
+      { field: 'status', expected: 'submitted', actual: 'draft' },
+    ]);
   });
 });

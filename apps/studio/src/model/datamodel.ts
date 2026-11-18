@@ -1,4 +1,4 @@
-import { isWorkedOut, type Definition, type Field } from '../types.js';
+import { type Definition, type Field, isWorkedOut } from '../types.js';
 
 /*
  * The data model as a canvas (design §6.11), as Ocean's ModelDesigner draws it and Mendix draws a
@@ -39,7 +39,12 @@ export const targetOf = (field: Field): string | undefined => (field.type === 'r
 /** Where a field's row is, on its entity's box: its middle. */
 export const rowY = (box: ModelBox, index: number): number => box.y + HEAD_H + LIST_PAD / 2 + index * ROW_H + ROW_H / 2;
 
-export function layoutModel(definition: Definition): { readonly boxes: ModelBox[]; readonly arrows: ModelArrow[]; readonly width: number; readonly height: number } {
+export function layoutModel(definition: Definition): {
+  readonly boxes: ModelBox[];
+  readonly arrows: ModelArrow[];
+  readonly width: number;
+  readonly height: number;
+} {
   const names = Object.keys(definition.entities);
   // Each entity goes one column to the right of the furthest entity that points at it.
   const column = new Map(names.map((name) => [name, 0]));
@@ -138,7 +143,8 @@ export function fieldNote(definition: Definition, field: Field): string | undefi
   if (field.type === 'choice') return `${field.options.length} choice${field.options.length === 1 ? '' : 's'}`;
   if (isWorkedOut(field)) return 'worked out';
   if (field.type === 'file') return 'a file';
-  if (field.type === 'reference') return field.multiple ? `several ${definition.entities[field.entity]?.pluralLabel?.toLowerCase() ?? 'records'}` : definition.entities[field.entity]?.label;
+  if (field.type === 'reference')
+    return field.multiple ? `several ${definition.entities[field.entity]?.pluralLabel?.toLowerCase() ?? 'records'}` : definition.entities[field.entity]?.label;
   // Lines are named by their arrow.
   return undefined;
 }

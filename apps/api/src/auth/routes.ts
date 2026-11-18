@@ -10,8 +10,7 @@ import { IdpUnavailableError, mfaTimestamp } from './oidc.js';
 import { provisionUser } from './provisioning.js';
 
 const LOGIN_COOKIE = 'platform_login';
-const idpUnavailable = () =>
-  new HttpError(503, 'idp_unavailable', 'The identity provider cannot be reached right now. Try again shortly.');
+const idpUnavailable = () => new HttpError(503, 'idp_unavailable', 'The identity provider cannot be reached right now. Try again shortly.');
 const LoginState = z.object({ state: z.string(), nonce: z.string(), codeVerifier: z.string(), returnTo: z.string().nullable() });
 
 /** Only same-site relative paths, so the login flow cannot be used as an open redirect. */

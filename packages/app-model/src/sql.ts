@@ -1,6 +1,6 @@
-import { COMPARISON_OPERATORS, evaluateCondition, isRef, isRelativeTime, relativeValue, timeOf, type Condition, type Operand } from '@platform/authz';
-import { isListKind, jsTypeOf, type FieldInfo, type ValueKind } from './fields.js';
-import { isCanonicalUuid, type FieldValue } from './values.js';
+import { COMPARISON_OPERATORS, type Condition, evaluateCondition, isRef, isRelativeTime, type Operand, relativeValue, timeOf } from '@platform/authz';
+import { type FieldInfo, isListKind, jsTypeOf, type ValueKind } from './fields.js';
+import { type FieldValue, isCanonicalUuid } from './values.js';
 
 /**
  * SQL for the built-in store. Every identifier comes from a validated definition (stable IDs,
@@ -69,12 +69,7 @@ const SQL_COMPARISON = { lt: '<', lte: '<=', gt: '>', gte: '>=' } as const;
  * values are missing: every comparison is `IS TRUE`, so NULL never leaks into the logic, and
  * `not` behaves as it does in TypeScript.
  */
-export function compileCondition(
-  condition: Condition,
-  fields: ReadonlyMap<string, FieldInfo>,
-  sql: SqlBuilder,
-  alias = 'r',
-): string {
+export function compileCondition(condition: Condition, fields: ReadonlyMap<string, FieldInfo>, sql: SqlBuilder, alias = 'r'): string {
   const column = (ref: string): Extract<Term, { kind: 'column' }> => {
     if (!ref.startsWith('record.')) throw new CompileError(`${ref} should have been filled in before compiling`);
     const info = fields.get(ref.slice('record.'.length));
@@ -146,7 +141,11 @@ export function compileCondition(
     if (isTime(a) && isTime(b)) {
       // A date is the start of its day in UTC, as evaluateCondition takes it.
       const moment = (t: Term) =>
-        t.kind === 'column' ? (t.info.kind === 'date' ? `(${t.sql}::timestamp AT TIME ZONE 'UTC')` : t.sql) : sql.param(new Date(timeOf(t.value)!).toISOString(), 'timestamptz');
+        t.kind === 'column'
+          ? t.info.kind === 'date'
+            ? `(${t.sql}::timestamp AT TIME ZONE 'UTC')`
+            : t.sql
+          : sql.param(new Date(timeOf(t.value)!).toISOString(), 'timestamptz');
       return `((${moment(a)} ${SQL_COMPARISON[op]} ${moment(b)}) IS TRUE)`;
     }
     if (!isNumber(a) || !isNumber(b)) return 'FALSE';
@@ -170,7 +169,9 @@ export function compileCondition(
       }
       if (jsTypeOf(needle.info.kind) !== 'string') return 'FALSE';
       // Text and IDs are both strings: an ID in a list of IDs compares as it is, anything else as text.
-      return ids && needle.info.kind === 'uuid' ? `((${needle.sql} = ANY(${haystack.sql})) IS TRUE)` : `((${needle.sql}::text = ANY(${haystack.sql}::text[])) IS TRUE)`;
+      return ids && needle.info.kind === 'uuid'
+        ? `((${needle.sql} = ANY(${haystack.sql})) IS TRUE)`
+        : `((${needle.sql}::text = ANY(${haystack.sql}::text[])) IS TRUE)`;
     }
 
     const items = (haystackOperand as readonly Operand[]).map(term);
@@ -249,9 +250,7 @@ export function afterCursor(keys: readonly SortKey[], after: readonly FieldValue
   const column = (key: SortKey) => `${alias}.${ident(key.info.column)}`;
   const equal = (key: SortKey, value: FieldValue) => (value === null ? `${column(key)} IS NULL` : `${column(key)} = ${toDatabase(sql, key.info, value)}`);
   const beyond = (key: SortKey, value: FieldValue) =>
-    value === null
-      ? 'FALSE'
-      : `(${column(key)} ${key.direction === 'asc' ? '>' : '<'} ${toDatabase(sql, key.info, value)} OR ${column(key)} IS NULL)`;
+    value === null ? 'FALSE' : `(${column(key)} ${key.direction === 'asc' ? '>' : '<'} ${toDatabase(sql, key.info, value)} OR ${column(key)} IS NULL)`;
   const branches = keys.map((key, index) => {
     const prefix = keys.slice(0, index).map((k, i) => equal(k, after[i]!));
     return `(${[...prefix, beyond(key, after[index]!)].join(' AND ')})`;

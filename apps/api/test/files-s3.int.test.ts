@@ -4,7 +4,7 @@ import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AppTransaction } from '../src/apps/transaction.js';
 import { s3BlobStore } from '../src/files/store.js';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * The S3 file store, against any S3-compatible server. Opt-in, because it needs one:
@@ -44,7 +44,12 @@ describe.skipIf(!endpoint)('files kept in S3', () => {
     });
     const alice = await t.login('alice');
     bob = await t.login('bob');
-    appId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } }, 201)).json().app.id;
+    appId = (
+      await inject(
+        { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } },
+        201,
+      )
+    ).json().app.id;
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
   });
 
@@ -65,7 +70,9 @@ describe.skipIf(!endpoint)('files kept in S3', () => {
   });
 
   it('uploads, attaches, downloads and expires through the API', async () => {
-    const file = (await inject({ method: 'POST', url: `/v1/apps/${appId}/files?name=taxi.jpg`, ...as(bob), headers: { 'content-type': 'image/jpeg' }, payload: JPEG }, 201)).json();
+    const file = (
+      await inject({ method: 'POST', url: `/v1/apps/${appId}/files?name=taxi.jpg`, ...as(bob), headers: { 'content-type': 'image/jpeg' }, payload: JPEG }, 201)
+    ).json();
     const key = `${(await t.ctx.apps.load(appId)).env.schemaName}/${file.id}`;
     await client.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
     const run = await inject(
@@ -80,7 +87,9 @@ describe.skipIf(!endpoint)('files kept in S3', () => {
     expect(run.json().record.files[file.id].name).toBe('taxi.jpg');
     expect((await inject({ method: 'GET', url: `/v1/apps/${appId}/files/${file.id}`, ...as(bob) }, 200)).rawPayload.equals(JPEG)).toBe(true);
 
-    const late = (await inject({ method: 'POST', url: `/v1/apps/${appId}/files`, ...as(bob), headers: { 'content-type': 'image/jpeg' }, payload: JPEG }, 201)).json();
+    const late = (
+      await inject({ method: 'POST', url: `/v1/apps/${appId}/files`, ...as(bob), headers: { 'content-type': 'image/jpeg' }, payload: JPEG }, 201)
+    ).json();
     t.clock.offsetMs += 2 * 3_600_000;
     expect(await t.ctx.files.sweep()).toBe(1);
     const lateKey = `${(await t.ctx.apps.load(appId)).env.schemaName}/${late.id}`;

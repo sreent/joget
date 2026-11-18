@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { EXPENSE_APP } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 import type { Definition } from '../types.js';
 import { normalize } from './edit.js';
 import { betweenOf, calc, calcOf, chooseOf, describeExpression, firstFilledOf, joinOf, shift, shiftOf, textFn, textFnOf, valueSources } from './expressions.js';
@@ -10,7 +10,12 @@ describe('values that logic works out', () => {
   it('offers the fields that hold the same kind of value', () => {
     const definition = app();
     const fields = definition.entities['expense_claim']!.fields;
-    const of = (name: string) => valueSources(definition, 'expense_claim', fields.find((f) => f.name === name)).map((source) => source.ref);
+    const of = (name: string) =>
+      valueSources(
+        definition,
+        'expense_claim',
+        fields.find((f) => f.name === name),
+      ).map((source) => source.ref);
     expect(of('approver')).toEqual(['record.approver', 'record.owner', 'record.created_by', 'record.updated_by']);
     expect(of('trip')).toEqual(['record.title', 'record.trip', 'record.status', 'record.iban']);
     expect(valueSources(definition, 'expense_claim', 'number').map((source) => source.ref)).toEqual(['record.total']);

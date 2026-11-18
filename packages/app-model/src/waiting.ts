@@ -59,7 +59,9 @@ export function withLists(step: FlowStep, at: string, replace: (steps: readonly 
         ...step,
         outcomes: step.outcomes.map((outcome, index) => ({ ...outcome, steps: replace(outcome.steps, `${at}.outcomes[${index}].steps`) })),
         ...(step.deadline ? { deadline: { ...step.deadline, steps: replace(step.deadline.steps, `${at}.deadline.steps`) } } : {}),
-        ...(step.reminders ? { reminders: step.reminders.map((reminder, index) => ({ ...reminder, steps: replace(reminder.steps, `${at}.reminders[${index}].steps`) })) } : {}),
+        ...(step.reminders
+          ? { reminders: step.reminders.map((reminder, index) => ({ ...reminder, steps: replace(reminder.steps, `${at}.reminders[${index}].steps`) })) }
+          : {}),
       };
     case 'first_of':
       return { ...step, ways: step.ways.map((way, index) => ({ ...way, steps: replace(way.steps, `${at}.ways[${index}].steps`) })) };
@@ -121,7 +123,10 @@ export function durationWords(duration: string): string {
 }
 
 /** A date field of a record, moved or not: "2 days before Starts on". */
-export function dateWords(date: { readonly date: string; readonly before?: string | undefined; readonly after?: string | undefined }, fieldLabel: (field: string) => string): string {
+export function dateWords(
+  date: { readonly date: string; readonly before?: string | undefined; readonly after?: string | undefined },
+  fieldLabel: (field: string) => string,
+): string {
   const field = fieldLabel(date.date);
   return date.before ? `${durationWords(date.before)} before ${field}` : date.after ? `${durationWords(date.after)} after ${field}` : field;
 }
@@ -204,7 +209,9 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
   }
   /** The flow's own references to its record, as the engine reads the record: `leave.days` is `record.days`. */
   const onRecord = (condition: Condition): Condition =>
-    mapRefs(condition, (ref) => (ref === subject.name ? 'record.id' : ref.startsWith(`${subject.name}.`) ? `record.${ref.slice(subject.name.length + 1)}` : ref));
+    mapRefs(condition, (ref) =>
+      ref === subject.name ? 'record.id' : ref.startsWith(`${subject.name}.`) ? `record.${ref.slice(subject.name.length + 1)}` : ref,
+    );
   /** The sub-process that the elements being added go in: a loop that waits. An event on a boundary is where its host is. */
   let inside: string | undefined;
   const add = (path: string, element: ProcessElement, id = elementIdOf(path)): string => {
@@ -297,16 +304,30 @@ export function compileFlow(definition: Lookup, name: string, flow: AppFlow): Co
         });
         connect(ends, id);
         const out = step.outcomes.flatMap((outcome, index) =>
-          list(outcome.steps, `${path}.outcomes[${index}].steps`, [{ from: id, flow: { outcome: outcome.name, name: outcome.label }, at: `${path}.outcomes[${index}]` }]),
+          list(outcome.steps, `${path}.outcomes[${index}].steps`, [
+            { from: id, flow: { outcome: outcome.name, name: outcome.label }, at: `${path}.outcomes[${index}]` },
+          ]),
         );
         if (step.deadline) {
-          const late = add(`${path}.deadline`, { type: 'boundaryEvent', name: clip(`${step.label}: after ${durationWords(step.deadline.after)}`), attachedTo: id, interrupting: true, timer: { duration: step.deadline.after } });
+          const late = add(`${path}.deadline`, {
+            type: 'boundaryEvent',
+            name: clip(`${step.label}: after ${durationWords(step.deadline.after)}`),
+            attachedTo: id,
+            interrupting: true,
+            timer: { duration: step.deadline.after },
+          });
           out.push(...list(step.deadline.steps, `${path}.deadline.steps`, [{ from: late }]));
         }
         // A reminder runs its steps beside the task, which waits on: its way ends by itself.
         for (const [index, reminder] of (step.reminders ?? []).entries()) {
           const at = `${path}.reminders[${index}]`;
-          const timer = add(at, { type: 'boundaryEvent', name: clip(`${step.label}: a reminder after ${durationWords(reminder.after)}`), attachedTo: id, interrupting: false, timer: { duration: reminder.after } });
+          const timer = add(at, {
+            type: 'boundaryEvent',
+            name: clip(`${step.label}: a reminder after ${durationWords(reminder.after)}`),
+            attachedTo: id,
+            interrupting: false,
+            timer: { duration: reminder.after },
+          });
           const done = list(reminder.steps, `${at}.steps`, [{ from: timer }]);
           if (done.length) connect(done, add(at, { type: 'endEvent', name: 'Reminded', terminate: false }, `${elementIdOf(at)}_end`));
         }

@@ -3,7 +3,7 @@ import { auditEvents } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * The process engine (design §6.10), which runs a flow that waits (§6.11): an action starts a
@@ -34,12 +34,20 @@ async function leaveApp(name: string, edit: (definition: Record<string, any>) =>
   definition['roles'].hr = {
     label: 'HR',
     description: 'Decides on leave when a manager is late.',
-    entities: { leave_request: { read: true, update: { where: { eq: [{ ref: 'record.status' }, 'submitted'] }, fields: { include: ['status', 'decided_on'] } } } },
+    entities: {
+      leave_request: { read: true, update: { where: { eq: [{ ref: 'record.status' }, 'submitted'] }, fields: { include: ['status', 'decided_on'] } } },
+    },
     actions: ['approve_leave', 'reject_leave'],
   };
   edit(definition);
-  const started = await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } }, 201);
-  for (const [subject, role] of [['bob', 'manager'], ['carol', 'hr']] as const) {
+  const started = await json(
+    { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name, bundle: definition } },
+    201,
+  );
+  for (const [subject, role] of [
+    ['bob', 'manager'],
+    ['carol', 'hr'],
+  ] as const) {
     await inject({ method: 'POST', url: `/v1/apps/${started.app.id}/shares`, ...as(alice), payload: { email: `${subject}@example.com`, role } }, 201);
   }
   return started.app.id;
@@ -67,7 +75,8 @@ const ask = (app: string, values: Record<string, unknown> = {}) =>
     },
     201,
   );
-const inbox = async (session: Session, status: 'open' | 'closed' = 'open') => (await json({ method: 'GET', url: `/v1/me/tasks?status=${status}`, ...as(session) }, 200)).tasks;
+const inbox = async (session: Session, status: 'open' | 'closed' = 'open') =>
+  (await json({ method: 'GET', url: `/v1/me/tasks?status=${status}`, ...as(session) }, 200)).tasks;
 const processesOf = async (app: string, recordId: string) =>
   (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${recordId}/processes`, ...as(alice) }, 200)).instances;
 const complete = (session: Session, taskId: string, outcome: string, expected = 200) =>
@@ -84,7 +93,7 @@ afterAll(async () => {
 });
 
 describe('a process that an action starts', () => {
-  it("puts its task in the inbox of the manager it names, whose decision moves it on", async () => {
+  it('puts its task in the inbox of the manager it names, whose decision moves it on', async () => {
     const asked = await ask(appId);
     const [task, ...others] = await inbox(bob);
     expect(others).toEqual([]);
@@ -108,10 +117,19 @@ describe('a process that an action starts', () => {
 
     // The record shows where its process waits.
     const [instance] = await processesOf(appId, asked.record.id);
-    expect(instance).toMatchObject({ label: 'Leave approval', status: 'running', startedBy: alice.userId, startedByAction: 'request_leave', waiting: [{ element: 'decide', name: 'Decide on the leave' }] });
+    expect(instance).toMatchObject({
+      label: 'Leave approval',
+      status: 'running',
+      startedBy: alice.userId,
+      startedByAction: 'request_leave',
+      waiting: [{ element: 'decide', name: 'Decide on the leave' }],
+    });
 
     // Alice may change her own request, but the decision waits for Bob.
-    const refused = await inject({ method: 'POST', url: `/v1/apps/${appId}/actions/approve_leave/run`, ...as(alice), payload: { recordId: asked.record.id } }, 403);
+    const refused = await inject(
+      { method: 'POST', url: `/v1/apps/${appId}/actions/approve_leave/run`, ...as(alice), payload: { recordId: asked.record.id } },
+      403,
+    );
     expect(refused.json()).toMatchObject({ error: 'task_assigned', message: expect.stringMatching(/^Decide on the leave waits for /) });
 
     // Bob decides in his inbox: the outcome runs approve_leave, as Bob.
@@ -121,7 +139,9 @@ describe('a process that an action starts', () => {
       result: { status: 'done', record: { values: { status: 'approved', decided_on: new Date().toISOString().slice(0, 10) } } },
     });
     expect(await inbox(bob)).toEqual([]);
-    expect((await inbox(bob, 'closed')).map((closed: { name: string; outcome: string }) => [closed.name, closed.outcome])).toEqual([['Decide on the leave', 'approve']]);
+    expect((await inbox(bob, 'closed')).map((closed: { name: string; outcome: string }) => [closed.name, closed.outcome])).toEqual([
+      ['Decide on the leave', 'approve'],
+    ]);
 
     const detail = await json({ method: 'GET', url: `/v1/apps/${appId}/process-instances/${instance.id}`, ...as(alice) }, 200);
     expect(detail).toMatchObject({ status: 'completed', waiting: [], stuck: [] });
@@ -135,7 +155,7 @@ describe('a process that an action starts', () => {
     expect(audited).toEqual(expect.arrayContaining(['process.start', 'process.task.assign', 'process.task.complete', 'process.end']));
   });
 
-  it('completes the task when its outcome\'s action runs anywhere else, such as a row button', async () => {
+  it("completes the task when its outcome's action runs anywhere else, such as a row button", async () => {
     const asked = await ask(appId, { starts: '2027-01-04', ends: '2027-01-05', days: 2 });
     await inject({ method: 'POST', url: `/v1/apps/${appId}/actions/reject_leave/run`, ...as(bob), payload: { recordId: asked.record.id } }, 200);
     expect(await inbox(bob)).toEqual([]);
@@ -163,15 +183,24 @@ describe('a process that an action starts', () => {
   it("completes the task once the person approves their agent's proposal", async () => {
     const asked = await ask(appId, { starts: '2027-03-01', ends: '2027-03-02', days: 2 });
     const [task] = (await inbox(bob)).filter((open: { recordId: string }) => open.recordId === asked.record.id);
-    const token = (await json({ method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'agent', scopes: ['app.run', 'action.run', 'query.run'], expiresInDays: 1 } }, 201)).token;
+    const token = (
+      await json(
+        { method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'agent', scopes: ['app.run', 'action.run', 'query.run'], expiresInDays: 1 } },
+        201,
+      )
+    ).token;
     const rpc = async (method: string, params: Record<string, unknown> = {}) =>
-      (await json({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${token}` }, payload: { jsonrpc: '2.0', id: 1, method, params } }, 200)).result;
+      (await json({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${token}` }, payload: { jsonrpc: '2.0', id: 1, method, params } }, 200))
+        .result;
     // Bob's agent finds the task among his, and completes it as he decides: that makes a proposal.
     const listed = (await rpc('tools/call', { name: 'my_tasks', arguments: {} })).structuredContent.tasks;
     expect(listed.map((open: { id: string }) => open.id)).toContain(task.id);
     const proposed = (await rpc('tools/call', { name: 'complete_task', arguments: { task_id: task.id, outcome: 'approve' } })).structuredContent;
     expect(proposed).toMatchObject({ task: { status: 'open' }, result: { status: 'needs_confirmation' } });
-    await inject({ method: 'POST', url: `/v1/proposals/${proposed.result.proposal.id}/approve`, ...as(bob), payload: { digest: proposed.result.proposal.digest } }, 200);
+    await inject(
+      { method: 'POST', url: `/v1/proposals/${proposed.result.proposal.id}/approve`, ...as(bob), payload: { digest: proposed.result.proposal.digest } },
+      200,
+    );
     const [instance] = await processesOf(appId, asked.record.id);
     expect(instance).toMatchObject({ status: 'completed', tasks: [{ status: 'completed', outcome: 'approve', completedBy: bob.userId }] });
   });
@@ -216,11 +245,20 @@ describe('a process that works by itself', () => {
     // Five days: no flow's condition holds, so the instance waits at the gateway for an operator.
     const middle = await ask(fast, { days: 5 });
     const stuck = (await json({ method: 'GET', url: `/v1/apps/${fast}/process-instances?stuck=true`, ...as(alice) }, 200)).instances;
-    expect(stuck).toMatchObject([{ recordId: middle.record.id, status: 'running', stuck: [{ element: 'how_long', name: 'How long?', error: "How long?: no flow's condition holds, and it has no default flow" }] }]);
+    expect(stuck).toMatchObject([
+      {
+        recordId: middle.record.id,
+        status: 'running',
+        stuck: [{ element: 'how_long', name: 'How long?', error: "How long?: no flow's condition holds, and it has no default flow" }],
+      },
+    ]);
     await inject({ method: 'GET', url: `/v1/apps/${fast}/process-instances`, ...as(bob) }, 403);
 
     // Alice corrects the request and tries it again: it goes on to Bob.
-    await inject({ method: 'PATCH', url: `/v1/apps/${fast}/entities/leave_request/records/${middle.record.id}`, ...as(alice), payload: { values: { days: 12 } } }, 200);
+    await inject(
+      { method: 'PATCH', url: `/v1/apps/${fast}/entities/leave_request/records/${middle.record.id}`, ...as(alice), payload: { values: { days: 12 } } },
+      200,
+    );
     const retried = await json({ method: 'POST', url: `/v1/apps/${fast}/process-instances/${stuck[0].id}/retry`, ...as(alice) }, 200);
     expect(retried).toMatchObject({ stuck: [], waiting: [{ element: 'decide', name: 'Decide on the leave' }] });
     expect((await inbox(bob)).map((task: { recordId: string }) => task.recordId)).toContain(middle.record.id);
@@ -238,21 +276,33 @@ describe('routing from the directory', () => {
     await directory(carol, { department: 'Sales' });
     await directory(dave, { department: 'Finance' });
     // A loop in the reporting line is refused, and only directory admins set it.
-    expect((await inject({ method: 'PATCH', url: `/v1/people/${erin.userId}/directory`, ...as(alice), payload: { managerId: alice.userId } }, 422)).json().error).toBe('reporting_loop');
+    expect(
+      (await inject({ method: 'PATCH', url: `/v1/people/${erin.userId}/directory`, ...as(alice), payload: { managerId: alice.userId } }, 422)).json().error,
+    ).toBe('reporting_loop');
     await inject({ method: 'PATCH', url: `/v1/people/${carol.userId}/directory`, ...as(bob), payload: { department: 'Finance' } }, 403);
 
     const routed = await leaveApp('Leave, by the directory', (definition) => {
       const process = definition['processes'].leave_approval;
       // The requester's manager decides; then the manager's manager, for long leave; then HR in the requester's department.
       process.elements.decide.assignee = { managerOf: 'owner' };
-      process.elements.second = { type: 'userTask', name: 'Second approval', role: 'manager', assignee: { managerOf: 'owner', levels: 2 }, outcomes: [{ name: 'done', label: 'Done' }] };
+      process.elements.second = {
+        type: 'userTask',
+        name: 'Second approval',
+        role: 'manager',
+        assignee: { managerOf: 'owner', levels: 2 },
+        outcomes: [{ name: 'done', label: 'Done' }],
+      };
       process.elements.file = { type: 'userTask', name: 'File it', role: 'hr', department: { of: 'owner' }, outcomes: [{ name: 'done', label: 'Done' }] };
       process.flows.on_approve.to = 'second';
       process.flows.seconded = { from: 'second', to: 'file' };
       process.flows.filed = { from: 'file', to: 'approved' };
       delete process.diagram;
     });
-    for (const [subject, role] of [['erin', 'manager'], ['dave', 'hr'], ['carol', 'manager']] as const) {
+    for (const [subject, role] of [
+      ['erin', 'manager'],
+      ['dave', 'hr'],
+      ['carol', 'manager'],
+    ] as const) {
       await inject({ method: 'POST', url: `/v1/apps/${routed}/shares`, ...as(alice), payload: { email: `${subject}@example.com`, role } }, 201);
     }
     const tasksOf = async (session: Session) => (await inbox(session)).filter((task: { app: { id: string } }) => task.app.id === routed);
@@ -264,7 +314,9 @@ describe('routing from the directory', () => {
     expect(await tasksOf(carol)).toEqual([]);
 
     // Bob hands it to Carol, who holds the role too; not to Dave, who doesn't.
-    expect((await inject({ method: 'POST', url: `/v1/tasks/${first.id}/reassign`, ...as(bob), payload: { userId: dave.userId } }, 422)).json().error).toBe('not_in_role');
+    expect((await inject({ method: 'POST', url: `/v1/tasks/${first.id}/reassign`, ...as(bob), payload: { userId: dave.userId } }, 422)).json().error).toBe(
+      'not_in_role',
+    );
     await json({ method: 'POST', url: `/v1/tasks/${first.id}/reassign`, ...as(bob), payload: { userId: carol.userId } }, 200);
     expect(await tasksOf(bob)).toEqual([]);
     await complete(carol, first.id, 'approve');
@@ -278,18 +330,26 @@ describe('routing from the directory', () => {
     expect(await tasksOf(dave)).toEqual([]);
     const [filing] = await tasksOf(carol);
     expect(filing).toMatchObject({ name: 'File it', assignee: null });
-    expect((await inject({ method: 'POST', url: `/v1/tasks/${filing.id}/complete`, ...as(dave), payload: { outcome: 'done' } }, 403)).json().error).toBe('task_department');
+    expect((await inject({ method: 'POST', url: `/v1/tasks/${filing.id}/complete`, ...as(dave), payload: { outcome: 'done' } }, 403)).json().error).toBe(
+      'task_department',
+    );
     expect(await json({ method: 'POST', url: `/v1/tasks/${filing.id}/claim`, ...as(carol) }, 200)).toMatchObject({ assignee: { id: carol.userId } });
     await complete(carol, filing.id, 'done');
     expect((await processesOf(routed, asked.record.id))[0]).toMatchObject({ status: 'completed' });
 
     // While Bob is away, Carol covers for him: the next request goes to her.
-    await inject({ method: 'PUT', url: '/v1/me/cover', ...as(bob), payload: { coverId: carol.userId, until: new Date(Date.now() + 7 * 86_400_000).toISOString() } }, 200);
+    await inject(
+      { method: 'PUT', url: '/v1/me/cover', ...as(bob), payload: { coverId: carol.userId, until: new Date(Date.now() + 7 * 86_400_000).toISOString() } },
+      200,
+    );
     const covered = await ask(routed, { starts: '2027-04-01', ends: '2027-04-01', days: 1 });
     const [cover] = (await tasksOf(carol)).filter((task: { recordId: string }) => task.recordId === covered.record.id);
     expect(cover).toMatchObject({ name: 'Decide on the leave', assignee: { id: carol.userId } });
     const [instance] = await processesOf(routed, covered.record.id);
-    expect(instance.events.find((event: { kind: string }) => event.kind === 'task_opened').detail).toMatchObject({ assignee: carol.userId, covering: bob.userId });
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'task_opened').detail).toMatchObject({
+      assignee: carol.userId,
+      covering: bob.userId,
+    });
     await inject({ method: 'PUT', url: '/v1/me/cover', ...as(bob), payload: { coverId: null } }, 200);
     await inject({ method: 'POST', url: `/v1/apps/${routed}/process-instances/${instance.id}/cancel`, ...as(alice) }, 200);
   });
@@ -299,7 +359,10 @@ describe('several people deciding', () => {
   /** A leave app whose decision is a vote: its outcomes' actions read no one person. */
   const votingApp = (name: string, several: Record<string, unknown>) =>
     leaveApp(name, (definition) => {
-      for (const [action, status] of [['mark_approved', 'approved'], ['mark_rejected', 'rejected']] as const) {
+      for (const [action, status] of [
+        ['mark_approved', 'approved'],
+        ['mark_rejected', 'rejected'],
+      ] as const) {
         definition['actions'][action] = {
           label: `Mark as ${status}`,
           description: `Record that the leave is ${status}.`,
@@ -333,14 +396,30 @@ describe('several people deciding', () => {
 
     await complete(bob, bobs.id, 'approve');
     expect(await votesOn(bob, asked.record.id)).toEqual([]);
-    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe('submitted');
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe(
+      'submitted',
+    );
     // The decision is the votes': nobody runs its action around them, and an agent can't vote.
-    expect((await inject({ method: 'POST', url: `/v1/apps/${app}/actions/mark_approved/run`, ...as(alice), payload: { recordId: asked.record.id } }, 403)).json().error).toBe('votes_pending');
-    const token = (await json({ method: 'POST', url: '/v1/me/tokens', ...as(carol), payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } }, 201)).token;
-    expect((await inject({ method: 'POST', url: `/v1/tasks/${carols.id}/complete`, headers: { authorization: `Bearer ${token}` }, payload: { outcome: 'approve' } }, 403)).json().error).toBe('person_only');
+    expect(
+      (await inject({ method: 'POST', url: `/v1/apps/${app}/actions/mark_approved/run`, ...as(alice), payload: { recordId: asked.record.id } }, 403)).json()
+        .error,
+    ).toBe('votes_pending');
+    const token = (
+      await json({ method: 'POST', url: '/v1/me/tokens', ...as(carol), payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } }, 201)
+    ).token;
+    expect(
+      (
+        await inject(
+          { method: 'POST', url: `/v1/tasks/${carols.id}/complete`, headers: { authorization: `Bearer ${token}` }, payload: { outcome: 'approve' } },
+          403,
+        )
+      ).json().error,
+    ).toBe('person_only');
 
     await complete(carol, carols.id, 'reject');
-    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe('rejected');
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe(
+      'rejected',
+    );
     const [instance] = await processesOf(app, asked.record.id);
     expect(instance.status).toBe('completed');
     expect(instance.events.map((event: { kind: string; element: string | null }) => [event.kind, event.element])).toEqual([
@@ -357,7 +436,11 @@ describe('several people deciding', () => {
 
   it('asks up the reporting line one after another, until the line agrees', async () => {
     const erin = await t.login('erin');
-    const app = await votingApp('Leave, up the line', { people: { lineOf: 'owner', levels: 2 }, sequential: true, decide: { count: 'all', outcome: 'approve', otherwise: 'reject' } });
+    const app = await votingApp('Leave, up the line', {
+      people: { lineOf: 'owner', levels: 2 },
+      sequential: true,
+      decide: { count: 'all', outcome: 'approve', otherwise: 'reject' },
+    });
     await inject({ method: 'POST', url: `/v1/apps/${app}/shares`, ...as(alice), payload: { email: 'erin@example.com', role: 'manager' } }, 201);
     // Alice reports to Bob, who reports to Erin (set by the routing test): Bob first, then Erin.
     const asked = await ask(app, { starts: '2027-06-07', ends: '2027-06-08', days: 2 });
@@ -368,7 +451,9 @@ describe('several people deciding', () => {
     const [second] = await votesOn(erin, asked.record.id);
     expect(second).toMatchObject({ name: 'Decide on the leave', assignee: { id: erin.userId } });
     await complete(erin, second.id, 'approve');
-    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe('approved');
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${asked.record.id}`, ...as(alice) }, 200)).values.status).toBe(
+      'approved',
+    );
     expect((await processesOf(app, asked.record.id))[0]).toMatchObject({ status: 'completed' });
   });
 });
@@ -409,7 +494,13 @@ describe('inclusive gateways, messages and errors', () => {
           who: { type: 'inclusiveGateway', name: 'Who hears?' },
           payroll: { type: 'serviceTask', name: 'Tell payroll', action: 'tell_payroll' },
           failed: { type: 'boundaryEvent', name: 'Payroll refused', attachedTo: 'payroll', error: true },
-          by_hand: { type: 'userTask', name: 'Tell payroll by hand', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          by_hand: {
+            type: 'userTask',
+            name: 'Tell payroll by hand',
+            role: 'manager',
+            assignee: { field: 'manager' },
+            outcomes: [{ name: 'done', label: 'Done' }],
+          },
           team: { type: 'manualTask', name: 'Tell the team' },
           joined: { type: 'inclusiveGateway' },
           done: { type: 'endEvent', name: 'Everyone knows' },
@@ -434,7 +525,14 @@ describe('inclusive gateways, messages and errors', () => {
     // gives the work to the manager, and the join waits for it.
     const long = await ask(app, { days: 8, starts: '2027-07-05', ends: '2027-07-14' });
     let [instance] = await processesOf(app, long.record.id);
-    expect(instance).toMatchObject({ status: 'running', stuck: [], waiting: expect.arrayContaining([{ element: 'by_hand', name: 'Tell payroll by hand' }, { element: 'joined', name: 'Inclusive gateway joined' }]) });
+    expect(instance).toMatchObject({
+      status: 'running',
+      stuck: [],
+      waiting: expect.arrayContaining([
+        { element: 'by_hand', name: 'Tell payroll by hand' },
+        { element: 'joined', name: 'Inclusive gateway joined' },
+      ]),
+    });
     expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught')).toMatchObject({ element: 'failed', detail: { task: 'payroll' } });
     const [task] = (await inbox(bob)).filter((open: { recordId: string }) => open.recordId === long.record.id);
     await complete(bob, task.id, 'done');
@@ -462,7 +560,9 @@ describe('inclusive gateways, messages and errors', () => {
       };
     });
     const asked = await ask(app, { starts: '2027-08-02', ends: '2027-08-03', days: 2 });
-    expect((await processesOf(app, asked.record.id)).map((instance: { process: string; status: string }) => [instance.process, instance.status]).sort()).toEqual([
+    expect(
+      (await processesOf(app, asked.record.id)).map((instance: { process: string; status: string }) => [instance.process, instance.status]).sort(),
+    ).toEqual([
       ['leave_approval', 'running'],
       ['watch', 'running'],
     ]);
@@ -509,13 +609,26 @@ describe('sub-processes and call activities', () => {
           review: { type: 'subProcess', name: 'Review' },
           review_start: { type: 'startEvent', in: 'review' },
           split: { type: 'parallelGateway', in: 'review' },
-          check: { type: 'userTask', name: 'Check the dates', in: 'review', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          check: {
+            type: 'userTask',
+            name: 'Check the dates',
+            in: 'review',
+            role: 'manager',
+            assignee: { field: 'manager' },
+            outcomes: [{ name: 'done', label: 'Done' }],
+          },
           note: { type: 'serviceTask', name: 'Note the review', in: 'review', action: 'note_review' },
           join: { type: 'parallelGateway', in: 'review' },
           review_end: { type: 'endEvent', in: 'review' },
           withdrawn: { type: 'boundaryEvent', name: 'Withdrawn', attachedTo: 'review', message: { action: 'withdraw_leave' } },
           failed: { type: 'boundaryEvent', name: 'Review failed', attachedTo: 'review', error: true },
-          by_hand: { type: 'userTask', name: 'Sort it out by hand', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          by_hand: {
+            type: 'userTask',
+            name: 'Sort it out by hand',
+            role: 'manager',
+            assignee: { field: 'manager' },
+            outcomes: [{ name: 'done', label: 'Done' }],
+          },
           reviewed: { type: 'endEvent', name: 'Reviewed' },
           gone: { type: 'endEvent', name: 'Leave withdrawn' },
         },
@@ -540,7 +653,13 @@ describe('sub-processes and call activities', () => {
     // Short leave: the sub-process runs both paths in it, and ends when nothing runs in it any more.
     const short = await ask(app, { days: 2 });
     let [instance] = await processesOf(app, short.record.id);
-    expect(instance).toMatchObject({ status: 'running', waiting: expect.arrayContaining([{ element: 'review', name: 'Review' }, { element: 'check', name: 'Check the dates' }]) });
+    expect(instance).toMatchObject({
+      status: 'running',
+      waiting: expect.arrayContaining([
+        { element: 'review', name: 'Review' },
+        { element: 'check', name: 'Check the dates' },
+      ]),
+    });
     await complete(bob, (await tasksFor(short.record.id))[0].id, 'done');
     [instance] = await processesOf(app, short.record.id);
     expect(instance.status).toBe('completed');
@@ -589,7 +708,15 @@ describe('sub-processes and call activities', () => {
       };
       definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
       definition['actions'].request_leave.input.push('team');
-      definition['actions'].add_team = { label: 'Add a team', description: 'Add a team.', entity: 'team', operation: 'create', input: ['name', 'lead'], set: {}, confirm: 'none' };
+      definition['actions'].add_team = {
+        label: 'Add a team',
+        description: 'Add a team.',
+        entity: 'team',
+        operation: 'create',
+        input: ['name', 'lead'],
+        set: {},
+        confirm: 'none',
+      };
       definition['roles'].employee.entities.team = { read: true, create: true };
       definition['roles'].employee.actions.push('add_team');
       definition['roles'].manager.entities.team = { read: true };
@@ -609,8 +736,12 @@ describe('sub-processes and call activities', () => {
       process.flows.covered = { from: 'cover', to: 'approved' };
       delete process.diagram;
     });
-    const team = await json({ method: 'POST', url: `/v1/apps/${app}/actions/add_team/run`, ...as(alice), payload: { values: { name: 'Payments', lead: bob.userId } } }, 201);
-    const teamProcesses = async () => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/team/records/${team.record.id}/processes`, ...as(alice) }, 200)).instances;
+    const team = await json(
+      { method: 'POST', url: `/v1/apps/${app}/actions/add_team/run`, ...as(alice), payload: { values: { name: 'Payments', lead: bob.userId } } },
+      201,
+    );
+    const teamProcesses = async () =>
+      (await json({ method: 'GET', url: `/v1/apps/${app}/entities/team/records/${team.record.id}/processes`, ...as(alice) }, 200)).instances;
     const decide = async (recordId: string) => {
       const [task] = (await inbox(bob)).filter((open: { recordId: string; element: string }) => open.recordId === recordId && open.element === 'decide');
       await complete(bob, task.id, 'approve');
@@ -624,7 +755,10 @@ describe('sub-processes and call activities', () => {
     expect(leave).toMatchObject({ status: 'running', waiting: [{ element: 'cover', name: 'Plan the cover' }] });
     const [cover] = await teamProcesses();
     expect(cover).toMatchObject({ process: 'cover_plan', status: 'running', calledBy: leave.id, entity: 'team', recordId: team.record.id });
-    expect(leave.events.find((event: { kind: string }) => event.kind === 'called')).toMatchObject({ element: 'cover', detail: { process: 'cover_plan', instance: cover.id } });
+    expect(leave.events.find((event: { kind: string }) => event.kind === 'called')).toMatchObject({
+      element: 'cover',
+      detail: { process: 'cover_plan', instance: cover.id },
+    });
     const [plan] = await planTask();
     expect(plan).toMatchObject({ name: 'Plan the cover', entity: 'team', assignee: { id: bob.userId } });
     await complete(bob, plan.id, 'done');
@@ -677,11 +811,24 @@ describe('rule checks, scripts, messages that a process sends, receive tasks and
         confirm: 'none',
         ...(where ? { where } : {}),
       });
-      definition['actions'].add_team = { label: 'Add a team', description: 'Add a team.', entity: 'team', operation: 'create', input: ['name'], set: {}, confirm: 'none' };
+      definition['actions'].add_team = {
+        label: 'Add a team',
+        description: 'Add a team.',
+        entity: 'team',
+        operation: 'create',
+        input: ['name'],
+        set: {},
+        confirm: 'none',
+      };
       definition['actions'].note_team = update('team', 'Note the team', { note: 'Someone is away' });
       definition['actions'].confirm_leave = update('leave_request', 'Confirm the leave', { decided_on: '2027-01-04' });
       definition['actions'].tell_payroll = update('leave_request', 'Tell payroll', { status: 'approved' });
-      definition['actions'].withdraw_leave = update('leave_request', 'Withdraw the leave', { status: 'rejected' }, { eq: [{ ref: 'record.status' }, 'submitted'] });
+      definition['actions'].withdraw_leave = update(
+        'leave_request',
+        'Withdraw the leave',
+        { status: 'rejected' },
+        { eq: [{ ref: 'record.status' }, 'submitted'] },
+      );
       definition['roles'].employee.entities.team = { read: true, create: true };
       definition['roles'].employee.actions.push('add_team', 'confirm_leave', 'withdraw_leave');
       // The team's process waits until a leave request of the team sends it a note.
@@ -730,7 +877,8 @@ describe('rule checks, scripts, messages that a process sends, receive tasks and
       };
     });
     const team = await json({ method: 'POST', url: `/v1/apps/${app}/actions/add_team/run`, ...as(alice), payload: { values: { name: 'Payments' } } }, 201);
-    const teamInstances = async () => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/team/records/${team.record.id}/processes`, ...as(alice) }, 200)).instances;
+    const teamInstances = async () =>
+      (await json({ method: 'GET', url: `/v1/apps/${app}/entities/team/records/${team.record.id}/processes`, ...as(alice) }, 200)).instances;
     expect((await teamInstances())[0]).toMatchObject({ process: 'team_watch', status: 'running' });
     const record = (id: string) => json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200);
 
@@ -780,7 +928,14 @@ describe('rule checks, scripts, messages that a process sends, receive tasks and
           split: { type: 'parallelGateway' },
           review: { type: 'subProcess', name: 'Review' },
           review_start: { type: 'startEvent', in: 'review' },
-          look: { type: 'userTask', name: 'Look at it', in: 'review', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] },
+          look: {
+            type: 'userTask',
+            name: 'Look at it',
+            in: 'review',
+            role: 'manager',
+            assignee: { field: 'manager' },
+            outcomes: [{ name: 'done', label: 'Done' }],
+          },
           review_end: { type: 'endEvent', in: 'review' },
           guard: {
             type: 'scriptTask',
@@ -808,12 +963,21 @@ describe('rule checks, scripts, messages that a process sends, receive tasks and
     const tasks = async () => (await inbox(bob)).filter((task: { recordId: string }) => task.recordId === asked.record.id);
     let [instance] = await processesOf(app, asked.record.id);
     expect(instance.waiting.filter((at: { element: string }) => at.element === 'review')).toHaveLength(2);
-    expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught')).toMatchObject({ element: 'too_long', detail: { task: 'guard', error: 'Leave is long' } });
+    expect(instance.events.find((event: { kind: string }) => event.kind === 'error_caught')).toMatchObject({
+      element: 'too_long',
+      detail: { task: 'guard', error: 'Leave is long' },
+    });
     expect(await tasks()).toHaveLength(2);
     // Each run ends on its own.
     await complete(bob, (await tasks())[0].id, 'done');
     [instance] = await processesOf(app, asked.record.id);
-    expect(instance).toMatchObject({ status: 'running', waiting: [{ element: 'review', name: 'Review' }, { element: 'look', name: 'Look at it' }] });
+    expect(instance).toMatchObject({
+      status: 'running',
+      waiting: [
+        { element: 'review', name: 'Review' },
+        { element: 'look', name: 'Look at it' },
+      ],
+    });
     await complete(bob, (await tasks())[0].id, 'done');
     [instance] = await processesOf(app, asked.record.id);
     expect(instance.status).toBe('completed');
@@ -824,7 +988,15 @@ describe('rule checks, scripts, messages that a process sends, receive tasks and
 describe('conditions, event-based gateways and starts by themselves', () => {
   /** The leave app with actions that change the days and the first day, a confirmation and a withdrawal. */
   const withChanges = (definition: Record<string, any>) => {
-    const update = (label: string, set: Record<string, unknown>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    const update = (label: string, set: Record<string, unknown>) => ({
+      label,
+      description: `${label}.`,
+      entity: 'leave_request',
+      operation: 'update',
+      input: [],
+      set,
+      confirm: 'none',
+    });
     definition['actions'].make_long = update('Make it long', { days: 12 });
     definition['actions'].make_short = update('Make it short', { days: 1 });
     definition['actions'].move_start = update('Start on 5 January', { starts: '2026-01-05' });
@@ -832,7 +1004,8 @@ describe('conditions, event-based gateways and starts by themselves', () => {
     definition['actions'].withdraw_leave = update('Withdraw the leave', { reason: 'Withdrawn' });
     definition['roles'].employee.actions.push('make_long', 'make_short', 'move_start', 'confirm_leave', 'withdraw_leave');
   };
-  const run = (app: string, action: string, recordId: string) => inject({ method: 'POST', url: `/v1/apps/${app}/actions/${action}/run`, ...as(alice), payload: { recordId } }, 200);
+  const run = (app: string, action: string, recordId: string) =>
+    inject({ method: 'POST', url: `/v1/apps/${app}/actions/${action}/run`, ...as(alice), payload: { recordId } }, 200);
   const processOf = async (app: string, recordId: string, process: string) =>
     (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
 
@@ -905,18 +1078,25 @@ describe('conditions, event-based gateways and starts by themselves', () => {
       const [task] = (await inbox(bob)).filter((open: { recordId: string; element: string }) => open.recordId === recordId && open.element === 'decide');
       await complete(bob, task.id, 'approve');
     };
-    const taken = async (recordId: string) => (await processOf(app, recordId, 'leave_approval')).events.find((event: { element: string | null }) => ['two_days', 'withdrawn', 'shortened', 'confirmed'].includes(event.element ?? ''));
+    const taken = async (recordId: string) =>
+      (await processOf(app, recordId, 'leave_approval')).events.find((event: { element: string | null }) =>
+        ['two_days', 'withdrawn', 'shortened', 'confirmed'].includes(event.element ?? ''),
+      );
 
     // While the manager decides, the leave grows long: HR looks at it beside the decision.
     const first = await ask(app, { days: 4, starts: '2030-04-01', ends: '2030-04-04' });
     await run(app, 'make_long', first.record.id);
-    expect((await inbox(carol)).filter((task: { recordId: string }) => task.recordId === first.record.id).map((task: { name: string }) => task.name)).toEqual(['Look at long leave']);
+    expect((await inbox(carol)).filter((task: { recordId: string }) => task.recordId === first.record.id).map((task: { name: string }) => task.name)).toEqual([
+      'Look at long leave',
+    ]);
     // Growing again doesn't make it happen again: the condition held before the change.
     await run(app, 'make_long', first.record.id);
     expect((await inbox(carol)).filter((task: { recordId: string }) => task.recordId === first.record.id)).toHaveLength(1);
     // Approved: the confirmation comes first.
     await approve(first.record.id);
-    expect(await processOf(app, first.record.id, 'leave_approval')).toMatchObject({ waiting: expect.arrayContaining([{ element: 'gate', name: 'What comes first?' }]) });
+    expect(await processOf(app, first.record.id, 'leave_approval')).toMatchObject({
+      waiting: expect.arrayContaining([{ element: 'gate', name: 'What comes first?' }]),
+    });
     await run(app, 'confirm_leave', first.record.id);
     expect(await taken(first.record.id)).toMatchObject({ kind: 'message', element: 'confirmed' });
 
@@ -943,12 +1123,21 @@ describe('errors with codes, escalations, undo and transactions', () => {
   /** The leave app with a room to book and to free again, and a note for HR. */
   const withRoom = (definition: Record<string, any>) => {
     definition['entities'].leave_request.fields.push({ name: 'room', label: 'Room', type: 'text' }, { name: 'hr_note', label: 'Note for HR', type: 'text' });
-    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    const update = (label: string, set: Record<string, string>) => ({
+      label,
+      description: `${label}.`,
+      entity: 'leave_request',
+      operation: 'update',
+      input: [],
+      set,
+      confirm: 'none',
+    });
     definition['actions'].book_room = update('Book a room', { room: 'Booked' });
     definition['actions'].free_room = update('Free the room', { room: 'Freed' });
     definition['actions'].tell_hr = update('Tell HR', { hr_note: 'Late' });
   };
-  const values = async (app: string, id: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200)).values;
+  const values = async (app: string, id: string) =>
+    (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200)).values;
   const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
 
   it('books a room in a transaction, and a cancel inside it frees the room again', async () => {
@@ -1059,7 +1248,8 @@ describe('errors with codes, escalations, undo and transactions', () => {
         },
       };
     });
-    const of = async (recordId: string, process: string) => (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
+    const of = async (recordId: string, process: string) =>
+      (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
 
     // Short leave: the budget holds, and the leave is approved with its room.
     const short = await ask(app, { days: 3, starts: '2027-11-15', ends: '2027-11-17' });
@@ -1073,7 +1263,10 @@ describe('errors with codes, escalations, undo and transactions', () => {
     const check = await of(longer.record.id, 'budget_check');
     expect(check).toMatchObject({ status: 'completed', calledBy: leave.id });
     expect(leave.status).toBe('completed');
-    expect(leave.events.find((event: { kind: string }) => event.kind === 'escalated')).toMatchObject({ element: 'heard', detail: { from: 'late', code: 'late', instance: check.id } });
+    expect(leave.events.find((event: { kind: string }) => event.kind === 'escalated')).toMatchObject({
+      element: 'heard',
+      detail: { from: 'late', code: 'late', instance: check.id },
+    });
     expect(await values(app, longer.record.id)).toMatchObject({ room: 'Booked', hr_note: 'Late' });
 
     // Leave beyond the budget: the check ends with an error, which the call catches, and the caller frees the room.
@@ -1095,7 +1288,9 @@ describe('errors with codes, escalations, undo and transactions', () => {
     expect((await values(app, over.record.id)).room).toBe('Freed');
 
     // Started by itself, nothing catches the error: the path waits for an operator.
-    const alone = (await inject({ method: 'POST', url: `/v1/apps/${app}/processes/budget_check/start`, ...as(alice), payload: { recordId: over.record.id } }, 201)).json();
+    const alone = (
+      await inject({ method: 'POST', url: `/v1/apps/${app}/processes/budget_check/start`, ...as(alice), payload: { recordId: over.record.id } }, 201)
+    ).json();
     expect(alone).toMatchObject({ status: 'running', stuck: [{ element: 'no_budget', error: 'No budget: nothing catches the error no_budget' }] });
   });
 });
@@ -1123,8 +1318,10 @@ describe('signals', () => {
         flows: { f1: { from: 'start', to: 'wait' }, f2: { from: 'wait', to: 'end' } },
       };
     });
-    const signal = (session: Session, payload: Record<string, unknown>, expected = 201) => inject({ method: 'POST', url: `/v1/apps/${app}/signals`, ...as(session), payload }, expected);
-    const of = async (recordId: string, process: string) => (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
+    const signal = (session: Session, payload: Record<string, unknown>, expected = 201) =>
+      inject({ method: 'POST', url: `/v1/apps/${app}/signals`, ...as(session), payload }, expected);
+    const of = async (recordId: string, process: string) =>
+      (await processesOf(app, recordId)).find((instance: { process: string }) => instance.process === process);
     const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
 
     const first = await ask(app, { starts: '2028-03-06', ends: '2028-03-07', days: 2 });
@@ -1222,7 +1419,8 @@ describe('event sub-processes', () => {
     });
     const kinds = (instance: { events: Array<{ kind: string; element: string | null }> }) => instance.events.map((event) => [event.kind, event.element]);
     const values = async (id: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${id}`, ...as(alice) }, 200)).values;
-    const decide = async (recordId: string) => (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === 'decide');
+    const decide = async (recordId: string) =>
+      (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === 'decide');
 
     // Two days on, HR hears of the first request, beside the manager's task.
     const first = await ask(app, { starts: '2028-05-01', ends: '2028-05-02', days: 2 });
@@ -1297,12 +1495,15 @@ describe('ad hoc sub-processes', () => {
         .filter((task: { recordId: string }) => task.recordId === recordId)
         .map((task: { element: string }) => task.element)
         .sort();
-    const find = async (recordId: string, element: string) => (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element);
+    const find = async (recordId: string, element: string) =>
+      (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element);
 
     // Both checks wait at once, and the note runs by itself.
     const first = await ask(app, { starts: '2028-06-05', ends: '2028-06-06', days: 2 });
     expect(await open(first.record.id)).toEqual(['dates', 'team']);
-    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${first.record.id}`, ...as(alice) }, 200)).values.reason).toBe('Checking');
+    expect((await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_request/records/${first.record.id}`, ...as(alice) }, 200)).values.reason).toBe(
+      'Checking',
+    );
     // The team first: the checks go on, for the dates. Then the dates: the checks end, and the manager decides.
     await complete(bob, (await find(first.record.id, 'team')).id, 'done');
     expect(await open(first.record.id)).toEqual(['dates']);
@@ -1329,7 +1530,13 @@ describe('complex gateways', () => {
   it('go on once enough paths have arrived, and end a path that arrives after', async () => {
     const app = await passingApp('Leave, with enough checks', (definition) => {
       const process = definition['processes'].leave_approval;
-      const check = (name: string) => ({ type: 'userTask', name, role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'done', label: 'Done' }] });
+      const check = (name: string) => ({
+        type: 'userTask',
+        name,
+        role: 'manager',
+        assignee: { field: 'manager' },
+        outcomes: [{ name: 'done', label: 'Done' }],
+      });
       Object.assign(process.elements, {
         split: { type: 'parallelGateway' },
         a: check('Check A'),
@@ -1355,7 +1562,11 @@ describe('complex gateways', () => {
         .map((task: { element: string }) => task.element)
         .sort();
     const finish = async (recordId: string, element: string, outcome = 'done') =>
-      complete(bob, (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element).id, outcome);
+      complete(
+        bob,
+        (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element).id,
+        outcome,
+      );
 
     const asked = await ask(app, { starts: '2028-07-03', ends: '2028-07-04', days: 2 });
     expect(await open(asked.record.id)).toEqual(['a', 'b', 'c']);
@@ -1372,7 +1583,9 @@ describe('complex gateways', () => {
     await finish(asked.record.id, 'decide', 'approve');
     [instance] = await processesOf(app, asked.record.id);
     expect(instance).toMatchObject({ status: 'completed', waiting: [] });
-    expect(instance.events.filter((event: { kind: string; element: string | null }) => event.kind === 'task_opened' && event.element === 'decide')).toHaveLength(1);
+    expect(
+      instance.events.filter((event: { kind: string; element: string | null }) => event.kind === 'task_opened' && event.element === 'decide'),
+    ).toHaveLength(1);
   });
 });
 
@@ -1382,7 +1595,12 @@ describe('loops', () => {
       const process = definition['processes'].leave_approval;
       Object.assign(process.elements, {
         // Before each time, while the leave is long, three times at most: so short leave skips it.
-        note: { type: 'scriptTask', name: 'Note long leave', steps: [{ type: 'set', field: 'reason', value: 'Long' }], repeat: { while: { gt: [{ ref: 'record.days' }, 10] }, max: 3, before: true } },
+        note: {
+          type: 'scriptTask',
+          name: 'Note long leave',
+          steps: [{ type: 'set', field: 'reason', value: 'Long' }],
+          repeat: { while: { gt: [{ ref: 'record.days' }, 10] }, max: 3, before: true },
+        },
         // After each time, while the manager asks for more, twice at most.
         review: {
           type: 'userTask',
@@ -1407,8 +1625,13 @@ describe('loops', () => {
         .map((task: { element: string }) => task.element)
         .sort();
     const finish = async (recordId: string, element: string, outcome: string) =>
-      complete(bob, (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element).id, outcome);
-    const kinds = async (recordId: string) => (await processesOf(app, recordId))[0].events.map((event: { kind: string; element: string | null }) => [event.kind, event.element]);
+      complete(
+        bob,
+        (await inbox(bob)).find((task: { recordId: string; element: string }) => task.recordId === recordId && task.element === element).id,
+        outcome,
+      );
+    const kinds = async (recordId: string) =>
+      (await processesOf(app, recordId))[0].events.map((event: { kind: string; element: string | null }) => [event.kind, event.element]);
 
     // Short leave skips the note. The manager asks for more once, then has enough.
     const short = await ask(app, { starts: '2028-08-07', ends: '2028-08-08', days: 2 });
@@ -1454,8 +1677,24 @@ describe('calls for each record', () => {
             { name: 'note', label: 'Note', type: 'text' },
           ],
         };
-        definition['actions'].add_day = { label: 'Add a day', description: 'Add a day.', entity: 'leave_day', operation: 'create', input: ['request', 'day'], set: {}, confirm: 'none' };
-        definition['actions'].confirm_day = { label: 'Confirm the day', description: 'Confirm the day.', entity: 'leave_day', operation: 'update', input: [], set: { note: 'Confirmed' }, confirm: 'none' };
+        definition['actions'].add_day = {
+          label: 'Add a day',
+          description: 'Add a day.',
+          entity: 'leave_day',
+          operation: 'create',
+          input: ['request', 'day'],
+          set: {},
+          confirm: 'none',
+        };
+        definition['actions'].confirm_day = {
+          label: 'Confirm the day',
+          description: 'Confirm the day.',
+          entity: 'leave_day',
+          operation: 'update',
+          input: [],
+          set: { note: 'Confirmed' },
+          confirm: 'none',
+        };
         definition['roles'].employee.entities.leave_day = { read: true, create: true, update: true };
         definition['roles'].employee.actions.push('add_day', 'confirm_day');
         definition['roles'].manager.entities.leave_day = { read: true };
@@ -1463,11 +1702,20 @@ describe('calls for each record', () => {
         definition['processes'].day_check = {
           label: 'Day check',
           entity: 'leave_day',
-          elements: { start: { type: 'startEvent' }, wait: { type: 'receiveTask', name: 'Until confirmed', message: { action: 'confirm_day' } }, end: { type: 'endEvent' } },
+          elements: {
+            start: { type: 'startEvent' },
+            wait: { type: 'receiveTask', name: 'Until confirmed', message: { action: 'confirm_day' } },
+            end: { type: 'endEvent' },
+          },
           flows: { f1: { from: 'start', to: 'wait' }, f2: { from: 'wait', to: 'end' } },
         };
         const process = definition['processes'].leave_approval;
-        process.elements.days = { type: 'callActivity', name: 'Check each day', process: 'day_check', each: { field: 'request', ...(sequential ? { sequential: true } : {}) } };
+        process.elements.days = {
+          type: 'callActivity',
+          name: 'Check each day',
+          process: 'day_check',
+          each: { field: 'request', ...(sequential ? { sequential: true } : {}) },
+        };
         process.flows.on_approve.to = 'days';
         process.flows.days_done = { from: 'days', to: 'approved' };
         delete process.diagram;
@@ -1475,10 +1723,19 @@ describe('calls for each record', () => {
       const asked = await ask(app, { starts: '2028-09-04', ends: '2028-09-05', days: 2 });
       const days: string[] = [];
       for (const day of ['2028-09-04', '2028-09-05']) {
-        days.push((await json({ method: 'POST', url: `/v1/apps/${app}/actions/add_day/run`, ...as(alice), payload: { values: { request: asked.record.id, day } } }, 201)).record.id);
+        days.push(
+          (
+            await json(
+              { method: 'POST', url: `/v1/apps/${app}/actions/add_day/run`, ...as(alice), payload: { values: { request: asked.record.id, day } } },
+              201,
+            )
+          ).record.id,
+        );
       }
-      const dayChecks = async (day: string) => (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_day/records/${day}/processes`, ...as(alice) }, 200)).instances;
-      const confirm = (day: string) => inject({ method: 'POST', url: `/v1/apps/${app}/actions/confirm_day/run`, ...as(alice), payload: { recordId: day } }, 200);
+      const dayChecks = async (day: string) =>
+        (await json({ method: 'GET', url: `/v1/apps/${app}/entities/leave_day/records/${day}/processes`, ...as(alice) }, 200)).instances;
+      const confirm = (day: string) =>
+        inject({ method: 'POST', url: `/v1/apps/${app}/actions/confirm_day/run`, ...as(alice), payload: { recordId: day } }, 200);
 
       // Approved: the days are checked, all at once or the first only.
       const [task] = (await inbox(bob)).filter((open: { recordId: string }) => open.recordId === asked.record.id);

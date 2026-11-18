@@ -22,7 +22,9 @@ function App() {
       <header className="sticky top-0 z-10 block border-b border-line bg-surface/95 p-0 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4">
           <Link to={{ name: 'home' }} className="brand p-0 no-underline" aria-label="a3t, your apps">
-            <span aria-hidden className="mark">a3</span>
+            <span aria-hidden className="mark">
+              a3
+            </span>
             a3t
           </Link>
           <span className="flex-1" />

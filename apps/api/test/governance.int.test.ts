@@ -3,7 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sealPending } from '../src/audit/sealer.js';
 import { recordAudit, SYSTEM_ACTOR } from '../src/audit/writer.js';
-import { identity, startTestApp, type Session, type TestApp } from './helpers.js';
+import { identity, type Session, startTestApp, type TestApp } from './helpers.js';
 
 let t: TestApp;
 let alice: Session; // bootstrap org owner
@@ -13,8 +13,7 @@ let dave: Session; // will become an org admin
 let financeSpaceId: string;
 
 const as = (session: Session) => ({ cookies: session.cookies, headers: { origin: 'http://platform.test' } });
-const grant = (session: Session, body: Record<string, unknown>) =>
-  t.app.inject({ method: 'POST', url: '/v1/bindings', ...as(session), payload: body });
+const grant = (session: Session, body: Record<string, unknown>) => t.app.inject({ method: 'POST', url: '/v1/bindings', ...as(session), payload: body });
 
 beforeAll(async () => {
   t = await startTestApp();
@@ -247,7 +246,11 @@ describe('personal spaces', () => {
   });
 
   it('cannot be shared through bindings', async () => {
-    const response = await grant(bob, { principal: { type: 'user', id: carol.userId }, roleId: 'space.viewer', scope: { type: 'space', id: carol.personalSpaceId } });
+    const response = await grant(bob, {
+      principal: { type: 'user', id: carol.userId },
+      roleId: 'space.viewer',
+      scope: { type: 'space', id: carol.personalSpaceId },
+    });
     expect(response.statusCode).toBe(403);
   });
 });
@@ -256,11 +259,13 @@ describe('guardrails', () => {
   it('make frozen spaces read-only, for everyone', async () => {
     const freeze = await t.app.inject({ method: 'POST', url: `/v1/spaces/${financeSpaceId}/freeze`, ...as(alice), payload: { reason: 'Quarter-end review' } });
     expect(freeze.statusCode).toBe(200);
-    const response = await grant(carol, { principal: { type: 'user', id: dave.userId }, roleId: 'space.builder', scope: { type: 'space', id: financeSpaceId } });
+    const response = await grant(carol, {
+      principal: { type: 'user', id: dave.userId },
+      roleId: 'space.builder',
+      scope: { type: 'space', id: financeSpaceId },
+    });
     expect(response.statusCode).toBe(403);
-    expect(response.json().details.reasons).toEqual([
-      expect.objectContaining({ kind: 'denied_by_guardrail', guardrailId: 'gr.space.frozen-read-only' }),
-    ]);
+    expect(response.json().details.reasons).toEqual([expect.objectContaining({ kind: 'denied_by_guardrail', guardrailId: 'gr.space.frozen-read-only' })]);
   });
 });
 
@@ -269,7 +274,16 @@ describe('the audit log', () => {
     const response = await t.app.inject({ method: 'GET', url: '/v1/audit/events?limit=500', ...as(alice) });
     expect(response.statusCode).toBe(200);
     const actions = new Set(response.json().events.map((e: { action: string }) => e.action));
-    for (const action of ['auth.login', 'user.provision', 'directory.membership.sync', 'space.create', 'binding.create', 'access.denied', 'space.freeze', 'access.explain']) {
+    for (const action of [
+      'auth.login',
+      'user.provision',
+      'directory.membership.sync',
+      'space.create',
+      'binding.create',
+      'access.denied',
+      'space.freeze',
+      'access.explain',
+    ]) {
       expect(actions).toContain(action);
     }
     const rejected = await t.app.inject({ method: 'GET', url: '/v1/audit/events', ...as(bob) });

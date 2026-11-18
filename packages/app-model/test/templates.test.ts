@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { lintDefinition, TEMPLATES, validateDefinition } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 describe('templates', () => {
   it('each pass the checks of any definition, and leave nothing for a reviewer to weigh', () => {

@@ -1,17 +1,17 @@
-import { describe, expect, it } from 'vitest';
 import {
   AppDefinition,
   beforeGives,
   capabilityChanges,
   Draft,
-  evaluateExpression,
   EXPENSE_APP,
+  type Expression,
+  evaluateExpression,
   isExpression,
   readsPrincipal,
-  validateDefinition,
-  type Expression,
   type StoredDefinition,
+  validateDefinition,
 } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 const ids = () => {
   let n = 0;
@@ -78,7 +78,10 @@ describe('expressions', () => {
     expect(evaluate({ round: [{ mul: [{ ref: 'record.total' }, 0.09] }, 2] })).toEqual({ ok: true, value: 27.22 });
     expect(evaluate({ round: [1.005, 2] })).toEqual({ ok: true, value: 1.01 });
     expect(evaluate({ sub: [{ ref: 'record.total' }, 2.4] })).toEqual({ ok: true, value: 300 });
-    expect(evaluate({ concat: ['Claim: ', { ref: 'record.title' }, ' (', { ref: 'record.trip' }, ')'] })).toEqual({ ok: true, value: 'Claim: Singapore trip ()' });
+    expect(evaluate({ concat: ['Claim: ', { ref: 'record.title' }, ' (', { ref: 'record.trip' }, ')'] })).toEqual({
+      ok: true,
+      value: 'Claim: Singapore trip ()',
+    });
   });
 
   it('leave a calculation empty when a value is empty, and refuse to divide by zero', () => {
@@ -103,7 +106,10 @@ describe('expressions', () => {
 describe('a draft of the record an action saves', () => {
   const definition = valid(EXPENSE_APP);
   const claim = { id: CLAIM, title: 'Singapore trip', trip: 'Singapore', total: 360, status: 'submitted', iban: 'SG12 3456', approver: null, owner: BOB };
-  const hotel = { id: '0193a7c4-0000-7000-8000-0000000000d1', values: { date: '2026-11-03', merchant: 'Hotel', category: 'hotel', amount: 360, receipt: null } };
+  const hotel = {
+    id: '0193a7c4-0000-7000-8000-0000000000d1',
+    values: { date: '2026-11-03', merchant: 'Hotel', category: 'hotel', amount: 360, receipt: null },
+  };
 
   it('sets values as their fields hold them, and says which it set', () => {
     const draft = new Draft(definition, 'expense_claim', claim, {});
@@ -126,7 +132,10 @@ describe('a draft of the record an action saves', () => {
   it('adds lines with their defaults, and the rollups follow', () => {
     const draft = new Draft(definition, 'expense_claim', claim, { lines: [hotel] });
     expect(draft.addLine('lines', { date: '2026-11-17T08:30:00.000Z', merchant: 'Per diem', category: 'meals', amount: 50.004 }, 'Add a per diem')).toEqual([]);
-    expect(draft.lines['lines']).toEqual([hotel, { id: null, values: { date: '2026-11-17', merchant: 'Per diem', category: 'meals', amount: 50, receipt: null } }]);
+    expect(draft.lines['lines']).toEqual([
+      hotel,
+      { id: null, values: { date: '2026-11-17', merchant: 'Per diem', category: 'meals', amount: 50, receipt: null } },
+    ]);
     expect(draft.record['total']).toBe(410);
     expect(draft.linesAdded).toEqual(['lines']);
     expect(draft.addLine('lines', { merchant: 'Taxi', amount: 12 }, 'Add a taxi')).toEqual([
@@ -134,7 +143,9 @@ describe('a draft of the record an action saves', () => {
       { field: 'lines[2].category', code: 'required', message: 'Add a taxi: Category is required' },
     ]);
     expect(draft.lines['lines']).toHaveLength(2);
-    expect(draft.addLine('nothing', {}, 'Add')).toEqual([{ field: 'nothing', code: 'unknown_field', message: 'Add: Expense claim has no lines field nothing' }]);
+    expect(draft.addLine('nothing', {}, 'Add')).toEqual([
+      { field: 'nothing', code: 'unknown_field', message: 'Add: Expense claim has no lines field nothing' },
+    ]);
   });
 });
 
@@ -150,17 +161,32 @@ describe('the flow an action runs before it saves', () => {
       description: "What Approve an expense claim does before it saves. It was the action's steps.",
       input: { expense_claim: { type: 'record', entity: 'expense_claim' } },
       steps: [
-        { type: 'check', assert: { ne: [{ ref: 'expense_claim.owner' }, { ref: 'principal.id' }] }, message: "You can't approve your own claim", severity: 'error' },
+        {
+          type: 'check',
+          assert: { ne: [{ ref: 'expense_claim.owner' }, { ref: 'principal.id' }] },
+          message: "You can't approve your own claim",
+          severity: 'error',
+        },
         { type: 'change', record: 'expense_claim', values: { approver: { ref: 'principal.id' } } },
         {
           type: 'if',
           when: { gt: [{ ref: 'expense_claim.total' }, 1000] },
-          then: [{ type: 'check', assert: { exists: 'expense_claim.iban' }, message: 'A large claim needs a bank account', severity: 'error', fields: ['expense_claim.iban'] }],
+          then: [
+            {
+              type: 'check',
+              assert: { exists: 'expense_claim.iban' },
+              message: 'A large claim needs a bank account',
+              severity: 'error',
+              fields: ['expense_claim.iban'],
+            },
+          ],
           else: [],
         },
       ],
     });
-    expect(result.notes).toContain('The steps of Approve an expense claim are now the flow Approve an expense claim: before it saves, which runs before it saves');
+    expect(result.notes).toContain(
+      'The steps of Approve an expense claim are now the flow Approve an expense claim: before it saves, which runs before it saves',
+    );
     // What it moved is a definition like any other: it saves, and checks again the same.
     expect(AppDefinition.safeParse(result.definition).success).toBe(true);
     expect(validateDefinition(result.definition, result.definition, ids())).toMatchObject({ ok: true, notes: [] });
@@ -179,7 +205,11 @@ describe('the flow an action runs before it saves', () => {
     const issues = issuesOf(
       edited((d) => {
         d.connections = { crm: { kind: 'service', label: 'CRM', url: 'https://crm.example.com', auth: { type: 'none' } } };
-        d.flows.audit = { label: 'Keep a copy', input: { claim: { type: 'record', entity: 'expense_claim' } }, steps: [{ type: 'change', record: 'claim', values: { trip: 'Copied' } }] };
+        d.flows.audit = {
+          label: 'Keep a copy',
+          input: { claim: { type: 'record', entity: 'expense_claim' } },
+          steps: [{ type: 'change', record: 'claim', values: { trip: 'Copied' } }],
+        };
         d.flows.check_approval = {
           label: 'Check the approval',
           input: { claim: { type: 'record', entity: 'expense_claim' } },
@@ -212,7 +242,9 @@ describe('the flow an action runs before it saves', () => {
     const waits = edited((d) => {
       d.flows.check_approval.steps = [{ type: 'wait', for: { duration: 'P1D' } }];
     });
-    expect(issuesOf(waits)).toContain('actions.approve_claim.before.flow: Check the approval waits, and a flow that runs before an action saves runs in one go');
+    expect(issuesOf(waits)).toContain(
+      'actions.approve_claim.before.flow: Check the approval waits, and a flow that runs before an action saves runs in one go',
+    );
     const given = edited((d) => {
       d.actions.approve_claim.before = { flow: 'check_approval', input: { claim: { ref: 'record.total' } } };
     });
@@ -227,7 +259,10 @@ describe('the flow an action runs before it saves', () => {
     const issues = issuesOf(
       withBefore([{ type: 'check', assert: { exists: 'claim.iban' }, message: 'Give a bank account', fields: ['claim.colour', 'other.iban'] }]),
     );
-    expect(issues).toEqual(['flows.check_approval.steps[0].fields[0]: claim.colour: Expense claim has no field colour', 'flows.check_approval.steps[0].fields[1]: other.iban: no variable other here']);
+    expect(issues).toEqual([
+      'flows.check_approval.steps[0].fields[0]: claim.colour: Expense claim has no field colour',
+      'flows.check_approval.steps[0].fields[1]: other.iban: no variable other here',
+    ]);
   });
 
   it('counts a field that it always sets as given, for a new record', () => {
@@ -240,7 +275,9 @@ describe('the flow an action runs before it saves', () => {
       });
     const trip = { exists: 'claim.trip' };
     const branchOnly = titled([{ type: 'if', when: trip, then: [{ type: 'change', record: 'claim', values: { title: { ref: 'claim.trip' } } }] }]);
-    expect(issuesOf(branchOnly)).toEqual(['actions.submit_claim.input: title is required, so the action must take it as input, set it, or the field needs a default']);
+    expect(issuesOf(branchOnly)).toEqual([
+      'actions.submit_claim.input: title is required, so the action must take it as input, set it, or the field needs a default',
+    ]);
     const bothSides = titled([
       {
         type: 'if',
@@ -262,7 +299,11 @@ describe('the flow an action runs before it saves', () => {
       valid(
         edited((d) => {
           d.flows.who = { label: 'Who', input: {}, steps: [{ type: 'set', var: 'someone', value }] };
-          d.flows.check_approval = { label: 'Check the approval', input: { claim: { type: 'record', entity: 'expense_claim' } }, steps: [{ type: 'call', flow: 'who', input: {} }] };
+          d.flows.check_approval = {
+            label: 'Check the approval',
+            input: { claim: { type: 'record', entity: 'expense_claim' } },
+            steps: [{ type: 'call', flow: 'who', input: {} }],
+          };
         }),
       );
     const quiet = calling('nobody');
@@ -287,11 +328,18 @@ describe('the flow an action runs before it saves', () => {
     const base = valid(EXPENSE_APP);
     const head = valid(
       edited((d) => {
-        d.flows.approve_quietly = { label: 'Approve quietly', input: { claim: { type: 'record', entity: 'expense_claim' } }, steps: [{ type: 'change', record: 'claim', values: { approver: { ref: 'principal.id' } } }] };
+        d.flows.approve_quietly = {
+          label: 'Approve quietly',
+          input: { claim: { type: 'record', entity: 'expense_claim' } },
+          steps: [{ type: 'change', record: 'claim', values: { approver: { ref: 'principal.id' } } }],
+        };
         d.actions.approve_claim.before = { flow: 'approve_quietly', input: { claim: { ref: 'record' } } };
       }),
       base,
     );
-    expect(capabilityChanges(base, head).map((change) => change.text)).toEqual(['approve_claim now runs the flow approve_quietly before it saves', 'New flow Approve quietly: it changes Expense claim']);
+    expect(capabilityChanges(base, head).map((change) => change.text)).toEqual([
+      'approve_claim now runs the flow approve_quietly before it saves',
+      'New flow Approve quietly: it changes Expense claim',
+    ]);
   });
 });

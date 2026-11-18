@@ -1,20 +1,20 @@
-import { describe, expect, it } from 'vitest';
 import {
   authorize,
   authorizeQuery,
+  type Binding,
+  type Condition,
   conditionRefs,
   createPolicy,
   evaluateCondition,
   isCondition,
   mergePolicies,
-  partialEvaluate,
-  PolicyError,
-  type Binding,
-  type Condition,
   type Operand,
+  PolicyError,
   type Principal,
+  partialEvaluate,
   type Resource,
 } from '@platform/authz';
+import { describe, expect, it } from 'vitest';
 
 const env = {
   principal: { id: 'u1', department: 'finance', level: 3, groupIds: ['g1', 'g2'] },
@@ -60,7 +60,9 @@ describe('partialEvaluate', () => {
 
   it('lists the references a condition makes', () => {
     expect(
-      conditionRefs({ all: [{ in: [{ ref: 'record.a' }, [{ ref: 'principal.id' }, 'x']] }, { not: { exists: 'record.b' } }, { eq: [{ ref: 'record.a' }, 1] }] }),
+      conditionRefs({
+        all: [{ in: [{ ref: 'record.a' }, [{ ref: 'principal.id' }, 'x']] }, { not: { exists: 'record.b' } }, { eq: [{ ref: 'record.a' }, 1] }],
+      }),
     ).toEqual(['record.a', 'principal.id', 'record.b']);
   });
 });
@@ -129,7 +131,10 @@ describe('partialEvaluate agrees with full evaluation', () => {
       const residual = partialEvaluate(condition, known, ['record']);
       if (typeof residual !== 'boolean') {
         expect(isCondition(residual), `seed ${seed}: residual is not a valid condition`).toBe(true);
-        expect(conditionRefs(residual).every((ref) => ref.startsWith('record.')), `seed ${seed}: residual refers to known values`).toBe(true);
+        expect(
+          conditionRefs(residual).every((ref) => ref.startsWith('record.')),
+          `seed ${seed}: residual refers to known values`,
+        ).toBe(true);
       }
       for (const values of records) {
         const expected = evaluateCondition(condition, { ...known, record: values });
@@ -150,14 +155,27 @@ describe('authorizeQuery', () => {
         grants: [
           { permission: 'record.read', resource: 'claim', condition: { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }, mask: ['iban'] },
           { permission: 'record.read', resource: 'claim', condition: { eq: [{ ref: 'principal.department' }, 'audit'] } },
-          { permission: 'record.update', resource: 'claim', condition: { eq: [{ ref: 'record.status' }, 'draft'] }, check: { ne: [{ ref: 'record.status' }, 'paid'] }, fields: { include: ['status'] } },
+          {
+            permission: 'record.update',
+            resource: 'claim',
+            condition: { eq: [{ ref: 'record.status' }, 'draft'] },
+            check: { ne: [{ ref: 'record.status' }, 'paid'] },
+            fields: { include: ['status'] },
+          },
         ],
       },
     ],
     roles: [{ id: 'claims', name: 'Claims', scopeType: 'env', permissionSetIds: ['ps.claims'] }],
     guardrails: [
       { id: 'gr.locked', name: 'Locked records are read-only', actions: ['record.update'], effect: 'deny', when: { eq: [{ ref: 'record.locked' }, true] } },
-      { id: 'gr.big', name: 'Fresh MFA for big claims', actions: ['record.read'], effect: 'step_up', maxMfaAgeSeconds: 60, when: { gt: [{ ref: 'record.amount' }, 1000] } },
+      {
+        id: 'gr.big',
+        name: 'Fresh MFA for big claims',
+        actions: ['record.read'],
+        effect: 'step_up',
+        maxMfaAgeSeconds: 60,
+        when: { gt: [{ ref: 'record.amount' }, 1000] },
+      },
     ],
   });
   const now = new Date('2026-11-15T12:00:00Z');
@@ -221,7 +239,10 @@ describe('mergePolicies', () => {
 
   it('validates field rules and checks', () => {
     expect(() =>
-      createPolicy({ permissionSets: [{ id: 'x', name: 'X', scopeType: 'env', grants: [{ permission: 'record.update', check: { eq: [1] } as never }] }], roles: [] }),
+      createPolicy({
+        permissionSets: [{ id: 'x', name: 'X', scopeType: 'env', grants: [{ permission: 'record.update', check: { eq: [1] } as never }] }],
+        roles: [],
+      }),
     ).toThrow(/invalid check/);
     expect(() =>
       createPolicy({ permissionSets: [{ id: 'x', name: 'X', scopeType: 'env', grants: [{ permission: 'record.read', mask: [''] }] }], roles: [] }),

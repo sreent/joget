@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
-import { api, ApiError, type AppAt } from '../api.js';
+import { ApiError, type AppAt, api } from '../api.js';
 import type { ImportResult, UiEntity } from '../types.js';
 import { Button, Card, Notice } from './ui.js';
 
@@ -55,21 +55,32 @@ export function ImportPanel({ at, entityName, entity, onDone }: { at: AppAt; ent
             {result.columns.map((column, i) => (
               <li key={i}>
                 <span className="font-medium">{column.header}</span>
-                {column.field ? <span className="text-muted"> fills {fieldLabel(column.field)}</span> : <span className="text-faint"> stays out: {column.note}</span>}
+                {column.field ? (
+                  <span className="text-muted"> fills {fieldLabel(column.field)}</span>
+                ) : (
+                  <span className="text-faint"> stays out: {column.note}</span>
+                )}
               </li>
             ))}
           </ul>
           {result.issues.length ? (
             <div className="grid gap-2">
               <Notice tone="bad">
-                {result.issues.length === 1 ? 'One problem' : `${result.issues.length} problems`} in {result.rows} {result.rows === 1 ? 'record' : 'records'}. Put the file right, and choose it again. Nothing has been brought in.
+                {result.issues.length === 1 ? 'One problem' : `${result.issues.length} problems`} in {result.rows} {result.rows === 1 ? 'record' : 'records'}.
+                Put the file right, and choose it again. Nothing has been brought in.
               </Notice>
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="border-b border-line text-left text-muted">
-                    <th scope="col" className="py-1.5 pr-3 font-medium">Line</th>
-                    <th scope="col" className="py-1.5 pr-3 font-medium">Field</th>
-                    <th scope="col" className="py-1.5 font-medium">Problem</th>
+                    <th scope="col" className="py-1.5 pr-3 font-medium">
+                      Line
+                    </th>
+                    <th scope="col" className="py-1.5 pr-3 font-medium">
+                      Field
+                    </th>
+                    <th scope="col" className="py-1.5 font-medium">
+                      Problem
+                    </th>
                   </tr>
                 </thead>
                 <tbody>

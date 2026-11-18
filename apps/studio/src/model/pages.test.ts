@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { EXPENSE_APP } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 import type { Definition } from '../types.js';
 import { normalize, removeEntity, removeField, removeForm } from './edit.js';
 import { removeItem, renameItem } from './logic.js';
@@ -34,7 +34,16 @@ describe('editing pages', () => {
     expect(name).toBe('recent_claims');
     expect(definition.pages[name]).toEqual({
       label: 'Recent claims',
-      blocks: [{ type: 'list', entity: 'expense_claim', columns: ['title', 'trip', 'total', 'created_at'], sort: [{ field: 'created_at', direction: 'desc' }], limit: 20, actions: [] }],
+      blocks: [
+        {
+          type: 'list',
+          entity: 'expense_claim',
+          columns: ['title', 'trip', 'total', 'created_at'],
+          sort: [{ field: 'created_at', direction: 'desc' }],
+          limit: 20,
+          actions: [],
+        },
+      ],
     });
     expect(describeBlock(definition, definition.pages[name]!.blocks[0]!)).toBe('Expense claims: Title, Trip, Total (SGD), Created');
   });
@@ -60,16 +69,33 @@ describe('editing pages', () => {
     let definition = renamePage(app(), 'my_claims', 'claims');
     expect(definition.navigation).toMatchObject({
       home: 'claims',
-      items: [{ page: 'claims' }, { form: 'claim_form' }, { entity: 'expense_claim', label: 'All claims' }, { page: 'spending' }, { heading: 'Approvals' }, { page: 'to_approve' }],
+      items: [
+        { page: 'claims' },
+        { form: 'claim_form' },
+        { entity: 'expense_claim', label: 'All claims' },
+        { page: 'spending' },
+        { heading: 'Approvals' },
+        { page: 'to_approve' },
+      ],
     });
     definition = removePage(definition, 'to_approve');
-    expect(definition.navigation!.items.map((item) => ('page' in item ? item.page : 'heading' in item ? item.heading : 'x'))).toEqual(['claims', 'x', 'x', 'spending', 'Approvals']);
+    expect(definition.navigation!.items.map((item) => ('page' in item ? item.page : 'heading' in item ? item.heading : 'x'))).toEqual([
+      'claims',
+      'x',
+      'x',
+      'spending',
+      'Approvals',
+    ]);
     definition = updatePage(definition, 'claims', { description: '', roles: [] });
     expect(definition.pages['claims']).not.toHaveProperty('description');
   });
 
   it('tidies pages and the menu when what they name goes away', () => {
-    let definition = removeField(app(), 'expense_claim', app().entities['expense_claim']!.fields.findIndex((f) => f.name === 'total'));
+    let definition = removeField(
+      app(),
+      'expense_claim',
+      app().entities['expense_claim']!.fields.findIndex((f) => f.name === 'total'),
+    );
     expect((definition.pages['my_claims']!.blocks[1] as { columns: string[] }).columns).toEqual(['title', 'status', 'created_at']);
     definition = removeForm(definition, 'claim_form');
     expect(definition.pages['my_claims']!.blocks.map((b) => b.type)).toEqual(['list']);
@@ -91,10 +117,23 @@ describe('editing pages', () => {
 describe('numbers and charts', () => {
   it('start from sensible defaults: a count, and a chart by the first choice', () => {
     let { definition, path } = addBlock(app(), 'spending', 'stat');
-    expect(blockAt(definition, 'spending', path)).toEqual({ type: 'stat', label: 'How many expense claims', entity: 'expense_claim', measure: { op: 'count' } });
+    expect(blockAt(definition, 'spending', path)).toEqual({
+      type: 'stat',
+      label: 'How many expense claims',
+      entity: 'expense_claim',
+      measure: { op: 'count' },
+    });
     ({ definition, path } = addBlock(definition, 'spending', 'chart'));
-    expect(blockAt(definition, 'spending', path)).toMatchObject({ type: 'chart', title: 'Expense claims by status', group: { field: 'status' }, show: 'bar', width: 'half' });
-    expect(describeBlock(definition, definition.pages['spending']!.blocks[4]!)).toBe('Spending by month (SGD): Sum of Receipts › Amount (SGD), by month of Receipts › Date');
+    expect(blockAt(definition, 'spending', path)).toMatchObject({
+      type: 'chart',
+      title: 'Expense claims by status',
+      group: { field: 'status' },
+      show: 'bar',
+      width: 'half',
+    });
+    expect(describeBlock(definition, definition.pages['spending']!.blocks[4]!)).toBe(
+      'Spending by month (SGD): Sum of Receipts › Amount (SGD), by month of Receipts › Date',
+    );
     expect(describeBlock(definition, definition.pages['spending']!.blocks[2]!)).toBe('Receipts: Count of Receipts');
   });
 
@@ -103,16 +142,43 @@ describe('numbers and charts', () => {
       { value: 'lines.amount', label: 'Receipts › Amount (SGD)' },
       { value: 'total', label: 'Total (SGD)' },
     ]);
-    expect(groupPaths(app(), 'expense_claim').map((g) => g.value)).toEqual(['title', 'trip', 'lines.date', 'lines.merchant', 'lines.category', 'status', 'iban', 'approver', 'owner', 'created_at', 'updated_at']);
+    expect(groupPaths(app(), 'expense_claim').map((g) => g.value)).toEqual([
+      'title',
+      'trip',
+      'lines.date',
+      'lines.merchant',
+      'lines.category',
+      'status',
+      'iban',
+      'approver',
+      'owner',
+      'created_at',
+      'updated_at',
+    ]);
   });
 
   it('let go of a field that goes: a total counts instead, a chart by it goes, and so does a range on it', () => {
     const lineFields = app().entities['expense_line']!.fields;
-    let definition = removeField(app(), 'expense_line', lineFields.findIndex((f) => f.name === 'amount'));
-    expect(definition.pages['spending']!.blocks.filter((b) => b.type === 'chart').map((b) => (b as { measure: unknown }).measure)).toEqual([{ op: 'count' }, { op: 'count' }]);
-    definition = removeField(definition, 'expense_line', definition.entities['expense_line']!.fields.findIndex((f) => f.name === 'date'));
+    let definition = removeField(
+      app(),
+      'expense_line',
+      lineFields.findIndex((f) => f.name === 'amount'),
+    );
+    expect(definition.pages['spending']!.blocks.filter((b) => b.type === 'chart').map((b) => (b as { measure: unknown }).measure)).toEqual([
+      { op: 'count' },
+      { op: 'count' },
+    ]);
+    definition = removeField(
+      definition,
+      'expense_line',
+      definition.entities['expense_line']!.fields.findIndex((f) => f.name === 'date'),
+    );
     expect(definition.pages['spending']!.blocks.map((b) => b.type)).toEqual(['stat', 'stat', 'stat', 'chart']);
-    definition = removeField(definition, 'expense_claim', definition.entities['expense_claim']!.fields.findIndex((f) => f.name === 'total'));
+    definition = removeField(
+      definition,
+      'expense_claim',
+      definition.entities['expense_claim']!.fields.findIndex((f) => f.name === 'total'),
+    );
     expect(definition.pages['spending']!.blocks[1]).toMatchObject({ measure: { op: 'count' }, range: { field: 'created_at' } });
   });
 });
@@ -120,9 +186,20 @@ describe('numbers and charts', () => {
 describe('queries that work out numbers', () => {
   it('let go of a field that goes, as charts do', () => {
     const lineFields = app().entities['expense_line']!.fields;
-    let definition = removeField(app(), 'expense_line', lineFields.findIndex((f) => f.name === 'category'));
-    expect(definition.queries['my_spending']!.summary).toEqual({ measure: { op: 'sum', field: 'lines.amount' }, range: { field: 'lines.date', within: 'this_year' } });
-    definition = removeField(definition, 'expense_line', definition.entities['expense_line']!.fields.findIndex((f) => f.name === 'amount'));
+    let definition = removeField(
+      app(),
+      'expense_line',
+      lineFields.findIndex((f) => f.name === 'category'),
+    );
+    expect(definition.queries['my_spending']!.summary).toEqual({
+      measure: { op: 'sum', field: 'lines.amount' },
+      range: { field: 'lines.date', within: 'this_year' },
+    });
+    definition = removeField(
+      definition,
+      'expense_line',
+      definition.entities['expense_line']!.fields.findIndex((f) => f.name === 'amount'),
+    );
     expect(definition.queries['my_spending']!.summary).toEqual({ measure: { op: 'count' }, range: { field: 'lines.date', within: 'this_year' } });
   });
 });

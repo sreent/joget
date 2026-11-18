@@ -26,7 +26,9 @@ export function ModelCanvas({
 }) {
   const laid = useMemo(() => layoutModel(definition), [definition]);
   const triangle = (head: { x: number; y: number; dir: 'left' | 'right' }) =>
-    head.dir === 'right' ? `M${head.x - 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x - 9} ${head.y + 4.6} Z` : `M${head.x + 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x + 9} ${head.y + 4.6} Z`;
+    head.dir === 'right'
+      ? `M${head.x - 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x - 9} ${head.y + 4.6} Z`
+      : `M${head.x + 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x + 9} ${head.y + 4.6} Z`;
   return (
     <div className="flow h-[40rem] overflow-auto rounded-lg" data-testid="model-canvas" aria-label="The data model">
       <div className="relative" style={{ width: laid.width, height: laid.height }}>
@@ -47,7 +49,12 @@ export function ModelCanvas({
           const spec = definition.entities[box.entity]!;
           const owner = lineOwner(definition, box.entity);
           return (
-            <div key={box.entity} className={cx('model-entity', box.entity === entity && 'ring-2 ring-focus')} style={{ left: box.x, top: box.y, width: BOX_W }} data-testid={`model-entity-${box.entity}`}>
+            <div
+              key={box.entity}
+              className={cx('model-entity', box.entity === entity && 'ring-2 ring-focus')}
+              style={{ left: box.x, top: box.y, width: BOX_W }}
+              data-testid={`model-entity-${box.entity}`}
+            >
               <button
                 type="button"
                 className="model-head w-full overflow-hidden rounded-none border-0 border-b bg-transparent text-left"
@@ -64,7 +71,12 @@ export function ModelCanvas({
                   const note = fieldNote(definition, each);
                   return (
                     <li key={each.name} className={cx(box.entity === entity && index === field && 'chosen')} style={{ height: ROW_H }}>
-                      <button type="button" className="flex w-full min-w-0 items-center gap-2 border-0 bg-transparent p-0 text-left" aria-label={`Open the field ${spec.label}: ${each.label}`} onClick={() => onPick(box.entity, index)}>
+                      <button
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-2 border-0 bg-transparent p-0 text-left"
+                        aria-label={`Open the field ${spec.label}: ${each.label}`}
+                        onClick={() => onPick(box.entity, index)}
+                      >
                         <span className="fd-type">{tag.icon ? <Icon name={tag.icon} /> : tag.text}</span>
                         <span className="truncate">{each.label}</span>
                         {each.type !== 'lines' && each.classification === 'pii' ? <span className="chip">PII</span> : null}
@@ -75,7 +87,12 @@ export function ModelCanvas({
                 })}
                 {onAddField ? (
                   <li style={{ height: ROW_H }}>
-                    <button type="button" className="flex w-full items-center gap-2 border-0 bg-transparent p-0 text-left text-sm text-accent" aria-label={`Add a field to ${spec.label}`} onClick={() => onAddField(box.entity)}>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 border-0 bg-transparent p-0 text-left text-sm text-accent"
+                      aria-label={`Add a field to ${spec.label}`}
+                      onClick={() => onAddField(box.entity)}
+                    >
                       <span className="fd-type">+</span>
                       <span>Add a field</span>
                     </button>

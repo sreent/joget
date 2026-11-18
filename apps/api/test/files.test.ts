@@ -29,7 +29,7 @@ describe('what a file is', () => {
 });
 
 describe('the malware scanner', () => {
-  it("counts no answer as no answer: uploads then fail closed", async () => {
+  it('counts no answer as no answer: uploads then fail closed', async () => {
     const scanner = clamdScanner({ host: '127.0.0.1', port: 1, timeoutMs: 2000 });
     await expect(scanner.scan(Buffer.from('%PDF-'))).rejects.toBeInstanceOf(ScannerUnavailableError);
   });

@@ -114,7 +114,9 @@ export function covers(grant: PermissionGrant, field: string): boolean {
   const [lines, sub] = splitPath(field);
   if ('include' in grant.fields) {
     const include = grant.fields.include;
-    return sub === undefined ? include.includes(field) || include.some((name) => name.startsWith(`${field}.`)) : include.includes(lines) || include.includes(field);
+    return sub === undefined
+      ? include.includes(field) || include.some((name) => name.startsWith(`${field}.`))
+      : include.includes(lines) || include.includes(field);
   }
   const exclude = grant.fields.exclude;
   return !exclude.includes(field) && !(sub !== undefined && exclude.includes(lines));
@@ -158,7 +160,9 @@ export function linesWritten(lineEntity: StoredEntity, field: string, before: re
   const old = new Map(before.flatMap((line) => (line.id ? [[line.id, line] as const] : [])));
   const kept = after.map((line) => (line.id ? old.get(line.id) : undefined));
   if (kept.some((line) => !line) || before.length !== after.length || before.some((line, i) => line.id !== after[i]!.id)) return all;
-  const changed = entered.filter((f) => after.some((line, i) => JSON.stringify(line.values[f.name] ?? null) !== JSON.stringify(kept[i]!.values[f.name] ?? null)));
+  const changed = entered.filter((f) =>
+    after.some((line, i) => JSON.stringify(line.values[f.name] ?? null) !== JSON.stringify(kept[i]!.values[f.name] ?? null)),
+  );
   return changed.map((f) => `${field}.${f.name}`);
 }
 

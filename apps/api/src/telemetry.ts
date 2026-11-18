@@ -12,16 +12,15 @@ if (endpoint) {
   // Instrument ES modules (http, pg, undici) loaded after this point.
   register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
 
-  const [{ NodeSDK }, { OTLPTraceExporter }, { OTLPMetricExporter }, { PeriodicExportingMetricReader }, http, pg, undici] =
-    await Promise.all([
-      import('@opentelemetry/sdk-node'),
-      import('@opentelemetry/exporter-trace-otlp-http'),
-      import('@opentelemetry/exporter-metrics-otlp-http'),
-      import('@opentelemetry/sdk-metrics'),
-      import('@opentelemetry/instrumentation-http'),
-      import('@opentelemetry/instrumentation-pg'),
-      import('@opentelemetry/instrumentation-undici'),
-    ]);
+  const [{ NodeSDK }, { OTLPTraceExporter }, { OTLPMetricExporter }, { PeriodicExportingMetricReader }, http, pg, undici] = await Promise.all([
+    import('@opentelemetry/sdk-node'),
+    import('@opentelemetry/exporter-trace-otlp-http'),
+    import('@opentelemetry/exporter-metrics-otlp-http'),
+    import('@opentelemetry/sdk-metrics'),
+    import('@opentelemetry/instrumentation-http'),
+    import('@opentelemetry/instrumentation-pg'),
+    import('@opentelemetry/instrumentation-undici'),
+  ]);
 
   const sdk = new NodeSDK({
     serviceName: process.env['OTEL_SERVICE_NAME'] ?? 'platform-api',

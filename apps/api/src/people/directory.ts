@@ -1,4 +1,4 @@
-import { users, type Executor } from '@platform/db';
+import { type Executor, users } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 
 /*
@@ -28,7 +28,10 @@ export async function managerUp(db: Executor, userId: string, levels: number): P
     if (!row?.managerId) return null;
     current = row.managerId;
   }
-  const [manager] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, current), eq(users.status, 'active')));
+  const [manager] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, current), eq(users.status, 'active')));
   return manager?.id ?? null;
 }
 
@@ -36,7 +39,10 @@ export async function managerUp(db: Executor, userId: string, levels: number): P
 export async function coverFor(db: Executor, userId: string, now: Date): Promise<string> {
   const [row] = await db.select({ coverId: users.coverId, coverUntil: users.coverUntil }).from(users).where(eq(users.id, userId));
   if (!row?.coverId || (row.coverUntil && row.coverUntil.getTime() <= now.getTime())) return userId;
-  const [cover] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, row.coverId), eq(users.status, 'active')));
+  const [cover] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, row.coverId), eq(users.status, 'active')));
   return cover?.id ?? userId;
 }
 
@@ -48,6 +54,9 @@ export async function departmentOf(db: Executor, userId: string): Promise<string
 
 /** The active person with an email in the org, for a manager the IdP names by email. */
 export async function personByEmail(db: Executor, orgId: string, email: string): Promise<string | null> {
-  const [row] = await db.select({ id: users.id }).from(users).where(and(eq(users.orgId, orgId), eq(users.email, email), eq(users.status, 'active')));
+  const [row] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.orgId, orgId), eq(users.email, email), eq(users.status, 'active')));
   return row?.id ?? null;
 }

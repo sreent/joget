@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { usePerson } from './people.js';
 import { Button, cx } from './ui.js';
 
@@ -94,7 +94,17 @@ function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] 
 }
 
 /** One number, as a dashboard tile: its label, then the value, in the same sans as everything else. */
-export function StatTile({ label, value, decimals, state }: { label: string; value: number | null | undefined; decimals: number; state: 'loading' | 'ready' | 'refused' | 'error' }) {
+export function StatTile({
+  label,
+  value,
+  decimals,
+  state,
+}: {
+  label: string;
+  value: number | null | undefined;
+  decimals: number;
+  state: 'loading' | 'ready' | 'refused' | 'error';
+}) {
   return (
     <section className="grid content-start gap-1 rounded-lg border border-line bg-surface p-4 shadow-card" aria-label={label}>
       <h3 className="m-0 text-sm font-normal text-muted">{label}</h3>
@@ -108,9 +118,21 @@ export function StatTile({ label, value, decimals, state }: { label: string; val
 }
 
 /** A chart in a card: its title, a switch to the table view, and the chart; held at half opacity while it refreshes. */
-export function ChartCard({ spec, data, state, refreshing }: { spec: ChartSpec; data: ChartData | undefined; state: 'loading' | 'ready' | 'refused' | 'error'; refreshing: boolean }) {
+export function ChartCard({
+  spec,
+  data,
+  state,
+  refreshing,
+}: {
+  spec: ChartSpec;
+  data: ChartData | undefined;
+  state: 'loading' | 'ready' | 'refused' | 'error';
+  refreshing: boolean;
+}) {
   const [table, setTable] = useState(spec.show === 'table');
-  const rows = data ? [...data.groups, ...(data.other !== null && data.more ? [{ key: null, label: `Other (${data.more})`, value: data.other } as ChartGroup] : [])] : [];
+  const rows = data
+    ? [...data.groups, ...(data.other !== null && data.more ? [{ key: null, label: `Other (${data.more})`, value: data.other } as ChartGroup] : [])]
+    : [];
   return (
     <figure className="m-0 grid content-start gap-3 rounded-lg border border-line bg-surface p-4 shadow-card">
       <figcaption className="flex items-start justify-between gap-2">
@@ -174,7 +196,10 @@ function ChartTable({ spec, rows }: { spec: ChartSpec; rows: readonly ChartGroup
 /** A tooltip: the value first and strong, the group after it. */
 function Tip({ value, children }: { value: string; children: ReactNode }) {
   return (
-    <span role="tooltip" className="pointer-events-none absolute z-10 grid gap-0.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs whitespace-nowrap shadow-raised">
+    <span
+      role="tooltip"
+      className="pointer-events-none absolute z-10 grid gap-0.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs whitespace-nowrap shadow-raised"
+    >
       <strong className="text-sm text-text tabular-nums">{value}</strong>
       <span className="text-muted">{children}</span>
     </span>
@@ -248,7 +273,13 @@ function Plot({ spec, rows }: { spec: ChartSpec; rows: readonly ChartGroup[] }) 
   return (
     <div ref={ref} className="relative" onPointerLeave={() => setActive(null)}>
       {width ? (
-        <svg width={width} height={height} role="img" aria-label={`${spec.title}: ${rows.length} ${spec.group.label.toLowerCase()} values`} className="block overflow-visible">
+        <svg
+          width={width}
+          height={height}
+          role="img"
+          aria-label={`${spec.title}: ${rows.length} ${spec.group.label.toLowerCase()} values`}
+          className="block overflow-visible"
+        >
           {ticks.map((tick) => (
             <g key={tick}>
               <line x1={LEFT} x2={width - 8} y1={y(tick)} y2={y(tick)} stroke="var(--line)" strokeWidth={1} shapeRendering="crispEdges" />
@@ -270,7 +301,9 @@ function Plot({ spec, rows }: { spec: ChartSpec; rows: readonly ChartGroup[] }) 
               <path d={path} fill="none" stroke="var(--chart-series)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
               {/* The end point: a dot in the series colour, ringed in the surface so it stays legible. */}
               <circle cx={x(last)} cy={y(rows[last]?.value ?? 0)} r={4} fill="var(--chart-series)" stroke="var(--surface)" strokeWidth={2} />
-              {active !== null && active !== last ? <circle cx={x(active)} cy={y(rows[active]?.value ?? 0)} r={4} fill="var(--chart-series)" stroke="var(--surface)" strokeWidth={2} /> : null}
+              {active !== null && active !== last ? (
+                <circle cx={x(active)} cy={y(rows[active]?.value ?? 0)} r={4} fill="var(--chart-series)" stroke="var(--surface)" strokeWidth={2} />
+              ) : null}
             </>
           ) : (
             rows.map((row, i) => {
@@ -286,7 +319,12 @@ function Plot({ spec, rows }: { spec: ChartSpec; rows: readonly ChartGroup[] }) 
             })
           )}
           {/* Only the latest value is written on the chart; the axis, the readout and the table carry the rest. */}
-          <text x={x(last)} y={y(rows[last]?.value ?? 0) - 10} textAnchor={line ? 'end' : 'middle'} className="fill-[var(--text)] text-[12px] font-semibold tabular-nums">
+          <text
+            x={x(last)}
+            y={y(rows[last]?.value ?? 0) - 10}
+            textAnchor={line ? 'end' : 'middle'}
+            className="fill-[var(--text)] text-[12px] font-semibold tabular-nums"
+          >
             {formatValue(rows[last]?.value ?? null, spec.decimals, true)}
           </text>
           {rows.map((row, i) => (
@@ -309,7 +347,10 @@ function Plot({ spec, rows }: { spec: ChartSpec; rows: readonly ChartGroup[] }) 
         <div style={{ height }} />
       )}
       {active !== null && rows[active] ? (
-        <span className="absolute" style={{ left: Math.min(Math.max(0, x(active) - 40), Math.max(0, width - 140)), top: Math.max(0, y(rows[active]!.value ?? 0) - 56) }}>
+        <span
+          className="absolute"
+          style={{ left: Math.min(Math.max(0, x(active) - 40), Math.max(0, width - 140)), top: Math.max(0, y(rows[active]!.value ?? 0) - 56) }}
+        >
           <Tip value={formatValue(rows[active]!.value, spec.decimals)}>
             <GroupName group={rows[active]!} spec={spec} />
           </Tip>

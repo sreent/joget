@@ -37,7 +37,8 @@ export interface Group {
 }
 
 export const isGroup = (item: Clause | Group): item is Group => 'match' in item;
-const isRef = (operand: unknown): operand is { ref: string } => typeof operand === 'object' && operand !== null && !Array.isArray(operand) && typeof (operand as { ref?: unknown }).ref === 'string';
+const isRef = (operand: unknown): operand is { ref: string } =>
+  typeof operand === 'object' && operand !== null && !Array.isArray(operand) && typeof (operand as { ref?: unknown }).ref === 'string';
 const relativeOf = (operand: unknown): Extract<Side, { kind: 'relative' }> | null => {
   if (typeof operand !== 'object' || operand === null || Array.isArray(operand)) return null;
   const object = operand as Record<string, unknown>;
@@ -90,7 +91,11 @@ export function toModel(condition: Condition | undefined, depth = 0): Group | nu
 function clauseJson(clause: Clause): Condition {
   const ref = { ref: clause.ref };
   const right: unknown =
-    clause.right?.kind === 'ref' ? { ref: clause.right.ref } : clause.right?.kind === 'relative' ? { [clause.right.unit]: clause.right.amount } : (clause.right?.value ?? null);
+    clause.right?.kind === 'ref'
+      ? { ref: clause.right.ref }
+      : clause.right?.kind === 'relative'
+        ? { [clause.right.unit]: clause.right.amount }
+        : (clause.right?.value ?? null);
   const list: readonly unknown[] = Array.isArray(right) ? right : right === null ? [] : [right];
   switch (clause.op) {
     case 'exists':
@@ -228,7 +233,12 @@ export const OP_LABELS: Record<Op, string> = {
 export function newClause(choice: RefChoice, clock = true): Clause {
   const op = opsFor(choice.kind)[0]!;
   // A date starts out compared with today, or, where the clock can't be read, with a date.
-  if (choice.kind === 'date') return { ref: choice.ref, op, right: clock ? { kind: 'relative', unit: 'today', amount: 0 } : { kind: 'value', value: new Date().toISOString().slice(0, 10) } };
+  if (choice.kind === 'date')
+    return {
+      ref: choice.ref,
+      op,
+      right: clock ? { kind: 'relative', unit: 'today', amount: 0 } : { kind: 'value', value: new Date().toISOString().slice(0, 10) },
+    };
   return { ref: choice.ref, op, ...(op === 'exists' ? {} : { right: { kind: 'value', value: defaultValue(choice, op) } }) };
 }
 

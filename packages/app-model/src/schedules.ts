@@ -1,4 +1,4 @@
-import { WEEKDAYS, type Schedule } from './schema.js';
+import { type Schedule, WEEKDAYS } from './schema.js';
 
 /*
  * Schedules (design §6.11): a flow that needs no input runs by itself every hour, day, weekday,
@@ -28,9 +28,12 @@ export function scheduleIssues(schedule: Schedule): Issue[] {
   if (schedule.every === 'week' && !schedule.on) issues.push({ path: '.on', message: 'Say on which day of the week it runs' });
   if (schedule.every !== 'week' && schedule.on) issues.push({ path: '.on', message: 'A day of the week is for a flow that runs every week' });
   if (schedule.every === 'month' && schedule.day === undefined) issues.push({ path: '.day', message: 'Say on which day of the month it runs' });
-  if (schedule.every !== 'month' && schedule.day !== undefined) issues.push({ path: '.day', message: 'A day of the month is for a flow that runs every month' });
-  if (schedule.every === 'hour' && !schedule.at.startsWith('00:')) issues.push({ path: '.at', message: 'Every hour, a flow runs at minutes past the hour: give them as 00:MM, for example 00:15' });
-  if (schedule.zone !== undefined && !knownZone(schedule.zone)) issues.push({ path: '.zone', message: `No time zone named ${schedule.zone}: give one such as Europe/London` });
+  if (schedule.every !== 'month' && schedule.day !== undefined)
+    issues.push({ path: '.day', message: 'A day of the month is for a flow that runs every month' });
+  if (schedule.every === 'hour' && !schedule.at.startsWith('00:'))
+    issues.push({ path: '.at', message: 'Every hour, a flow runs at minutes past the hour: give them as 00:MM, for example 00:15' });
+  if (schedule.zone !== undefined && !knownZone(schedule.zone))
+    issues.push({ path: '.zone', message: `No time zone named ${schedule.zone}: give one such as Europe/London` });
   return issues;
 }
 
@@ -49,7 +52,16 @@ const FORMATS = new Map<string, Intl.DateTimeFormat>();
 function wallAt(moment: number, zone: string): Wall {
   let format = FORMATS.get(zone);
   if (!format) {
-    format = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', weekday: 'short' });
+    format = new Intl.DateTimeFormat('en-GB', {
+      timeZone: zone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      weekday: 'short',
+    });
     FORMATS.set(zone, format);
   }
   const parts = Object.fromEntries(format.formatToParts(new Date(moment)).map((part) => [part.type, part.value]));

@@ -1,9 +1,9 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { flowWaits, NAME_PATTERN } from '@platform/app-model';
 import { appEnvironments } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod, ZodTypeProvider } from 'fastify-type-provider-zod';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { once, requireAuth } from '../access/rules.js';
 import { appResource } from '../apps/resources.js';
@@ -37,7 +37,11 @@ export function webhookSignature(key: string, timestamp: string, body: string): 
 
 export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: Secrets): FastifyPluginAsyncZod {
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
-  const appRule = (action: string) => ({ kind: 'permission' as const, action, resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theApp(request)) });
+  const appRule = (action: string) => ({
+    kind: 'permission' as const,
+    action,
+    resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theApp(request)),
+  });
   const raw = new WeakMap<FastifyRequest, string>();
 
   return async (app) => {
@@ -52,7 +56,16 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
           querystring: EnvQuery,
           response: {
             200: z.object({
-              connections: z.array(z.object({ name: z.string(), kind: z.enum(['service', 'teams']), label: z.string(), host: z.string().nullable(), needsSecret: z.boolean(), secret: SecretOut })),
+              connections: z.array(
+                z.object({
+                  name: z.string(),
+                  kind: z.enum(['service', 'teams']),
+                  label: z.string(),
+                  host: z.string().nullable(),
+                  needsSecret: z.boolean(),
+                  secret: SecretOut,
+                }),
+              ),
               webhooks: z.array(z.object({ name: z.string(), label: z.string(), flow: z.string(), url: z.string(), secret: SecretOut })),
             }),
           },
@@ -89,7 +102,8 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
         config: { access: appRule('connection.manage') },
         schema: {
           tags: ['integration'],
-          summary: "Set the secret a connection proves who it is with, in this environment: a token, a password, a key, or a Teams channel's address. Nothing shows it again",
+          summary:
+            "Set the secret a connection proves who it is with, in this environment: a token, a password, a key, or a Teams channel's address. Nothing shows it again",
           params: Params,
           querystring: EnvQuery,
           body: z.object({ value: z.string().min(1).max(4000) }),
@@ -104,13 +118,17 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
         const address = /^https:\/\//.test(request.body.value) || (ctx.config.OUTBOUND_ALLOW_HTTP && /^http:\/\//.test(request.body.value));
         if (connection.kind === 'teams' && !address) throw unprocessable('invalid_values', "Give the Teams channel's webhook address, as https://");
         const state = await secrets.set(ctx.db, { id: loaded.env.id, appId: loaded.app.id }, 'connection', request.params.name, request.body.value, auth);
-        await recordAudit(ctx.db, { orgId: ctx.org.id, actor: { type: auth.actor.type, id: auth.actor.id, via: 'api' }, now: ctx.now(), context: {} }, {
-          action: 'connection.secret.set',
-          target: { type: 'connection', id: request.params.name, name: connection.label },
-          spaceId: loaded.space.id,
-          appId: loaded.app.id,
-          env: loaded.env.kind,
-        });
+        await recordAudit(
+          ctx.db,
+          { orgId: ctx.org.id, actor: { type: auth.actor.type, id: auth.actor.id, via: 'api' }, now: ctx.now(), context: {} },
+          {
+            action: 'connection.secret.set',
+            target: { type: 'connection', id: request.params.name, name: connection.label },
+            spaceId: loaded.space.id,
+            appId: loaded.app.id,
+            env: loaded.env.kind,
+          },
+        );
         return state;
       },
     );
@@ -119,19 +137,29 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
       '/v1/apps/:appId/connections/:name/secret',
       {
         config: { access: appRule('connection.manage') },
-        schema: { tags: ['integration'], summary: "Remove a connection's secret from this environment: its calls fail until a new one is set", params: Params, querystring: EnvQuery, response: { 200: SecretOut } },
+        schema: {
+          tags: ['integration'],
+          summary: "Remove a connection's secret from this environment: its calls fail until a new one is set",
+          params: Params,
+          querystring: EnvQuery,
+          response: { 200: SecretOut },
+        },
       },
       async (request) => {
         const auth = requireAuth(request);
         const loaded = await theApp(request);
         if (await secrets.clear(ctx.db, loaded.env.id, 'connection', request.params.name)) {
-          await recordAudit(ctx.db, { orgId: ctx.org.id, actor: { type: auth.actor.type, id: auth.actor.id, via: 'api' }, now: ctx.now(), context: {} }, {
-            action: 'connection.secret.clear',
-            target: { type: 'connection', id: request.params.name },
-            spaceId: loaded.space.id,
-            appId: loaded.app.id,
-            env: loaded.env.kind,
-          });
+          await recordAudit(
+            ctx.db,
+            { orgId: ctx.org.id, actor: { type: auth.actor.type, id: auth.actor.id, via: 'api' }, now: ctx.now(), context: {} },
+            {
+              action: 'connection.secret.clear',
+              target: { type: 'connection', id: request.params.name },
+              spaceId: loaded.space.id,
+              appId: loaded.app.id,
+              env: loaded.env.kind,
+            },
+          );
         }
         return { set: false, setAt: null };
       },
@@ -143,7 +171,8 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
         config: { access: appRule('connection.manage') },
         schema: {
           tags: ['integration'],
-          summary: "Make a new key for a webhook in this environment, in place of the one it had. The key is shown this once: the other system signs each request with it",
+          summary:
+            'Make a new key for a webhook in this environment, in place of the one it had. The key is shown this once: the other system signs each request with it',
           params: Params,
           querystring: EnvQuery,
           response: { 200: z.object({ key: z.string(), url: z.string(), setAt: z.string() }) },
@@ -156,13 +185,17 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
         if (!hook) throw notFound('Webhook');
         const key = randomBytes(32).toString('base64url');
         const state = await secrets.set(ctx.db, { id: loaded.env.id, appId: loaded.app.id }, 'webhook', request.params.name, key, auth);
-        await recordAudit(ctx.db, { orgId: ctx.org.id, actor: { type: auth.actor.type, id: auth.actor.id, via: 'api' }, now: ctx.now(), context: {} }, {
-          action: 'webhook.key.make',
-          target: { type: 'webhook', id: request.params.name, name: hook.label },
-          spaceId: loaded.space.id,
-          appId: loaded.app.id,
-          env: loaded.env.kind,
-        });
+        await recordAudit(
+          ctx.db,
+          { orgId: ctx.org.id, actor: { type: auth.actor.type, id: auth.actor.id, via: 'api' }, now: ctx.now(), context: {} },
+          {
+            action: 'webhook.key.make',
+            target: { type: 'webhook', id: request.params.name, name: hook.label },
+            spaceId: loaded.space.id,
+            appId: loaded.app.id,
+            env: loaded.env.kind,
+          },
+        );
         return { key, url: `${ctx.config.PUBLIC_BASE_URL.replace(/\/$/, '')}/v1/hooks/${loaded.env.id}/${request.params.name}`, setAt: state.setAt! };
       },
     );
@@ -195,7 +228,10 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
           const { environmentId, name } = request.params;
           // Whatever is wrong, the caller learns only that its request isn't one this hook takes.
           const refused = () => new HttpError(401, 'not_signed', 'The request is not signed with this webhook’s key');
-          const [env] = await ctx.db.select({ appId: appEnvironments.appId, status: appEnvironments.status }).from(appEnvironments).where(eq(appEnvironments.id, environmentId));
+          const [env] = await ctx.db
+            .select({ appId: appEnvironments.appId, status: appEnvironments.status })
+            .from(appEnvironments)
+            .where(eq(appEnvironments.id, environmentId));
           if (!env || env.status !== 'active') throw refused();
           const loaded = await ctx.apps.load(env.appId, { id: environmentId });
           const hook = loaded.definition.webhooks?.[name];

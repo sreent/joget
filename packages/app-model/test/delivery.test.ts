@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest';
 import {
   accessChanges,
   capabilityChanges,
@@ -6,9 +5,10 @@ import {
   EXPENSE_APP,
   lintDefinition,
   mergeDefinitions,
-  validateDefinition,
   type StoredDefinition,
+  validateDefinition,
 } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 const ids = () => {
   let n = 0;
@@ -54,7 +54,12 @@ describe('the diff of a change', () => {
   });
 
   it('is empty when nothing changed', () => {
-    expect(diffDefinitions(base, changed(base, () => undefined))).toEqual([]);
+    expect(
+      diffDefinitions(
+        base,
+        changed(base, () => undefined),
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -62,7 +67,10 @@ describe('who gains or loses access', () => {
   it('says what a role can now do, and what it can no longer do', () => {
     const head = changed(base, (d) => {
       d.roles.approver.entities.expense_claim.export = true;
-      d.roles.approver.entities.expense_claim.update = { where: d.roles.approver.entities.expense_claim.update.where, fields: { include: ['status', 'approver', 'trip'] } };
+      d.roles.approver.entities.expense_claim.update = {
+        where: d.roles.approver.entities.expense_claim.update.where,
+        fields: { include: ['status', 'approver', 'trip'] },
+      };
       d.roles.approver.actions = [];
       d.roles.requester.entities.expense_claim.read = { unmask: ['iban'] };
     });
@@ -168,7 +176,9 @@ describe('the three-way merge', () => {
   it("keeps a change's connections, webhooks and tests while the main line moved on", () => {
     const ours = changed(base, (d) => {
       d.connections = { erp: { kind: 'service', label: 'ERP', url: 'https://erp.example.com', auth: { type: 'none' } } };
-      d.tests = { submits: { label: 'A requester submits', when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } }, then: { outcome: 'refused' } } };
+      d.tests = {
+        submits: { label: 'A requester submits', when: { action: 'submit_claim', as: 'requester', values: { title: 'Taxi' } }, then: { outcome: 'refused' } },
+      };
     });
     const theirs = changed(base, (d) => {
       d.queries.my_claims.limit = 20;

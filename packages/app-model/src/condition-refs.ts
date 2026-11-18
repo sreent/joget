@@ -1,4 +1,4 @@
-import { isRef, type Condition, type Operand } from '@platform/authz';
+import { type Condition, isRef, type Operand } from '@platform/authz';
 
 /** A condition with its references renamed. */
 export function mapRefs(condition: Condition, rename: (ref: string) => string): Condition {

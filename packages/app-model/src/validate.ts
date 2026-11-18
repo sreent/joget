@@ -1,7 +1,10 @@
-import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
+import { COMPARISON_OPERATORS, type Condition, conditionRefs, isRef, isRelativeTime, type Operand, timeOf } from '@platform/authz';
+import { beforeGives, checkBeforeFlows, moveSteps, readsPrincipal } from './before.js';
+import { mapRefs } from './condition-refs.js';
+import { calculationKind, type Expression, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo } from './expressions.js';
 import {
   entityFields,
-  workedOutBy,
+  type FieldInfo,
   formulaOf,
   isListKind,
   isOrderedKind,
@@ -10,37 +13,52 @@ import {
   jsTypeOf,
   lineOwners,
   rollupOf,
-  type FieldInfo,
   type StoredDefinition,
   type StoredEntity,
   type StoredField,
+  workedOutBy,
 } from './fields.js';
-import { calculationKind, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
-import { mapRefs } from './condition-refs.js';
 import { checkFlowRun, checkFlows, renameInFlows } from './flows.js';
-import { compileFlows, flowWaits } from './waiting.js';
-import { adHocStarts, canRepeat, catcherOn, elementName, eventSubCatcher, eventSubsIn, isAdHoc, isEventSub, insideOf, linkTarget, plainStartOf, processGraph, processWork, raisedCode, scopeOf, scopesOf, startEventsOf } from './processes.js';
+import { FORMULA_OPERATORS } from './formulas.js';
+import { blockPlace, pageBlocks } from './pages.js';
 import {
-  AppDefinition,
-  LINE_PATH_PATTERN,
-  RULE_OUTCOMES,
-  SYSTEM_FIELDS,
+  adHocStarts,
+  canRepeat,
+  catcherOn,
+  elementName,
+  eventSubCatcher,
+  eventSubsIn,
+  insideOf,
+  isAdHoc,
+  isEventSub,
+  linkTarget,
+  plainStartOf,
+  processGraph,
+  processWork,
+  raisedCode,
+  scopeOf,
+  scopesOf,
+  startEventsOf,
+} from './processes.js';
+import {
   type Action,
+  AppDefinition,
   type Entity,
   type Field,
+  LINE_PATH_PATTERN,
   type Message,
   type PageBlock,
   type Process,
   type ProcessElement,
+  RULE_OUTCOMES,
   type SimpleStep,
   type Step,
+  SYSTEM_FIELDS,
   type Timer,
 } from './schema.js';
-import { beforeGives, checkBeforeFlows, moveSteps, readsPrincipal } from './before.js';
-import { blockPlace, pageBlocks } from './pages.js';
-import { FORMULA_OPERATORS } from './formulas.js';
-import { canonicalValue, isCanonicalUuid } from './values.js';
 import { givenRefs } from './tests.js';
+import { canonicalValue, isCanonicalUuid } from './values.js';
+import { compileFlows, flowWaits } from './waiting.js';
 
 export interface Issue {
   /** Where in the definition, for example `entities.expense_claim.fields[2].name`. */
@@ -67,7 +85,14 @@ export function newId(): string {
   return [...globalThis.crypto.getRandomValues(new Uint8Array(10))].map((byte) => ID_ALPHABET[byte % ID_ALPHABET.length]).join('');
 }
 
-const TYPE_WORDS: Readonly<Record<string, string>> = { string: 'text', number: 'a number', int: 'a whole number', boolean: 'yes or no', object: 'a group of settings', array: 'a list' };
+const TYPE_WORDS: Readonly<Record<string, string>> = {
+  string: 'text',
+  number: 'a number',
+  int: 'a whole number',
+  boolean: 'yes or no',
+  object: 'a group of settings',
+  array: 'a list',
+};
 
 /** What the schema finds wrong, in plain words: its own messages are for programmers. A message a rule of the schema gives itself stays as it is. */
 export function plainMessage(issue: { readonly code: string; readonly message: string }): string {
@@ -225,7 +250,11 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       case 'add_line': {
         const lines = fieldName(entity)(step.field);
         const lineEntity = lineEntityOf(entity, lines);
-        return { ...step, field: lines, values: Object.fromEntries(Object.entries(step.values).map(([name, v]) => [lineEntity ? fieldName(lineEntity)(name) : name, value(v)])) };
+        return {
+          ...step,
+          field: lines,
+          values: Object.fromEntries(Object.entries(step.values).map(([name, v]) => [lineEntity ? fieldName(lineEntity)(name) : name, value(v)])),
+        };
       }
       case 'check':
         return { ...step, assert: condition(entity, step.assert), ...(step.fields ? { fields: step.fields.map(fieldName(entity)) } : {}) };
@@ -233,7 +262,12 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
   };
   const step = (entity: string, s: Step): Step =>
     s.type === 'if'
-      ? { ...s, when: condition(entity, s.when), then: s.then.map((inner) => simpleStep(entity, inner)), else: s.else.map((inner) => simpleStep(entity, inner)) }
+      ? {
+          ...s,
+          when: condition(entity, s.when),
+          then: s.then.map((inner) => simpleStep(entity, inner)),
+          else: s.else.map((inner) => simpleStep(entity, inner)),
+        }
       : simpleStep(entity, s);
   const actions = mapRecord(definition.actions, (action) => {
     const entity = entityName(action.entity);
@@ -291,7 +325,11 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
       entity,
       sections: form.sections.map((section) => ({
         ...section,
-        fields: section.fields.map((item) => ({ ...item, field: fieldName(entity)(item.field), ...(item.visibleWhen ? { visibleWhen: condition(entity, item.visibleWhen) } : {}) })),
+        fields: section.fields.map((item) => ({
+          ...item,
+          field: fieldName(entity)(item.field),
+          ...(item.visibleWhen ? { visibleWhen: condition(entity, item.visibleWhen) } : {}),
+        })),
       })),
     };
   });
@@ -309,9 +347,12 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
             ...(a['where'] ? { where: condition(entity, a['where'] as Condition) } : {}),
             ...(a['check'] ? { check: condition(entity, a['check'] as Condition) } : {}),
             ...(a['fields']
-              ? { fields: 'include' in (a['fields'] as object)
-                  ? { include: (a['fields'] as { include: string[] }).include.map(rename) }
-                  : { exclude: (a['fields'] as { exclude: string[] }).exclude.map(rename) } }
+              ? {
+                  fields:
+                    'include' in (a['fields'] as object)
+                      ? { include: (a['fields'] as { include: string[] }).include.map(rename) }
+                      : { exclude: (a['fields'] as { exclude: string[] }).exclude.map(rename) },
+                }
               : {}),
             ...(a['mask'] ? { mask: (a['mask'] as string[]).map(rename) } : {}),
             ...(a['unmask'] ? { unmask: (a['unmask'] as string[]).map(rename) } : {}),
@@ -368,16 +409,25 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
           elements: mapRecord(process.elements, (original): ProcessElement => {
             // A message sent to another record names it by a reference field of this one.
             const sent: ProcessElement =
-              'message' in original && original.message?.record ? { ...original, message: { ...original.message, record: field(original.message.record) } } : original;
+              'message' in original && original.message?.record
+                ? { ...original, message: { ...original.message, record: field(original.message.record) } }
+                : original;
             // The conditions that a loop and an ad hoc sub-process end on read the record too.
-            const repeated: ProcessElement = canRepeat(sent) && sent.repeat ? { ...sent, repeat: { ...sent.repeat, while: condition(entity, sent.repeat.while) } } : sent;
-            const element: ProcessElement = repeated.type === 'subProcess' && repeated.completeWhen ? { ...repeated, completeWhen: condition(entity, repeated.completeWhen) } : repeated;
+            const repeated: ProcessElement =
+              canRepeat(sent) && sent.repeat ? { ...sent, repeat: { ...sent.repeat, while: condition(entity, sent.repeat.while) } } : sent;
+            const element: ProcessElement =
+              repeated.type === 'subProcess' && repeated.completeWhen ? { ...repeated, completeWhen: condition(entity, repeated.completeWhen) } : repeated;
             switch (element.type) {
               case 'userTask':
                 return {
                   ...element,
                   ...(element.assignee
-                    ? { assignee: 'field' in element.assignee ? { field: field(element.assignee.field) } : { ...element.assignee, managerOf: field(element.assignee.managerOf) } }
+                    ? {
+                        assignee:
+                          'field' in element.assignee
+                            ? { field: field(element.assignee.field) }
+                            : { ...element.assignee, managerOf: field(element.assignee.managerOf) },
+                      }
                     : {}),
                   ...(element.department ? { department: { of: field(element.department.of) } } : {}),
                   ...(element.several
@@ -411,7 +461,9 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
               case 'scriptTask':
                 return { ...element, steps: element.steps.map((each) => step(entity, each)) };
               case 'serviceTask':
-                return element.flow ? { ...element, flow: { ...element.flow, input: mapRecord(element.flow.input, (e) => mapExpressionRefs(e, refs(entity))) } } : element;
+                return element.flow
+                  ? { ...element, flow: { ...element.flow, input: mapRecord(element.flow.input, (e) => mapExpressionRefs(e, refs(entity))) } }
+                  : element;
               default:
                 return element;
             }
@@ -422,13 +474,18 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
     : undefined;
   const flows = definition.flows ? renameInFlows({ ...definition, entities }, definition.flows, entityName, fieldName) : undefined;
   // A test names entities and fields by name too: its values follow their renames.
-  const testValues = (entity: string, values: Readonly<Record<string, unknown>>) => Object.fromEntries(Object.entries(values).map(([field, value]) => [fieldName(entity)(field), value]));
+  const testValues = (entity: string, values: Readonly<Record<string, unknown>>) =>
+    Object.fromEntries(Object.entries(values).map(([field, value]) => [fieldName(entity)(field), value]));
   const tests = definition.tests
     ? mapRecord(definition.tests, (test) => {
         const subject = entityName(definition.actions[test.when.action]?.entity ?? '');
         return {
           ...test,
-          given: mapRecord(test.given, (record) => ({ ...record, entity: entityName(record.entity), values: testValues(entityName(record.entity), record.values) })),
+          given: mapRecord(test.given, (record) => ({
+            ...record,
+            entity: entityName(record.entity),
+            values: testValues(entityName(record.entity), record.values),
+          })),
           when: { ...test.when, values: testValues(subject, test.when.values) },
           then: test.then.outcome === 'saved' ? { ...test.then, values: testValues(subject, test.then.values) } : test.then,
         };
@@ -452,12 +509,7 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
   } as StoredDefinition;
 }
 
-function assignIds(
-  data: AppDefinition,
-  previous: StoredDefinition | undefined,
-  generateId: () => string,
-  issues: Issue[],
-): StoredDefinition {
+function assignIds(data: AppDefinition, previous: StoredDefinition | undefined, generateId: () => string, issues: Issue[]): StoredDefinition {
   const unique = (taken: ReadonlySet<string>) => {
     for (;;) {
       const id = generateId();
@@ -553,10 +605,12 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
 
   const literalMatches = (info: FieldInfo, literal: Operand): string | null => {
     if (isRef(literal)) return null;
-    if (isRelativeTime(literal)) return info.kind === 'date' || info.kind === 'datetime' ? null : `${info.name} isn't a date or a time, so it doesn't compare with today or now`;
+    if (isRelativeTime(literal))
+      return info.kind === 'date' || info.kind === 'datetime' ? null : `${info.name} isn't a date or a time, so it doesn't compare with today or now`;
     if (literal === null) return `${info.name}: test for an empty field with "exists" rather than null`;
     const expected = jsTypeOf(info.kind);
-    if (expected === 'array') return info.kind === 'uuid[]' ? `${info.name} holds several records: test it with "in"` : `${info.name} is a multiple choice: test it with "in"`;
+    if (expected === 'array')
+      return info.kind === 'uuid[]' ? `${info.name} holds several records: test it with "in"` : `${info.name} is a multiple choice: test it with "in"`;
     if (typeof literal !== expected) return `${info.name} holds ${expected === 'string' ? 'text' : expected}s, not ${typeof literal}s`;
     return null;
   };
@@ -590,7 +644,10 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
     const op = (['eq', 'ne', ...COMPARISON_OPERATORS] as const).find((key) => key in c)!;
     const [left, right] = (c as Record<string, readonly [Operand, Operand]>)[op]!;
     for (const operand of [left, right]) if (isRef(operand)) checkRef(operand.ref);
-    for (const [a, b] of [[left, right], [right, left]] as const) {
+    for (const [a, b] of [
+      [left, right],
+      [right, left],
+    ] as const) {
       const outcomes = outcomesOf(a);
       if (outcomes && !isRef(b) && (op === 'eq' || op === 'ne') && (typeof b !== 'string' || !outcomes.includes(b))) {
         issues.push({ path, message: `${(a as { ref: string }).ref} is ${outcomes.join(' or ')}, never ${JSON.stringify(b)}` });
@@ -611,7 +668,11 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
           : time
             ? isRelativeTime(b) || timeOf(b) !== undefined
             : typeof b === 'number';
-        if (!fits) issues.push({ path, message: `${info.name} holds ${time ? 'dates or times' : 'numbers'}, so compare it with ${time ? 'a date, a time, today or now' : 'a number'}` });
+        if (!fits)
+          issues.push({
+            path,
+            message: `${info.name} holds ${time ? 'dates or times' : 'numbers'}, so compare it with ${time ? 'a date, a time, today or now' : 'a number'}`,
+          });
       }
     }
   };
@@ -659,7 +720,8 @@ function checkTests(definition: StoredDefinition, issues: Issue[]): void {
     const values = (entity: string, given: Readonly<Record<string, unknown>>, at: string, inputs?: readonly string[]) => {
       const known = definition.entities[entity];
       for (const [field, value] of Object.entries(given)) {
-        if (known && field !== 'owner' && !known.fields.some((f) => f.name === field)) issues.push({ path: `${at}.${field}`, message: `${known.label} has no field ${field}` });
+        if (known && field !== 'owner' && !known.fields.some((f) => f.name === field))
+          issues.push({ path: `${at}.${field}`, message: `${known.label} has no field ${field}` });
         else if (inputs && !inputs.includes(field)) issues.push({ path: `${at}.${field}`, message: `${field} isn't one of the action's inputs` });
         for (const ref of givenRefs(value)) if (!(ref in test.given)) issues.push({ path: `${at}.${field}`, message: `The test makes no record named ${ref}` });
       }
@@ -667,7 +729,8 @@ function checkTests(definition: StoredDefinition, issues: Issue[]): void {
     for (const [given, record] of Object.entries(test.given)) {
       const at = `${path}.given.${given}`;
       if (!definition.entities[record.entity]) issues.push({ path: `${at}.entity`, message: `No entity named ${record.entity}` });
-      else if (lines.has(record.entity)) issues.push({ path: `${at}.entity`, message: `${record.entity} is the lines of another entity: make that record, with its lines` });
+      else if (lines.has(record.entity))
+        issues.push({ path: `${at}.entity`, message: `${record.entity} is the lines of another entity: make that record, with its lines` });
       else values(record.entity, record.values, `${at}.values`);
     }
     if (!definition.roles[test.when.as]) issues.push({ path: `${path}.when.as`, message: `No role named ${test.when.as}` });
@@ -677,16 +740,29 @@ function checkTests(definition: StoredDefinition, issues: Issue[]): void {
       continue;
     }
     const record = test.when.record ? test.given[test.when.record] : undefined;
-    if (action.operation === 'update' && !test.when.record) issues.push({ path: `${path}.when.record`, message: `${action.label} changes a record: name one that the test makes` });
-    else if (action.operation === 'create' && test.when.record) issues.push({ path: `${path}.when.record`, message: `${action.label} makes its own record: it changes none` });
+    if (action.operation === 'update' && !test.when.record)
+      issues.push({ path: `${path}.when.record`, message: `${action.label} changes a record: name one that the test makes` });
+    else if (action.operation === 'create' && test.when.record)
+      issues.push({ path: `${path}.when.record`, message: `${action.label} makes its own record: it changes none` });
     else if (test.when.record && !record) issues.push({ path: `${path}.when.record`, message: `The test makes no record named ${test.when.record}` });
-    else if (record && record.entity !== action.entity) issues.push({ path: `${path}.when.record`, message: `${test.when.record} is a record of ${record.entity}, and ${action.label} changes one of ${action.entity}` });
+    else if (record && record.entity !== action.entity)
+      issues.push({
+        path: `${path}.when.record`,
+        message: `${test.when.record} is a record of ${record.entity}, and ${action.label} changes one of ${action.entity}`,
+      });
     values(action.entity, test.when.values, `${path}.when.values`, [...action.input]);
     if (test.then.outcome === 'saved') values(action.entity, test.then.values, `${path}.then.values`);
   }
 }
 
-function checkFormula(field: Field, formula: Expression, fields: ReadonlyMap<string, FieldInfo>, lines: ReadonlySet<string>, path: string, issues: Issue[]): void {
+function checkFormula(
+  field: Field,
+  formula: Expression,
+  fields: ReadonlyMap<string, FieldInfo>,
+  lines: ReadonlySet<string>,
+  path: string,
+  issues: Issue[],
+): void {
   const at = `${path}.formula`;
   const issue = (message: string) => issues.push({ path: at, message });
   const kindOf = (expression: Expression): ExpressionKind => {
@@ -737,8 +813,10 @@ function checkFormula(field: Field, formula: Expression, fields: ReadonlyMap<str
     if (op === 'if') {
       const when = (expression as { if: readonly [Condition, Expression, Expression] }).if[0];
       checkCondition(when, { record: fields, lines }, at, issues);
-      if (conditionRefs(when).some((ref) => ref === 'principal' || ref.startsWith('principal.'))) issue("A formula's choice reads the record, not the person who writes it");
-      if (conditionRefs(when).some((ref) => fields.get(ref.slice('record.'.length))?.system)) issue("A formula's choice reads the fields of the app, not those the platform keeps");
+      if (conditionRefs(when).some((ref) => ref === 'principal' || ref.startsWith('principal.')))
+        issue("A formula's choice reads the record, not the person who writes it");
+      if (conditionRefs(when).some((ref) => fields.get(ref.slice('record.'.length))?.system))
+        issue("A formula's choice reads the fields of the app, not those the platform keeps");
       if (comparesWithClock(when)) issue("A formula's choice can't compare with today or now: once stored, its value would go stale");
     }
     const worked = calculationKind(op, operandsOf(expression).map(kindOf));
@@ -747,7 +825,10 @@ function checkFormula(field: Field, formula: Expression, fields: ReadonlyMap<str
   };
   const kind = kindOf(formula);
   const wanted = fields.get(field.name)?.kind;
-  if (wanted && !(kind === 'any' || kind === 'null' || kind === wanted || (wanted === 'date' && kind === 'datetime') || (wanted === 'text' && kind !== 'text[]'))) {
+  if (
+    wanted &&
+    !(kind === 'any' || kind === 'null' || kind === wanted || (wanted === 'date' && kind === 'datetime') || (wanted === 'text' && kind !== 'text[]'))
+  ) {
     issue(`${field.label} holds ${KIND_WORDS[wanted]}, and this formula gives ${KIND_WORDS[kind]}`);
   }
 }
@@ -784,7 +865,9 @@ function checkSteps(
       if (info) return info.kind;
       issues.push({
         path: at,
-        message: lines.has(name) ? `${expression.ref}: a step can't use lines one by one. Add a rollup, such as a total, and use that` : `${expression.ref}: no such field`,
+        message: lines.has(name)
+          ? `${expression.ref}: a step can't use lines one by one. Add a rollup, such as a total, and use that`
+          : `${expression.ref}: no such field`,
       });
       return 'any';
     }
@@ -793,7 +876,10 @@ function checkSteps(
     const op = operatorOf(expression);
     if (!op) return 'any';
     if (op === 'if') checkCondition((expression as { if: readonly [Condition, Expression, Expression] }).if[0], { record: fields, lines }, at, issues);
-    const worked = calculationKind(op, operandsOf(expression).map((operand) => kindOf(operand, at)));
+    const worked = calculationKind(
+      op,
+      operandsOf(expression).map((operand) => kindOf(operand, at)),
+    );
     for (const message of worked.problems) issues.push({ path: at, message });
     return worked.kind;
   };
@@ -824,8 +910,9 @@ function checkSteps(
           const info = fields.get(step.field);
           if (lines.has(step.field)) issues.push({ path: `${at}.field`, message: `${step.field} holds lines: add one with an "add a line" step` });
           else if (!info) issues.push({ path: `${at}.field`, message: `No field named ${step.field}` });
-          else if (!isWritable(info)) issues.push({ path: `${at}.field`, message: info.system ? `${step.field} is set by the platform` : `${step.field} is ${workedOutBy(info)}` });
-          else if (info.field?.type === 'file') issues.push({ path: `${at}.field`, message: 'A step can\'t set a file: take it as input' });
+          else if (!isWritable(info))
+            issues.push({ path: `${at}.field`, message: info.system ? `${step.field} is set by the platform` : `${step.field} is ${workedOutBy(info)}` });
+          else if (info.field?.type === 'file') issues.push({ path: `${at}.field`, message: "A step can't set a file: take it as input" });
           else fits(info, step.value, `${at}.value`, info.field?.label ?? step.field);
           return;
         }
@@ -840,12 +927,13 @@ function checkSteps(
           for (const [name, expression] of Object.entries(step.values)) {
             const info = lineFields.get(name);
             if (!info || info.system) issues.push({ path: `${at}.values.${name}`, message: `${lineEntity.label} has no field ${name}` });
-            else if (info.field?.type === 'file') issues.push({ path: `${at}.values.${name}`, message: 'A step can\'t set a file: take it as input' });
+            else if (info.field?.type === 'file') issues.push({ path: `${at}.values.${name}`, message: "A step can't set a file: take it as input" });
             else fits(info, expression, `${at}.values.${name}`, info.field?.label ?? name);
           }
           for (const declared of lineEntity.fields) {
             const defaulted = 'default' in declared && declared.default !== undefined;
-            if (declared.required && !(declared.name in step.values) && !defaulted) issues.push({ path: `${at}.values`, message: `Each line needs ${declared.label}: give it a value` });
+            if (declared.required && !(declared.name in step.values) && !defaulted)
+              issues.push({ path: `${at}.values`, message: `Each line needs ${declared.label}: give it a value` });
           }
           return;
         }
@@ -867,7 +955,9 @@ function checkSteps(
 function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   const owners = lineOwners(definition);
   const fieldsOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, entityFields(entity, { line: owners.has(name) })]));
-  const linesOf = new Map(Object.entries(definition.entities).map(([name, entity]) => [name, new Set(entity.fields.filter((f) => f.type === 'lines').map((f) => f.name))]));
+  const linesOf = new Map(
+    Object.entries(definition.entities).map(([name, entity]) => [name, new Set(entity.fields.filter((f) => f.type === 'lines').map((f) => f.name))]),
+  );
   const entityAt = (name: string, path: string) => {
     const fields = fieldsOf.get(name);
     if (!fields) issues.push({ path, message: `No entity named ${name}` });
@@ -890,7 +980,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   /** A field of an entity's records, or a field of its lines named as `lines.amount`. */
   const fieldAt = (entity: string, name: string): { info?: FieldInfo; lines?: boolean } | undefined => {
     const match = LINE_PATH_PATTERN.exec(name);
-    if (!match) return linesOf.get(entity)?.has(name) ? { lines: true } : fieldsOf.get(entity)?.has(name) ? { info: fieldsOf.get(entity)!.get(name)! } : undefined;
+    if (!match)
+      return linesOf.get(entity)?.has(name) ? { lines: true } : fieldsOf.get(entity)?.has(name) ? { info: fieldsOf.get(entity)!.get(name)! } : undefined;
     const lineEntity = lineEntityOf(entity, match[1]!);
     const info = lineEntity ? entityFields(lineEntity, { line: true }).get(match[2]!) : undefined;
     return info && !info.system ? { info } : undefined;
@@ -913,7 +1004,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         const target = definition.entities[field.entity];
         const owner = owners.get(field.entity);
         if (!target) issues.push({ path: `${path}.entity`, message: `No entity named ${field.entity}` });
-        else if (field.entity === name) issues.push({ path: `${path}.entity`, message: 'An entity can\'t be lines of itself' });
+        else if (field.entity === name) issues.push({ path: `${path}.entity`, message: "An entity can't be lines of itself" });
         else if (owner && (owner.parent !== name || owner.field !== field.name)) {
           issues.push({ path: `${path}.entity`, message: `${field.entity} is already the lines of ${owner.parent}.${owner.field}` });
         } else if (target.fields.some((f) => f.type === 'lines')) {
@@ -923,7 +1014,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         if (field.classification === 'pii') issues.push({ path: `${path}.classification`, message: `Classify the fields of ${field.entity} instead` });
       }
       if (owners.has(name) && 'unique' in field && field.unique) {
-        issues.push({ path: `${path}.unique`, message: 'Fields of lines can\'t be unique yet' });
+        issues.push({ path: `${path}.unique`, message: "Fields of lines can't be unique yet" });
       }
       const rollup = rollupOf(field);
       if (rollup) {
@@ -938,10 +1029,11 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
             issues.push({ path: `${path}.decimals`, message: `${sub} has ${source.decimals} decimal places, so the ${op} needs at least as many` });
           }
         }
-        if (field.required) issues.push({ path: `${path}.required`, message: 'A field worked out from lines always has its value: it can\'t be required' });
-        if ('default' in field && field.default !== undefined) issues.push({ path: `${path}.default`, message: 'A field worked out from lines can\'t have a default' });
+        if (field.required) issues.push({ path: `${path}.required`, message: "A field worked out from lines always has its value: it can't be required" });
+        if ('default' in field && field.default !== undefined)
+          issues.push({ path: `${path}.default`, message: "A field worked out from lines can't have a default" });
         if (formulaOf(field)) issues.push({ path: `${path}.formula`, message: 'A field is worked out from lines or by a formula, not both' });
-        if ('unique' in field && field.unique) issues.push({ path: `${path}.unique`, message: 'A field worked out from lines can\'t be unique' });
+        if ('unique' in field && field.unique) issues.push({ path: `${path}.unique`, message: "A field worked out from lines can't be unique" });
       }
       if (field.type === 'number' && field.min !== undefined && field.max !== undefined && field.min > field.max) {
         issues.push({ path, message: 'min is greater than max' });
@@ -958,8 +1050,10 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       const formula = formulaOf(field);
       if (formula && !rollup) {
         checkFormula(field, formula, fieldsOf.get(name)!, linesOf.get(name)!, path, issues);
-        if (field.required || field.requiredWhen) issues.push({ path: `${path}.required`, message: 'The platform works this field out, so nobody can be asked to fill it in' });
-        if ('default' in field && field.default !== undefined) issues.push({ path: `${path}.default`, message: 'A field worked out by a formula has no default' });
+        if (field.required || field.requiredWhen)
+          issues.push({ path: `${path}.required`, message: 'The platform works this field out, so nobody can be asked to fill it in' });
+        if ('default' in field && field.default !== undefined)
+          issues.push({ path: `${path}.default`, message: 'A field worked out by a formula has no default' });
       }
       if (field.requiredWhen) {
         const at = `${path}.requiredWhen`;
@@ -976,10 +1070,14 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       issues.push({ path: `${base}.titleField`, message: `${entity.titleField} holds several records, so it can't name a record` });
     }
     // Formulas work each other out in order: a loop of them would never end.
-    const reads = new Map(entity.fields.flatMap((field) => {
-      const formula = formulaOf(field);
-      return formula ? [[field.name, expressionRefs(formula).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : []))] as const] : [];
-    }));
+    const reads = new Map(
+      entity.fields.flatMap((field) => {
+        const formula = formulaOf(field);
+        return formula
+          ? [[field.name, expressionRefs(formula).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : []))] as const]
+          : [];
+      }),
+    );
     const looping = new Set<string>();
     const walk = (field: string, trail: readonly string[]): void => {
       if (trail.includes(field)) {
@@ -990,7 +1088,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     };
     for (const field of reads.keys()) walk(field, []);
     entity.fields.forEach((field, index) => {
-      if (looping.has(field.name)) issues.push({ path: `${base}.fields[${index}].formula`, message: `${field.label}'s formula reads itself, through other formulas: break the loop` });
+      if (looping.has(field.name))
+        issues.push({ path: `${base}.fields[${index}].formula`, message: `${field.label}'s formula reads itself, through other formulas: break the loop` });
     });
   }
 
@@ -1013,7 +1112,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     for (const field of action.input) {
       const info = fields.get(field);
       if (!info && !lines.has(field)) issues.push({ path: `${path}.input`, message: `No field named ${field}` });
-      else if (info && !isWritable(info)) issues.push({ path: `${path}.input`, message: info.system ? `${field} is set by the platform` : `${field} is ${workedOutBy(info)}` });
+      else if (info && !isWritable(info))
+        issues.push({ path: `${path}.input`, message: info.system ? `${field} is set by the platform` : `${field} is ${workedOutBy(info)}` });
       if (input.has(field)) issues.push({ path: `${path}.input`, message: `${field} is listed twice` });
       input.add(field);
     }
@@ -1037,7 +1137,12 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       const stepsGive = beforeGives(definition, action);
       for (const field of entity.fields) {
         // The platform works out a formula's value: its own check says it can't be required.
-        const provided = input.has(field.name) || field.name in action.set || stepsGive.has(field.name) || ('default' in field && field.default !== undefined) || Boolean(formulaOf(field));
+        const provided =
+          input.has(field.name) ||
+          field.name in action.set ||
+          stepsGive.has(field.name) ||
+          ('default' in field && field.default !== undefined) ||
+          Boolean(formulaOf(field));
         if (field.required && !provided) {
           issues.push({
             path: `${path}.input`,
@@ -1066,7 +1171,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     for (const field of query.fields) if (!fields.has(field) && !lines.has(field)) issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
     if (query.summary) {
       if (query.fields.length) issues.push({ path: `${path}.fields`, message: 'A query that answers with numbers returns no fields' });
-      if (query.sort.length) issues.push({ path: `${path}.sort`, message: 'A query that answers with numbers is in its own order: largest first, or latest first' });
+      if (query.sort.length)
+        issues.push({ path: `${path}.sort`, message: 'A query that answers with numbers is in its own order: largest first, or latest first' });
     } else if (!query.fields.length) {
       issues.push({ path: `${path}.fields`, message: 'Name at least one field each record carries, or let the query answer with numbers' });
     }
@@ -1074,7 +1180,11 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     if (query.filter) checkCondition(query.filter, { record: fields, lines, input }, `${path}.filter`, issues);
     query.sort.forEach((sort, index) => {
       const info = fields.get(sort.field);
-      if (!info) issues.push({ path: `${path}.sort[${index}]`, message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}` });
+      if (!info)
+        issues.push({
+          path: `${path}.sort[${index}]`,
+          message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}`,
+        });
       else if (!isSortableKind(info.kind)) issues.push({ path: `${path}.sort[${index}]`, message: `${sort.field} can't be sorted` });
     });
   }
@@ -1085,14 +1195,19 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     const lines = linesOf.get(card.entity)!;
     for (const field of card.show) if (!fields.has(field) && !lines.has(field)) issues.push({ path: `cards.${name}.show`, message: `No field named ${field}` });
     for (const [, field] of card.title.matchAll(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g)) {
-      if (!fields.has(field!)) issues.push({ path: `cards.${name}.title`, message: lines.has(field!) ? `${field} holds lines: put a rollup, such as a total, in the title` : `No field named ${field}` });
+      if (!fields.has(field!))
+        issues.push({
+          path: `cards.${name}.title`,
+          message: lines.has(field!) ? `${field} holds lines: put a rollup, such as a total, in the title` : `No field named ${field}`,
+        });
     }
     if (card.table) {
       const lineEntity = lineEntityOf(card.entity, card.table.of);
       if (!lineEntity) issues.push({ path: `cards.${name}.table.of`, message: `${card.entity} has no lines field named ${card.table.of}` });
       else {
         for (const column of card.table.columns) {
-          if (!lineEntity.fields.some((f) => f.name === column)) issues.push({ path: `cards.${name}.table.columns`, message: `${card.table.of} has no field named ${column}` });
+          if (!lineEntity.fields.some((f) => f.name === column))
+            issues.push({ path: `cards.${name}.table.columns`, message: `${card.table.of} has no field named ${column}` });
         }
       }
     }
@@ -1105,14 +1220,16 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     const lines = linesOf.get(form.entity)!;
     const action = form.action ? definition.actions[form.action] : undefined;
     if (form.action && !action) issues.push({ path: `${path}.action`, message: `No action named ${form.action}` });
-    else if (action && action.entity !== form.entity) issues.push({ path: `${path}.action`, message: `${form.action} works on ${action.entity}, not ${form.entity}` });
+    else if (action && action.entity !== form.entity)
+      issues.push({ path: `${path}.action`, message: `${form.action} works on ${action.entity}, not ${form.entity}` });
     const placed = new Set<string>();
     form.sections.forEach((section, s) => {
       section.fields.forEach((item, f) => {
         const at = `${path}.sections[${s}].fields[${f}]`;
         const info = fields.get(item.field);
         if (!info && !lines.has(item.field)) issues.push({ path: at, message: `No field named ${item.field}` });
-        else if (info && !item.readOnly && !isWritable(info)) issues.push({ path: at, message: `${item.field} is ${info.system ? 'set by the platform' : workedOutBy(info)}: show it read-only` });
+        else if (info && !item.readOnly && !isWritable(info))
+          issues.push({ path: at, message: `${item.field} is ${info.system ? 'set by the platform' : workedOutBy(info)}: show it read-only` });
         else if (action && !item.readOnly && !action.input.includes(item.field)) {
           issues.push({ path: at, message: `${item.field} isn't an input of ${form.action}: show it read-only, or add it to the action's inputs` });
         }
@@ -1121,7 +1238,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         if (item.visibleWhen) checkCondition(item.visibleWhen, { record: fields, lines }, `${at}.visibleWhen`, issues);
       });
     });
-    if (form.layout === 'steps' && form.sections.length < 2) issues.push({ path: `${path}.layout`, message: 'A form in steps has a step for each section: give it two sections or more' });
+    if (form.layout === 'steps' && form.sections.length < 2)
+      issues.push({ path: `${path}.layout`, message: 'A form in steps has a step for each section: give it two sections or more' });
   }
 
   for (const [roleName, role] of Object.entries(definition.roles)) {
@@ -1175,7 +1293,9 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
   const isDated = (info: FieldInfo) => info.kind === 'date' || info.kind === 'datetime';
   /** Fields whose values make sensible groups: choices, text, yes or no, and people. */
   const groupable = (info: FieldInfo) =>
-    info.kind === 'text' || info.kind === 'boolean' || (info.kind === 'uuid' && info.name !== 'id' && info.field?.type !== 'reference' && info.field?.type !== 'file');
+    info.kind === 'text' ||
+    info.kind === 'boolean' ||
+    (info.kind === 'uuid' && info.name !== 'id' && info.field?.type !== 'reference' && info.field?.type !== 'file');
   const OPS = { sum: 'total', avg: 'average', min: 'find the smallest of', max: 'find the largest of' } as const;
 
   /** A number or a chart: what it works out, over what, grouped how, and over which lines. */
@@ -1202,7 +1322,10 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       const { field, period } = block.group;
       const found = summaryField(block.entity, field);
       if (!found) {
-        issues.push({ path: `${path}.group.field`, message: lines.has(field) ? `${field} holds lines: group by a field of them, such as ${field}.category` : `No field named ${field}` });
+        issues.push({
+          path: `${path}.group.field`,
+          message: lines.has(field) ? `${field} holds lines: group by a field of them, such as ${field}.category` : `No field named ${field}`,
+        });
       } else {
         if (found.lines) over.add(found.lines);
         if (isDated(found.info) && !period) issues.push({ path: `${path}.group.period`, message: `${field} is a date: group it by periods, such as month` });
@@ -1210,7 +1333,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         else if (!isDated(found.info) && !groupable(found.info)) {
           issues.push({ path: `${path}.group.field`, message: `${field} can't group records: group by a choice, text, a yes or no, a person or a date` });
         }
-        if (block.show === 'line' && !period) issues.push({ path: `${path}.show`, message: 'A line shows change over time: group by periods of a date, or show bars' });
+        if (block.show === 'line' && !period)
+          issues.push({ path: `${path}.show`, message: 'A line shows change over time: group by periods of a date, or show bars' });
       }
     }
     if (block.range) {
@@ -1248,7 +1372,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     const oneClick = (actionName: string, entity: string, at: string, where: string) => {
       const action = definition.actions[actionName];
       if (!action) issues.push({ path: at, message: `No action named ${actionName}` });
-      else if (action.entity !== entity || action.operation !== 'update') issues.push({ path: at, message: `${actionName} doesn't change a ${entity} record, so it can't run on ${where}` });
+      else if (action.entity !== entity || action.operation !== 'update')
+        issues.push({ path: at, message: `${actionName} doesn't change a ${entity} record, so it can't run on ${where}` });
       else if (action.input.length) issues.push({ path: at, message: `${actionName} takes input, so it can't run in one click: open it from a form instead` });
     };
     /** `of`: a reference field of the block's entity that points at the record the page is about, or a list that may hold it. */
@@ -1266,7 +1391,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         block.buttons.forEach((button, b) => {
           if ('form' in button && !definition.forms[button.form]) issues.push({ path: `${path}.buttons[${b}]`, message: `No form named ${button.form}` });
           if ('page' in button && !definition.pages[button.page]) issues.push({ path: `${path}.buttons[${b}]`, message: `No page named ${button.page}` });
-          else if ('page' in button && recordPage(button.page)) issues.push({ path: `${path}.buttons[${b}]`, message: `${button.page} is about one record, so a list's row opens it, not a button` });
+          else if ('page' in button && recordPage(button.page))
+            issues.push({ path: `${path}.buttons[${b}]`, message: `${button.page} is about one record, so a list's row opens it, not a button` });
         });
       }
       if (block.type === 'fields') {
@@ -1277,7 +1403,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         // A lines field shows as a table of its lines.
         const fields = entityFields(definition.entities[about]!);
         const lines = linesOf.get(about)!;
-        for (const field of block.fields) if ((!fields.has(field) && !lines.has(field)) || field === 'version') issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
+        for (const field of block.fields)
+          if ((!fields.has(field) && !lines.has(field)) || field === 'version') issues.push({ path: `${path}.fields`, message: `No field named ${field}` });
         for (const actionName of block.actions) oneClick(actionName, about, `${path}.actions`, 'this record');
         continue;
       }
@@ -1301,7 +1428,11 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       if (block.filter) checkCondition(block.filter, { record: fields, lines }, `${path}.filter`, issues);
       block.sort.forEach((sort, s) => {
         const info = fields.get(sort.field);
-        if (!info) issues.push({ path: `${path}.sort[${s}]`, message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}` });
+        if (!info)
+          issues.push({
+            path: `${path}.sort[${s}]`,
+            message: lines.has(sort.field) ? `${sort.field} holds lines, which can't be sorted by` : `No field named ${sort.field}`,
+          });
         else if (!isSortableKind(info.kind)) issues.push({ path: `${path}.sort[${s}]`, message: `${sort.field} can't be sorted` });
       });
       for (const actionName of block.actions) oneClick(actionName, block.entity, `${path}.actions`, 'a row');
@@ -1309,7 +1440,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       if (block.open !== undefined) {
         const opened = definition.pages[block.open];
         if (!opened) issues.push({ path: `${path}.open`, message: `No page named ${block.open}` });
-        else if (opened.record?.entity !== block.entity) issues.push({ path: `${path}.open`, message: `${block.open} isn't a page about one ${block.entity}, so a row can't open it` });
+        else if (opened.record?.entity !== block.entity)
+          issues.push({ path: `${path}.open`, message: `${block.open} isn't a page about one ${block.entity}, so a row can't open it` });
       }
     }
   }
@@ -1321,7 +1453,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     items.forEach((item, index) => {
       const path = `navigation.items[${index}]`;
       if ('page' in item && !definition.pages[item.page]) issues.push({ path, message: `No page named ${item.page}` });
-      else if ('page' in item && recordPage(item.page)) issues.push({ path, message: `${item.page} is about one record, so a list's row opens it, not the menu` });
+      else if ('page' in item && recordPage(item.page))
+        issues.push({ path, message: `${item.page} is about one record, so a list's row opens it, not the menu` });
       if ('form' in item && !definition.forms[item.form]) issues.push({ path, message: `No form named ${item.form}` });
       if ('entity' in item) recordEntityAt(item.entity, path);
     });
@@ -1341,7 +1474,10 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
   }
   const owner = owners.get(process.entity);
   if (owner) {
-    issues.push({ path: `${base}.entity`, message: `${process.entity} is the lines of ${owner.parent}.${owner.field}, so it has no records of its own: use ${owner.parent}` });
+    issues.push({
+      path: `${base}.entity`,
+      message: `${process.entity} is the lines of ${owner.parent}.${owner.field}, so it has no records of its own: use ${owner.parent}`,
+    });
     return;
   }
   const fields = entityFields(entity);
@@ -1349,8 +1485,13 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
   const graph = processGraph(process);
   const label = (id: string) => elementName(process, id);
   const tasks = new Map<string, readonly string[]>(
-    Object.entries(process.elements).flatMap(([id, element]): Array<[string, readonly string[]]> =>
-      element.type === 'userTask' ? [[id, element.outcomes.map((outcome) => outcome.name)]] : element.type === 'businessRuleTask' ? [[id, RULE_OUTCOMES]] : [],
+    Object.entries(process.elements).flatMap(
+      ([id, element]): Array<[string, readonly string[]]> =>
+        element.type === 'userTask'
+          ? [[id, element.outcomes.map((outcome) => outcome.name)]]
+          : element.type === 'businessRuleTask'
+            ? [[id, RULE_OUTCOMES]]
+            : [],
     ),
   );
   const scope = { record: fields, lines, tasks };
@@ -1371,17 +1512,22 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
     const [fromScope, toScope] = [scopeOf(process, flow.from), scopeOf(process, flow.to)];
     if (fromScope !== toScope) {
       const where = (scope: string | undefined) => (scope ? `in ${label(scope)}` : 'in the process itself');
-      issues.push({ path, message: `A flow can't cross the edge of a sub-process: ${label(flow.from)} is ${where(fromScope)}, and ${label(flow.to)} is ${where(toScope)}` });
+      issues.push({
+        path,
+        message: `A flow can't cross the edge of a sub-process: ${label(flow.from)} is ${where(fromScope)}, and ${label(flow.to)} is ${where(toScope)}`,
+      });
     }
     if (flow.outcome !== undefined) {
-      const outcomes = from.type === 'userTask' ? from.outcomes.map((outcome) => outcome.name) : from.type === 'businessRuleTask' ? [...RULE_OUTCOMES] : undefined;
+      const outcomes =
+        from.type === 'userTask' ? from.outcomes.map((outcome) => outcome.name) : from.type === 'businessRuleTask' ? [...RULE_OUTCOMES] : undefined;
       if (!outcomes) issues.push({ path: `${path}.outcome`, message: 'Only a flow out of a user task or a rule check follows an outcome' });
       else if (!outcomes.includes(flow.outcome)) issues.push({ path: `${path}.outcome`, message: `${label(flow.from)} has no outcome ${flow.outcome}` });
     }
     if ((flow.when || flow.default) && from.type !== 'exclusiveGateway' && from.type !== 'inclusiveGateway' && from.type !== 'complexGateway') {
       issues.push({ path, message: 'Only a flow out of an exclusive or inclusive gateway has a condition or is its default' });
     }
-    if (flow.when && flow.default) issues.push({ path: `${path}.when`, message: "A default flow has no condition: it's taken when no other flow's condition holds" });
+    if (flow.when && flow.default)
+      issues.push({ path: `${path}.when`, message: "A default flow has no condition: it's taken when no other flow's condition holds" });
     if (flow.when) checkCondition(flow.when, scope, `${path}.when`, issues);
   }
 
@@ -1416,15 +1562,24 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
     else if (readsPrincipal(definition, action)) issues.push({ path, message: `${undo} reads the person who runs it, but a process undoes with no person` });
   };
   /** Where an error or an escalation of a code that an element throws is caught: a sub-process around it, or a call of this process. */
-  const caughtIn = (model: Process, modelGraph: ReturnType<typeof processGraph>, scopes: readonly string[], kind: 'error' | 'escalation', code: string | undefined): boolean =>
-    [...scopes, undefined].some((scope) => eventSubCatcher(model, scope, kind, code) !== undefined) || scopes.some((scope) => catcherOn(model, modelGraph, scope, kind, code) !== undefined);
+  const caughtIn = (
+    model: Process,
+    modelGraph: ReturnType<typeof processGraph>,
+    scopes: readonly string[],
+    kind: 'error' | 'escalation',
+    code: string | undefined,
+  ): boolean =>
+    [...scopes, undefined].some((scope) => eventSubCatcher(model, scope, kind, code) !== undefined) ||
+    scopes.some((scope) => catcherOn(model, modelGraph, scope, kind, code) !== undefined);
   const caughtAround = (id: string, kind: 'error' | 'escalation', code: string | undefined): boolean =>
     caughtIn(process, graph, scopesOf(process, id), kind, code) ||
     Object.values(definition.processes ?? {}).some((caller) => {
       const callerGraph = processGraph(caller);
       return Object.entries(caller.elements).some(
         ([callId, element]) =>
-          element.type === 'callActivity' && element.process === name && (catcherOn(caller, callerGraph, callId, kind, code) !== undefined || caughtIn(caller, callerGraph, scopesOf(caller, callId), kind, code)),
+          element.type === 'callActivity' &&
+          element.process === name &&
+          (catcherOn(caller, callerGraph, callId, kind, code) !== undefined || caughtIn(caller, callerGraph, scopesOf(caller, callId), kind, code)),
       );
     });
   /** A message the process sends: an update action that it runs with the app's authority, on its record or on the one a reference field names. */
@@ -1440,8 +1595,10 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
     const action = definition.actions[message.action];
     if (!action) issues.push({ path: `${path}.action`, message: `No action named ${message.action}` });
     else if (action.entity !== target) issues.push({ path: `${path}.action`, message: `${message.action} works on ${action.entity}, not on ${target}` });
-    else if (action.operation !== 'update') issues.push({ path: `${path}.action`, message: `${message.action} creates a record; a message is an action that changes one` });
-    else if (readsPrincipal(definition, action)) issues.push({ path: `${path}.action`, message: `${message.action} reads the person who runs it, but a process sends a message with no person` });
+    else if (action.operation !== 'update')
+      issues.push({ path: `${path}.action`, message: `${message.action} creates a record; a message is an action that changes one` });
+    else if (readsPrincipal(definition, action))
+      issues.push({ path: `${path}.action`, message: `${message.action} reads the person who runs it, but a process sends a message with no person` });
   };
   /** An action that starts the process: it may create the record or change it. */
   const startAction = (action: string, path: string) => {
@@ -1460,26 +1617,41 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
     const out = graph.outgoing.get(id) ?? [];
     // In an ad hoc sub-process, a path may end where no flow leads on.
     const oneOut = () => {
-      if (out.length !== 1 && !(out.length === 0 && isAdHoc(process, scopeOf(process, id)))) issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
+      if (out.length !== 1 && !(out.length === 0 && isAdHoc(process, scopeOf(process, id))))
+        issues.push({ path, message: `${label(id)} leads on by one flow${out.length ? ': use a gateway to split the path' : ''}` });
     };
     const linked = element.type === 'intermediateCatchEvent' && element.link !== undefined;
-    if (element.type !== 'startEvent' && element.type !== 'boundaryEvent' && !linked && !into.length && !isEventSub(process, id) && !isAdHoc(process, scopeOf(process, id))) {
+    if (
+      element.type !== 'startEvent' &&
+      element.type !== 'boundaryEvent' &&
+      !linked &&
+      !into.length &&
+      !isEventSub(process, id) &&
+      !isAdHoc(process, scopeOf(process, id))
+    ) {
       issues.push({ path, message: `No flow leads to ${label(id)}` });
     }
     if (element.type !== 'boundaryEvent' && element.in !== undefined) {
       const container = process.elements[element.in];
       if (!container) issues.push({ path: `${path}.in`, message: `No element ${element.in}` });
-      else if (container.type !== 'subProcess') issues.push({ path: `${path}.in`, message: `${label(element.in)} isn't a sub-process: only a sub-process holds other elements` });
+      else if (container.type !== 'subProcess')
+        issues.push({ path: `${path}.in`, message: `${label(element.in)} isn't a sub-process: only a sub-process holds other elements` });
       else if (scopeOf(process, element.in) !== undefined && scopesOf(process, element.in).includes(id)) {
         issues.push({ path: `${path}.in`, message: `${label(id)} would be inside itself` });
       }
     }
     if (canRepeat(element) && element.repeat) {
       checkCondition(element.repeat.while, scope, `${path}.repeat.while`, issues);
-      if (element.type === 'userTask' && element.several) issues.push({ path: `${path}.repeat`, message: `${label(id)} repeats, or several people decide it: one of the two` });
-      if (element.type === 'subProcess' && element.event) issues.push({ path: `${path}.repeat`, message: `${label(id)} is an event sub-process: its trigger starts it, so it doesn't repeat` });
+      if (element.type === 'userTask' && element.several)
+        issues.push({ path: `${path}.repeat`, message: `${label(id)} repeats, or several people decide it: one of the two` });
+      if (element.type === 'subProcess' && element.event)
+        issues.push({ path: `${path}.repeat`, message: `${label(id)} is an event sub-process: its trigger starts it, so it doesn't repeat` });
       // A task whose flows follow its outcomes needs an outcome to leave by, so it checks after it runs.
-      if (element.repeat.before && (element.type === 'userTask' || element.type === 'businessRuleTask') && out.some((flowId) => process.flows[flowId]!.outcome !== undefined)) {
+      if (
+        element.repeat.before &&
+        (element.type === 'userTask' || element.type === 'businessRuleTask') &&
+        out.some((flowId) => process.flows[flowId]!.outcome !== undefined)
+      ) {
         issues.push({ path: `${path}.repeat.before`, message: `${label(id)} leaves by its outcome, so it checks whether to repeat after it runs, not before` });
       }
     }
@@ -1491,12 +1663,20 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           if ([element.actions.length > 0, element.timer, element.condition, element.signal].filter(Boolean).length > 1) {
             issues.push({ path, message: `${label(id)} starts on actions, a timer, a condition or a signal: one of these` });
           }
-          if (caught) issues.push({ path, message: `${label(id)} starts the process: only a start event in an event sub-process catches an error or an escalation, or lets the rest go on` });
+          if (caught)
+            issues.push({
+              path,
+              message: `${label(id)} starts the process: only a start event in an event sub-process catches an error or an escalation, or lets the rest go on`,
+            });
         } else if (isEventSub(process, element.in)) {
           if ([element.actions.length > 0, element.timer, element.condition, element.signal, element.error, element.escalation].filter(Boolean).length !== 1) {
-            issues.push({ path, message: `${label(id)} starts its event sub-process on an action, a timer, a condition, a signal, an error or an escalation: one of these` });
+            issues.push({
+              path,
+              message: `${label(id)} starts its event sub-process on an action, a timer, a condition, a signal, an error or an escalation: one of these`,
+            });
           }
-          if (element.error && element.interrupting === false) issues.push({ path: `${path}.interrupting`, message: 'An error always ends what it comes from' });
+          if (element.error && element.interrupting === false)
+            issues.push({ path: `${path}.interrupting`, message: 'An error always ends what it comes from' });
         } else if (element.actions.length || element.timer || element.condition || element.signal || caught) {
           issues.push({ path, message: 'A start event inside a sub-process starts when the sub-process does: it names no action, timer, condition or signal' });
         }
@@ -1518,8 +1698,11 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
       }
       case 'endEvent': {
         if (element.in === undefined) ends++;
-        const ways = [element.terminate, element.message, element.error, element.escalation, element.compensate, element.cancel, element.signal].filter(Boolean).length;
-        if (ways > 1) issues.push({ path, message: `${label(id)} ends in one way: for all, or with a message, an error, an escalation, an undo, a cancel or a signal` });
+        const ways = [element.terminate, element.message, element.error, element.escalation, element.compensate, element.cancel, element.signal].filter(
+          Boolean,
+        ).length;
+        if (ways > 1)
+          issues.push({ path, message: `${label(id)} ends in one way: for all, or with a message, an error, an escalation, an undo, a cancel or a signal` });
         if (element.message) sent(element.message, `${path}.message`);
         if (element.error && !caughtAround(id, 'error', raisedCode(element.error))) {
           issues.push({
@@ -1529,7 +1712,8 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         }
         if (element.cancel) {
           const transaction = element.in !== undefined ? process.elements[element.in] : undefined;
-          if (transaction?.type !== 'subProcess' || !transaction.transaction) issues.push({ path: `${path}.cancel`, message: 'A cancel end event sits in a transaction' });
+          if (transaction?.type !== 'subProcess' || !transaction.transaction)
+            issues.push({ path: `${path}.cancel`, message: 'A cancel end event sits in a transaction' });
         }
         break;
       }
@@ -1537,9 +1721,19 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         if (!element.steps.length) issues.push({ path: `${path}.steps`, message: `${label(id)} needs a step` });
         if (element.undo) undoAction(element.undo, process.entity, `${path}.undo`);
         // The steps are checked as an action's: the script runs as an update of the process's record.
-        const script: Action = { label: element.name, description: element.name, entity: process.entity, operation: 'update', input: [], set: {}, confirm: 'none', steps: element.steps };
+        const script: Action = {
+          label: element.name,
+          description: element.name,
+          entity: process.entity,
+          operation: 'update',
+          input: [],
+          set: {},
+          confirm: 'none',
+          steps: element.steps,
+        };
         checkSteps(definition, script, path, fields, lines, issues);
-        if (readsPrincipal(definition, script)) issues.push({ path: `${path}.steps`, message: `${label(id)} reads the person who runs it, but a process runs it with no person` });
+        if (readsPrincipal(definition, script))
+          issues.push({ path: `${path}.steps`, message: `${label(id)} reads the person who runs it, but a process runs it with no person` });
         oneOut();
         break;
       }
@@ -1547,15 +1741,19 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         (element.rules ?? []).forEach((rule, index) => {
           const found = definition.rules[rule];
           if (!found) issues.push({ path: `${path}.rules[${index}]`, message: `No rule named ${rule}` });
-          else if (found.entity !== process.entity) issues.push({ path: `${path}.rules[${index}]`, message: `${rule} checks ${found.entity}, not ${process.entity}` });
+          else if (found.entity !== process.entity)
+            issues.push({ path: `${path}.rules[${index}]`, message: `${rule} checks ${found.entity}, not ${process.entity}` });
         });
-        if (!Object.values(definition.rules).some((rule) => rule.entity === process.entity)) issues.push({ path, message: `${process.entity} has no rules to check` });
+        if (!Object.values(definition.rules).some((rule) => rule.entity === process.entity))
+          issues.push({ path, message: `${process.entity} has no rules to check` });
         const named = out.filter((flowId) => process.flows[flowId]!.outcome !== undefined);
         if (named.length) {
-          if (named.length !== out.length) issues.push({ path, message: `Every flow out of ${label(id)} follows an outcome, or one flow leads on to a gateway` });
+          if (named.length !== out.length)
+            issues.push({ path, message: `Every flow out of ${label(id)} follows an outcome, or one flow leads on to a gateway` });
           for (const outcome of RULE_OUTCOMES) {
             const taken = named.filter((flowId) => process.flows[flowId]!.outcome === outcome).length;
-            if (taken !== 1) issues.push({ path, message: taken ? `${outcome}: one flow follows each outcome` : `${outcome} leads nowhere: draw a flow for it` });
+            if (taken !== 1)
+              issues.push({ path, message: taken ? `${outcome}: one flow follows each outcome` : `${outcome} leads nowhere: draw a flow for it` });
           }
         } else {
           oneOut();
@@ -1594,14 +1792,18 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         if (element.adHoc) {
           // What has no flow into it starts at once, and a path ends where no flow leads on.
           if (inner.length || ends) issues.push({ path, message: `${label(id)} is ad hoc: it has no start or end event inside it` });
-          if (!adHocStarts(process, graph, id).length) issues.push({ path, message: `${label(id)} needs something inside it that no flow leads to, which starts at once` });
-          if (element.event || element.transaction) issues.push({ path, message: `${label(id)} is ad hoc, a transaction or an event sub-process: one of these` });
+          if (!adHocStarts(process, graph, id).length)
+            issues.push({ path, message: `${label(id)} needs something inside it that no flow leads to, which starts at once` });
+          if (element.event || element.transaction)
+            issues.push({ path, message: `${label(id)} is ad hoc, a transaction or an event sub-process: one of these` });
         } else {
-          if (inner.length !== 1) issues.push({ path, message: inner.length ? `${label(id)} starts at one start event inside it` : `${label(id)} needs a start event inside it` });
+          if (inner.length !== 1)
+            issues.push({ path, message: inner.length ? `${label(id)} starts at one start event inside it` : `${label(id)} needs a start event inside it` });
           if (!ends) issues.push({ path, message: `${label(id)} needs an end event inside it` });
         }
         if (element.completeWhen) {
-          if (!element.adHoc) issues.push({ path: `${path}.completeWhen`, message: `${label(id)} isn't ad hoc: only an ad hoc sub-process ends on a condition` });
+          if (!element.adHoc)
+            issues.push({ path: `${path}.completeWhen`, message: `${label(id)} isn't ad hoc: only an ad hoc sub-process ends on a condition` });
           else checkCondition(element.completeWhen, scope, `${path}.completeWhen`, issues);
         }
         const cancels = Object.values(process.elements).some((other) => other.type === 'endEvent' && other.in === id && other.cancel);
@@ -1609,7 +1811,8 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           const event = process.elements[boundary];
           return event?.type === 'boundaryEvent' && event.cancel;
         });
-        if (element.transaction && cancels && !leaves) issues.push({ path, message: `${label(id)} has a cancel end event inside it, but no cancel event on its boundary to leave by` });
+        if (element.transaction && cancels && !leaves)
+          issues.push({ path, message: `${label(id)} has a cancel end event inside it, but no cancel event on its boundary to leave by` });
         if (element.event) {
           if (into.length || out.length) issues.push({ path, message: `${label(id)} starts on its start event's trigger: no flow leads into it or out of it` });
           if ((graph.boundaries.get(id) ?? []).length) issues.push({ path, message: `${label(id)} is an event sub-process: no event sits on its boundary` });
@@ -1635,16 +1838,21 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           const field = called ? definition.entities[called.entity]?.fields.find((candidate) => candidate.name === element.each!.field) : undefined;
           if (called && !field) issues.push({ path: `${path}.each.field`, message: `${called.entity} has no field ${element.each.field}` });
           else if (field && (field.type !== 'reference' || field.multiple || field.entity !== process.entity)) {
-            issues.push({ path: `${path}.each.field`, message: `${element.each.field} doesn't refer to ${process.entity}: a call runs for each record that refers to this one` });
+            issues.push({
+              path: `${path}.each.field`,
+              message: `${element.each.field} doesn't refer to ${process.entity}: a call runs for each record that refers to this one`,
+            });
           }
         } else if (called && called.entity !== process.entity) {
           issues.push({ path: `${path}.record`, message: `${called.label} is about ${called.entity}: name the reference field whose record it runs on` });
         }
-        if (element.record !== undefined && element.each) issues.push({ path, message: `${label(id)} runs on the record a field names, or for each record that refers to this one: one of the two` });
+        if (element.record !== undefined && element.each)
+          issues.push({ path, message: `${label(id)} runs on the record a field names, or for each record that refers to this one: one of the two` });
         if (called) {
           const start = plainStartOf(called);
           const at = start ? called.elements[start] : undefined;
-          if (at?.type === 'startEvent' && at.actions.length) issues.push({ path: `${path}.process`, message: `${called.label} has no start event without actions, where a call starts it` });
+          if (at?.type === 'startEvent' && at.actions.length)
+            issues.push({ path: `${path}.process`, message: `${called.label} has no start event without actions, where a call starts it` });
         }
         oneOut();
         break;
@@ -1655,7 +1863,8 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         const person = (field: string, at: string) => {
           const info = fields.get(field);
           if (!info) issues.push({ path: at, message: `No field ${field}` });
-          else if (!(info.field?.type === 'user' || PERSON_FIELDS.includes(info.name))) issues.push({ path: at, message: `${info.name} doesn't name a person` });
+          else if (!(info.field?.type === 'user' || PERSON_FIELDS.includes(info.name)))
+            issues.push({ path: at, message: `${info.name} doesn't name a person` });
         };
         if (element.assignee) {
           if ('field' in element.assignee) person(element.assignee.field, `${path}.assignee.field`);
@@ -1672,9 +1881,12 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           if ('lineOf' in people) person(people.lineOf, `${path}.several.people.lineOf`);
           if (!('first' in decide)) {
             const names = element.outcomes.map((outcome) => outcome.name);
-            if (!names.includes(decide.outcome)) issues.push({ path: `${path}.several.decide.outcome`, message: `${label(id)} has no outcome ${decide.outcome}` });
-            if (!names.includes(decide.otherwise)) issues.push({ path: `${path}.several.decide.otherwise`, message: `${label(id)} has no outcome ${decide.otherwise}` });
-            if (decide.outcome === decide.otherwise) issues.push({ path: `${path}.several.decide.otherwise`, message: 'The other outcome differs from the one the votes are for' });
+            if (!names.includes(decide.outcome))
+              issues.push({ path: `${path}.several.decide.outcome`, message: `${label(id)} has no outcome ${decide.outcome}` });
+            if (!names.includes(decide.otherwise))
+              issues.push({ path: `${path}.several.decide.otherwise`, message: `${label(id)} has no outcome ${decide.otherwise}` });
+            if (decide.outcome === decide.otherwise)
+              issues.push({ path: `${path}.several.decide.otherwise`, message: 'The other outcome differs from the one the votes are for' });
             const most = 'fields' in people ? people.fields.length : 'lineOf' in people ? people.levels : undefined;
             if (typeof decide.count === 'number' && most !== undefined && decide.count > most) {
               issues.push({ path: `${path}.several.decide.count`, message: `${decide.count} votes are needed, but only ${most} people vote` });
@@ -1684,7 +1896,10 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           element.outcomes.forEach((outcome, index) => {
             const action = outcome.action ? definition.actions[outcome.action] : undefined;
             if (action && readsPrincipal(definition, action)) {
-              issues.push({ path: `${path}.outcomes[${index}].action`, message: `${outcome.action} reads the person who runs it, but when several people decide, it runs with no one person` });
+              issues.push({
+                path: `${path}.outcomes[${index}].action`,
+                message: `${outcome.action} reads the person who runs it, but when several people decide, it runs with no one person`,
+              });
             }
           });
         }
@@ -1701,20 +1916,26 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           const action = updateAction(outcome.action, `${at}.action`);
           // When several people decide, the action runs with the app's authority: the role need not run it.
           if (action && role && !element.several && !role.actions.includes(outcome.action)) {
-            issues.push({ path: `${at}.action`, message: `${role.label} can't run ${outcome.action}, so nobody who may do the task could choose ${outcome.label}` });
+            issues.push({
+              path: `${at}.action`,
+              message: `${role.label} can't run ${outcome.action}, so nobody who may do the task could choose ${outcome.label}`,
+            });
           }
         });
         if (element.card) {
           const card = definition.cards[element.card];
           if (!card) issues.push({ path: `${path}.card`, message: `No card named ${element.card}` });
-          else if (card.entity !== process.entity) issues.push({ path: `${path}.card`, message: `${element.card} shows ${card.entity}, not ${process.entity}` });
+          else if (card.entity !== process.entity)
+            issues.push({ path: `${path}.card`, message: `${element.card} shows ${card.entity}, not ${process.entity}` });
         }
         const named = out.filter((flowId) => process.flows[flowId]!.outcome !== undefined);
         if (named.length) {
-          if (named.length !== out.length) issues.push({ path, message: `Every flow out of ${label(id)} follows an outcome, or one flow leads on to a gateway` });
+          if (named.length !== out.length)
+            issues.push({ path, message: `Every flow out of ${label(id)} follows an outcome, or one flow leads on to a gateway` });
           for (const outcome of element.outcomes) {
             const taken = named.filter((flowId) => process.flows[flowId]!.outcome === outcome.name).length;
-            if (taken !== 1) issues.push({ path, message: taken ? `${outcome.label}: one flow follows each outcome` : `${outcome.label} leads nowhere: draw a flow for it` });
+            if (taken !== 1)
+              issues.push({ path, message: taken ? `${outcome.label}: one flow follows each outcome` : `${outcome.label} leads nowhere: draw a flow for it` });
           }
         } else {
           oneOut();
@@ -1730,7 +1951,8 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         if (element.flow) {
           checkFlowRun(definition, element.flow, { entity: process.entity, person: false }, `${path}.flow`, issues);
           const ran = definition.flows?.[element.flow.flow];
-          if (ran && flowWaits(ran, definition.flows)) issues.push({ path: `${path}.flow.flow`, message: `${ran.label} waits: a process task runs a flow that runs in one go` });
+          if (ran && flowWaits(ran, definition.flows))
+            issues.push({ path: `${path}.flow.flow`, message: `${ran.label} waits: a process task runs a flow that runs in one go` });
         }
         oneOut();
         break;
@@ -1748,7 +1970,10 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         if (element.message) heard(element.message, `${path}.message`);
         if (element.link !== undefined) {
           if (into.length) issues.push({ path, message: `${label(id)} takes over from its throw link: no flow leads into it` });
-          const same = Object.entries(process.elements).filter(([other, candidate]) => candidate.type === 'intermediateCatchEvent' && candidate.link === element.link && scopeOf(process, other) === scopeOf(process, id));
+          const same = Object.entries(process.elements).filter(
+            ([other, candidate]) =>
+              candidate.type === 'intermediateCatchEvent' && candidate.link === element.link && scopeOf(process, other) === scopeOf(process, id),
+          );
           if (same[0]?.[0] !== id) issues.push({ path: `${path}.link`, message: `Another catch link here is already named ${element.link}` });
         }
         break;
@@ -1764,7 +1989,8 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         if (out.length > 1) {
           for (const flowId of out) {
             const flow = process.flows[flowId]!;
-            if (!flow.default && !flow.when) issues.push({ path: `${base}.flows.${flowId}`, message: `A flow out of ${label(id)} needs a condition, or must be its default` });
+            if (!flow.default && !flow.when)
+              issues.push({ path: `${base}.flows.${flowId}`, message: `A flow out of ${label(id)} needs a condition, or must be its default` });
           }
         }
         break;
@@ -1778,23 +2004,35 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           const target = process.flows[flowId]!.to;
           const event = process.elements[target];
           const waits = (event?.type === 'intermediateCatchEvent' && event.link === undefined) || event?.type === 'receiveTask';
-          if (!waits) issues.push({ path: `${base}.flows.${flowId}`, message: `${label(target)} doesn't wait: after ${label(id)} come events that wait for a timer, a message, a condition or a signal, or receive tasks` });
-          else if ((graph.incoming.get(target) ?? []).length !== 1) issues.push({ path: `${base}.elements.${target}`, message: `${label(target)} waits after ${label(id)} only: no other flow leads into it` });
+          if (!waits)
+            issues.push({
+              path: `${base}.flows.${flowId}`,
+              message: `${label(target)} doesn't wait: after ${label(id)} come events that wait for a timer, a message, a condition or a signal, or receive tasks`,
+            });
+          else if ((graph.incoming.get(target) ?? []).length !== 1)
+            issues.push({ path: `${base}.elements.${target}`, message: `${label(target)} waits after ${label(id)} only: no other flow leads into it` });
         }
         break;
       }
       case 'boundaryEvent': {
         const host = process.elements[element.attachedTo];
-        const kinds = [element.timer, element.message, element.error, element.condition, element.escalation, element.cancel, element.signal].filter(Boolean).length;
-        if (kinds !== 1) issues.push({ path, message: `${label(id)} is a timer, a message, a condition, a signal, an error, an escalation or a cancel: one of these` });
+        const kinds = [element.timer, element.message, element.error, element.condition, element.escalation, element.cancel, element.signal].filter(
+          Boolean,
+        ).length;
+        if (kinds !== 1)
+          issues.push({ path, message: `${label(id)} is a timer, a message, a condition, a signal, an error, an escalation or a cancel: one of these` });
         if (element.condition) checkCondition(element.condition, scope, `${path}.condition`, issues);
         if (!host) issues.push({ path: `${path}.attachedTo`, message: `No element ${element.attachedTo}` });
         else if (element.escalation) {
           if (host.type !== 'subProcess' && host.type !== 'callActivity') {
-            issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} can't hear an escalation: an escalation event sits on a sub-process or a call, for what escalates inside it` });
+            issues.push({
+              path: `${path}.attachedTo`,
+              message: `${label(element.attachedTo)} can't hear an escalation: an escalation event sits on a sub-process or a call, for what escalates inside it`,
+            });
           }
         } else if (element.cancel) {
-          if (host.type !== 'subProcess' || !host.transaction) issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a transaction: a cancel event sits on a transaction` });
+          if (host.type !== 'subProcess' || !host.transaction)
+            issues.push({ path: `${path}.attachedTo`, message: `${label(element.attachedTo)} isn't a transaction: a cancel event sits on a transaction` });
           if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'A cancel always ends the transaction' });
         } else if (element.error) {
           if (!['serviceTask', 'scriptTask', 'sendTask', 'subProcess', 'callActivity'].includes(host.type)) {
@@ -1804,7 +2042,10 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
             });
           } else if (host.type !== 'subProcess' && host.type !== 'callActivity' && raisedCode(element.error) !== undefined) {
             // A task's failure has no code: only an error end event inside a sub-process or a called process raises one.
-            issues.push({ path: `${path}.error`, message: `${label(id)} catches only the error ${raisedCode(element.error)}, but a task that fails raises no code: leave the code out` });
+            issues.push({
+              path: `${path}.error`,
+              message: `${label(id)} catches only the error ${raisedCode(element.error)}, but a task that fails raises no code: leave the code out`,
+            });
           }
           if (!element.interrupting) issues.push({ path: `${path}.interrupting`, message: 'An error always ends what it sits on' });
           // One error event for each code, and one for any.
@@ -1831,7 +2072,11 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
               const task = process.elements[inner];
               return task?.type === 'userTask' && task.outcomes.some((outcome) => outcome.action === action);
             });
-            if (decides) issues.push({ path: `${path}.message.action`, message: `${action} decides ${label(decides)} inside ${label(element.attachedTo)}, so it can't also interrupt it` });
+            if (decides)
+              issues.push({
+                path: `${path}.message.action`,
+                message: `${action} decides ${label(decides)} inside ${label(element.attachedTo)}, so it can't also interrupt it`,
+              });
           }
         }
         oneOut();
@@ -1852,7 +2097,12 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
     reached.add(id);
     for (const flowId of graph.outgoing.get(id) ?? []) queue.push(process.flows[flowId]!.to);
     for (const boundary of graph.boundaries.get(id) ?? []) queue.push(boundary);
-    if (process.elements[id]?.type === 'subProcess') queue.push(...startEventsOf(process, id), ...eventSubsIn(process, id).map((sub) => sub.id), ...(isAdHoc(process, id) ? adHocStarts(process, graph, id) : []));
+    if (process.elements[id]?.type === 'subProcess')
+      queue.push(
+        ...startEventsOf(process, id),
+        ...eventSubsIn(process, id).map((sub) => sub.id),
+        ...(isAdHoc(process, id) ? adHocStarts(process, graph, id) : []),
+      );
     const jump = linkTarget(process, id);
     if (jump !== undefined) queue.push(jump);
   }
@@ -1867,7 +2117,6 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
   for (const id of Object.keys(process.diagram?.edges ?? {})) {
     if (!process.flows[id]) issues.push({ path: `${base}.diagram.edges.${id}`, message: `No flow ${id}` });
   }
-
 }
 
 /**
@@ -1896,7 +2145,11 @@ function checkWaitingFlows(definition: StoredDefinition, issues: Issue[]): void 
   if (!definition.flows) return;
   const compiled = compileFlows(definition);
   const flawed = new Set(issues.flatMap((issue) => /^flows\.([a-z][a-z0-9_]*)/.exec(issue.path)?.slice(1, 2) ?? []));
-  const runs: StoredDefinition = { ...definition, processes: { ...definition.processes, ...compiled.processes }, flows: { ...definition.flows, ...compiled.parts } };
+  const runs: StoredDefinition = {
+    ...definition,
+    processes: { ...definition.processes, ...compiled.processes },
+    flows: { ...definition.flows, ...compiled.parts },
+  };
   for (const [name, process] of Object.entries(compiled.processes)) {
     if (definition.processes?.[name]) {
       issues.push({ path: `flows.${name}`, message: `A process is also named ${name}, and a flow that waits runs as one: rename one of them` });
@@ -1943,7 +2196,9 @@ function stepPathOf(name: string, path: string, process: Process, at: ReadonlyMa
 /** Processes that call each other in a ring would call without end: each call is refused where the ring closes. */
 function checkCalls(definition: StoredDefinition, issues: Issue[]): void {
   const processes = definition.processes ?? {};
-  const calls = new Map(Object.entries(processes).map(([name, process]) => [name, processWork(process).calls.filter((called) => called !== name && processes[called])]));
+  const calls = new Map(
+    Object.entries(processes).map(([name, process]) => [name, processWork(process).calls.filter((called) => called !== name && processes[called])]),
+  );
   const reaches = (from: string, target: string): boolean => {
     const seen = new Set<string>();
     const queue = [from];
@@ -1960,7 +2215,10 @@ function checkCalls(definition: StoredDefinition, issues: Issue[]): void {
     for (const [id, element] of Object.entries(process.elements)) {
       if (element.type !== 'callActivity' || element.process === name || !processes[element.process]) continue;
       if (reaches(element.process, name)) {
-        issues.push({ path: `processes.${name}.elements.${id}.process`, message: `${processes[element.process]!.label} calls ${process.label} in turn, so they would call each other without end` });
+        issues.push({
+          path: `processes.${name}.elements.${id}.process`,
+          message: `${processes[element.process]!.label} calls ${process.label} in turn, so they would call each other without end`,
+        });
       }
     }
   }

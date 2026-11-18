@@ -2,10 +2,10 @@ import { serviceAccounts, users } from '@platform/db';
 import { and, asc, eq, ilike, inArray, or } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { requireUser } from '../access/rules.js';
-import type { AppContext } from '../context.js';
 import { orgResource } from '../access/resources.js';
+import { requireUser } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
+import type { AppContext } from '../context.js';
 import { badRequest, notFound, unprocessable } from '../errors.js';
 import { closesLoop } from './directory.js';
 
@@ -69,7 +69,14 @@ export function peopleRoutes(ctx: AppContext): FastifyPluginAsyncZod {
 
         if (search !== undefined) return { people: await searchPeople(ctx, search) };
 
-        const wanted = [...new Set(ids!.split(',').map((id) => id.trim()).filter(Boolean))];
+        const wanted = [
+          ...new Set(
+            ids!
+              .split(',')
+              .map((id) => id.trim())
+              .filter(Boolean),
+          ),
+        ];
         if (wanted.length > MAX_LOOKUP_IDS) throw badRequest('too_many_ids', `Look up at most ${MAX_LOOKUP_IDS} IDs at a time`);
         const invalid = wanted.filter((id) => !z.uuid().safeParse(id).success);
         if (invalid.length) throw badRequest('invalid_ids', 'IDs must be UUIDs', { invalid: invalid.slice(0, 10) });
@@ -94,7 +101,13 @@ export function peopleRoutes(ctx: AppContext): FastifyPluginAsyncZod {
       },
     );
 
-    const DirectoryOut = z.object({ id: z.uuid(), department: z.string().nullable(), managerId: z.uuid().nullable(), coverId: z.uuid().nullable(), coverUntil: z.string().nullable() });
+    const DirectoryOut = z.object({
+      id: z.uuid(),
+      department: z.string().nullable(),
+      managerId: z.uuid().nullable(),
+      coverId: z.uuid().nullable(),
+      coverUntil: z.string().nullable(),
+    });
     const directoryOf = async (id: string) => {
       const [row] = await ctx.db
         .select({ id: users.id, department: users.department, managerId: users.managerId, coverId: users.coverId, coverUntil: users.coverUntil })
@@ -171,12 +184,18 @@ export function peopleRoutes(ctx: AppContext): FastifyPluginAsyncZod {
         const { coverId, until } = request.body;
         if (coverId) {
           if (coverId === me) throw unprocessable('own_cover', 'Name someone else to cover for you');
-          const [cover] = await ctx.db.select({ id: users.id }).from(users).where(and(eq(users.orgId, ctx.org.id), eq(users.id, coverId), eq(users.status, 'active')));
+          const [cover] = await ctx.db
+            .select({ id: users.id })
+            .from(users)
+            .where(and(eq(users.orgId, ctx.org.id), eq(users.id, coverId), eq(users.status, 'active')));
           if (!cover) throw unprocessable('unknown_person', 'Name someone active in the directory');
           if (until && Date.parse(until) <= ctx.now().getTime()) throw unprocessable('cover_past', 'The cover ends in the past');
         }
         await ctx.db.transaction(async (tx) => {
-          await tx.update(users).set({ coverId, coverUntil: coverId && until ? new Date(until) : null }).where(eq(users.id, me));
+          await tx
+            .update(users)
+            .set({ coverId, coverUntil: coverId && until ? new Date(until) : null })
+            .where(eq(users.id, me));
           await recordAudit(tx, auditScopeFor(request, ctx.org.id, ctx.now()), {
             action: 'user.cover',
             target: { type: 'user', id: me },

@@ -17,9 +17,14 @@ export interface ScriptedModel {
 export function scriptedModel(): ScriptedModel {
   const queue: Array<Record<string, unknown> | { readonly status: number; readonly error: Record<string, unknown> }> = [];
   const requests: ScriptedModel['requests'] = [];
-  const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'request-id': 'req_test' } });
+  const respond = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'request-id': 'req_test' } });
   const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    requests.push({ url: String(input instanceof Request ? input.url : input), headers: Object.fromEntries(new Headers(init?.headers)), body: JSON.parse(String(init?.body ?? '{}')) });
+    requests.push({
+      url: String(input instanceof Request ? input.url : input),
+      headers: Object.fromEntries(new Headers(init?.headers)),
+      body: JSON.parse(String(init?.body ?? '{}')),
+    });
     const next = queue.shift();
     if (!next) return respond(500, { type: 'error', error: { type: 'api_error', message: 'The test scripted no more replies' } });
     if ('status' in next && 'error' in next) return respond(Number(next.status), { type: 'error', error: next.error });
@@ -35,7 +40,10 @@ export function scriptedModel(): ScriptedModel {
 let counter = 0;
 
 /** A reply of the model: its content blocks, and why it stopped. */
-export function modelMessage(content: Array<Record<string, unknown>>, stopReason: 'end_turn' | 'tool_use' | 'refusal' | 'max_tokens' = 'end_turn'): Record<string, unknown> {
+export function modelMessage(
+  content: Array<Record<string, unknown>>,
+  stopReason: 'end_turn' | 'tool_use' | 'refusal' | 'max_tokens' = 'end_turn',
+): Record<string, unknown> {
   counter++;
   return {
     id: `msg_test_${counter}`,

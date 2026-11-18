@@ -3,29 +3,29 @@ import { useState } from 'react';
 import { api } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { Badge, Button, Field, Select, TextInput } from '../components/ui.js';
-import { recordChoices, type Condition, type RefChoice } from '../model/conditions.js';
+import { type Condition, type RefChoice, recordChoices } from '../model/conditions.js';
 import {
   betweenOf,
+  CALC_OPS,
+  type CalcOp,
   calc,
   calcOf,
-  CALC_OPS,
   chooseOf,
   describeExpression,
+  type Expression,
   firstFilledOf,
   joinOf,
-  shift,
-  shiftOf,
-  textFn,
-  textFnOf,
-  TEXT_FNS,
-  SYSTEM_REFS,
-  valueSources,
-  startingValue,
-  type CalcOp,
-  type Expression,
   type Moment,
   type Operand,
+  SYSTEM_REFS,
+  shift,
+  shiftOf,
+  startingValue,
+  TEXT_FNS,
   type TextFn,
+  textFn,
+  textFnOf,
+  valueSources,
 } from '../model/expressions.js';
 import type { Definition, Field as FieldDef } from '../types.js';
 
@@ -57,7 +57,13 @@ const MODE_LABELS: Readonly<Record<Mode, string>> = {
   first: 'The first value that is filled in',
   formula: 'A formula',
 };
-const TEXT_FN_LABELS: Readonly<Record<TextFn, string>> = { upper: 'in capitals', lower: 'in small letters', trim: 'without spaces at its ends', left: 'its first characters', text_length: 'its length' };
+const TEXT_FN_LABELS: Readonly<Record<TextFn, string>> = {
+  upper: 'in capitals',
+  lower: 'in small letters',
+  trim: 'without spaces at its ends',
+  left: 'its first characters',
+  text_length: 'its length',
+};
 
 const isRefOperand = (value: unknown): value is { readonly ref: string } =>
   typeof value === 'object' && value !== null && !Array.isArray(value) && typeof (value as { ref?: unknown }).ref === 'string';
@@ -99,7 +105,13 @@ function modesFor(target: FieldDef | undefined): Mode[] {
   }
 }
 
-function startFor(mode: Mode, target: FieldDef | undefined, sources: ReadonlyArray<{ ref: string }>, dates: ReadonlyArray<{ ref: string }> = [], stored = false): Expression {
+function startFor(
+  mode: Mode,
+  target: FieldDef | undefined,
+  sources: ReadonlyArray<{ ref: string }>,
+  dates: ReadonlyArray<{ ref: string }> = [],
+  stored = false,
+): Expression {
   const first: Operand | undefined = sources[0] ? { ref: sources[0].ref } : undefined;
   const moment: Moment = dates[0] ? { ref: dates[0].ref } : target?.type === 'datetime' ? { now: true } : { today: true };
   switch (mode) {
@@ -168,15 +180,24 @@ export function ValueEditor({
   stored?: boolean;
 }) {
   const mode = modeOf(value);
-  const own = (list: ReadonlyArray<{ ref: string; label: string }>) => (stored ? list.filter((source) => !SYSTEM_REFS.has(source.ref) && source.ref !== `record.${target?.name}`) : list);
+  const own = (list: ReadonlyArray<{ ref: string; label: string }>) =>
+    stored ? list.filter((source) => !SYSTEM_REFS.has(source.ref) && source.ref !== `record.${target?.name}`) : list;
   const sources = from ? from.all : own(valueSources(definition, entity, target));
   const numbers = from ? from.numbers : own(valueSources(definition, entity, 'number'));
   const dates = from ? from.dates : own(valueSources(definition, entity, 'date'));
   const texts = from ? from.all : own(valueSources(definition, entity));
   // Lines' choices are their own fields only: those a stored value can read.
-  const choices = from ? from.choices : stored ? recordChoices(definition, entity, true).filter((choice) => choice.ref !== `record.${target?.name}`) : recordChoices(definition, entity);
+  const choices = from
+    ? from.choices
+    : stored
+      ? recordChoices(definition, entity, true).filter((choice) => choice.ref !== `record.${target?.name}`)
+      : recordChoices(definition, entity);
   // Shifting and counting days need a date to start from, when today isn't one.
-  const modes = only ? [...only] : stored ? modesFor(target).filter((m) => STORED_MODES.includes(m) && ((m !== 'shift' && m !== 'between') || dates.length > 0)) : modesFor(target);
+  const modes = only
+    ? [...only]
+    : stored
+      ? modesFor(target).filter((m) => STORED_MODES.includes(m) && ((m !== 'shift' && m !== 'between') || dates.length > 0))
+      : modesFor(target);
   const shown = modes.includes(mode) ? modes : [...modes, mode];
   const calculation = mode === 'calc' ? calcOf(value) : undefined;
   const parts = mode === 'join' ? joinOf(value) : undefined;
@@ -188,7 +209,17 @@ export function ValueEditor({
   // A number's text function is its length; text's are the others.
   const fns = TEXT_FNS.filter((fn) => (target?.type === 'number' ? fn === 'text_length' : target ? fn !== 'text_length' : true));
   const inner = (part: Expression, onPart: (next: Expression) => void, name: string) => (
-    <ValueEditor definition={definition} entity={entity} {...(target ? { target } : {})} label={name} value={part} onChange={onPart} {...(from ? { from } : {})} {...(only ? { only } : {})} stored={stored} />
+    <ValueEditor
+      definition={definition}
+      entity={entity}
+      {...(target ? { target } : {})}
+      label={name}
+      value={part}
+      onChange={onPart}
+      {...(from ? { from } : {})}
+      {...(only ? { only } : {})}
+      stored={stored}
+    />
   );
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -219,7 +250,13 @@ export function ValueEditor({
       ) : null}
       {calculation ? (
         <>
-          <OperandInput label={`${label}, first`} sources={numbers} value={calculation.a} numeric onChange={(a) => onChange(calc(calculation.op, a, calculation.b))} />
+          <OperandInput
+            label={`${label}, first`}
+            sources={numbers}
+            value={calculation.a}
+            numeric
+            onChange={(a) => onChange(calc(calculation.op, a, calculation.b))}
+          />
           <Select
             aria-label={`${label}, operation`}
             className="w-auto"
@@ -232,16 +269,32 @@ export function ValueEditor({
               </option>
             ))}
           </Select>
-          <OperandInput label={`${label}, second`} sources={numbers} value={calculation.b} numeric onChange={(b) => onChange(calc(calculation.op, calculation.a, b))} />
+          <OperandInput
+            label={`${label}, second`}
+            sources={numbers}
+            value={calculation.b}
+            numeric
+            onChange={(b) => onChange(calc(calculation.op, calculation.a, b))}
+          />
         </>
       ) : null}
       {parts ? (
         <>
           {parts.map((part, i) => (
             <span key={i} className="flex items-center gap-1">
-              <OperandInput label={`${label}, part ${i + 1}`} sources={from ? from.all : valueSources(definition, entity)} value={part} onChange={(next) => onChange({ concat: parts.map((p, j) => (j === i ? next : p)) })} />
+              <OperandInput
+                label={`${label}, part ${i + 1}`}
+                sources={from ? from.all : valueSources(definition, entity)}
+                value={part}
+                onChange={(next) => onChange({ concat: parts.map((p, j) => (j === i ? next : p)) })}
+              />
               {parts.length > 2 ? (
-                <Button size="sm" variant="ghost" aria-label={`${label}: remove part ${i + 1}`} onClick={() => onChange({ concat: parts.filter((_, j) => j !== i) })}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`${label}: remove part ${i + 1}`}
+                  onClick={() => onChange({ concat: parts.filter((_, j) => j !== i) })}
+                >
                   ✕
                 </Button>
               ) : null}
@@ -256,13 +309,30 @@ export function ValueEditor({
       ) : null}
       {shifted ? (
         <>
-          <MomentInput label={`${label}, from`} sources={dates} value={shifted.from} clock={!stored} onChange={(next) => onChange(shift(shifted.op, next, shifted.by))} />
+          <MomentInput
+            label={`${label}, from`}
+            sources={dates}
+            value={shifted.from}
+            clock={!stored}
+            onChange={(next) => onChange(shift(shifted.op, next, shifted.by))}
+          />
           <span className="text-sm text-muted">plus</span>
-          <OperandInput label={`${label}, how many`} sources={numbers} value={shifted.by} numeric onChange={(by) => onChange(shift(shifted.op, shifted.from, by))} />
+          <OperandInput
+            label={`${label}, how many`}
+            sources={numbers}
+            value={shifted.by}
+            numeric
+            onChange={(by) => onChange(shift(shifted.op, shifted.from, by))}
+          />
           {stored && shifted.op === 'add_days' ? (
             <span className="text-sm text-muted">days</span>
           ) : (
-            <Select aria-label={`${label}, unit`} className="w-auto" value={shifted.op} onChange={(e) => onChange(shift(e.target.value === 'add_hours' ? 'add_hours' : 'add_days', shifted.from, shifted.by))}>
+            <Select
+              aria-label={`${label}, unit`}
+              className="w-auto"
+              value={shifted.op}
+              onChange={(e) => onChange(shift(e.target.value === 'add_hours' ? 'add_hours' : 'add_days', shifted.from, shifted.by))}
+            >
               <option value="add_days">days</option>
               <option value="add_hours">hours</option>
             </Select>
@@ -272,9 +342,21 @@ export function ValueEditor({
       {between ? (
         <>
           <span className="text-sm text-muted">from</span>
-          <MomentInput label={`${label}, from`} sources={dates} value={between.from} clock={!stored} onChange={(next) => onChange({ days_between: [next, between.to] })} />
+          <MomentInput
+            label={`${label}, from`}
+            sources={dates}
+            value={between.from}
+            clock={!stored}
+            onChange={(next) => onChange({ days_between: [next, between.to] })}
+          />
           <span className="text-sm text-muted">to</span>
-          <MomentInput label={`${label}, to`} sources={dates} value={between.to} clock={!stored} onChange={(next) => onChange({ days_between: [between.from, next] })} />
+          <MomentInput
+            label={`${label}, to`}
+            sources={dates}
+            value={between.to}
+            clock={!stored}
+            onChange={(next) => onChange({ days_between: [between.from, next] })}
+          />
         </>
       ) : null}
       {chosen ? (
@@ -296,7 +378,12 @@ export function ValueEditor({
       {texted ? (
         <>
           <OperandInput label={`${label}, the text`} sources={texts} value={texted.of} onChange={(of) => onChange(textFn(texted.fn, of, texted.count))} />
-          <Select aria-label={`${label}, how`} className="w-auto" value={texted.fn} onChange={(e) => onChange(textFn(fns.find((fn) => fn === e.target.value) ?? texted.fn, texted.of, texted.count))}>
+          <Select
+            aria-label={`${label}, how`}
+            className="w-auto"
+            value={texted.fn}
+            onChange={(e) => onChange(textFn(fns.find((fn) => fn === e.target.value) ?? texted.fn, texted.of, texted.count))}
+          >
             {(fns.includes(texted.fn) ? fns : [...fns, texted.fn]).map((fn) => (
               <option key={fn} value={fn}>
                 {TEXT_FN_LABELS[fn]}
@@ -304,7 +391,14 @@ export function ValueEditor({
             ))}
           </Select>
           {texted.fn === 'left' ? (
-            <TextInput aria-label={`${label}, how many characters`} type="number" min={1} className="w-20" value={texted.count} onChange={(e) => onChange(textFn('left', texted.of, Math.max(1, Number(e.target.value) || 1)))} />
+            <TextInput
+              aria-label={`${label}, how many characters`}
+              type="number"
+              min={1}
+              className="w-20"
+              value={texted.count}
+              onChange={(e) => onChange(textFn('left', texted.of, Math.max(1, Number(e.target.value) || 1)))}
+            />
           ) : null}
         </>
       ) : null}
@@ -313,9 +407,19 @@ export function ValueEditor({
           {firsts.map((part, i) => (
             <span key={i} className="flex items-center gap-1">
               {i ? <span className="text-sm text-muted">or else</span> : null}
-              <OperandInput label={`${label}, choice ${i + 1}`} sources={texts} value={part} onChange={(next) => onChange({ coalesce: firsts.map((p, j) => (j === i ? next : p)) })} />
+              <OperandInput
+                label={`${label}, choice ${i + 1}`}
+                sources={texts}
+                value={part}
+                onChange={(next) => onChange({ coalesce: firsts.map((p, j) => (j === i ? next : p)) })}
+              />
               {firsts.length > 2 ? (
-                <Button size="sm" variant="ghost" aria-label={`${label}: remove choice ${i + 1}`} onClick={() => onChange({ coalesce: firsts.filter((_, j) => j !== i) })}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`${label}: remove choice ${i + 1}`}
+                  onClick={() => onChange({ coalesce: firsts.filter((_, j) => j !== i) })}
+                >
                   ✕
                 </Button>
               ) : null}
@@ -334,10 +438,27 @@ export function ValueEditor({
 }
 
 /** A date or a time that a value reads: today, now, or a date or time field. */
-function MomentInput({ label, sources, value, onChange, clock = true }: { label: string; sources: ReadonlyArray<{ ref: string; label: string }>; value: Moment; onChange: (value: Moment) => void; clock?: boolean }) {
+function MomentInput({
+  label,
+  sources,
+  value,
+  onChange,
+  clock = true,
+}: {
+  label: string;
+  sources: ReadonlyArray<{ ref: string; label: string }>;
+  value: Moment;
+  onChange: (value: Moment) => void;
+  clock?: boolean;
+}) {
   const current = 'ref' in value ? value.ref : 'today' in value ? '·today' : '·now';
   return (
-    <Select aria-label={label} className="w-auto" value={current} onChange={(e) => onChange(e.target.value === '·today' ? { today: true } : e.target.value === '·now' ? { now: true } : { ref: e.target.value })}>
+    <Select
+      aria-label={label}
+      className="w-auto"
+      value={current}
+      onChange={(e) => onChange(e.target.value === '·today' ? { today: true } : e.target.value === '·now' ? { now: true } : { ref: e.target.value })}
+    >
       {/* Where the clock can't be read, today and now show only to be changed. */}
       {clock || current === '·today' ? <option value="·today">Today</option> : null}
       {clock || current === '·now' ? <option value="·now">Now</option> : null}
@@ -351,11 +472,28 @@ function MomentInput({ label, sources, value, onChange, clock = true }: { label:
 }
 
 /** One side of a calculation, or one part of joined text: a field, or a value typed in. */
-function OperandInput({ label, sources, value, numeric = false, onChange }: { label: string; sources: ReadonlyArray<{ ref: string; label: string }>; value: Operand; numeric?: boolean; onChange: (value: Operand) => void }) {
+function OperandInput({
+  label,
+  sources,
+  value,
+  numeric = false,
+  onChange,
+}: {
+  label: string;
+  sources: ReadonlyArray<{ ref: string; label: string }>;
+  value: Operand;
+  numeric?: boolean;
+  onChange: (value: Operand) => void;
+}) {
   const typed = !isRefOperand(value);
   return (
     <span className="flex items-center gap-1">
-      <Select aria-label={`${label}: from`} className="w-auto" value={isRefOperand(value) ? value.ref : '·typed'} onChange={(e) => onChange(e.target.value === '·typed' ? (numeric ? 0 : '') : { ref: e.target.value })}>
+      <Select
+        aria-label={`${label}: from`}
+        className="w-auto"
+        value={isRefOperand(value) ? value.ref : '·typed'}
+        onChange={(e) => onChange(e.target.value === '·typed' ? (numeric ? 0 : '') : { ref: e.target.value })}
+      >
         <option value="·typed">{numeric ? 'A number' : 'Text'}</option>
         {sources.map((source) => (
           <option key={source.ref} value={source.ref}>
@@ -365,7 +503,13 @@ function OperandInput({ label, sources, value, numeric = false, onChange }: { la
       </Select>
       {typed ? (
         numeric ? (
-          <TextInput aria-label={label} type="number" className="w-24" value={typeof value === 'number' ? value : 0} onChange={(e) => onChange(Number(e.target.value))} />
+          <TextInput
+            aria-label={label}
+            type="number"
+            className="w-24"
+            value={typeof value === 'number' ? value : 0}
+            onChange={(e) => onChange(Number(e.target.value))}
+          />
         ) : (
           <TextInput aria-label={label} className="w-32" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />
         )
@@ -395,7 +539,26 @@ function FixedInput({ target, label, value, onChange }: { target?: FieldDef; lab
       </Select>
     );
   }
-  if (target?.type === 'number') return <TextInput aria-label={label} type="number" className="w-32" value={typeof value === 'number' ? value : ''} onChange={(e) => onChange(Number(e.target.value))} />;
-  if (target?.type === 'date') return <TextInput aria-label={label} type="date" className="w-auto" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />;
-  return <TextInput aria-label={label} className="w-56" value={typeof value === 'string' ? value : typeof value === 'number' ? String(value) : ''} onChange={(e) => onChange(e.target.value)} />;
+  if (target?.type === 'number')
+    return (
+      <TextInput
+        aria-label={label}
+        type="number"
+        className="w-32"
+        value={typeof value === 'number' ? value : ''}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    );
+  if (target?.type === 'date')
+    return (
+      <TextInput aria-label={label} type="date" className="w-auto" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />
+    );
+  return (
+    <TextInput
+      aria-label={label}
+      className="w-56"
+      value={typeof value === 'string' ? value : typeof value === 'number' ? String(value) : ''}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
 }

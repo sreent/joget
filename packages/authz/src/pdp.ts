@@ -1,4 +1,4 @@
-import { isCondition, partialEvaluate, type Condition, type ConditionEnv } from './conditions.js';
+import { type Condition, type ConditionEnv, isCondition, partialEvaluate } from './conditions.js';
 import type {
   AuthorizationRequest,
   Binding,
@@ -37,7 +37,10 @@ function validateGrant(set: PermissionSet, grant: PermissionGrant): void {
   if (!isValidPermissionPattern(grant.permission)) {
     throw new PolicyError(`Permission set ${set.id} has an invalid permission pattern "${grant.permission}"`);
   }
-  for (const [what, condition] of [['condition', grant.condition], ['check', grant.check]] as const) {
+  for (const [what, condition] of [
+    ['condition', grant.condition],
+    ['check', grant.check],
+  ] as const) {
     if (condition !== undefined && !isCondition(condition)) {
       throw new PolicyError(`Permission set ${set.id} has an invalid ${what} on "${grant.permission}"`);
     }
@@ -49,11 +52,7 @@ function validateGrant(set: PermissionSet, grant: PermissionGrant): void {
 }
 
 /** Build a policy, rejecting definitions that are malformed or reference unknown permission sets. */
-export function createPolicy(input: {
-  permissionSets: readonly PermissionSet[];
-  roles: readonly Role[];
-  guardrails?: readonly Guardrail[];
-}): Policy {
+export function createPolicy(input: { permissionSets: readonly PermissionSet[]; roles: readonly Role[]; guardrails?: readonly Guardrail[] }): Policy {
   const permissionSets = new Map<string, PermissionSet>();
   for (const set of input.permissionSets) {
     if (permissionSets.has(set.id)) throw new PolicyError(`Duplicate permission set ${set.id}`);
@@ -218,11 +217,7 @@ function deny(action: string, reasons: Reason[]): QueryDecision & { allowed: fal
  *
  * Grants are additive; guardrails are the only source of explicit denial.
  */
-export function authorizeQuery(
-  policy: Policy,
-  request: AuthorizationRequest,
-  pending: readonly string[] = ['record'],
-): QueryDecision {
+export function authorizeQuery(policy: Policy, request: AuthorizationRequest, pending: readonly string[] = ['record']): QueryDecision {
   const { principal, action, resource } = request;
   const now = request.now ?? new Date();
 
@@ -276,8 +271,7 @@ export function authorizeQuery(
     if (when === false) continue;
     if (guardrail.effect === 'step_up') {
       const maxMfaAgeSeconds = guardrail.maxMfaAgeSeconds ?? DEFAULT_MAX_MFA_AGE_SECONDS;
-      const fresh =
-        principal.mfaAt !== undefined && (now.getTime() - principal.mfaAt.getTime()) / 1000 <= maxMfaAgeSeconds;
+      const fresh = principal.mfaAt !== undefined && (now.getTime() - principal.mfaAt.getTime()) / 1000 <= maxMfaAgeSeconds;
       if (fresh) continue;
       if (when === true) {
         denials.push({ kind: 'step_up_required', guardrailId: guardrail.id, name: guardrail.name, maxMfaAgeSeconds });

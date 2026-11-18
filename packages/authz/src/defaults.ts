@@ -241,10 +241,7 @@ export const MANAGED_GUARDRAILS: readonly Guardrail[] = [
     actions: ['connection.use'],
     effect: 'deny',
     when: {
-      all: [
-        { eq: [{ ref: 'resource.spaceKind' }, 'personal'] },
-        { eq: [{ ref: 'resource.connectionTier' }, 'production'] },
-      ],
+      all: [{ eq: [{ ref: 'resource.spaceKind' }, 'personal'] }, { eq: [{ ref: 'resource.connectionTier' }, 'production'] }],
     },
     managed: true,
   },

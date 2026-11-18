@@ -24,12 +24,7 @@ export interface SodConflict {
  * `existing` must hold the active bindings of the same principal: for a user, include the bindings
  * of the groups they belong to.
  */
-export function findSodConflicts(
-  roleId: string | undefined,
-  existing: readonly Binding[],
-  rules: readonly SodRule[],
-  now: Date = new Date(),
-): SodConflict[] {
+export function findSodConflicts(roleId: string | undefined, existing: readonly Binding[], rules: readonly SodRule[], now: Date = new Date()): SodConflict[] {
   if (!roleId) return [];
   const conflicts: SodConflict[] = [];
   for (const binding of existing) {
@@ -68,11 +63,7 @@ export function findEscalation(
   target: { readonly roleId?: string; readonly permissionSetId?: string },
   now: Date = new Date(),
 ): string[] {
-  const setIds = target.roleId
-    ? (policy.roles.get(target.roleId)?.permissionSetIds ?? [])
-    : target.permissionSetId
-      ? [target.permissionSetId]
-      : [];
+  const setIds = target.roleId ? (policy.roles.get(target.roleId)?.permissionSetIds ?? []) : target.permissionSetId ? [target.permissionSetId] : [];
   const held = effectiveGrants(policy, granter, scopes, granterBindings, now).filter((grant) => !grant.outsidePersonalBoundary);
   // A conditional grant covers only the same condition: granting what you hold only in previews stays in previews.
   const sameCondition = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);

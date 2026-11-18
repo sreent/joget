@@ -1,20 +1,20 @@
+import { holdsOn } from '@platform/app-model';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError, type AppAt } from '../api.js';
+import { ApiError, type AppAt, api } from '../api.js';
 import { ChartCard, StatTile } from '../components/charts.js';
 import { FilesProvider } from '../components/files.js';
+import { Icon } from '../components/icon.js';
 import { ImportPanel } from '../components/import.js';
-import { TitlesProvider, titlesOf } from '../components/records.js';
 import { filledLines, LinesChangeView, LinesEditor, LinesTable, workedOut } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
+import { TitlesProvider, titlesOf } from '../components/records.js';
 import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
 import { asLines, display, ValueInput, ValueView } from '../components/values.js';
 import { atRoute, Link, navigate, type Route } from '../router.js';
+import type { HistoryEntry, Line, RecordOut, RecordValue, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 import { MovedNotice } from './BuilderPanels.js';
 import { ProcessCard } from './Tasks.js';
-import { holdsOn } from '@platform/app-model';
-import { Icon } from '../components/icon.js';
-import type { HistoryEntry, Line, RecordOut, RecordValue, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
 
 /** What the screen shows: one of the app's pages, a form, an entity's records, or one record. */
 type View =
@@ -43,7 +43,10 @@ function landing(manifest: UiManifest): View {
 export function Use({ appId, env, page, recordId, appPage }: { appId: string; env?: string; page?: string; recordId?: string; appPage?: string }) {
   const at: AppAt = { id: appId, ...(env ? { env } : {}) };
   const ui = useQuery({ queryKey: ['ui', appId, env], queryFn: () => api.ui(at) });
-  if (ui.isError) return <Notice tone="bad">{ui.error instanceof ApiError && ui.error.status === 403 ? "This app isn't shared with you." : "This app can't be opened."}</Notice>;
+  if (ui.isError)
+    return (
+      <Notice tone="bad">{ui.error instanceof ApiError && ui.error.status === 403 ? "This app isn't shared with you." : "This app can't be opened."}</Notice>
+    );
   if (!ui.data) return <p className="text-muted">Loading…</p>;
   const manifest = ui.data;
   const view: View = appPage
@@ -59,43 +62,47 @@ export function Use({ appId, env, page, recordId, appPage }: { appId: string; en
   return (
     <FilesProvider at={at}>
       <TitlesProvider at={at} entities={manifest.entities}>
-      <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
-        <nav aria-label={manifest.app.name} className="grid content-start gap-4">
-          <div>
-            <h1 className="m-0 text-xl font-semibold tracking-tight">{manifest.app.name}</h1>
-            <EnvironmentBadge app={manifest.app} />
-            {manifest.app.access.build ? (
-              <Link to={{ name: 'build', appId, tab: manifest.app.kind === 'team' ? 'delivery' : 'data' }} className="text-sm">
-                {manifest.app.kind === 'team' ? 'Delivery' : 'Build this app'}
-              </Link>
+        <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
+          <nav aria-label={manifest.app.name} className="grid content-start gap-4">
+            <div>
+              <h1 className="m-0 text-xl font-semibold tracking-tight">{manifest.app.name}</h1>
+              <EnvironmentBadge app={manifest.app} />
+              {manifest.app.access.build ? (
+                <Link to={{ name: 'build', appId, tab: manifest.app.kind === 'team' ? 'delivery' : 'data' }} className="text-sm">
+                  {manifest.app.kind === 'team' ? 'Delivery' : 'Build this app'}
+                </Link>
+              ) : (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {manifest.app.access.roles.map((role) => (
+                    <Badge key={role}>{role}</Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+            <AppMenu at={at} manifest={manifest} view={view} />
+          </nav>
+
+          <div className="grid min-w-0 content-start gap-4">
+            {manifest.app.movedTo ? <MovedNotice movedTo={manifest.app.movedTo} /> : null}
+            {view.kind === 'page' ? (
+              manifest.pages[view.name] ? (
+                <PageView at={at} manifest={manifest} name={view.name} {...(view.record ? { record: view.record } : {})} />
+              ) : (
+                <EmptyState title="This page isn't here for you">It doesn't exist, or it's meant for people in other roles.</EmptyState>
+              )
+            ) : view.kind === 'form' && manifest.forms[view.name] ? (
+              <FormRunner at={at} manifest={manifest} name={view.name} form={manifest.forms[view.name]!} />
+            ) : view.kind === 'record' && manifest.entities[view.entity] ? (
+              <RecordView at={at} manifest={manifest} entityName={view.entity} recordId={view.id} />
+            ) : view.kind === 'list' && manifest.entities[view.entity] ? (
+              <RecordList at={at} manifest={manifest} entityName={view.entity} />
             ) : (
-              <div className="mt-1 flex flex-wrap gap-1">{manifest.app.access.roles.map((role) => <Badge key={role}>{role}</Badge>)}</div>
+              <EmptyState title="Nothing to see here yet">This app has nothing you can read.</EmptyState>
             )}
           </div>
-          <AppMenu at={at} manifest={manifest} view={view} />
-        </nav>
-
-        <div className="grid min-w-0 content-start gap-4">
-          {manifest.app.movedTo ? <MovedNotice movedTo={manifest.app.movedTo} /> : null}
-          {view.kind === 'page' ? (
-            manifest.pages[view.name] ? (
-              <PageView at={at} manifest={manifest} name={view.name} {...(view.record ? { record: view.record } : {})} />
-            ) : (
-              <EmptyState title="This page isn't here for you">It doesn't exist, or it's meant for people in other roles.</EmptyState>
-            )
-          ) : view.kind === 'form' && manifest.forms[view.name] ? (
-            <FormRunner at={at} manifest={manifest} name={view.name} form={manifest.forms[view.name]!} />
-          ) : view.kind === 'record' && manifest.entities[view.entity] ? (
-            <RecordView at={at} manifest={manifest} entityName={view.entity} recordId={view.id} />
-          ) : view.kind === 'list' && manifest.entities[view.entity] ? (
-            <RecordList at={at} manifest={manifest} entityName={view.entity} />
-          ) : (
-            <EmptyState title="Nothing to see here yet">This app has nothing you can read.</EmptyState>
-          )}
         </div>
-      </div>
-    </TitlesProvider>
-</FilesProvider>
+      </TitlesProvider>
+    </FilesProvider>
   );
 }
 
@@ -107,7 +114,13 @@ function AppMenu({ at, manifest, view }: { at: AppAt; manifest: UiManifest; view
       aria-current={active ? 'page' : undefined}
       className={cx(
         'block rounded-md px-2.5 py-1.5 no-underline',
-        form ? (active ? 'bg-accent font-medium text-accent-text' : 'bg-accent-soft font-medium text-accent') : active ? 'bg-sunken text-text' : 'text-muted hover:text-text',
+        form
+          ? active
+            ? 'bg-accent font-medium text-accent-text'
+            : 'bg-accent-soft font-medium text-accent'
+          : active
+            ? 'bg-sunken text-text'
+            : 'text-muted hover:text-text',
       )}
     >
       {form ? `+ ${label}` : label}
@@ -186,7 +199,15 @@ function PageView({ at, manifest, name, record }: { at: AppAt; manifest: UiManif
   });
   if (page.record && !record) return <EmptyState title="Open it from a list">This page is about one record: a row of a list opens it.</EmptyState>;
   if (page.record && found.isError) return <Notice tone="bad">This record isn't here for you.</Notice>;
-  const title = about && found.data ? (about.titleField ? display(about.fields.find((f) => f.name === about.titleField), found.data.values?.[about.titleField]) : found.data.id) : null;
+  const title =
+    about && found.data
+      ? about.titleField
+        ? display(
+            about.fields.find((f) => f.name === about.titleField),
+            found.data.values?.[about.titleField],
+          )
+        : found.data.id
+      : null;
   return (
     <div className="grid gap-5">
       <div>
@@ -244,10 +265,15 @@ function FieldsBlockView({ where, block }: { where: BlockAt; block: Extract<UiBl
   const client = useQueryClient();
   const entityName = manifest.pages[where.page]?.record?.entity ?? '';
   const entity = manifest.entities[entityName];
-  const record = useQuery({ queryKey: ['record', at.id, at.env, entityName, where.record], queryFn: () => api.record(at, entityName, where.record!), enabled: Boolean(entity && where.record) });
+  const record = useQuery({
+    queryKey: ['record', at.id, at.env, entityName, where.record],
+    queryFn: () => api.record(at, entityName, where.record!),
+    enabled: Boolean(entity && where.record),
+  });
   const run = useMutation({
     mutationFn: (action: string) => api.runAction(at, action, { values: {}, recordId: record.data!.id, version: record.data!.version }),
-    onSuccess: () => Promise.all(['pageList', 'pageSummary', 'records', 'record', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] }))),
+    onSuccess: () =>
+      Promise.all(['pageList', 'pageSummary', 'records', 'record', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] }))),
   });
   if (!entity || !record.data) return null;
   const data = record.data;
@@ -255,33 +281,37 @@ function FieldsBlockView({ where, block }: { where: BlockAt; block: Extract<UiBl
     <Card className="grid gap-4">
       {block.title ? <h3 className="m-0 text-base font-semibold">{block.title}</h3> : null}
       <TitlesProvider known={data.titles ?? {}}>
-      <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
-        {block.fields.map((name) => {
-          const field = entity.fields.find((f) => f.name === name);
-          const system = SYSTEM_TIMES.has(name) ? (name === 'created_at' ? data.createdAt : data.updatedAt) : undefined;
-          const person = SYSTEM_PEOPLE[name];
-          if (!field && system === undefined && !person) return null;
-          const lines = field?.type === 'lines';
-          return (
-            <div key={name} className="contents">
-              <dt className={cx('text-muted', lines && 'sm:col-span-2')}>{field?.label ?? SYSTEM_LABELS[name] ?? name}</dt>
-              <dd className={cx('m-0', lines && 'sm:col-span-2')}>
-                {field && lines ? (
-                  <LinesTable field={field} value={data.values?.[name]} masked={data.masked ?? []} />
-                ) : field ? (
-                  <Cell field={field} record={data} />
-                ) : person ? (
-                  data[person] ? <PersonName id={data[person]!} /> : '—'
-                ) : system ? (
-                  new Date(system).toLocaleString()
-                ) : (
-                  '—'
-                )}
-              </dd>
-            </div>
-          );
-        })}
-      </dl>
+        <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
+          {block.fields.map((name) => {
+            const field = entity.fields.find((f) => f.name === name);
+            const system = SYSTEM_TIMES.has(name) ? (name === 'created_at' ? data.createdAt : data.updatedAt) : undefined;
+            const person = SYSTEM_PEOPLE[name];
+            if (!field && system === undefined && !person) return null;
+            const lines = field?.type === 'lines';
+            return (
+              <div key={name} className="contents">
+                <dt className={cx('text-muted', lines && 'sm:col-span-2')}>{field?.label ?? SYSTEM_LABELS[name] ?? name}</dt>
+                <dd className={cx('m-0', lines && 'sm:col-span-2')}>
+                  {field && lines ? (
+                    <LinesTable field={field} value={data.values?.[name]} masked={data.masked ?? []} />
+                  ) : field ? (
+                    <Cell field={field} record={data} />
+                  ) : person ? (
+                    data[person] ? (
+                      <PersonName id={data[person]!} />
+                    ) : (
+                      '—'
+                    )
+                  ) : system ? (
+                    new Date(system).toLocaleString()
+                  ) : (
+                    '—'
+                  )}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
       </TitlesProvider>
       {block.actions.length ? (
         <div className="flex flex-wrap gap-2 border-t border-line pt-3">
@@ -307,7 +337,11 @@ function summaryState(query: { isPending: boolean; isError: boolean; error: unkn
 function StatBlockView({ where, block }: { where: BlockAt; block: Extract<UiBlock, { type: 'stat' }> }) {
   const { at, page } = where;
   const record = block.of ? where.record : undefined;
-  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.path, record], queryFn: () => api.pageSummary(at, page, block.path, record), placeholderData: keepPreviousData });
+  const summary = useQuery({
+    queryKey: ['pageSummary', at.id, at.env, page, block.path, record],
+    queryFn: () => api.pageSummary(at, page, block.path, record),
+    placeholderData: keepPreviousData,
+  });
   const value = summary.data && 'value' in summary.data ? summary.data.value : undefined;
   return <StatTile label={block.label} value={value} decimals={block.decimals} state={summaryState(summary)} />;
 }
@@ -315,7 +349,11 @@ function StatBlockView({ where, block }: { where: BlockAt; block: Extract<UiBloc
 function ChartBlockView({ where, block }: { where: BlockAt; block: Extract<UiBlock, { type: 'chart' }> }) {
   const { at, page } = where;
   const record = block.of ? where.record : undefined;
-  const summary = useQuery({ queryKey: ['pageSummary', at.id, at.env, page, block.path, record], queryFn: () => api.pageSummary(at, page, block.path, record), placeholderData: keepPreviousData });
+  const summary = useQuery({
+    queryKey: ['pageSummary', at.id, at.env, page, block.path, record],
+    queryFn: () => api.pageSummary(at, page, block.path, record),
+    placeholderData: keepPreviousData,
+  });
   const data = summary.data && 'groups' in summary.data ? summary.data : undefined;
   return <ChartCard spec={block} data={data} state={summaryState(summary)} refreshing={summary.isFetching && !summary.isPending} />;
 }
@@ -351,7 +389,8 @@ function BlockView({ where, block, index }: { where: BlockAt; block: UiBlock; in
         ) : block.type === 'buttons' ? (
           <div key={index} className="flex flex-wrap gap-2">
             {block.buttons.map((button, b) => {
-              const to: Route = 'form' in button ? { name: 'use', ...atRoute(at), page: 'new', recordId: button.form } : { name: 'use', ...atRoute(at), appPage: button.page };
+              const to: Route =
+                'form' in button ? { name: 'use', ...atRoute(at), page: 'new', recordId: button.form } : { name: 'use', ...atRoute(at), appPage: button.page };
               const label = button.label ?? ('form' in button ? manifest.forms[button.form]?.label : manifest.pages[button.page]?.label) ?? '';
               return (
                 <Link key={b} to={to} className="no-underline">
@@ -371,7 +410,13 @@ function BlockView({ where, block, index }: { where: BlockAt; block: UiBlock; in
 }
 
 const SYSTEM_TIMES = new Set(['created_at', 'updated_at']);
-const SYSTEM_LABELS: Readonly<Record<string, string>> = { created_at: 'Created', updated_at: 'Last changed', owner: 'Owner', created_by: 'Created by', updated_by: 'Changed by' };
+const SYSTEM_LABELS: Readonly<Record<string, string>> = {
+  created_at: 'Created',
+  updated_at: 'Last changed',
+  owner: 'Owner',
+  created_by: 'Created by',
+  updated_by: 'Changed by',
+};
 const SYSTEM_PEOPLE: Readonly<Record<string, 'owner' | 'createdBy' | 'updatedBy'>> = { owner: 'owner', created_by: 'createdBy', updated_by: 'updatedBy' };
 
 /** A list on a page: its records under the person's own permissions, with more on request, and its row actions. */
@@ -388,12 +433,14 @@ function ListBlockView({ where, block }: { where: BlockAt; block: Extract<UiBloc
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
   const run = useMutation({
-    mutationFn: ({ action, record }: { action: string; record: RecordOut }) => api.runAction(at, action, { values: {}, recordId: record.id, version: record.version }),
+    mutationFn: ({ action, record }: { action: string; record: RecordOut }) =>
+      api.runAction(at, action, { values: {}, recordId: record.id, version: record.version }),
     onSuccess: () => Promise.all(['pageList', 'records', 'record', 'history'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] }))),
   });
   const records = rows.data?.pages.flatMap((p) => p.records) ?? [];
   /** Where a row goes: the page about one record that the list names, or the record's own screen. */
-  const opens = (id: string): Route => (block.open ? { name: 'use', ...atRoute(at), appPage: block.open, recordId: id } : { name: 'use', ...atRoute(at), page: block.entity, recordId: id });
+  const opens = (id: string): Route =>
+    block.open ? { name: 'use', ...atRoute(at), appPage: block.open, recordId: id } : { name: 'use', ...atRoute(at), page: block.entity, recordId: id };
   const cell = (column: (typeof block.columns)[number], record: RecordOut) => {
     if (SYSTEM_TIMES.has(column.name)) {
       const value = column.name === 'created_at' ? record.createdAt : record.updatedAt;
@@ -412,68 +459,68 @@ function ListBlockView({ where, block }: { where: BlockAt; block: Extract<UiBloc
       {block.title ? <h3 className="m-0 border-b border-line px-4 py-3 text-base font-semibold">{block.title}</h3> : null}
       {rows.isError ? (
         <div className="p-4">
-          <Notice tone="bad">{rows.error instanceof ApiError ? rows.error.message : 'This list can\'t be shown.'}</Notice>
+          <Notice tone="bad">{rows.error instanceof ApiError ? rows.error.message : "This list can't be shown."}</Notice>
         </div>
       ) : rows.data && records.length === 0 ? (
         <p className="m-0 px-4 py-6 text-center text-sm text-muted">{block.empty ?? 'Nothing here yet.'}</p>
       ) : records.length ? (
         <FilesProvider at={at} known={Object.assign({}, ...records.map((r) => r.files ?? {}))}>
           <TitlesProvider known={titlesOf(records)}>
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-muted">
-                {block.columns.map((column) => (
-                  <th key={column.name} scope="col" className="px-4 py-2.5 font-medium">
-                    {column.label}
-                  </th>
-                ))}
-                {block.actions.length ? <th scope="col" className="px-4 py-2.5" /> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {records.map((record) => (
-                <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate(opens(record.id))}>
-                  {block.columns.map((column, i) => (
-                    <td key={column.name} className="px-4 py-2.5">
-                      {i === 0 ? (
-                        <Link to={opens(record.id)} className="font-medium" onClick={(e) => e.stopPropagation()}>
-                          {cell(column, record)}
-                        </Link>
-                      ) : (
-                        cell(column, record)
-                      )}
-                    </td>
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-muted">
+                  {block.columns.map((column) => (
+                    <th key={column.name} scope="col" className="px-4 py-2.5 font-medium">
+                      {column.label}
+                    </th>
                   ))}
-                  {block.actions.length ? (
-                    <td className="px-4 py-2 text-right whitespace-nowrap">
-                      {block.actions.map((action) => (
-                        <Button
-                          key={action}
-                          size="sm"
-                          className="ml-2"
-                          disabled={run.isPending}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            run.mutate({ action, record });
-                          }}
-                        >
-                          {manifest.actions[action]?.label ?? action}
-                        </Button>
-                      ))}
-                    </td>
-                  ) : null}
+                  {block.actions.length ? <th scope="col" className="px-4 py-2.5" /> : null}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </TitlesProvider>
-</FilesProvider>
+              </thead>
+              <tbody>
+                {records.map((record) => (
+                  <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate(opens(record.id))}>
+                    {block.columns.map((column, i) => (
+                      <td key={column.name} className="px-4 py-2.5">
+                        {i === 0 ? (
+                          <Link to={opens(record.id)} className="font-medium" onClick={(e) => e.stopPropagation()}>
+                            {cell(column, record)}
+                          </Link>
+                        ) : (
+                          cell(column, record)
+                        )}
+                      </td>
+                    ))}
+                    {block.actions.length ? (
+                      <td className="px-4 py-2 text-right whitespace-nowrap">
+                        {block.actions.map((action) => (
+                          <Button
+                            key={action}
+                            size="sm"
+                            className="ml-2"
+                            disabled={run.isPending}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              run.mutate({ action, record });
+                            }}
+                          >
+                            {manifest.actions[action]?.label ?? action}
+                          </Button>
+                        ))}
+                      </td>
+                    ) : null}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TitlesProvider>
+        </FilesProvider>
       ) : (
         <p className="m-0 px-4 py-6 text-sm text-muted">Loading…</p>
       )}
       {run.error ? (
         <div className="p-4 pt-0">
-          <Notice tone="bad">{run.error instanceof ApiError ? run.error.message : 'That didn\'t work.'}</Notice>
+          <Notice tone="bad">{run.error instanceof ApiError ? run.error.message : "That didn't work."}</Notice>
         </div>
       ) : null}
       {rows.hasNextPage ? (
@@ -517,7 +564,12 @@ function EnvironmentBadge({ app }: { app: UiManifest['app'] }) {
 }
 
 function Cell({ field, record }: { field: UiField; record: RecordOut }) {
-  if (record.masked?.includes(field.name)) return <span className="text-faint" title="Masked for your role">••••</span>;
+  if (record.masked?.includes(field.name))
+    return (
+      <span className="text-faint" title="Masked for your role">
+        ••••
+      </span>
+    );
   return <ValueView field={field} value={record.values?.[field.name]} />;
 }
 
@@ -562,7 +614,11 @@ function RecordList({ at, manifest, entityName }: { at: AppAt; manifest: UiManif
           ) : null}
         </div>
       </div>
-      {imported !== null ? <Notice tone="good">Brought in {imported} {imported === 1 ? entity.label.toLowerCase() : entity.pluralLabel.toLowerCase()}.</Notice> : null}
+      {imported !== null ? (
+        <Notice tone="good">
+          Brought in {imported} {imported === 1 ? entity.label.toLowerCase() : entity.pluralLabel.toLowerCase()}.
+        </Notice>
+      ) : null}
       {importing ? (
         <ImportPanel
           at={at}
@@ -577,43 +633,51 @@ function RecordList({ at, manifest, entityName }: { at: AppAt; manifest: UiManif
       {records.data?.records.length === 0 ? <EmptyState title={`No ${entity.pluralLabel.toLowerCase()} you can see`} /> : null}
       {records.data?.records.length ? (
         <FilesProvider at={at} known={Object.assign({}, ...records.data.records.map((r) => r.files ?? {}))}>
-        <TitlesProvider known={titlesOf(records.data.records)}>
-        <Card className="overflow-x-auto p-0">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-muted">
-                {columns.map((f) => (
-                  <th key={f.name} scope="col" className="px-4 py-2.5 font-medium">
-                    {f.label}
-                  </th>
-                ))}
-                <th scope="col" className="px-4 py-2.5 font-medium">
-                  Updated
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {records.data.records.map((record) => (
-                <tr key={record.id} className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken" onClick={() => navigate({ name: 'use', ...atRoute(at), page: entityName, recordId: record.id })}>
-                  {columns.map((f, i) => (
-                    <td key={f.name} className="px-4 py-2.5">
-                      {i === 0 ? (
-                        <Link to={{ name: 'use', ...atRoute(at), page: entityName, recordId: record.id }} className="font-medium" onClick={(e) => e.stopPropagation()}>
-                          <Cell field={f} record={record} />
-                        </Link>
-                      ) : (
-                        <Cell field={f} record={record} />
-                      )}
-                    </td>
+          <TitlesProvider known={titlesOf(records.data.records)}>
+            <Card className="overflow-x-auto p-0">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left text-muted">
+                    {columns.map((f) => (
+                      <th key={f.name} scope="col" className="px-4 py-2.5 font-medium">
+                        {f.label}
+                      </th>
+                    ))}
+                    <th scope="col" className="px-4 py-2.5 font-medium">
+                      Updated
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.data.records.map((record) => (
+                    <tr
+                      key={record.id}
+                      className="cursor-pointer border-b border-line last:border-0 hover:bg-sunken"
+                      onClick={() => navigate({ name: 'use', ...atRoute(at), page: entityName, recordId: record.id })}
+                    >
+                      {columns.map((f, i) => (
+                        <td key={f.name} className="px-4 py-2.5">
+                          {i === 0 ? (
+                            <Link
+                              to={{ name: 'use', ...atRoute(at), page: entityName, recordId: record.id }}
+                              className="font-medium"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Cell field={f} record={record} />
+                            </Link>
+                          ) : (
+                            <Cell field={f} record={record} />
+                          )}
+                        </td>
+                      ))}
+                      <td className="px-4 py-2.5 text-muted">{record.updatedAt ? new Date(record.updatedAt).toLocaleDateString() : '—'}</td>
+                    </tr>
                   ))}
-                  <td className="px-4 py-2.5 text-muted">{record.updatedAt ? new Date(record.updatedAt).toLocaleDateString() : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-        </TitlesProvider>
-</FilesProvider>
+                </tbody>
+              </table>
+            </Card>
+          </TitlesProvider>
+        </FilesProvider>
       ) : null}
     </div>
   );
@@ -688,7 +752,9 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
     onError: (error) => {
       // In steps, go back to the first step with a value the server refused.
       const refused = Object.keys(problemsOf(error).fields);
-      const first = form.sections.findIndex((section) => section.fields.some((item) => refused.some((field) => field === item.field || field.startsWith(`${item.field}[`))));
+      const first = form.sections.findIndex((section) =>
+        section.fields.some((item) => refused.some((field) => field === item.field || field.startsWith(`${item.field}[`))),
+      );
       if (form.layout === 'steps' && first !== -1) setStep(first);
     },
   });
@@ -764,13 +830,25 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
                         <ValueView field={field} value={(current[field.name] as Value | undefined) ?? null} />
                       </p>
                     ) : lines && !item.readOnly ? (
-                      <LinesEditor id={id} field={field} value={asLines(values[field.name])} onChange={(value) => setValues({ ...values, [field.name]: value })} mode="create" problems={problems.fields} />
+                      <LinesEditor
+                        id={id}
+                        field={field}
+                        value={asLines(values[field.name])}
+                        onChange={(value) => setValues({ ...values, [field.name]: value })}
+                        mode="create"
+                        problems={problems.fields}
+                      />
                     ) : item.readOnly ? (
                       <p className="m-0">
                         <ValueView field={field} value={values[field.name]} />
                       </p>
                     ) : (
-                      <ValueInput id={id} field={field} value={values[field.name] as Value | undefined} onChange={(value) => setValues({ ...values, [field.name]: value })} />
+                      <ValueInput
+                        id={id}
+                        field={field}
+                        value={values[field.name] as Value | undefined}
+                        onChange={(value) => setValues({ ...values, [field.name]: value })}
+                      />
                     )}
                     {item.help ? <p className="m-0 text-xs text-faint">{item.help}</p> : null}
                     {problem ? <p className="m-0 text-xs text-bad">{problem}</p> : null}
@@ -818,106 +896,143 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
   const history = useQuery({ queryKey: ['history', at.id, at.env, entityName, recordId], queryFn: () => api.history(at, entityName, recordId) });
   const [edits, setEdits] = useState<Record<string, RecordValue> | null>(null);
   const refresh = () =>
-    Promise.all([...['record', 'records', 'history', 'processes'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] })), client.invalidateQueries({ queryKey: ['tasks'] })]);
+    Promise.all([
+      ...['record', 'records', 'history', 'processes'].map((key) => client.invalidateQueries({ queryKey: [key, at.id] })),
+      client.invalidateQueries({ queryKey: ['tasks'] }),
+    ]);
   // Lines are sent whole, with their IDs, so the platform knows which changed; empty new rows are dropped.
-  const changes = () => Object.fromEntries(Object.entries(edits ?? {}).map(([field, value]) => [field, entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value]));
-  const save = useMutation({ mutationFn: () => api.updateRecord(at, entityName, recordId, changes(), record.data!.version), onSuccess: async () => (setEdits(null), await refresh()) });
-  const run = useMutation({ mutationFn: (action: string) => api.runAction(at, action, { values: {}, recordId, version: record.data!.version }), onSuccess: refresh });
+  const changes = () =>
+    Object.fromEntries(
+      Object.entries(edits ?? {}).map(([field, value]) => [
+        field,
+        entity.fields.find((f) => f.name === field)?.type === 'lines' ? filledLines(asLines(value)) : value,
+      ]),
+    );
+  const save = useMutation({
+    mutationFn: () => api.updateRecord(at, entityName, recordId, changes(), record.data!.version),
+    onSuccess: async () => (setEdits(null), await refresh()),
+  });
+  const run = useMutation({
+    mutationFn: (action: string) => api.runAction(at, action, { values: {}, recordId, version: record.data!.version }),
+    onSuccess: refresh,
+  });
   const actions = Object.entries(manifest.actions).filter(([, a]) => a.entity === entityName && a.operation === 'update' && a.input.length === 0);
   const editable = entity.fields.filter((f) => f.update && !f.computed && !record.data?.masked?.includes(f.name));
 
   if (record.isError) return <Notice tone="bad">This record doesn't exist, or you can't see it.</Notice>;
   if (!record.data) return <p className="text-muted">Loading…</p>;
-  const title = entity.titleField ? display(entity.fields.find((f) => f.name === entity.titleField), record.data.values?.[entity.titleField]) : record.data.id;
+  const title = entity.titleField
+    ? display(
+        entity.fields.find((f) => f.name === entity.titleField),
+        record.data.values?.[entity.titleField],
+      )
+    : record.data.id;
   const problems = problemsOf(save.error ?? run.error);
 
   return (
     <FilesProvider at={at} known={record.data.files ?? {}}>
-    <TitlesProvider known={record.data.titles ?? {}}>
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-      <Card className="grid content-start gap-4">
-        <div>
-          <p className="m-0 text-sm text-muted">
-            <Link to={{ name: 'use', ...atRoute(at), page: entityName }}>{entity.pluralLabel}</Link>
-          </p>
-          <h2 className="m-0 text-2xl font-semibold tracking-tight">{title}</h2>
+      <TitlesProvider known={record.data.titles ?? {}}>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+          <Card className="grid content-start gap-4">
+            <div>
+              <p className="m-0 text-sm text-muted">
+                <Link to={{ name: 'use', ...atRoute(at), page: entityName }}>{entity.pluralLabel}</Link>
+              </p>
+              <h2 className="m-0 text-2xl font-semibold tracking-tight">{title}</h2>
+            </div>
+            <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
+              {entity.fields
+                .filter((f) => f.read)
+                .map((field) => {
+                  const editing = edits !== null && editable.includes(field);
+                  const current = edits && field.name in edits ? edits[field.name] : (record.data.values?.[field.name] ?? null);
+                  const lines = field.type === 'lines';
+                  return (
+                    <div key={field.name} className="contents">
+                      <dt className={cx('text-muted', lines && 'sm:col-span-2')}>
+                        {editing ? <label htmlFor={`edit-${field.name}`}>{field.label}</label> : field.label}
+                      </dt>
+                      <dd className={cx('m-0', lines && 'sm:col-span-2')}>
+                        {editing && lines ? (
+                          <LinesEditor
+                            id={`edit-${field.name}`}
+                            field={field}
+                            value={asLines(current)}
+                            onChange={(next) => setEdits({ ...edits, [field.name]: next })}
+                            mode="update"
+                            problems={problems.fields}
+                          />
+                        ) : editing ? (
+                          <ValueInput
+                            id={`edit-${field.name}`}
+                            field={field}
+                            value={current as Value}
+                            onChange={(value) => setEdits({ ...edits, [field.name]: value })}
+                          />
+                        ) : lines ? (
+                          <LinesTable field={field} value={record.data.values?.[field.name]} masked={record.data.masked ?? []} />
+                        ) : field.computed && edits ? (
+                          <span className="tabular-nums">
+                            <ValueView
+                              field={field}
+                              value={(workedOut(entity.fields, { ...record.data.values, ...edits })[field.name] as Value | undefined) ?? null}
+                            />
+                          </span>
+                        ) : (
+                          <Cell field={field} record={record.data} />
+                        )}
+                        {problems.fields[field.name] && !lines ? <span className="block text-xs text-bad">{problems.fields[field.name]}</span> : null}
+                      </dd>
+                    </div>
+                  );
+                })}
+              {record.data.owner ? (
+                <>
+                  <dt className="text-muted">{OWNER.label}</dt>
+                  <dd className="m-0">
+                    <PersonName id={record.data.owner} />
+                  </dd>
+                </>
+              ) : null}
+            </dl>
+            {problems.message ? <Notice tone="bad">{problems.message}</Notice> : null}
+            <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+              {edits ? (
+                <>
+                  <Button variant="primary" onClick={() => save.mutate()} disabled={save.isPending}>
+                    Save
+                  </Button>
+                  <Button onClick={() => setEdits(null)}>Cancel</Button>
+                </>
+              ) : (
+                <>
+                  {editable.length ? <Button onClick={() => setEdits({})}>Edit</Button> : null}
+                  {actions.map(([name, action]) => (
+                    <Button key={name} variant="primary" onClick={() => run.mutate(name)} disabled={run.isPending}>
+                      {action.label}
+                    </Button>
+                  ))}
+                </>
+              )}
+            </div>
+          </Card>
+          <div className="grid content-start gap-4">
+            <ProcessCard at={at} entity={entityName} recordId={recordId} />
+            <Card className="grid content-start gap-3">
+              <h3 className="m-0 text-sm font-semibold text-muted">History</h3>
+              <ol className="m-0 grid list-none gap-3 p-0">
+                {history.data?.history
+                  .slice()
+                  .reverse()
+                  .map((entry) => (
+                    <HistoryItem key={`${entry.version}-${entry.at}`} entry={entry} entity={entity} record={record.data!} />
+                  ))}
+              </ol>
+            </Card>
+          </div>
         </div>
-        <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
-          {entity.fields
-            .filter((f) => f.read)
-            .map((field) => {
-              const editing = edits !== null && editable.includes(field);
-              const current = edits && field.name in edits ? edits[field.name] : (record.data.values?.[field.name] ?? null);
-              const lines = field.type === 'lines';
-              return (
-              <div key={field.name} className="contents">
-                <dt className={cx('text-muted', lines && 'sm:col-span-2')}>{editing ? <label htmlFor={`edit-${field.name}`}>{field.label}</label> : field.label}</dt>
-                <dd className={cx('m-0', lines && 'sm:col-span-2')}>
-                  {editing && lines ? (
-                    <LinesEditor id={`edit-${field.name}`} field={field} value={asLines(current)} onChange={(next) => setEdits({ ...edits, [field.name]: next })} mode="update" problems={problems.fields} />
-                  ) : editing ? (
-                    <ValueInput id={`edit-${field.name}`} field={field} value={current as Value} onChange={(value) => setEdits({ ...edits, [field.name]: value })} />
-                  ) : lines ? (
-                    <LinesTable field={field} value={record.data.values?.[field.name]} masked={record.data.masked ?? []} />
-                  ) : field.computed && edits ? (
-                    <span className="tabular-nums">
-                      <ValueView field={field} value={(workedOut(entity.fields, { ...record.data.values, ...edits })[field.name] as Value | undefined) ?? null} />
-                    </span>
-                  ) : (
-                    <Cell field={field} record={record.data} />
-                  )}
-                  {problems.fields[field.name] && !lines ? <span className="block text-xs text-bad">{problems.fields[field.name]}</span> : null}
-                </dd>
-              </div>
-              );
-            })}
-          {record.data.owner ? (
-            <>
-              <dt className="text-muted">{OWNER.label}</dt>
-              <dd className="m-0">
-                <PersonName id={record.data.owner} />
-              </dd>
-            </>
-          ) : null}
-        </dl>
-        {problems.message ? <Notice tone="bad">{problems.message}</Notice> : null}
-        <div className="flex flex-wrap gap-2 border-t border-line pt-3">
-          {edits ? (
-            <>
-              <Button variant="primary" onClick={() => save.mutate()} disabled={save.isPending}>
-                Save
-              </Button>
-              <Button onClick={() => setEdits(null)}>Cancel</Button>
-            </>
-          ) : (
-            <>
-              {editable.length ? <Button onClick={() => setEdits({})}>Edit</Button> : null}
-              {actions.map(([name, action]) => (
-                <Button key={name} variant="primary" onClick={() => run.mutate(name)} disabled={run.isPending}>
-                  {action.label}
-                </Button>
-              ))}
-            </>
-          )}
-        </div>
-      </Card>
-      <div className="grid content-start gap-4">
-      <ProcessCard at={at} entity={entityName} recordId={recordId} />
-      <Card className="grid content-start gap-3">
-        <h3 className="m-0 text-sm font-semibold text-muted">History</h3>
-        <ol className="m-0 grid list-none gap-3 p-0">
-          {history.data?.history
-            .slice()
-            .reverse()
-            .map((entry) => (
-              <HistoryItem key={`${entry.version}-${entry.at}`} entry={entry} entity={entity} record={record.data!} />
-            ))}
-        </ol>
-      </Card>
-      </div>
-    </div>
-    </TitlesProvider>
-</FilesProvider>
+      </TitlesProvider>
+    </FilesProvider>
   );
 }
 
@@ -949,8 +1064,18 @@ function HistoryItem({ entry, entity, record }: { entry: HistoryEntry; entity: U
         {entry.changes.map((change, i) => {
           const field = change.field === 'owner' ? OWNER : entity.fields.find((f) => f.name === change.field);
           const label = field?.label ?? change.field;
-          if (change.masked) return <li key={i} className="text-muted">{label}: changed (masked)</li>;
-          if (change.removed) return <li key={i} className="text-faint">{label}: a field that no longer exists</li>;
+          if (change.masked)
+            return (
+              <li key={i} className="text-muted">
+                {label}: changed (masked)
+              </li>
+            );
+          if (change.removed)
+            return (
+              <li key={i} className="text-faint">
+                {label}: a field that no longer exists
+              </li>
+            );
           if (change.lines && field) {
             return (
               <li key={i}>
@@ -969,7 +1094,9 @@ function HistoryItem({ entry, entity, record }: { entry: HistoryEntry; entity: U
                 </>
               ) : null}
               <ValueView field={field} value={change.after ?? null} link={false} />
-              {change.source?.source === 'document' ? <span className="ml-1 text-outside">from {String(change.source['document'] ?? 'a document')}</span> : null}
+              {change.source?.source === 'document' ? (
+                <span className="ml-1 text-outside">from {String(change.source['document'] ?? 'a document')}</span>
+              ) : null}
               {change.source?.source === 'agent' ? <span className="ml-1 text-agent">inferred by the agent</span> : null}
             </li>
           );

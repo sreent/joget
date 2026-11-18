@@ -85,7 +85,11 @@ export type PersonStep = keyof typeof PERSON_STEPS;
  */
 export function requirePerson(auth: AuthContext, step: PersonStep, details: Record<string, unknown> = {}): void {
   if (auth.actor.type === 'user' && auth.credential.kind === 'session' && !auth.agent) return;
-  throw forbidden('session_required', `${PERSON_STEPS[step]} stays with a person: sign in to do it. An agent, a script or an automation can prepare it, but can't do it.`, { step, ...details });
+  throw forbidden(
+    'session_required',
+    `${PERSON_STEPS[step]} stays with a person: sign in to do it. An agent, a script or an automation can prepare it, but can't do it.`,
+    { step, ...details },
+  );
 }
 
 /** The caller, who must be a person signed in interactively: API tokens cannot do this. */

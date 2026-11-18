@@ -1,6 +1,6 @@
 import type { Expression } from '@platform/app-model';
 import type { Definition, Field } from '../types.js';
-import { isGroup, opLabel, recordChoices, relativeWords, toModel, type Clause, type Condition, type Group } from './conditions.js';
+import { type Clause, type Condition, type Group, isGroup, opLabel, recordChoices, relativeWords, toModel } from './conditions.js';
 
 /**
  * The values that logic works out, as builders edit them (design §6.2): a field, a calculation,
@@ -39,7 +39,7 @@ function refLabel(definition: Definition, entity: string, ref: string): string {
   if (ref.startsWith('principal.')) return `the person's ${ref.slice('principal.'.length)}`;
   const choice = recordChoices(definition, entity).find((c) => c.ref === ref);
   if (choice) return choice.label;
-  if (ref === 'record.id') return 'the record\'s ID';
+  if (ref === 'record.id') return "the record's ID";
   return ref.slice(ref.indexOf('.') + 1);
 }
 
@@ -91,7 +91,9 @@ function describeClause(definition: Definition, entity: string, clause: Clause):
 }
 
 function describeGroup(definition: Definition, entity: string, group: Group): string {
-  return group.items.map((item) => (isGroup(item) ? `(${describeGroup(definition, entity, item)})` : describeClause(definition, entity, item))).join(group.match === 'all' ? ' and ' : ' or ');
+  return group.items
+    .map((item) => (isGroup(item) ? `(${describeGroup(definition, entity, item)})` : describeClause(definition, entity, item)))
+    .join(group.match === 'all' ? ' and ' : ' or ');
 }
 
 /** A condition in words: "Total (SGD) is more than 1000". */
@@ -156,7 +158,8 @@ export function valueSources(definition: Definition, entity: string, target?: Fi
   const wanted = target === 'number' || target === 'date' ? target : kindOfField(target);
   return all
     .filter((source) => {
-      if (target !== 'number' && target !== 'date' && target.type === 'reference') return source.kind === (target.multiple ? 'records' : 'record') && source.entity === target.entity;
+      if (target !== 'number' && target !== 'date' && target.type === 'reference')
+        return source.kind === (target.multiple ? 'records' : 'record') && source.entity === target.entity;
       return source.kind === wanted || (wanted === 'date' && source.kind === 'datetime');
     })
     .map(({ ref, label }) => ({ ref, label }));
@@ -170,17 +173,28 @@ export type CalcOp = (typeof CALC_OPS)[number];
 export type Operand = number | string | { readonly ref: string };
 
 const isOperand = (value: Expression): value is Operand =>
-  typeof value === 'number' || typeof value === 'string' || (value !== null && typeof value === 'object' && !isList(value) && 'ref' in value && Object.keys(value).length === 1);
+  typeof value === 'number' ||
+  typeof value === 'string' ||
+  (value !== null && typeof value === 'object' && !isList(value) && 'ref' in value && Object.keys(value).length === 1);
 
 /** A calculation of two operands, if the expression is one the editor can show. */
 export function calcOf(expression: Expression): { op: CalcOp; a: Operand; b: Operand } | undefined {
   if (expression === null || typeof expression !== 'object' || isList(expression)) return undefined;
   const found: [CalcOp, readonly Expression[]] | undefined =
-    'add' in expression ? ['add', expression.add] : 'sub' in expression ? ['sub', expression.sub] : 'mul' in expression ? ['mul', expression.mul] : 'div' in expression ? ['div', expression.div] : undefined;
+    'add' in expression
+      ? ['add', expression.add]
+      : 'sub' in expression
+        ? ['sub', expression.sub]
+        : 'mul' in expression
+          ? ['mul', expression.mul]
+          : 'div' in expression
+            ? ['div', expression.div]
+            : undefined;
   if (!found) return undefined;
   const [op, operands] = found;
   const [a, b] = operands;
-  if (operands.length !== 2 || a === undefined || b === undefined || !isOperand(a) || !isOperand(b) || typeof a === 'string' || typeof b === 'string') return undefined;
+  if (operands.length !== 2 || a === undefined || b === undefined || !isOperand(a) || !isOperand(b) || typeof a === 'string' || typeof b === 'string')
+    return undefined;
   return { op, a, b };
 }
 
@@ -205,7 +219,12 @@ const isMoment = (value: Expression | undefined): value is Moment =>
 /** A date or a time so many days or hours away, if the expression is one the editor can show. */
 export function shiftOf(expression: Expression): { op: 'add_days' | 'add_hours'; from: Moment; by: Operand } | undefined {
   if (expression === null || typeof expression !== 'object' || isList(expression)) return undefined;
-  const found = 'add_days' in expression ? (['add_days', expression.add_days] as const) : 'add_hours' in expression ? (['add_hours', expression.add_hours] as const) : undefined;
+  const found =
+    'add_days' in expression
+      ? (['add_days', expression.add_days] as const)
+      : 'add_hours' in expression
+        ? (['add_hours', expression.add_hours] as const)
+        : undefined;
   if (!found) return undefined;
   const [from, by] = found[1];
   return isMoment(from) && by !== undefined && isOperand(by) && typeof by !== 'string' ? { op: found[0], from, by } : undefined;

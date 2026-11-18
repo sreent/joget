@@ -1,6 +1,6 @@
-import { isCondition, type Condition } from '@platform/authz';
+import { type Condition, isCondition } from '@platform/authz';
 import { z } from 'zod';
-import { isExpression, type Expression } from './expressions.js';
+import { type Expression, isExpression } from './expressions.js';
 
 /**
  * The app definition format (design §6): entities hold data; rules check every write; actions
@@ -119,7 +119,10 @@ const DateTimeField = z.strictObject({
 const ChoiceField = z.strictObject({
   ...fieldCommon,
   type: z.literal('choice'),
-  options: z.array(z.strictObject({ value: OptionValue, label: Label })).min(1).max(200),
+  options: z
+    .array(z.strictObject({ value: OptionValue, label: Label }))
+    .min(1)
+    .max(200),
   multiple: z.boolean().default(false),
   default: z.union([OptionValue, z.array(OptionValue).max(200)]).optional(),
 });
@@ -152,7 +155,11 @@ export type FileKind = (typeof FILE_KINDS)[number];
 const FileField = z.strictObject({
   ...fieldCommon,
   type: z.literal('file'),
-  accept: z.array(z.enum(FILE_KINDS)).min(1).max(FILE_KINDS.length).default([...FILE_KINDS]),
+  accept: z
+    .array(z.enum(FILE_KINDS))
+    .min(1)
+    .max(FILE_KINDS.length)
+    .default([...FILE_KINDS]),
 });
 
 /**
@@ -220,7 +227,6 @@ const Literal = z.union([z.string().max(MAX_TEXT_LENGTH), z.number(), z.boolean(
 export const CONFIRMATION_LEVELS = ['none', 'preview', 'review'] as const;
 export type ConfirmationLevel = (typeof CONFIRMATION_LEVELS)[number];
 
-
 /** Set a field of the record to a value that the step works out. */
 const SetStep = z.strictObject({ type: z.literal('set'), field: Name, value: ExpressionSchema });
 /** Add a line to a lines field of the record, such as a receipt to a claim. */
@@ -254,7 +260,8 @@ export const MAX_STEPS = 20;
  */
 
 /** An ISO 8601 duration, as BPMN 2.0's timers use: P3D is three days, PT4H four hours. */
-export const DURATION_PATTERN = /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
+export const DURATION_PATTERN =
+  /^P(?=\d|T\d)(?:(\d{1,4})Y)?(?:(\d{1,4})M)?(?:(\d{1,4})W)?(?:(\d{1,4})D)?(?:T(?=\d)(?:(\d{1,4})H)?(?:(\d{1,4})M)?(?:(\d{1,4})S)?)?$/;
 export const Duration = z.string().regex(DURATION_PATTERN, 'Give a duration in ISO 8601, for example P3D for three days or PT4H for four hours');
 
 /**
@@ -363,7 +370,9 @@ export type FlowType = z.infer<typeof FlowType>;
 /** Values for a record's fields, or for a flow's input, by name. */
 const FlowValues = z.record(Name, ExpressionSchema);
 /** A list variable, or a lines field of a record variable, as `claim.lines`. */
-const FlowList = z.string().regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, 'Name a list variable, or a record variable\'s lines field, as claim.lines');
+const FlowList = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]{0,62}(\.[a-z][a-z0-9_]{0,62})?$/, "Name a list variable, or a record variable's lines field, as claim.lines");
 /** The most steps in one list of steps, and in a whole flow. */
 export const MAX_FLOW_BLOCK = 50;
 export const MAX_FLOW_STEPS = 200;
@@ -401,7 +410,10 @@ const FlowCheck = z.strictObject({
   message: z.string().trim().min(1).max(500),
   severity: z.enum(['error', 'warning']).default('error'),
   /** The values the message is about, as claim.iban: a form marks those of the record its action saves. */
-  fields: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,62}\.[a-z][a-z0-9_]{0,62}$/, 'Name a field of a record variable, as claim.iban')).max(20).optional(),
+  fields: z
+    .array(z.string().regex(/^[a-z][a-z0-9_]{0,62}\.[a-z][a-z0-9_]{0,62}$/, 'Name a field of a record variable, as claim.iban'))
+    .max(20)
+    .optional(),
 });
 /** Run another flow of the app, and keep its result. */
 const FlowCall = z.strictObject({ type: z.literal('call'), flow: Name, input: FlowValues.default({}), var: Name.optional() });
@@ -444,7 +456,13 @@ const FlowCallService = z.strictObject({
   body: FlowValues.optional(),
   /** The variables its answer gives: each from a place in the answer's JSON. */
   results: z
-    .record(Name, z.strictObject({ from: z.string().regex(JSON_PATH, 'Name a place in the answer, such as data.id'), type: z.enum(['text', 'number', 'boolean', 'date', 'datetime']) }))
+    .record(
+      Name,
+      z.strictObject({
+        from: z.string().regex(JSON_PATH, 'Name a place in the answer, such as data.id'),
+        type: z.enum(['text', 'number', 'boolean', 'date', 'datetime']),
+      }),
+    )
     .default({}),
 });
 /** Whom a notice goes to: a person a value names, such as a user field of a record, or everyone with a role of the app. */
@@ -487,7 +505,10 @@ export const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday',
  */
 export const Schedule = z.strictObject({
   every: z.enum(['hour', 'day', 'weekday', 'week', 'month']),
-  at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Give a time of day as HH:MM, for example 07:30').default('00:00'),
+  at: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Give a time of day as HH:MM, for example 07:30')
+    .default('00:00'),
   /** Every week: the day it runs. */
   on: z.enum(WEEKDAYS).optional(),
   /** Every month: the day of the month it runs, 1 to 28, or the last day. */
@@ -514,10 +535,22 @@ export type FlowStep =
   | { readonly type: 'add_line'; readonly record: string; readonly field: string; readonly values: Record<string, Expression> }
   | { readonly type: 'each'; readonly in: string; readonly as: string; readonly steps: FlowStep[] }
   | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStep[]; readonly else: FlowStep[] }
-  | { readonly type: 'check'; readonly assert: Condition; readonly message: string; readonly severity: 'error' | 'warning'; readonly fields?: string[] | undefined }
+  | {
+      readonly type: 'check';
+      readonly assert: Condition;
+      readonly message: string;
+      readonly severity: 'error' | 'warning';
+      readonly fields?: string[] | undefined;
+    }
   | { readonly type: 'call'; readonly flow: string; readonly input: Record<string, Expression>; readonly var?: string | undefined }
   | { readonly type: 'try'; readonly steps: FlowStep[]; readonly catch: FlowStep[]; readonly rollback: boolean; readonly error?: string | undefined }
-  | { readonly type: 'total'; readonly var: string; readonly of: string; readonly op: 'count' | 'sum' | 'avg' | 'min' | 'max'; readonly field?: string | undefined }
+  | {
+      readonly type: 'total';
+      readonly var: string;
+      readonly of: string;
+      readonly op: 'count' | 'sum' | 'avg' | 'min' | 'max';
+      readonly field?: string | undefined;
+    }
   | { readonly type: 'return'; readonly value?: Expression | undefined }
   | {
       readonly type: 'task';
@@ -559,17 +592,31 @@ export type FlowStep =
 /** A step as it is written, before defaults fill in. */
 export type FlowStepInput =
   | Extract<FlowStep, { type: 'set' | 'delete' | 'add_line' | 'change' | 'total' | 'return' }>
-  | (Omit<Extract<FlowStep, { type: 'find' }>, 'limit' | 'sort'> & { readonly limit?: number | undefined; readonly sort?: Array<{ readonly field: string; readonly direction?: 'asc' | 'desc' | undefined }> | undefined })
+  | (Omit<Extract<FlowStep, { type: 'find' }>, 'limit' | 'sort'> & {
+      readonly limit?: number | undefined;
+      readonly sort?: Array<{ readonly field: string; readonly direction?: 'asc' | 'desc' | undefined }> | undefined;
+    })
   | (Omit<Extract<FlowStep, { type: 'create' }>, 'values'> & { readonly values?: Record<string, Expression> | undefined })
   | { readonly type: 'each'; readonly in: string; readonly as: string; readonly steps: FlowStepInput[] }
   | { readonly type: 'if'; readonly when: Condition; readonly then: FlowStepInput[]; readonly else?: FlowStepInput[] | undefined }
   | (Omit<Extract<FlowStep, { type: 'check' }>, 'severity'> & { readonly severity?: 'error' | 'warning' | undefined })
   | (Omit<Extract<FlowStep, { type: 'call' }>, 'input'> & { readonly input?: Record<string, Expression> | undefined })
-  | { readonly type: 'try'; readonly steps: FlowStepInput[]; readonly catch?: FlowStepInput[] | undefined; readonly rollback?: boolean | undefined; readonly error?: string | undefined }
+  | {
+      readonly type: 'try';
+      readonly steps: FlowStepInput[];
+      readonly catch?: FlowStepInput[] | undefined;
+      readonly rollback?: boolean | undefined;
+      readonly error?: string | undefined;
+    }
   | (Omit<Extract<FlowStep, { type: 'task' }>, 'assignee' | 'several' | 'outcomes' | 'deadline' | 'reminders'> & {
       readonly assignee?: z.input<typeof Routing> | undefined;
       readonly several?: z.input<typeof Several> | undefined;
-      readonly outcomes: Array<{ readonly name: string; readonly label: string; readonly action?: string | undefined; readonly steps?: FlowStepInput[] | undefined }>;
+      readonly outcomes: Array<{
+        readonly name: string;
+        readonly label: string;
+        readonly action?: string | undefined;
+        readonly steps?: FlowStepInput[] | undefined;
+      }>;
       readonly deadline?: { readonly after: string; readonly steps?: FlowStepInput[] | undefined } | undefined;
       readonly reminders?: Array<{ readonly after: string; readonly steps?: FlowStepInput[] | undefined }> | undefined;
     })
@@ -586,7 +633,11 @@ export type FlowStepInput =
   | { readonly type: 'all_at_once'; readonly ways: Array<{ readonly steps?: FlowStepInput[] | undefined }> };
 
 /** A list of steps, which a loop, a branch or an error handler holds. */
-const flowSteps = (min = 0) => z.array(z.lazy(() => FlowStep)).min(min).max(MAX_FLOW_BLOCK);
+const flowSteps = (min = 0) =>
+  z
+    .array(z.lazy(() => FlowStep))
+    .min(min)
+    .max(MAX_FLOW_BLOCK);
 
 /** Run steps for each item of a list. */
 const FlowEach = z.strictObject({
@@ -625,14 +676,21 @@ const FlowTask = z.strictObject({
   assignee: Routing.optional(),
   department: z.strictObject({ of: Name }).optional(),
   several: Several.optional(),
-  outcomes: z.array(z.strictObject({ name: Name, label: Label, action: Name.optional(), steps: flowSteps().default([]) })).min(1).max(10),
+  outcomes: z
+    .array(z.strictObject({ name: Name, label: Label, action: Name.optional(), steps: flowSteps().default([]) }))
+    .min(1)
+    .max(10),
   /** How long the task may stay open, from when it opens: its due date in the inbox. */
   due: Duration.optional(),
   /** The review card the task shows. */
   card: Name.optional(),
   deadline: z.strictObject({ after: Duration, steps: flowSteps().default([]) }).optional(),
   /** Steps that run while the task still waits, a time after it opens, such as telling whoever has it. The task waits on. */
-  reminders: z.array(z.strictObject({ after: Duration, steps: flowSteps().default([]) })).min(1).max(3).optional(),
+  reminders: z
+    .array(z.strictObject({ after: Duration, steps: flowSteps().default([]) }))
+    .min(1)
+    .max(3)
+    .optional(),
 });
 /**
  * Run steps again while a condition holds, checked before each time, up to `max` times in all. In a
@@ -642,12 +700,18 @@ const FlowRepeat = z.strictObject({ type: z.literal('repeat'), while: ConditionS
 /** Wait for the first of several things, and go on by its way: the others no longer wait. */
 const FlowFirstOf = z.strictObject({
   type: z.literal('first_of'),
-  ways: z.array(z.strictObject({ for: WaitFor, steps: flowSteps().default([]) })).min(1).max(10),
+  ways: z
+    .array(z.strictObject({ for: WaitFor, steps: flowSteps().default([]) }))
+    .min(1)
+    .max(10),
 });
 /** Run several ways at once, and go on once each has ended. */
 const FlowAllAtOnce = z.strictObject({
   type: z.literal('all_at_once'),
-  ways: z.array(z.strictObject({ steps: flowSteps().default([]) })).min(1).max(10),
+  ways: z
+    .array(z.strictObject({ steps: flowSteps().default([]) }))
+    .min(1)
+    .max(10),
 });
 export const FlowStep: z.ZodType<FlowStep, FlowStepInput> = z.discriminatedUnion('type', [
   FlowSet,
@@ -776,7 +840,10 @@ export const Query = z.strictObject({
   /** A fixed filter. May use `principal.*` (my claims) and `input.<parameter>`. */
   filter: ConditionSchema.optional(),
   parameters: z.record(Name, Parameter).default({}),
-  sort: z.array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') })).max(3).default([]),
+  sort: z
+    .array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') }))
+    .max(3)
+    .default([]),
   limit: z.int().min(1).max(200).default(50),
   /** Answer with numbers, worked out over the records the caller may read, instead of the records. */
   summary: QuerySummary.optional(),
@@ -844,7 +911,10 @@ const ListBlock = z.strictObject({
   columns: z.array(Name).min(1).max(12),
   /** Which records. May use `principal.*`, as in "my claims". */
   filter: ConditionSchema.optional(),
-  sort: z.array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') })).max(3).default([]),
+  sort: z
+    .array(z.strictObject({ field: Name, direction: z.enum(['asc', 'desc']).default('asc') }))
+    .max(3)
+    .default([]),
   /** How many records show at first; more come on request. */
   limit: z.int().min(1).max(100).default(20),
   /** Update actions that run on a row in one click, such as Approve. */
@@ -1134,9 +1204,24 @@ const BusinessRuleTask = z.strictObject({
   repeat: Repeat.optional(),
 });
 /** Sends a message: runs an update action, with the app's authority, on the record or on the one a reference field names. */
-const SendTask = z.strictObject({ type: z.literal('sendTask'), name: Label, description: Description.optional(), in: In, message: Message, undo: Undo, repeat: Repeat.optional() });
+const SendTask = z.strictObject({
+  type: z.literal('sendTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  message: Message,
+  undo: Undo,
+  repeat: Repeat.optional(),
+});
 /** Waits for a message, an action committing on the record, as a task: deadlines and other events can sit on its boundary. */
-const ReceiveTask = z.strictObject({ type: z.literal('receiveTask'), name: Label, description: Description.optional(), in: In, message: Message, repeat: Repeat.optional() });
+const ReceiveTask = z.strictObject({
+  type: z.literal('receiveTask'),
+  name: Label,
+  description: Description.optional(),
+  in: In,
+  message: Message,
+  repeat: Repeat.optional(),
+});
 /** A task with nothing to run, which passes straight on: work that is only drawn. */
 const PlainTask = z.strictObject({ type: z.literal('task'), name: Label, description: Description.optional(), in: In, repeat: Repeat.optional() });
 /** Work done away from any system, such as posting a letter: the process passes straight on. */
@@ -1313,7 +1398,18 @@ const Bounds = z.strictObject({ x: Coordinate, y: Coordinate, width: z.number().
 /** Where each element and flow is drawn: BPMN 2.0's diagram interchange, so a model looks the same in every tool. */
 export const Diagram = z.strictObject({
   shapes: z.record(ElementId, z.strictObject({ ...Bounds.shape, label: Bounds.optional() })).default({}),
-  edges: z.record(ElementId, z.strictObject({ points: z.array(z.strictObject({ x: Coordinate, y: Coordinate })).min(2).max(50), label: Bounds.optional() })).default({}),
+  edges: z
+    .record(
+      ElementId,
+      z.strictObject({
+        points: z
+          .array(z.strictObject({ x: Coordinate, y: Coordinate }))
+          .min(2)
+          .max(50),
+        label: Bounds.optional(),
+      }),
+    )
+    .default({}),
 });
 export type Diagram = z.infer<typeof Diagram>;
 
@@ -1340,9 +1436,15 @@ const ReadAccess = z.strictObject({
   where: ConditionSchema.optional(),
   fields: FieldSelection.optional(),
   /** Fields shown masked. */
-  mask: z.array(FieldPath).max(MAX_FIELDS * 2).optional(),
+  mask: z
+    .array(FieldPath)
+    .max(MAX_FIELDS * 2)
+    .optional(),
   /** `pii` fields this role may see unmasked. */
-  unmask: z.array(FieldPath).max(MAX_FIELDS * 2).optional(),
+  unmask: z
+    .array(FieldPath)
+    .max(MAX_FIELDS * 2)
+    .optional(),
 });
 const CreateAccess = z.strictObject({ check: ConditionSchema.optional(), fields: FieldSelection.optional() });
 const UpdateAccess = z.strictObject({
@@ -1413,10 +1515,27 @@ export const AppTest = z.strictObject({
 });
 export type AppTest = z.infer<typeof AppTest>;
 
-export const LIMITS = { entities: 50, rules: 200, actions: 100, queries: 100, cards: 100, forms: 100, roles: 20, pages: 50, processes: 50, flows: 100, connections: 30, webhooks: 30, tests: 100 } as const;
+export const LIMITS = {
+  entities: 50,
+  rules: 200,
+  actions: 100,
+  queries: 100,
+  cards: 100,
+  forms: 100,
+  roles: 20,
+  pages: 50,
+  processes: 50,
+  flows: 100,
+  connections: 30,
+  webhooks: 30,
+  tests: 100,
+} as const;
 
 const bounded = <T extends z.ZodType>(value: T, max: number, what: string) =>
-  z.record(Name, value).default({} as never).refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
+  z
+    .record(Name, value)
+    .default({} as never)
+    .refine((map) => Object.keys(map).length <= max, `At most ${max} ${what}`);
 
 export const AppDefinition = z.strictObject({
   formatVersion: z.literal(1).default(1),

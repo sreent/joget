@@ -16,7 +16,11 @@ export function LinesTable({ field, value, masked = [] }: { field: UiField; valu
         <thead>
           <tr>
             {columns.map((c) => (
-              <th key={c.name} scope="col" className={cx('border-b border-line-strong px-2 py-1 text-left font-medium text-muted', c.type === 'number' && 'text-right')}>
+              <th
+                key={c.name}
+                scope="col"
+                className={cx('border-b border-line-strong px-2 py-1 text-left font-medium text-muted', c.type === 'number' && 'text-right')}
+              >
                 {c.label}
               </th>
             ))}
@@ -27,7 +31,13 @@ export function LinesTable({ field, value, masked = [] }: { field: UiField; valu
             <tr key={line.id ?? index}>
               {columns.map((c) => (
                 <td key={c.name} className={cx(cell, c.type === 'number' && 'text-right tabular-nums')}>
-                  {masked.includes(`${field.name}.${c.name}`) ? <span className="text-faint" title="Masked for your role">••••</span> : <ValueView field={c} value={line[c.name] ?? null} />}
+                  {masked.includes(`${field.name}.${c.name}`) ? (
+                    <span className="text-faint" title="Masked for your role">
+                      ••••
+                    </span>
+                  ) : (
+                    <ValueView field={c} value={line[c.name] ?? null} />
+                  )}
                 </td>
               ))}
             </tr>
@@ -85,11 +95,19 @@ export function LinesEditor(props: {
                           <ValueView field={c} value={formulaValue(c, line)} />
                         </span>
                       ) : editable(c) ? (
-                        <ValueInput id={`${id}-${index}-${c.name}`} field={c} value={line[c.name] ?? null} onChange={(v) => set(index, c.name, v)} label={`${what}, ${c.label}`} />
+                        <ValueInput
+                          id={`${id}-${index}-${c.name}`}
+                          field={c}
+                          value={line[c.name] ?? null}
+                          onChange={(v) => set(index, c.name, v)}
+                          label={`${what}, ${c.label}`}
+                        />
                       ) : (
                         <ValueView field={c} value={line[c.name] ?? null} />
                       )}
-                      {problem(`${field.name}[${index}].${c.name}`) ? <span className="mt-0.5 block text-xs text-bad">{problem(`${field.name}[${index}].${c.name}`)}</span> : null}
+                      {problem(`${field.name}[${index}].${c.name}`) ? (
+                        <span className="mt-0.5 block text-xs text-bad">{problem(`${field.name}[${index}].${c.name}`)}</span>
+                      ) : null}
                     </td>
                   ))}
                   {whole ? (
@@ -119,14 +137,20 @@ export function LinesEditor(props: {
 
 /** Lines with something in them: an empty row someone added and left isn't a line. */
 export function filledLines(lines: readonly Line[]): Line[] {
-  return lines.filter((line) => line.id || Object.entries(line).some(([key, v]) => key !== 'id' && v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)));
+  return lines.filter(
+    (line) => line.id || Object.entries(line).some(([key, v]) => key !== 'id' && v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)),
+  );
 }
 
 /** A formula's value, worked out as the platform will, to show while people type. */
 export function formulaValue(field: UiField, values: Readonly<Record<string, RecordValue | undefined>>): Value {
   if (!isExpression(field.formula)) return null;
   // A formula reads the record's own values, never its lines one by one.
-  const record = Object.fromEntries(Object.entries(values).filter((entry): entry is [string, Value] => entry[1] !== undefined && (!Array.isArray(entry[1]) || entry[1].every((each) => typeof each === 'string'))));
+  const record = Object.fromEntries(
+    Object.entries(values).filter(
+      (entry): entry is [string, Value] => entry[1] !== undefined && (!Array.isArray(entry[1]) || entry[1].every((each) => typeof each === 'string')),
+    ),
+  );
   const worked = evaluateExpression(field.formula, { record, principal: {}, now: new Date(0) });
   if (!worked.ok || worked.value === null) return null;
   const value = worked.value;
@@ -199,7 +223,9 @@ export function LinesChangeView({ field, change, current }: { field: UiField; ch
         <li key={`a-${line.id}`}>
           Added <strong className="font-medium">{title(line.values, line.id)}</strong>
           {summary(line.values) ? <span className="text-muted"> ({summary(line.values)})</span> : null}
-          {line.sources && Object.values(line.sources).some((s) => s.source === 'document') ? <span className="ml-1 text-outside">read from a document</span> : null}
+          {line.sources && Object.values(line.sources).some((s) => s.source === 'document') ? (
+            <span className="ml-1 text-outside">read from a document</span>
+          ) : null}
         </li>
       ))}
       {change.changed.map((line) => (
@@ -208,7 +234,8 @@ export function LinesChangeView({ field, change, current }: { field: UiField; ch
           {line.changes.map((c, i) => (
             <span key={c.field}>
               {i ? '; ' : ''}
-              {fieldOf(c.field)?.label ?? c.field} {c.masked ? 'changed' : `${display(fieldOf(c.field), c.before ?? null)} → ${display(fieldOf(c.field), c.after ?? null)}`}
+              {fieldOf(c.field)?.label ?? c.field}{' '}
+              {c.masked ? 'changed' : `${display(fieldOf(c.field), c.before ?? null)} → ${display(fieldOf(c.field), c.after ?? null)}`}
             </span>
           ))}
         </li>

@@ -1,7 +1,7 @@
-import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { closestCenter, DndContext, type DragEndEvent, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { useEffect, useState, type ReactNode } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { GroupFields, MeasureFields, RangeFields } from '../components/summary.js';
 import { Badge, Button, Card, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
@@ -12,48 +12,60 @@ import {
   addNavItem,
   addPage,
   addTab,
+  type Block,
+  type BlockType,
   blockAt,
+  type ChartBlock,
   changeListEntity,
   describeBlock,
+  type ListBlock,
   listable,
   moveBlock,
   moveNavItem,
+  type NavItem,
+  newChart,
+  type PageButton,
+  recordPages,
+  referringFields,
   removeBlock,
   removeNavItem,
   removePage,
   renamePage,
   rowActions,
+  type StatBlock,
+  SYSTEM_COLUMNS,
   setCustomMenu,
   setHome,
-  SYSTEM_COLUMNS,
   updateBlock,
   updateNavItem,
   updatePage,
-  newChart,
-  recordPages,
-  referringFields,
   updateTab,
-  type Block,
-  type BlockType,
-  type ChartBlock,
-  type ListBlock,
-  type StatBlock,
-  type NavItem,
-  type PageButton,
 } from '../model/pages.js';
 import type { Definition } from '../types.js';
 import { Checklist, Choice } from './LogicDesigners.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
-const BLOCK_NAMES: Readonly<Record<BlockType, string>> = { text: 'Text', list: 'List', buttons: 'Buttons', stat: 'Number', chart: 'Chart', fields: 'Fields of the record', tabs: 'Tabs' };
+const BLOCK_NAMES: Readonly<Record<BlockType, string>> = {
+  text: 'Text',
+  list: 'List',
+  buttons: 'Buttons',
+  stat: 'Number',
+  chart: 'Chart',
+  fields: 'Fields of the record',
+  tabs: 'Tabs',
+};
 /** What can go on a page, and in a tab: all but tabs, which go one level deep. */
 const INNER_TYPES = ['text', 'list', 'buttons', 'stat', 'chart', 'fields'] as const;
-const badgeTone = (type: BlockType) => (type === 'list' ? 'accent' : type === 'buttons' ? 'good' : type === 'stat' || type === 'chart' ? 'agent' : type === 'fields' ? 'warn' : 'idle');
+const badgeTone = (type: BlockType) =>
+  type === 'list' ? 'accent' : type === 'buttons' ? 'good' : type === 'stat' || type === 'chart' ? 'agent' : type === 'fields' ? 'warn' : 'idle';
 
 /** A vertical list whose rows drag to reorder, by a handle, or with the keyboard. */
 function SortableRows({ ids, onMove, children }: { ids: string[]; onMove: (from: number, to: number) => void; children: ReactNode }) {
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) return;
     onMove(ids.indexOf(String(active.id)), ids.indexOf(String(over.id)));
@@ -73,7 +85,11 @@ function Row({ id, label, selected, onSelect, children }: { id: string; label: s
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cx('flex items-center gap-2 rounded-md border bg-surface px-2 py-1.5', selected ? 'border-accent' : 'border-line', isDragging && 'opacity-60 shadow-raised')}
+      className={cx(
+        'flex items-center gap-2 rounded-md border bg-surface px-2 py-1.5',
+        selected ? 'border-accent' : 'border-line',
+        isDragging && 'opacity-60 shadow-raised',
+      )}
     >
       <button type="button" aria-label={`Move ${label}`} className="cursor-grab rounded px-1 text-faint hover:text-text" {...attributes} {...listeners}>
         ⠿
@@ -115,7 +131,10 @@ export function PagesDesigner({ definition, onChange }: Props) {
                 className={cx('w-full rounded-md px-2.5 py-1.5 text-left', name === current ? 'bg-accent-soft' : 'hover:bg-sunken')}
               >
                 <span className="block font-medium">{definition.pages[name]!.label}</span>
-                <span className="text-xs text-faint">{definition.navigation?.home === name ? 'Home · ' : ''}{definition.pages[name]!.blocks.length} block(s)</span>
+                <span className="text-xs text-faint">
+                  {definition.navigation?.home === name ? 'Home · ' : ''}
+                  {definition.pages[name]!.blocks.length} block(s)
+                </span>
               </button>
             </li>
           ))}
@@ -154,7 +173,9 @@ export function PagesDesigner({ definition, onChange }: Props) {
           }}
         />
       ) : (
-        <EmptyState title="No pages yet">A page brings together lists of records, buttons and text, for each kind of person who uses the app. Without pages, an app shows its forms and lists.</EmptyState>
+        <EmptyState title="No pages yet">
+          A page brings together lists of records, buttons and text, for each kind of person who uses the app. Without pages, an app shows its forms and lists.
+        </EmptyState>
       )}
 
       {current && block !== null && blockAt(definition, current, block) ? (
@@ -171,7 +192,9 @@ export function PagesDesigner({ definition, onChange }: Props) {
   );
 }
 
-function PageCanvas(props: Props & { name: string; block: string | null; onBlock: (path: string | null) => void; onRename: (name: string) => void; onRemove: () => void }) {
+function PageCanvas(
+  props: Props & { name: string; block: string | null; onBlock: (path: string | null) => void; onRename: (name: string) => void; onRemove: () => void },
+) {
   const { definition, onChange, name } = props;
   const page = definition.pages[name]!;
   const [newName, setNewName] = useState(name);
@@ -185,7 +208,14 @@ function PageCanvas(props: Props & { name: string; block: string | null; onBlock
     props.onBlock(result.path);
   };
   const can = (type: BlockType) => addBlock(definition, name, type).path !== '';
-  const why = (type: BlockType) => (can(type) ? undefined : type === 'list' ? 'Add an entity first' : type === 'fields' ? 'Say which records the page is about' : 'Add a form or another page first');
+  const why = (type: BlockType) =>
+    can(type)
+      ? undefined
+      : type === 'list'
+        ? 'Add an entity first'
+        : type === 'fields'
+          ? 'Say which records the page is about'
+          : 'Add a form or another page first';
   const row = (block: Block | InnerBlockOf, path: string, label: string) => (
     <>
       <Badge tone={badgeTone(block.type)}>{block.type === 'text' && block.style === 'heading' ? 'Heading' : BLOCK_NAMES[block.type]}</Badge>
@@ -200,7 +230,9 @@ function PageCanvas(props: Props & { name: string; block: string | null; onBlock
     // One column that may shrink, so that a long block description truncates and does not widen the card.
     <Card className="grid grid-cols-1 content-start gap-4">
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Label">{(id) => <TextInput id={id} value={page.label} onChange={(e) => onChange(updatePage(definition, name, { label: e.target.value }))} />}</Field>
+        <Field label="Label">
+          {(id) => <TextInput id={id} value={page.label} onChange={(e) => onChange(updatePage(definition, name, { label: e.target.value }))} />}
+        </Field>
         <Field label="Name" hint="Links to the page use it.">
           {(id) => (
             <TextInput
@@ -224,9 +256,20 @@ function PageCanvas(props: Props & { name: string; block: string | null; onBlock
       <Field label="Description (optional)">
         {(id) => <TextInput id={id} value={page.description ?? ''} onChange={(e) => onChange(updatePage(definition, name, { description: e.target.value }))} />}
       </Field>
-      <Field label="About" hint={page.record ? "A row of a list opens it, and its blocks show that record. The menu can't open it." : 'A page of its own, which the menu and buttons open.'}>
+      <Field
+        label="About"
+        hint={
+          page.record
+            ? "A row of a list opens it, and its blocks show that record. The menu can't open it."
+            : 'A page of its own, which the menu and buttons open.'
+        }
+      >
         {(id) => (
-          <Select id={id} value={page.record?.entity ?? ''} onChange={(e) => onChange(updatePage(definition, name, { record: e.target.value ? { entity: e.target.value } : undefined }))}>
+          <Select
+            id={id}
+            value={page.record?.entity ?? ''}
+            onChange={(e) => onChange(updatePage(definition, name, { record: e.target.value ? { entity: e.target.value } : undefined }))}
+          >
             <option value="">Nothing in particular</option>
             {listable(definition).map((entity) => (
               <option key={entity} value={entity}>
@@ -256,7 +299,13 @@ function PageCanvas(props: Props & { name: string; block: string | null; onBlock
           }}
         >
           {page.blocks.map((block, index) => (
-            <Row key={ids[index]} id={ids[index]!} label={`${BLOCK_NAMES[block.type]} block ${index + 1}`} selected={props.block === String(index)} onSelect={() => props.onBlock(String(index))}>
+            <Row
+              key={ids[index]}
+              id={ids[index]!}
+              label={`${BLOCK_NAMES[block.type]} block ${index + 1}`}
+              selected={props.block === String(index)}
+              onSelect={() => props.onBlock(String(index))}
+            >
               {row(block, String(index), `${BLOCK_NAMES[block.type]} block ${index + 1}`)}
             </Row>
           ))}
@@ -279,7 +328,10 @@ function PageCanvas(props: Props & { name: string; block: string | null; onBlock
                             type="button"
                             aria-current={props.block === path ? 'true' : undefined}
                             aria-label={`${tab.label}: ${BLOCK_NAMES[inner.type]} block ${i + 1}`}
-                            className={cx('flex w-full items-center gap-2 rounded-md border bg-surface px-2 py-1.5 text-left text-sm', props.block === path ? 'border-accent' : 'border-line')}
+                            className={cx(
+                              'flex w-full items-center gap-2 rounded-md border bg-surface px-2 py-1.5 text-left text-sm',
+                              props.block === path ? 'border-accent' : 'border-line',
+                            )}
                             onClick={() => props.onBlock(path)}
                           >
                             {row(inner, path, '')}
@@ -352,7 +404,15 @@ function BlockPanel({ definition, onChange, page, path }: Props & { page: string
           onChange={(style) => set({ style })}
         />
         <Field label="Text">
-          {(id) => <textarea id={id} rows={block.style === 'heading' ? 1 : 4} className="w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5" value={block.text} onChange={(e) => set({ text: e.target.value })} />}
+          {(id) => (
+            <textarea
+              id={id}
+              rows={block.style === 'heading' ? 1 : 4}
+              className="w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5"
+              value={block.text}
+              onChange={(e) => set({ text: e.target.value })}
+            />
+          )}
         </Field>
       </>
     );
@@ -365,7 +425,13 @@ function BlockPanel({ definition, onChange, page, path }: Props & { page: string
         {block.tabs.map((tab, t) => (
           <div key={t} className="flex items-center gap-2">
             <TextInput aria-label={`Tab ${t + 1}`} value={tab.label} onChange={(e) => onChange(updateTab(definition, page, index, t, e.target.value))} />
-            <Button size="sm" variant="ghost" aria-label={`Remove tab ${t + 1}`} disabled={block.tabs.length <= 2} onClick={() => onChange(updateTab(definition, page, index, t, null))}>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label={`Remove tab ${t + 1}`}
+              disabled={block.tabs.length <= 2}
+              onClick={() => onChange(updateTab(definition, page, index, t, null))}
+            >
               ✕
             </Button>
           </div>
@@ -384,7 +450,9 @@ function BlockPanel({ definition, onChange, page, path }: Props & { page: string
     const actions = about ? rowActions(definition, about) : [];
     return (
       <>
-        <Field label="Title (optional)">{(id) => <TextInput id={id} value={block.title ?? ''} onChange={(e) => set({ title: e.target.value || undefined })} />}</Field>
+        <Field label="Title (optional)">
+          {(id) => <TextInput id={id} value={block.title ?? ''} onChange={(e) => set({ title: e.target.value || undefined })} />}
+        </Field>
         <Checklist
           label="Shows"
           options={[...fields.filter((field) => field.type !== 'file').map((field) => ({ value: field.name, label: field.label })), ...SYSTEM_COLUMNS]}
@@ -417,11 +485,26 @@ function BlockPanel({ definition, onChange, page, path }: Props & { page: string
 }
 
 /** On a page about one record: whether a block shows only the records that refer to it, and by which field. */
-function OfField({ definition, entity, about, value, onChange }: { definition: Definition; entity: string; about: string; value: string | undefined; onChange: (of: string | undefined) => void }) {
+function OfField({
+  definition,
+  entity,
+  about,
+  value,
+  onChange,
+}: {
+  definition: Definition;
+  entity: string;
+  about: string;
+  value: string | undefined;
+  onChange: (of: string | undefined) => void;
+}) {
   const fields = referringFields(definition, entity, about);
   if (!fields.length && value === undefined) return null;
   return (
-    <Field label="Which records" hint={`On this page about one ${definition.entities[about]?.label.toLowerCase() ?? about}, it can show only those that refer to it.`}>
+    <Field
+      label="Which records"
+      hint={`On this page about one ${definition.entities[about]?.label.toLowerCase() ?? about}, it can show only those that refer to it.`}
+    >
       {(id) => (
         <Select id={id} value={value ?? ''} onChange={(e) => onChange(e.target.value || undefined)}>
           <option value="">All of them</option>
@@ -453,7 +536,11 @@ function SummaryPanel({ definition, block, set }: { definition: Definition; bloc
             id={id}
             value={block.entity}
             onChange={(e) =>
-              set(chart ? { ...newChart(definition, e.target.value), title: chart.title, filter: undefined, range: undefined } : { entity: e.target.value, measure: { op: 'count' }, filter: undefined, range: undefined })
+              set(
+                chart
+                  ? { ...newChart(definition, e.target.value), title: chart.title, filter: undefined, range: undefined }
+                  : { entity: e.target.value, measure: { op: 'count' }, filter: undefined, range: undefined },
+              )
             }
           >
             {listable(definition).map((entity) => (
@@ -486,7 +573,16 @@ function SummaryPanel({ definition, block, set }: { definition: Definition; bloc
           />
           <div className="grid gap-2 sm:grid-cols-2">
             <Field label={chart.group.period ? 'Latest periods' : 'Largest groups'} hint={chart.group.period ? undefined : 'The rest show as Other.'}>
-              {(id) => <TextInput id={id} type="number" min={2} max={24} value={chart.limit ?? 8} onChange={(e) => set({ limit: Math.min(24, Math.max(2, Number(e.target.value) || 2)) })} />}
+              {(id) => (
+                <TextInput
+                  id={id}
+                  type="number"
+                  min={2}
+                  max={24}
+                  value={chart.limit ?? 8}
+                  onChange={(e) => set({ limit: Math.min(24, Math.max(2, Number(e.target.value) || 2)) })}
+                />
+              )}
             </Field>
             <Field label="Width">
               {(id) => (
@@ -512,17 +608,29 @@ function SummaryPanel({ definition, block, set }: { definition: Definition; bloc
   );
 }
 
-function ListPanel({ definition, onChange, page, path, block, set }: Props & { page: string; path: string; block: ListBlock; set: (patch: Record<string, unknown>) => void }) {
+function ListPanel({
+  definition,
+  onChange,
+  page,
+  path,
+  block,
+  set,
+}: Props & { page: string; path: string; block: ListBlock; set: (patch: Record<string, unknown>) => void }) {
   const about = definition.pages[page]?.record?.entity;
   const opens = recordPages(definition, block.entity);
   const fields = (definition.entities[block.entity]?.fields ?? []).filter((field) => field.type !== 'lines');
   const columns = [...fields.map((field) => ({ value: field.name, label: field.label })), ...SYSTEM_COLUMNS];
-  const sortable = [...fields.filter((field) => !(field.type === 'choice' && field.multiple)).map((field) => ({ value: field.name, label: field.label })), ...SYSTEM_COLUMNS];
+  const sortable = [
+    ...fields.filter((field) => !(field.type === 'choice' && field.multiple)).map((field) => ({ value: field.name, label: field.label })),
+    ...SYSTEM_COLUMNS,
+  ];
   const sort = block.sort ?? [];
   const actions = rowActions(definition, block.entity);
   return (
     <>
-      <Field label="Title (optional)">{(id) => <TextInput id={id} value={block.title ?? ''} onChange={(e) => set({ title: e.target.value || undefined })} />}</Field>
+      <Field label="Title (optional)">
+        {(id) => <TextInput id={id} value={block.title ?? ''} onChange={(e) => set({ title: e.target.value || undefined })} />}
+      </Field>
       <Field label="Lists">
         {(id) => (
           <Select id={id} value={block.entity} onChange={(e) => onChange(changeListEntity(definition, page, path, e.target.value))}>
@@ -534,7 +642,13 @@ function ListPanel({ definition, onChange, page, path, block, set }: Props & { p
           </Select>
         )}
       </Field>
-      <Checklist label="Columns" options={columns} selected={block.columns} onChange={(next) => (next.length ? set({ columns: next }) : undefined)} hint="People see only the columns their role may read." />
+      <Checklist
+        label="Columns"
+        options={columns}
+        selected={block.columns}
+        onChange={(next) => (next.length ? set({ columns: next }) : undefined)}
+        hint="People see only the columns their role may read."
+      />
       <ConditionEditor
         label="Only records where"
         value={block.filter}
@@ -547,14 +661,24 @@ function ListPanel({ definition, onChange, page, path, block, set }: Props & { p
         <span className="text-sm text-muted">Sorted by</span>
         {sort.map((key, s) => (
           <div key={s} className="flex flex-wrap items-center gap-2">
-            <Select aria-label={`Sort ${s + 1}`} className="w-auto" value={key.field} onChange={(e) => set({ sort: sort.map((k, i) => (i === s ? { ...k, field: e.target.value } : k)) })}>
+            <Select
+              aria-label={`Sort ${s + 1}`}
+              className="w-auto"
+              value={key.field}
+              onChange={(e) => set({ sort: sort.map((k, i) => (i === s ? { ...k, field: e.target.value } : k)) })}
+            >
               {sortable.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
             </Select>
-            <Select aria-label={`Direction ${s + 1}`} className="w-auto" value={key.direction ?? 'asc'} onChange={(e) => set({ sort: sort.map((k, i) => (i === s ? { ...k, direction: e.target.value as 'asc' | 'desc' } : k)) })}>
+            <Select
+              aria-label={`Direction ${s + 1}`}
+              className="w-auto"
+              value={key.direction ?? 'asc'}
+              onChange={(e) => set({ sort: sort.map((k, i) => (i === s ? { ...k, direction: e.target.value as 'asc' | 'desc' } : k)) })}
+            >
               <option value="asc">lowest or oldest first</option>
               <option value="desc">highest or newest first</option>
             </Select>
@@ -572,7 +696,17 @@ function ListPanel({ definition, onChange, page, path, block, set }: Props & { p
         ) : null}
       </div>
       <Field label="Shows at first">
-        {(id) => <TextInput id={id} type="number" className="w-28" min={1} max={100} value={block.limit ?? 20} onChange={(e) => set({ limit: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })} />}
+        {(id) => (
+          <TextInput
+            id={id}
+            type="number"
+            className="w-28"
+            min={1}
+            max={100}
+            value={block.limit ?? 20}
+            onChange={(e) => set({ limit: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })}
+          />
+        )}
       </Field>
       {actions.length ? (
         <Checklist
@@ -583,7 +717,9 @@ function ListPanel({ definition, onChange, page, path, block, set }: Props & { p
           hint="Actions that change a record and take no input. Each person sees only those they may run."
         />
       ) : null}
-      <Field label="When there are none">{(id) => <TextInput id={id} placeholder="Nothing here yet." value={block.empty ?? ''} onChange={(e) => set({ empty: e.target.value || undefined })} />}</Field>
+      <Field label="When there are none">
+        {(id) => <TextInput id={id} placeholder="Nothing here yet." value={block.empty ?? ''} onChange={(e) => set({ empty: e.target.value || undefined })} />}
+      </Field>
       {about ? <OfField definition={definition} entity={block.entity} about={about} value={block.of} onChange={(of) => set({ of })} /> : null}
       {opens.length || block.open ? (
         <Field label="A row opens">
@@ -603,13 +739,25 @@ function ListPanel({ definition, onChange, page, path, block, set }: Props & { p
   );
 }
 
-function ButtonsPanel({ definition, buttons, onButtons, page }: { definition: Definition; buttons: PageButton[]; onButtons: (buttons: PageButton[]) => void; page: string }) {
+function ButtonsPanel({
+  definition,
+  buttons,
+  onButtons,
+  page,
+}: {
+  definition: Definition;
+  buttons: PageButton[];
+  onButtons: (buttons: PageButton[]) => void;
+  page: string;
+}) {
   const forms = Object.entries(definition.forms);
   const pages = Object.entries(definition.pages).filter(([name]) => name !== page);
-  const targets = (kind: 'form' | 'page') => (kind === 'form' ? forms.map(([name, form]) => ({ value: name, label: form.label })) : pages.map(([name, p]) => ({ value: name, label: p.label })));
+  const targets = (kind: 'form' | 'page') =>
+    kind === 'form' ? forms.map(([name, form]) => ({ value: name, label: form.label })) : pages.map(([name, p]) => ({ value: name, label: p.label }));
   const kindOf = (button: PageButton): 'form' | 'page' => ('form' in button ? 'form' : 'page');
   const target = (button: PageButton) => ('form' in button ? button.form : button.page);
-  const make = (kind: 'form' | 'page', value: string, label?: string): PageButton => (kind === 'form' ? { form: value, ...(label ? { label } : {}) } : { page: value, ...(label ? { label } : {}) });
+  const make = (kind: 'form' | 'page', value: string, label?: string): PageButton =>
+    kind === 'form' ? { form: value, ...(label ? { label } : {}) } : { page: value, ...(label ? { label } : {}) };
   return (
     <div className="grid gap-3">
       {buttons.map((button, b) => (
@@ -632,7 +780,12 @@ function ButtonsPanel({ definition, buttons, onButtons, page }: { definition: De
                 A page
               </option>
             </Select>
-            <Select aria-label={`Button ${b + 1} target`} className="min-w-40 flex-1" value={target(button)} onChange={(e) => onButtons(buttons.map((existing, i) => (i === b ? make(kindOf(existing), e.target.value, existing.label) : existing)))}>
+            <Select
+              aria-label={`Button ${b + 1} target`}
+              className="min-w-40 flex-1"
+              value={target(button)}
+              onChange={(e) => onButtons(buttons.map((existing, i) => (i === b ? make(kindOf(existing), e.target.value, existing.label) : existing)))}
+            >
               {targets(kindOf(button)).map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
@@ -641,7 +794,14 @@ function ButtonsPanel({ definition, buttons, onButtons, page }: { definition: De
             </Select>
           </div>
           <div className="flex gap-2">
-            <TextInput aria-label={`Button ${b + 1} label`} placeholder="Its own label" value={button.label ?? ''} onChange={(e) => onButtons(buttons.map((existing, i) => (i === b ? make(kindOf(existing), target(existing), e.target.value || undefined) : existing)))} />
+            <TextInput
+              aria-label={`Button ${b + 1} label`}
+              placeholder="Its own label"
+              value={button.label ?? ''}
+              onChange={(e) =>
+                onButtons(buttons.map((existing, i) => (i === b ? make(kindOf(existing), target(existing), e.target.value || undefined) : existing)))
+              }
+            />
             {buttons.length > 1 ? (
               <Button size="sm" variant="ghost" aria-label={`Remove button ${b + 1}`} onClick={() => onButtons(buttons.filter((_, i) => i !== b))}>
                 ✕
@@ -691,7 +851,13 @@ export function MenuDesigner({ definition, onChange }: Props) {
   const firstNew = (kind: Exclude<ItemKind, 'heading'>) =>
     targets(kind).find((option) => !navigation?.items.some((item) => kindOfItem(item) === kind && targetOf(item) === option.value)) ?? targets(kind)[0];
   const make = (kind: ItemKind, value: string, label?: string): NavItem =>
-    kind === 'heading' ? { heading: value } : kind === 'page' ? { page: value, ...(label ? { label } : {}) } : kind === 'form' ? { form: value, ...(label ? { label } : {}) } : { entity: value, ...(label ? { label } : {}) };
+    kind === 'heading'
+      ? { heading: value }
+      : kind === 'page'
+        ? { page: value, ...(label ? { label } : {}) }
+        : kind === 'form'
+          ? { form: value, ...(label ? { label } : {}) }
+          : { entity: value, ...(label ? { label } : {}) };
   const ids = (navigation?.items ?? []).map((_, index) => `item:${index}`);
 
   return (
@@ -702,7 +868,11 @@ export function MenuDesigner({ definition, onChange }: Props) {
           value={navigation ? 'custom' : 'default'}
           options={[
             { value: 'default', label: 'Every form and list, as they come', hint: 'Each person sees the forms and lists they may use.' },
-            { value: 'custom', label: 'Our own menu', hint: 'Pages, forms and lists in the order you choose, under headings. Each person still sees only what they may use.' },
+            {
+              value: 'custom',
+              label: 'Our own menu',
+              hint: 'Pages, forms and lists in the order you choose, under headings. Each person still sees only what they may use.',
+            },
           ]}
           onChange={(value) => onChange(setCustomMenu(definition, value === 'custom'))}
         />
@@ -730,7 +900,12 @@ export function MenuDesigner({ definition, onChange }: Props) {
                     <Row key={ids[index]} id={ids[index]!} label={labelOf(item)}>
                       <Badge tone={kind === 'heading' ? 'idle' : 'accent'}>{ITEM_KINDS[kind]}</Badge>
                       {kind === 'heading' ? (
-                        <TextInput aria-label={`Heading ${index + 1}`} className="min-w-40 flex-1" value={labelOf(item)} onChange={(e) => onChange(updateNavItem(definition, index, make('heading', e.target.value)))} />
+                        <TextInput
+                          aria-label={`Heading ${index + 1}`}
+                          className="min-w-40 flex-1"
+                          value={labelOf(item)}
+                          onChange={(e) => onChange(updateNavItem(definition, index, make('heading', e.target.value)))}
+                        />
                       ) : (
                         <>
                           <Select
@@ -751,7 +926,17 @@ export function MenuDesigner({ definition, onChange }: Props) {
                             placeholder="Its own label"
                             value={'label' in item ? (item.label ?? '') : ''}
                             onChange={(e) =>
-                              onChange(updateNavItem(definition, index, make(kind, 'page' in item ? item.page : 'form' in item ? item.form : 'entity' in item ? item.entity : '', e.target.value || undefined)))
+                              onChange(
+                                updateNavItem(
+                                  definition,
+                                  index,
+                                  make(
+                                    kind,
+                                    'page' in item ? item.page : 'form' in item ? item.form : 'entity' in item ? item.entity : '',
+                                    e.target.value || undefined,
+                                  ),
+                                ),
+                              )
                             }
                           />
                         </>
@@ -782,18 +967,19 @@ export function MenuDesigner({ definition, onChange }: Props) {
         <h2 className="m-0 text-sm font-semibold text-muted">How it looks</h2>
         <p className="m-0 text-xs text-faint">Each person sees only the items they may use.</p>
         <ul className="m-0 grid list-none gap-1 p-0">
-          {(navigation ? navigation.items : [...forms.map(([form]) => ({ form }) as NavItem), ...entities.map((entity) => ({ entity }) as NavItem)]).map((item, index) =>
-            'heading' in item ? (
-              <li key={index} className="mt-2 text-xs font-semibold tracking-wide text-faint uppercase">
-                {item.heading}
-              </li>
-            ) : (
-              <li key={index} className={cx('rounded-md px-2.5 py-1.5 text-sm', 'form' in item ? 'bg-accent-soft font-medium text-accent' : 'text-muted')}>
-                {'form' in item ? '+ ' : ''}
-                {labelOf(item)}
-                {'page' in item && navigation?.home === item.page ? <span className="ml-2 text-xs text-faint">(home)</span> : null}
-              </li>
-            ),
+          {(navigation ? navigation.items : [...forms.map(([form]) => ({ form }) as NavItem), ...entities.map((entity) => ({ entity }) as NavItem)]).map(
+            (item, index) =>
+              'heading' in item ? (
+                <li key={index} className="mt-2 text-xs font-semibold tracking-wide text-faint uppercase">
+                  {item.heading}
+                </li>
+              ) : (
+                <li key={index} className={cx('rounded-md px-2.5 py-1.5 text-sm', 'form' in item ? 'bg-accent-soft font-medium text-accent' : 'text-muted')}>
+                  {'form' in item ? '+ ' : ''}
+                  {labelOf(item)}
+                  {'page' in item && navigation?.home === item.page ? <span className="ml-2 text-xs text-faint">(home)</span> : null}
+                </li>
+              ),
           )}
         </ul>
       </Card>

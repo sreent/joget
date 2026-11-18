@@ -1,6 +1,6 @@
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * The operators' MCP server (`/mcp/ops`): an AI client watches an app's processes, tries stuck
@@ -29,7 +29,10 @@ async function inject(options: InjectOptions, expected: number): Promise<Json> {
 
 /** Call a tool of `/mcp/ops`: its structured result, or its error. */
 async function call(token: string, name: string, args: Json = {}): Promise<{ isError: boolean; result: Json }> {
-  const { result } = await inject({ method: 'POST', url: '/mcp/ops', ...bearer(token), payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } } }, 200);
+  const { result } = await inject(
+    { method: 'POST', url: '/mcp/ops', ...bearer(token), payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } } },
+    200,
+  );
   return { isError: result.isError === true, result: result.structuredContent };
 }
 const ok = async (token: string, name: string, args: Json = {}) => {
@@ -41,15 +44,23 @@ const ok = async (token: string, name: string, args: Json = {}) => {
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
-  appId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name: 'Leave', template: 'leave' } }, 201)).app.id;
+  appId = (
+    await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps/import`, ...as(alice), payload: { name: 'Leave', template: 'leave' } }, 201)
+  ).app.id;
   for (const person of ['bob', 'carol']) {
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: `${person}@example.com`, role: 'manager' } }, 201);
   }
   const asked = await inject(
-    { method: 'POST', url: `/v1/apps/${appId}/actions/request_leave/run`, ...as(alice), payload: { values: { kind: 'annual', starts: '2026-12-21', ends: '2026-12-24', days: 4, manager: bob.userId } } },
+    {
+      method: 'POST',
+      url: `/v1/apps/${appId}/actions/request_leave/run`,
+      ...as(alice),
+      payload: { values: { kind: 'annual', starts: '2026-12-21', ends: '2026-12-24', days: 4, manager: bob.userId } },
+    },
     201,
   );
-  instanceId = (await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/leave_request/records/${asked.record.id}/processes`, ...as(alice) }, 200)).instances[0].id;
+  instanceId = (await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/leave_request/records/${asked.record.id}/processes`, ...as(alice) }, 200))
+    .instances[0].id;
   const scopes = ['app.read', 'app.edit', 'ops.monitor.read', 'ops.job.retry', 'process.admin', 'ops.task.reassign'];
   operator = (await inject({ method: 'POST', url: '/v1/me/tokens', ...as(alice), payload: { name: 'ops client', scopes } }, 201)).token;
 });
@@ -58,8 +69,8 @@ afterAll(async () => {
   await t?.close();
 });
 
-describe('the operators\' MCP server', () => {
-  it('offers the operators\' tools, and marks the one that cannot be undone', async () => {
+describe("the operators' MCP server", () => {
+  it("offers the operators' tools, and marks the one that cannot be undone", async () => {
     const { result } = await inject({ method: 'POST', url: '/mcp/ops', ...bearer(operator), payload: { jsonrpc: '2.0', id: 1, method: 'tools/list' } }, 200);
     const tools = result.tools as Array<{ name: string; inputSchema: Json; annotations: Json }>;
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -102,10 +113,17 @@ describe('the operators\' MCP server', () => {
 
   it('checks the arguments, and is for operators only', async () => {
     expect((await call(operator, 'list_instances', {})).result).toMatchObject({ error: 'invalid_arguments' });
-    expect((await call(operator, 'throw_signal', { app_id: appId, name: 'policy_changed', entity: 'leave_request' })).result).toMatchObject({ error: 'record_incomplete' });
+    expect((await call(operator, 'throw_signal', { app_id: appId, name: 'policy_changed', entity: 'leave_request' })).result).toMatchObject({
+      error: 'record_incomplete',
+    });
 
     // Bob decides leave in the app, and operates nothing.
-    const bobs = (await inject({ method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'ops client', scopes: ['app.read', 'app.run', 'ops.monitor.read'] } }, 201)).token;
+    const bobs = (
+      await inject(
+        { method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'ops client', scopes: ['app.read', 'app.run', 'ops.monitor.read'] } },
+        201,
+      )
+    ).token;
     expect((await ok(bobs, 'list_apps')).apps).toEqual([]);
     expect((await call(bobs, 'list_instances', { app_id: appId })).result).toMatchObject({ error: 'forbidden' });
   });

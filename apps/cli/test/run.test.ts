@@ -1,13 +1,16 @@
-import { describe, expect, it } from 'vitest';
 import { EXPENSE_APP } from '@platform/app-model';
-import { run, type Io } from '../src/run.js';
+import { describe, expect, it } from 'vitest';
+import { type Io, run } from '../src/run.js';
 
 const APP = '0193a7c4-0000-7000-8000-0000000000a1';
 const RELEASE = '0193a7c4-0000-7000-8000-0000000000b1';
 const DEPLOYMENT = '0193a7c4-0000-7000-8000-0000000000c1';
 
 /** A stand-in for Ambit: answers by method and path, and keeps every request. */
-function fake(routes: Record<string, (body: unknown) => { status?: number; body: unknown }>, env: Record<string, string> = { AMBIT_TOKEN: 'a-test-token', AMBIT_URL: 'https://ambit.test' }) {
+function fake(
+  routes: Record<string, (body: unknown) => { status?: number; body: unknown }>,
+  env: Record<string, string> = { AMBIT_TOKEN: 'a-test-token', AMBIT_URL: 'https://ambit.test' },
+) {
   const requests: Array<{ method: string; path: string; body: unknown; authorization: string | null }> = [];
   const out: string[] = [];
   const err: string[] = [];
@@ -105,7 +108,9 @@ describe('ambit', () => {
   });
 
   it('deploys to Staging at once, and waits for Prod until people approve it', async () => {
-    const releases = { releases: [{ id: RELEASE, number: 2, revision: 5, liveIn: [], verified: true, destructive: false, createdAt: '2026-11-17T07:00:00.000Z' }] };
+    const releases = {
+      releases: [{ id: RELEASE, number: 2, revision: 5, liveIn: [], verified: true, destructive: false, createdAt: '2026-11-17T07:00:00.000Z' }],
+    };
     const staging = fake({
       'GET /v1/apps': () => ({ body: apps }),
       [`GET /v1/apps/${APP}/releases`]: () => ({ body: releases }),

@@ -1,6 +1,6 @@
+import { compileAppPolicy, type StoredDefinition, validateDefinition } from '@platform/app-model';
 import { createPolicy, mergePolicies, type Policy } from '@platform/authz';
-import { compileAppPolicy, validateDefinition, type StoredDefinition } from '@platform/app-model';
-import { appEnvironments, appRevisions, apps, spaces, type Database, type Executor } from '@platform/db';
+import { appEnvironments, appRevisions, apps, type Database, type Executor, spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import { badRequest, HttpError, notFound } from '../errors.js';
 
@@ -40,7 +40,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function envSelector(value: string | undefined): EnvSelector {
   if (value === undefined || value === '') return 'default';
   if (value === 'prod' || value === 'staging') return value;
-  if (!UUID.test(value)) throw badRequest('invalid_env', 'Name an environment as prod, staging, or a preview\'s environment ID');
+  if (!UUID.test(value)) throw badRequest('invalid_env', "Name an environment as prod, staging, or a preview's environment ID");
   return { id: value };
 }
 

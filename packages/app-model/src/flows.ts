@@ -1,9 +1,31 @@
-import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
+import { COMPARISON_OPERATORS, type Condition, conditionRefs, isRef, isRelativeTime, type Operand, timeOf } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
-import { calculationKind, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
-import { entityFields, workedOutBy, fieldKind, isOrderedKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
-import { JSON_PATH, MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStart, type FlowStep, type FlowType, type Voters, type WaitFor } from './schema.js';
+import { calculationKind, type Expression, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo } from './expressions.js';
+import {
+  entityFields,
+  type FieldInfo,
+  fieldKind,
+  isOrderedKind,
+  isSortableKind,
+  isWritable,
+  lineOwners,
+  type StoredDefinition,
+  workedOutBy,
+} from './fields.js';
 import { scheduleIssues } from './schedules.js';
+import {
+  type AppFlow,
+  type Field,
+  type FlowRun,
+  type FlowStart,
+  type FlowStep,
+  type FlowType,
+  JSON_PATH,
+  MAX_FLOW_DEPTH,
+  MAX_FLOW_STEPS,
+  type Voters,
+  type WaitFor,
+} from './schema.js';
 import { canonicalValue } from './values.js';
 import { atProcessLevel, flowSubject, flowWaits, innerLists, stepWaits, withLists } from './waiting.js';
 
@@ -66,7 +88,10 @@ function describeKind(kind: VarKind): string {
 }
 
 const sameKind = (a: VarKind, b: VarKind): boolean =>
-  a.kind === b.kind && (a.kind === 'value' ? (a.value === 'any' || (b as typeof a).value === 'any' || (b as typeof a).value === 'null' || a.value === (b as typeof a).value) : a.entity === (b as typeof a).entity);
+  a.kind === b.kind &&
+  (a.kind === 'value'
+    ? a.value === 'any' || (b as typeof a).value === 'any' || (b as typeof a).value === 'null' || a.value === (b as typeof a).value
+    : a.entity === (b as typeof a).entity);
 
 /** The steps of a list, and of every list inside it, with where each is. */
 export function flowSteps(steps: readonly FlowStep[], base = 'steps'): Array<{ readonly step: FlowStep; readonly path: string }> {
@@ -84,7 +109,15 @@ interface FlowLookup {
   readonly flows?: Readonly<Record<string, AppFlow>> | undefined;
 }
 
-const SYSTEM_KINDS: Readonly<Record<string, ValueKind>> = { id: 'uuid', version: 'number', owner: 'uuid', created_at: 'datetime', created_by: 'uuid', updated_at: 'datetime', updated_by: 'uuid' };
+const SYSTEM_KINDS: Readonly<Record<string, ValueKind>> = {
+  id: 'uuid',
+  version: 'number',
+  owner: 'uuid',
+  created_at: 'datetime',
+  created_by: 'uuid',
+  updated_at: 'datetime',
+  updated_by: 'uuid',
+};
 
 /** The kind of a field of a record, or of a line, which has only its ID besides its own fields. */
 function fieldKindIn(entity: { readonly fields: readonly Field[] }, name: string, line: boolean): ValueKind | undefined {
@@ -195,7 +228,12 @@ function expressionKind(definition: FlowLookup, expression: Expression, scope: S
   if ('today' in expression) return 'date';
   if ('now' in expression) return 'datetime';
   const op = operatorOf(expression);
-  return op ? calculationKind(op, operandsOf(expression).map((operand) => expressionKind(definition, operand, scope))).kind : 'any';
+  return op
+    ? calculationKind(
+        op,
+        operandsOf(expression).map((operand) => expressionKind(definition, operand, scope)),
+      ).kind
+    : 'any';
 }
 
 type Resolved = { readonly ok: true; readonly kind: VarKind } | { readonly ok: false; readonly message: string };
@@ -206,7 +244,10 @@ type Resolved = { readonly ok: true; readonly kind: VarKind } | { readonly ok: f
  */
 function refKind(definition: FlowLookup, ref: string, scope: Scope): Resolved {
   const [root, ...path] = ref.split('.') as [string, ...string[]];
-  if (root === 'principal') return path.length === 1 ? { ok: true, kind: value(path[0] === 'id' ? 'uuid' : 'any') } : { ok: false, message: `${ref}: name a property, for example principal.id` };
+  if (root === 'principal')
+    return path.length === 1
+      ? { ok: true, kind: value(path[0] === 'id' ? 'uuid' : 'any') }
+      : { ok: false, message: `${ref}: name a property, for example principal.id` };
   if (root === 'record') return { ok: false, message: `${ref}: a flow names records by its variables. record.<field> is for a find's condition` };
   const held = scope.get(root);
   if (!held) return { ok: false, message: `${ref}: no variable ${root} here` };
@@ -219,7 +260,10 @@ function refKind(definition: FlowLookup, ref: string, scope: Scope): Resolved {
   const kind = fieldKindIn(entity, path[0]!, held.kind === 'line');
   if (kind) return { ok: true, kind: value(kind) };
   const lines = entity.fields.some((f) => f.name === path[0] && f.type === 'lines');
-  return { ok: false, message: lines ? `${ref}: a lines field. Loop over it with an each step, or total it` : `${ref}: ${entity.label} has no field ${path[0]}` };
+  return {
+    ok: false,
+    message: lines ? `${ref}: a lines field. Loop over it with an each step, or total it` : `${ref}: ${entity.label} has no field ${path[0]}`,
+  };
 }
 
 /**
@@ -267,7 +311,12 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
       if (step.type !== 'each' && step.type !== 'try' && step.type !== 'repeat') continue;
       const lists = innerLists(step, path);
       if (step.type !== 'repeat' && lists.some((list) => list.steps.some((inner) => stepWaits(inner, flows)))) {
-        issue(path, step.type === 'each' ? "A loop over a list can't hold steps that wait yet: move them out of it, or repeat them while a condition holds" : "An error handler can't hold steps that wait yet: move them out of it");
+        issue(
+          path,
+          step.type === 'each'
+            ? "A loop over a list can't hold steps that wait yet: move them out of it, or repeat them while a condition holds"
+            : "An error handler can't hold steps that wait yet: move them out of it",
+        );
       }
       for (const list of lists) for (const found of flowSteps(list.steps, list.path)) if (found.step.type === 'return') ending.add(found.path);
     }
@@ -290,7 +339,8 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
   }
   /** The variables that went when the flow last waited, as the step being checked sees them. */
   let gone: ReadonlySet<string> = new Set();
-  const lost = (name: string, ref = name) => `${ref}: ${name} doesn't live on after the flow waits. Keep the value in a field of the record, and read it from there`;
+  const lost = (name: string, ref = name) =>
+    `${ref}: ${name} doesn't live on after the flow waits. Keep the value in a field of the record, and read it from there`;
   const noVariable = (name: string) => (gone.has(name) ? lost(name) : `No variable ${name} here`);
   /** What a reference names. In a flow that waits there is no person, and a variable doesn't live on across a wait. */
   const resolve = (ref: string, scope: Scope): Resolved => {
@@ -334,7 +384,10 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
     const op = operatorOf(expression);
     if (!op) return 'any';
     if (op === 'if') condition((expression as { if: readonly [Condition, Expression, Expression] }).if[0], scope, at);
-    const worked = calculationKind(op, operandsOf(expression).map((operand) => kindAt(operand, scope, at)));
+    const worked = calculationKind(
+      op,
+      operandsOf(expression).map((operand) => kindAt(operand, scope, at)),
+    );
     for (const message of worked.problems) issue(at, message);
     return worked.kind;
   };
@@ -366,7 +419,13 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
     for (const [field, expression] of Object.entries(given)) {
       const info = fields.get(field);
       const where = `${at}.${field}`;
-      if (!info) issue(where, known.fields.some((f) => f.name === field && f.type === 'lines') ? `${field} holds lines: add one with an add_line step` : `${known.label} has no field ${field}`);
+      if (!info)
+        issue(
+          where,
+          known.fields.some((f) => f.name === field && f.type === 'lines')
+            ? `${field} holds lines: add one with an add_line step`
+            : `${known.label} has no field ${field}`,
+        );
       else if (line && info.system) issue(where, `${field} is set by the platform`);
       else if (!isWritable(info)) issue(where, info.system ? `${field} is set by the platform` : `${field} is ${workedOutBy(info)}`);
       else if (info.field?.type === 'file') issue(where, "A flow can't set a file");
@@ -423,10 +482,14 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
       };
       const [a, b] = [order(left), order(right)];
       const words = (operand: Operand) => (isRef(operand) ? operand.ref : JSON.stringify(operand));
-      for (const [operand, side] of [[left, a], [right, b]] as const) {
+      for (const [operand, side] of [
+        [left, a],
+        [right, b],
+      ] as const) {
         if (side === 'other') issue(at, `${op} compares numbers, dates and times, and ${words(operand)} is none of them`);
       }
-      if (a && b && a !== 'other' && b !== 'other' && a !== b) issue(at, `${op} compares a number with a number, or a date or a time with a date or a time: not ${words(left)} with ${words(right)}`);
+      if (a && b && a !== 'other' && b !== 'other' && a !== b)
+        issue(at, `${op} compares a number with a number, or a date or a time with a date or a time: not ${words(left)} with ${words(right)}`);
     };
     visit(c);
   };
@@ -483,7 +546,10 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
     if (expression === undefined) return;
     const wanted = kindOfType(type);
     if (wanted.kind !== 'value') {
-      const named = expression !== null && typeof expression === 'object' && !Array.isArray(expression) && 'ref' in expression && !expression.ref.includes('.') ? scope.get(expression.ref) : undefined;
+      const named =
+        expression !== null && typeof expression === 'object' && !Array.isArray(expression) && 'ref' in expression && !expression.ref.includes('.')
+          ? scope.get(expression.ref)
+          : undefined;
       if (!named || !sameKind(wanted, named)) {
         const ref = expression !== null && typeof expression === 'object' && !Array.isArray(expression) && 'ref' in expression ? expression.ref : undefined;
         issue(at, !named && ref && gone.has(ref) ? lost(ref) : `Give ${describeKind(wanted)}: a variable that holds one`);
@@ -491,7 +557,8 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
       return;
     }
     const kind = kindAt(expression, scope, at);
-    if (!(kind === 'any' || kind === 'null' || kind === wanted.value || (wanted.value === 'date' && kind === 'datetime'))) issue(at, `This gives ${KIND_WORDS[kind]}, not ${KIND_WORDS[wanted.value]}`);
+    if (!(kind === 'any' || kind === 'null' || kind === wanted.value || (wanted.value === 'date' && kind === 'datetime')))
+      issue(at, `This gives ${KIND_WORDS[kind]}, not ${KIND_WORDS[wanted.value]}`);
   };
 
   // A flow that waits starts by itself on its record; a flow that needs no input, on a schedule.
@@ -504,7 +571,8 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
   });
   if (flow.schedule) {
     if (waits) issue('schedule', 'A flow that waits keeps its place on one record, so it starts on records, not on a schedule: say how in its starts');
-    else if (Object.keys(flow.input).length) issue('schedule', 'A flow on a schedule runs with nobody to give it input: give it no input, and find the records it works on');
+    else if (Object.keys(flow.input).length)
+      issue('schedule', 'A flow on a schedule runs with nobody to give it input: give it no input, and find the records it works on');
     for (const problem of scheduleIssues(flow.schedule)) issue(`schedule${problem.path}`, problem.message);
   }
 
@@ -573,17 +641,26 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
         case 'call_service': {
           const connection = definition.connections?.[step.connection];
           if (!connection) issue(`${at}.connection`, `No connection named ${step.connection}`);
-          else if (connection.kind !== 'service') issue(`${at}.connection`, `${connection.label} is a Teams channel: a notice posts to it, with an inform step`);
+          else if (connection.kind !== 'service')
+            issue(`${at}.connection`, `${connection.label} is a Teams channel: a notice posts to it, with an inform step`);
           kindAt(step.path, scope, `${at}.path`);
           for (const [name, expression] of Object.entries(step.query)) kindAt(expression, scope, `${at}.query.${name}`);
           for (const [name, expression] of Object.entries(step.body ?? {})) kindAt(expression, scope, `${at}.body.${name}`);
           if (step.body && step.method === 'GET') issue(`${at}.body`, 'A GET sends nothing: send values with POST, PUT or PATCH, or as the query');
           // Personal data leaves the app only for a service that says it takes it, as a reviewer sees.
           if (connection?.kind === 'service' && !connection.personalData) {
-            const parts: Array<readonly [string, Expression]> = [['path', step.path], ...Object.entries(step.query).map(([name, e]) => [`query.${name}`, e] as const), ...Object.entries(step.body ?? {}).map(([name, e]) => [`body.${name}`, e] as const)];
+            const parts: Array<readonly [string, Expression]> = [
+              ['path', step.path],
+              ...Object.entries(step.query).map(([name, e]) => [`query.${name}`, e] as const),
+              ...Object.entries(step.body ?? {}).map(([name, e]) => [`body.${name}`, e] as const),
+            ];
             for (const [part, expression] of parts) {
               for (const ref of expressionRefs(expression)) {
-                if (fieldOf(ref, scope)?.classification === 'pii') issue(`${at}.${part}`, `${ref} is personal data, and ${connection.label} doesn't take it. Leave it out, or say on the connection that it takes personal data`);
+                if (fieldOf(ref, scope)?.classification === 'pii')
+                  issue(
+                    `${at}.${part}`,
+                    `${ref} is personal data, and ${connection.label} doesn't take it. Leave it out, or say on the connection that it takes personal data`,
+                  );
               }
             }
           }
@@ -604,7 +681,8 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
             const before = issues.length;
             kindAt(recipient.person, scope, `${where}.person`);
             if (issues.length > before) return;
-            if (!isPerson(recipient.person, scope)) issue(`${where}.person`, 'Name a person: a user field of a record, such as leave.manager, or the person running the flow');
+            if (!isPerson(recipient.person, scope))
+              issue(`${where}.person`, 'Name a person: a user field of a record, such as leave.manager, or the person running the flow');
           });
           kindAt(step.title, scope, `${at}.title`);
           if (step.message !== undefined) kindAt(step.message, scope, `${at}.message`);
@@ -612,9 +690,13 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
           // Email and Teams leave the app: personal data stays in its notices in the app.
           if (step.email || step.teams !== undefined) {
             const how = step.email ? 'email' : 'Teams';
-            for (const [part, expression] of [['title', step.title], ['message', step.message]] as const) {
+            for (const [part, expression] of [
+              ['title', step.title],
+              ['message', step.message],
+            ] as const) {
               for (const ref of expression === undefined ? [] : expressionRefs(expression)) {
-                if (fieldOf(ref, scope)?.classification === 'pii') issue(`${at}.${part}`, `${ref} is personal data, and ${how} takes it out of the app: leave it out, or tell people in the app only`);
+                if (fieldOf(ref, scope)?.classification === 'pii')
+                  issue(`${at}.${part}`, `${ref} is personal data, and ${how} takes it out of the app: leave it out, or tell people in the app only`);
               }
             }
           }
@@ -707,7 +789,9 @@ export function checkFlows(definition: StoredDefinition, issues: Issue[]): void 
   for (const [name, flow] of Object.entries(flows)) checkFlow(definition, name, flow, issues);
 
   // A flow never calls itself, however far round: a loop of calls would never end.
-  const calls = new Map(Object.entries(flows).map(([name, flow]) => [name, [...new Set(flowSteps(flow.steps).flatMap(({ step }) => (step.type === 'call' ? [step.flow] : [])))]]));
+  const calls = new Map(
+    Object.entries(flows).map(([name, flow]) => [name, [...new Set(flowSteps(flow.steps).flatMap(({ step }) => (step.type === 'call' ? [step.flow] : [])))]]),
+  );
   const reported = new Set<string>();
   const visit = (name: string, trail: readonly string[]): void => {
     if (trail.includes(name)) {
@@ -734,8 +818,10 @@ export function checkFlows(definition: StoredDefinition, issues: Issue[]): void 
     } catch {
       url = undefined;
     }
-    if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) issues.push({ path: at, message: 'Give the address as https://, such as https://api.example.com/v1' });
-    else if (url.username || url.password) issues.push({ path: at, message: "Keep secrets out of the address: each environment keeps the connection's secret" });
+    if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:'))
+      issues.push({ path: at, message: 'Give the address as https://, such as https://api.example.com/v1' });
+    else if (url.username || url.password)
+      issues.push({ path: at, message: "Keep secrets out of the address: each environment keeps the connection's secret" });
     else if (url.search || url.hash) issues.push({ path: at, message: 'End the address before any query: each step adds its own' });
   }
   // A webhook runs a flow in one go, with input from places in the request.
@@ -750,7 +836,8 @@ export function checkFlows(definition: StoredDefinition, issues: Issue[]): void 
       issues.push({ path: `${at}.flow`, message: `${flow.label} waits for people or for time: a webhook runs a flow that runs in one go` });
       continue;
     }
-    for (const input of Object.keys(flow.input)) if (!(input in hook.input)) issues.push({ path: `${at}.input`, message: `${flow.label} needs ${input}: say where in the request it is` });
+    for (const input of Object.keys(flow.input))
+      if (!(input in hook.input)) issues.push({ path: `${at}.input`, message: `${flow.label} needs ${input}: say where in the request it is` });
     for (const [input, place] of Object.entries(hook.input)) {
       if (!(input in flow.input)) issues.push({ path: `${at}.input.${input}`, message: `${flow.label} takes no ${input}` });
       else if (!place || !JSON_PATH.test(place)) issues.push({ path: `${at}.input.${input}`, message: 'Name a place in the request, such as order.id' });
@@ -773,7 +860,13 @@ export function checkFlows(definition: StoredDefinition, issues: Issue[]): void 
  * from the record (`record.<field>`, or `record` itself for a record input) and, where a person
  * runs it, `principal.id`.
  */
-export function checkFlowRun(definition: StoredDefinition, run: FlowRun, from: { readonly entity: string; readonly person: boolean }, path: string, issues: Issue[]): void {
+export function checkFlowRun(
+  definition: StoredDefinition,
+  run: FlowRun,
+  from: { readonly entity: string; readonly person: boolean },
+  path: string,
+  issues: Issue[],
+): void {
   const flow = definition.flows?.[run.flow];
   if (!flow) {
     issues.push({ path: `${path}.flow`, message: `No flow named ${run.flow}` });
@@ -794,18 +887,21 @@ export function checkFlowRun(definition: StoredDefinition, run: FlowRun, from: {
     }
     if (type.type === 'record') {
       const isRecord = given !== null && typeof given === 'object' && !Array.isArray(given) && 'ref' in given && given.ref === 'record';
-      if (!isRecord || type.entity !== from.entity) issues.push({ path: at, message: `${input} is a record of ${type.entity}: give record, the ${from.entity} itself` });
+      if (!isRecord || type.entity !== from.entity)
+        issues.push({ path: at, message: `${input} is a record of ${type.entity}: give record, the ${from.entity} itself` });
       continue;
     }
     for (const ref of given !== null && typeof given === 'object' && !Array.isArray(given) ? refsOf(given) : []) {
       const [root, field, ...rest] = ref.split('.');
       if (root === 'principal') {
         if (!from.person) issues.push({ path: at, message: `${ref}: a process runs the flow with no person` });
-      } else if (root !== 'record' || !field || rest.length) issues.push({ path: at, message: `${ref}: give values from record.<field>${from.person ? ' or principal.id' : ''}` });
+      } else if (root !== 'record' || !field || rest.length)
+        issues.push({ path: at, message: `${ref}: give values from record.<field>${from.person ? ' or principal.id' : ''}` });
       else if (!fields.has(field)) issues.push({ path: at, message: `${ref}: no such field` });
     }
   }
-  for (const input of Object.keys(run.input)) if (!(input in flow.input)) issues.push({ path: `${path}.input.${input}`, message: `${flow.label} takes no ${input}` });
+  for (const input of Object.keys(run.input))
+    if (!(input in flow.input)) issues.push({ path: `${path}.input.${input}`, message: `${flow.label} takes no ${input}` });
 }
 
 function refsOf(expression: Expression): string[] {
@@ -813,7 +909,10 @@ function refsOf(expression: Expression): string[] {
 }
 
 /** What a flow does to records, by entity, the flows it calls and whom its tasks ask: what a change request names. */
-export function flowWork(definition: StoredDefinition, flow: AppFlow): {
+export function flowWork(
+  definition: StoredDefinition,
+  flow: AppFlow,
+): {
   readonly finds: readonly string[];
   readonly creates: readonly string[];
   readonly changes: readonly string[];
@@ -826,7 +925,16 @@ export function flowWork(definition: StoredDefinition, flow: AppFlow): {
   /** The connections it calls, and the Teams channels it posts to. */
   readonly connects: readonly string[];
 } {
-  const work = { finds: new Set<string>(), creates: new Set<string>(), changes: new Set<string>(), deletes: new Set<string>(), calls: new Set<string>(), asks: new Set<string>(), tells: new Set<string>(), connects: new Set<string>() };
+  const work = {
+    finds: new Set<string>(),
+    creates: new Set<string>(),
+    changes: new Set<string>(),
+    deletes: new Set<string>(),
+    calls: new Set<string>(),
+    asks: new Set<string>(),
+    tells: new Set<string>(),
+    connects: new Set<string>(),
+  };
   walk(definition, flow, (step, scope) => {
     const held = (name: string) => {
       const kind = scope.get(name);
@@ -864,12 +972,18 @@ export function flowWork(definition: StoredDefinition, flow: AppFlow): {
         for (const recipient of step.to) {
           if ('role' in recipient) work.tells.add(definition.roles[recipient.role]?.label ?? recipient.role);
           else {
-            const ref = recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person ? recipient.person.ref : undefined;
+            const ref =
+              recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person
+                ? recipient.person.ref
+                : undefined;
             const [root, name] = ref?.split('.') ?? [];
             const kind = root ? scope.get(root) : undefined;
-            const field = kind && (kind.kind === 'record' || kind.kind === 'line') ? definition.entities[kind.entity]?.fields.find((f) => f.name === name) : undefined;
+            const field =
+              kind && (kind.kind === 'record' || kind.kind === 'line') ? definition.entities[kind.entity]?.fields.find((f) => f.name === name) : undefined;
             const system: Readonly<Record<string, string>> = { owner: 'the owner', created_by: 'whoever created it', updated_by: 'whoever last changed it' };
-            work.tells.add(ref === 'principal.id' ? 'the person running it' : field ? `the ${field.label.toLowerCase()}` : (system[name ?? ''] ?? ref ?? 'someone'));
+            work.tells.add(
+              ref === 'principal.id' ? 'the person running it' : field ? `the ${field.label.toLowerCase()}` : (system[name ?? ''] ?? ref ?? 'someone'),
+            );
           }
         }
         return;
@@ -902,7 +1016,14 @@ export function renameInFlows(
   const typeOf = (type: FlowType): FlowType => (type.type === 'record' || type.type === 'list' ? { ...type, entity: entityName(type.entity) } : type);
   // The entities of the flows' inputs and results, renamed, so that variables are typed by the new names.
   const renamedFlows = Object.fromEntries(
-    Object.entries(flows).map(([name, flow]) => [name, { ...flow, input: Object.fromEntries(Object.entries(flow.input).map(([input, type]) => [input, typeOf(type)])), ...(flow.output ? { output: typeOf(flow.output) } : {}) }]),
+    Object.entries(flows).map(([name, flow]) => [
+      name,
+      {
+        ...flow,
+        input: Object.fromEntries(Object.entries(flow.input).map(([input, type]) => [input, typeOf(type)])),
+        ...(flow.output ? { output: typeOf(flow.output) } : {}),
+      },
+    ]),
   ) as Record<string, AppFlow>;
   const lookup: StoredDefinition = { ...definition, flows: renamedFlows };
 
@@ -938,101 +1059,112 @@ export function renameInFlows(
       // A task and a wait name fields of the record the flow is about.
       const about = flowSubject(flow)?.entity;
       const field = about ? fieldName(about) : (name: string) => name;
-      walk(lookup, { ...flow, steps: flow.steps.map((step) => renameEntities(step, entityName)) }, (step, scope, path) => {
-        const held = (variable: string) => {
-          const kind = scope.get(variable);
-          return kind?.kind === 'record' || kind?.kind === 'line' ? kind.entity : undefined;
-        };
-        const item = (of: string) => {
-          const [root, lines] = of.split('.');
-          const kind = root ? scope.get(root) : undefined;
-          if (!lines) return kind?.kind === 'list' ? kind.entity : undefined;
-          const field = kind?.kind === 'record' ? lookup.entities[kind.entity]?.fields.find((f) => f.name === fieldName(kind.entity)(lines)) : undefined;
-          return field?.type === 'lines' ? entityName(field.entity) : undefined;
-        };
-        let next: FlowStep;
-        switch (step.type) {
-          case 'set':
-            next = { ...step, value: expression(scope)(step.value) };
-            break;
-          case 'find':
-            next = {
-              ...step,
-              ...(step.where ? { where: condition(scope, step.entity)(step.where) } : {}),
-              ...(step.sort ? { sort: step.sort.map((sort) => ({ ...sort, field: fieldName(step.entity)(sort.field) })) } : {}),
-            };
-            break;
-          case 'create':
-            next = { ...step, values: valuesOf(step.entity, step.values, scope) };
-            break;
-          case 'change':
-            next = { ...step, values: valuesOf(held(step.record), step.values, scope) };
-            break;
-          case 'add_line': {
-            const entity = held(step.record);
-            const lines = entity ? fieldName(entity)(step.field) : step.field;
-            const field = entity ? lookup.entities[entity]?.fields.find((f) => f.name === lines) : undefined;
-            next = { ...step, field: lines, values: valuesOf(field?.type === 'lines' ? entityName(field.entity) : undefined, step.values, scope) };
-            break;
+      walk(
+        lookup,
+        { ...flow, steps: flow.steps.map((step) => renameEntities(step, entityName)) },
+        (step, scope, path) => {
+          const held = (variable: string) => {
+            const kind = scope.get(variable);
+            return kind?.kind === 'record' || kind?.kind === 'line' ? kind.entity : undefined;
+          };
+          const item = (of: string) => {
+            const [root, lines] = of.split('.');
+            const kind = root ? scope.get(root) : undefined;
+            if (!lines) return kind?.kind === 'list' ? kind.entity : undefined;
+            const field = kind?.kind === 'record' ? lookup.entities[kind.entity]?.fields.find((f) => f.name === fieldName(kind.entity)(lines)) : undefined;
+            return field?.type === 'lines' ? entityName(field.entity) : undefined;
+          };
+          let next: FlowStep;
+          switch (step.type) {
+            case 'set':
+              next = { ...step, value: expression(scope)(step.value) };
+              break;
+            case 'find':
+              next = {
+                ...step,
+                ...(step.where ? { where: condition(scope, step.entity)(step.where) } : {}),
+                ...(step.sort ? { sort: step.sort.map((sort) => ({ ...sort, field: fieldName(step.entity)(sort.field) })) } : {}),
+              };
+              break;
+            case 'create':
+              next = { ...step, values: valuesOf(step.entity, step.values, scope) };
+              break;
+            case 'change':
+              next = { ...step, values: valuesOf(held(step.record), step.values, scope) };
+              break;
+            case 'add_line': {
+              const entity = held(step.record);
+              const lines = entity ? fieldName(entity)(step.field) : step.field;
+              const field = entity ? lookup.entities[entity]?.fields.find((f) => f.name === lines) : undefined;
+              next = { ...step, field: lines, values: valuesOf(field?.type === 'lines' ? entityName(field.entity) : undefined, step.values, scope) };
+              break;
+            }
+            case 'each':
+              next = { ...step, in: listPath(step.in, scope) };
+              break;
+            case 'if':
+              next = { ...step, when: condition(scope)(step.when) };
+              break;
+            case 'repeat':
+              next = { ...step, while: condition(scope)(step.while) };
+              break;
+            case 'call_service':
+              next = {
+                ...step,
+                path: expression(scope)(step.path),
+                query: valuesOf(undefined, step.query, scope),
+                ...(step.body ? { body: valuesOf(undefined, step.body, scope) } : {}),
+              };
+              break;
+            case 'inform':
+              next = {
+                ...step,
+                to: step.to.map((recipient) => ('person' in recipient ? { person: expression(scope)(recipient.person) } : recipient)),
+                title: expression(scope)(step.title),
+                ...(step.message !== undefined ? { message: expression(scope)(step.message) } : {}),
+              };
+              break;
+            case 'check':
+              next = { ...step, assert: condition(scope)(step.assert), ...(step.fields ? { fields: step.fields.map(ref(scope)) } : {}) };
+              break;
+            case 'call':
+              next = { ...step, input: valuesOf(undefined, step.input, scope) };
+              break;
+            case 'total': {
+              const entity = item(step.of);
+              next = { ...step, of: listPath(step.of, scope), ...(step.field && entity ? { field: fieldName(entity)(step.field) } : {}) };
+              break;
+            }
+            case 'return':
+              next = step.value === undefined ? step : { ...step, value: expression(scope)(step.value) };
+              break;
+            case 'task':
+              next = {
+                ...step,
+                ...(step.assignee
+                  ? {
+                      assignee:
+                        'field' in step.assignee ? { field: field(step.assignee.field) } : { ...step.assignee, managerOf: field(step.assignee.managerOf) },
+                    }
+                  : {}),
+                ...(step.department ? { department: { of: field(step.department.of) } } : {}),
+                ...(step.several ? { several: { ...step.several, people: voters(step.several.people, field) } } : {}),
+              };
+              break;
+            case 'wait':
+              next = { ...step, for: waitFor(step.for, scope, field) };
+              break;
+            case 'first_of':
+              next = { ...step, ways: step.ways.map((way) => ({ ...way, for: waitFor(way.for, scope, field) })) };
+              break;
+            default:
+              next = step;
           }
-          case 'each':
-            next = { ...step, in: listPath(step.in, scope) };
-            break;
-          case 'if':
-            next = { ...step, when: condition(scope)(step.when) };
-            break;
-          case 'repeat':
-            next = { ...step, while: condition(scope)(step.while) };
-            break;
-          case 'call_service':
-            next = {
-              ...step,
-              path: expression(scope)(step.path),
-              query: valuesOf(undefined, step.query, scope),
-              ...(step.body ? { body: valuesOf(undefined, step.body, scope) } : {}),
-            };
-            break;
-          case 'inform':
-            next = {
-              ...step,
-              to: step.to.map((recipient) => ('person' in recipient ? { person: expression(scope)(recipient.person) } : recipient)),
-              title: expression(scope)(step.title),
-              ...(step.message !== undefined ? { message: expression(scope)(step.message) } : {}),
-            };
-            break;
-          case 'check':
-            next = { ...step, assert: condition(scope)(step.assert), ...(step.fields ? { fields: step.fields.map(ref(scope)) } : {}) };
-            break;
-          case 'call':
-            next = { ...step, input: valuesOf(undefined, step.input, scope) };
-            break;
-          case 'total': {
-            const entity = item(step.of);
-            next = { ...step, of: listPath(step.of, scope), ...(step.field && entity ? { field: fieldName(entity)(step.field) } : {}) };
-            break;
-          }
-          case 'return':
-            next = step.value === undefined ? step : { ...step, value: expression(scope)(step.value) };
-            break;
-          case 'task':
-            next = {
-              ...step,
-              ...(step.assignee ? { assignee: 'field' in step.assignee ? { field: field(step.assignee.field) } : { ...step.assignee, managerOf: field(step.assignee.managerOf) } } : {}),
-              ...(step.department ? { department: { of: field(step.department.of) } } : {}),
-              ...(step.several ? { several: { ...step.several, people: voters(step.several.people, field) } } : {}),
-            };
-            break;
-          case 'wait':
-            next = { ...step, for: waitFor(step.for, scope, field) };
-            break;
-          case 'first_of':
-            next = { ...step, ways: step.ways.map((way) => ({ ...way, for: waitFor(way.for, scope, field) })) };
-            break;
-          default:
-            next = step;
-        }
-        renamed.set(path, next);
-      }, undefined, (entity, lines) => fieldName(entity)(lines));
+          renamed.set(path, next);
+        },
+        undefined,
+        (entity, lines) => fieldName(entity)(lines),
+      );
       // Put the renamed steps back together, list by list.
       const rebuild = (steps: readonly FlowStep[], base: string): FlowStep[] =>
         steps.map((original, index) => {

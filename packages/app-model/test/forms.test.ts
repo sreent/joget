@@ -1,14 +1,14 @@
-import { describe, expect, it } from 'vitest';
 import {
   checkActionInput,
   defaultValue,
+  EXPENSE_APP,
   entityFields,
   evaluateRules,
-  EXPENSE_APP,
   holdsOn,
-  validateDefinition,
   type StoredDefinition,
+  validateDefinition,
 } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 /**
  * Forms that adapt (design §6.4): a field required while a condition holds, which every write
@@ -111,7 +111,12 @@ describe('defaults worked out as a record is created', () => {
   });
 
   it('fill in what a new record is not given', () => {
-    const check = checkActionInput(definition, 'submit_claim', { title: 'Taxi', lines: [{ date: '2026-11-17', merchant: 'Cab', category: 'travel', amount: 30 }] }, { now: NOW, person: ALICE });
+    const check = checkActionInput(
+      definition,
+      'submit_claim',
+      { title: 'Taxi', lines: [{ date: '2026-11-17', merchant: 'Cab', category: 'travel', amount: 30 }] },
+      { now: NOW, person: ALICE },
+    );
     expect(check.issues).toEqual([]);
     expect(check.values).toMatchObject({ claimed_on: '2026-11-18', pay_by: '2026-12-02', claimant: ALICE, status: 'submitted' });
   });
@@ -151,7 +156,10 @@ describe('a form that adapts', () => {
         d.forms.claim_form.sections[2].fields[0].visibleWhen = { gt: [{ ref: 'record.total' }, 0] };
       }),
     );
-    expect(stepped.forms['claim_form']).toMatchObject({ layout: 'steps', sections: [{}, {}, { fields: [{ field: 'iban', visibleWhen: { gt: [{ ref: 'record.total' }, 0] } }] }] });
+    expect(stepped.forms['claim_form']).toMatchObject({
+      layout: 'steps',
+      sections: [{}, {}, { fields: [{ field: 'iban', visibleWhen: { gt: [{ ref: 'record.total' }, 0] } }] }],
+    });
     expect(valid(EXPENSE_APP).forms['claim_form']!.layout).toBe('page');
   });
 

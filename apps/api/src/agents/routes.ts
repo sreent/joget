@@ -38,7 +38,10 @@ export function agentRoutes(ctx: AppContext): FastifyPluginAsyncZod {
   const theAccount = (request: FastifyRequest) =>
     once(request, 'agent-account', async () => {
       const { serviceAccountId } = request.params as { serviceAccountId: string };
-      const [row] = await ctx.db.select().from(serviceAccounts).where(and(eq(serviceAccounts.id, serviceAccountId), eq(serviceAccounts.orgId, ctx.org.id)));
+      const [row] = await ctx.db
+        .select()
+        .from(serviceAccounts)
+        .where(and(eq(serviceAccounts.id, serviceAccountId), eq(serviceAccounts.orgId, ctx.org.id)));
       if (!row) throw notFound('Service account');
       return row;
     });
@@ -164,22 +167,37 @@ export function agentRoutes(ctx: AppContext): FastifyPluginAsyncZod {
         try {
           identity = await ctx.oidc.verifyToken(subjectToken);
         } catch (error) {
-          if (error instanceof IdpUnavailableError) return oauthError(reply, 503, 'temporarily_unavailable', 'The identity provider cannot be reached right now');
+          if (error instanceof IdpUnavailableError)
+            return oauthError(reply, 503, 'temporarily_unavailable', 'The identity provider cannot be reached right now');
           if (!(error instanceof InvalidSubjectTokenError)) throw error;
-          await recordAudit(ctx.db, audit, { action: 'token.exchange', outcome: 'denied', reason: { error: 'invalid_subject_token', detail: error.message.slice(0, 200) } });
+          await recordAudit(ctx.db, audit, {
+            action: 'token.exchange',
+            outcome: 'denied',
+            reason: { error: 'invalid_subject_token', detail: error.message.slice(0, 200) },
+          });
           return oauthError(reply, 400, 'invalid_grant', 'The subject token is not a valid token from the identity provider for Ambit');
         }
         try {
           const issued = await ctx.db.transaction(async (tx) => {
             const person = await provisionUser(tx, { orgId: ctx.org.id, config: ctx.config, identity, audit, mode: 'exchange' });
             const expiresAt = new Date(now.getTime() + ctx.config.DELEGATED_TOKEN_TTL_SECONDS * 1000);
-            const { token, row } = await ctx.tokens.issueDelegated(tx, { userId: person.userId, agentId: agent.id, agentName: agent.name, scopes: requested, expiresAt });
-            await recordAudit(tx, { ...audit, actor: { ...audit.actor, onBehalfOf: person.userId } }, {
-              action: 'token.exchange',
-              target: { type: 'api_token', id: row.id, name: row.displayPrefix },
-              spaceId: agent.spaceId,
-              reason: { issuer: identity.issuer, scopes: requested, expiresAt: expiresAt.toISOString() },
+            const { token, row } = await ctx.tokens.issueDelegated(tx, {
+              userId: person.userId,
+              agentId: agent.id,
+              agentName: agent.name,
+              scopes: requested,
+              expiresAt,
             });
+            await recordAudit(
+              tx,
+              { ...audit, actor: { ...audit.actor, onBehalfOf: person.userId } },
+              {
+                action: 'token.exchange',
+                target: { type: 'api_token', id: row.id, name: row.displayPrefix },
+                spaceId: agent.spaceId,
+                reason: { issuer: identity.issuer, scopes: requested, expiresAt: expiresAt.toISOString() },
+              },
+            );
             return { token, scopes: requested };
           });
           return reply.header('cache-control', 'no-store').send({

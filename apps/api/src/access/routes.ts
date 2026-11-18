@@ -1,23 +1,23 @@
 import { uuidv7 } from '@platform/audit';
 import {
+  type Binding,
   findEscalation,
   findSodConflicts,
   isValidPermissionPattern,
   MANAGED_SOD_RULES,
-  SYSTEM_ASSIGNED_ROLES,
-  type Binding,
   type Principal,
+  SYSTEM_ASSIGNED_ROLES,
 } from '@platform/authz';
 import { bindings, groups, serviceAccounts, users } from '@platform/db';
 import { and, eq, gt, isNull, or } from 'drizzle-orm';
-import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import type { FastifyRequest } from 'fastify';
+import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { auditScopeFor, recordAudit, spaceIdOf } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
 import { BindingOut, describeBindings } from './describe.js';
-import { toBinding, type BindingRow } from './policy-service.js';
+import { type BindingRow, toBinding } from './policy-service.js';
 import { bindingManageAction, loadSpace, scopeResource } from './resources.js';
 import { once, requireAuth } from './rules.js';
 
@@ -189,7 +189,14 @@ export function accessRoutes(ctx: AppContext): FastifyPluginAsyncZod {
 
         // You can only hand out permissions you hold yourself at this scope.
         const granterBindings = await ctx.policy.bindingsFor(auth.principal);
-        const missing = findEscalation(policy, auth.principal, resource.scopes, granterBindings, body.roleId ? { roleId: body.roleId } : { permissionSetId: body.permissionSetId! }, now);
+        const missing = findEscalation(
+          policy,
+          auth.principal,
+          resource.scopes,
+          granterBindings,
+          body.roleId ? { roleId: body.roleId } : { permissionSetId: body.permissionSetId! },
+          now,
+        );
         if (missing.length > 0) {
           await deny('privilege_escalation', { missing });
           throw forbidden('privilege_escalation', 'You can only grant permissions that you hold yourself at this scope', { missing });
@@ -307,7 +314,15 @@ export function accessRoutes(ctx: AppContext): FastifyPluginAsyncZod {
             target: { type: 'binding', id: row.id },
             spaceId: spaceIdOf(resource),
             reason: request.body.justification ? { justification: request.body.justification } : {},
-            changes: { before: { principalType: row.principalType, principalId: row.principalId, roleId: row.roleId, permissionSetId: row.permissionSetId, scope: { type: row.scopeType, id: row.scopeId } } },
+            changes: {
+              before: {
+                principalType: row.principalType,
+                principalId: row.principalId,
+                roleId: row.roleId,
+                permissionSetId: row.permissionSetId,
+                scope: { type: row.scopeType, id: row.scopeId },
+              },
+            },
           });
           return updated;
         });

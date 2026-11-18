@@ -1,5 +1,5 @@
 import { uuidv7 } from '@platform/audit';
-import { apps, noticeEmails, notices, processTasks, users, type Database } from '@platform/db';
+import { apps, type Database, noticeEmails, notices, processTasks, users } from '@platform/db';
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { inAudience, roleHolders } from '../access/holders.js';
 import type { AppContext } from '../context.js';
@@ -92,7 +92,9 @@ export class Notices {
     if (input.email && this.#mailer) {
       const emails = rows.flatMap((row) => {
         const person = people.find((each) => each.id === row.userId);
-        return person?.email && person.emailNotices ? [{ id: uuidv7(now.getTime()), orgId: this.#ctx.org.id, noticeId: row.id, address: person.email, nextAttemptAt: now, createdAt: now }] : [];
+        return person?.email && person.emailNotices
+          ? [{ id: uuidv7(now.getTime()), orgId: this.#ctx.org.id, noticeId: row.id, address: person.email, nextAttemptAt: now, createdAt: now }]
+          : [];
       });
       if (emails.length) await db.insert(noticeEmails).values(emails);
     }
@@ -122,7 +124,9 @@ export class Notices {
         environmentId: task.environmentId,
         kind: 'task_assigned',
         title: task.name,
-        message: task.assignee ? `It waits for you${task.dueAt ? `, by ${when(task.dueAt)}` : ''}.` : `It waits for someone with your role${task.dueAt ? `, by ${when(task.dueAt)}` : ''}.`,
+        message: task.assignee
+          ? `It waits for you${task.dueAt ? `, by ${when(task.dueAt)}` : ''}.`
+          : `It waits for someone with your role${task.dueAt ? `, by ${when(task.dueAt)}` : ''}.`,
         about: task.about,
         taskId: task.id,
         to,
@@ -144,7 +148,10 @@ export class Notices {
           and(
             eq(processTasks.status, 'open'),
             isNotNull(processTasks.dueAt),
-            or(and(isNull(processTasks.overdueNoticeAt), lte(processTasks.dueAt, now)), and(isNull(processTasks.dueSoonNoticeAt), lte(processTasks.dueAt, soon), gt(processTasks.dueAt, now))),
+            or(
+              and(isNull(processTasks.overdueNoticeAt), lte(processTasks.dueAt, now)),
+              and(isNull(processTasks.dueSoonNoticeAt), lte(processTasks.dueAt, soon), gt(processTasks.dueAt, now)),
+            ),
           ),
         )
         .orderBy(asc(processTasks.dueAt))
@@ -156,7 +163,10 @@ export class Notices {
         // What the task's record was called when the task told its people of it.
         const [earlier] = await tx.select({ label: notices.label }).from(notices).where(eq(notices.taskId, task.id)).limit(1);
         if (!task.assignee && task.department && to.length) {
-          const kept = await tx.select({ id: users.id }).from(users).where(and(inArray(users.id, to), eq(users.department, task.department)));
+          const kept = await tx
+            .select({ id: users.id })
+            .from(users)
+            .where(and(inArray(users.id, to), eq(users.department, task.department)));
           to = kept.map((row) => row.id);
         }
         await this.send(
@@ -203,13 +213,24 @@ export class Notices {
       await tx
         .update(noticeEmails)
         .set({ attempts: sql`${noticeEmails.attempts} + 1`, nextAttemptAt: new Date(now.getTime() + 60_000) })
-        .where(inArray(noticeEmails.id, due.map((row) => row.email.id)));
+        .where(
+          inArray(
+            noticeEmails.id,
+            due.map((row) => row.email.id),
+          ),
+        );
       return due.map((row) => ({ ...row, email: { ...row.email, attempts: row.email.attempts + 1 } }));
     });
     const base = this.#ctx.config.PUBLIC_BASE_URL.replace(/\/$/, '');
     for (const { email, notice, appName } of claimed) {
-      const link = notice.taskId ? `${base}/studio/tasks` : notice.entity && notice.recordId ? `${base}/studio/apps/${notice.appId}/${notice.entity}/${notice.recordId}` : `${base}/studio/notices`;
-      const text = [notice.message ?? '', `Open it: ${link}`, `${appName} sent you this notice. You can stop notices by email in a3t: ${base}/studio/notices`].filter(Boolean).join('\n\n');
+      const link = notice.taskId
+        ? `${base}/studio/tasks`
+        : notice.entity && notice.recordId
+          ? `${base}/studio/apps/${notice.appId}/${notice.entity}/${notice.recordId}`
+          : `${base}/studio/notices`;
+      const text = [notice.message ?? '', `Open it: ${link}`, `${appName} sent you this notice. You can stop notices by email in a3t: ${base}/studio/notices`]
+        .filter(Boolean)
+        .join('\n\n');
       try {
         await mailer.send({ to: email.address, subject: clip(`${appName}: ${notice.title}`, 200), text });
         await this.#ctx.db.update(noticeEmails).set({ status: 'sent', sentAt: this.#ctx.now(), lastError: null }).where(eq(noticeEmails.id, email.id));
@@ -218,7 +239,10 @@ export class Notices {
         const failed = email.attempts >= MAX_ATTEMPTS;
         await this.#ctx.db
           .update(noticeEmails)
-          .set({ lastError: message, ...(failed ? { status: 'failed' as const } : { nextAttemptAt: new Date(this.#ctx.now().getTime() + 30_000 * 2 ** email.attempts) }) })
+          .set({
+            lastError: message,
+            ...(failed ? { status: 'failed' as const } : { nextAttemptAt: new Date(this.#ctx.now().getTime() + 30_000 * 2 ** email.attempts) }),
+          })
           .where(eq(noticeEmails.id, email.id));
       }
     }
@@ -236,7 +260,10 @@ export class Notices {
   }
 
   /** A person's notices, the newest first, and how many are unread. */
-  async list(userId: string, options: { readonly unread: boolean; readonly limit: number }): Promise<{ readonly notices: NoticeOut[]; readonly unread: number }> {
+  async list(
+    userId: string,
+    options: { readonly unread: boolean; readonly limit: number },
+  ): Promise<{ readonly notices: NoticeOut[]; readonly unread: number }> {
     const rows = await this.#ctx.db
       .select({ notice: notices, appName: apps.name })
       .from(notices)
@@ -261,7 +288,10 @@ export class Notices {
   }
 
   async unread(userId: string): Promise<number> {
-    const [row] = await this.#ctx.db.select({ n: count() }).from(notices).where(and(eq(notices.userId, userId), isNull(notices.readAt)));
+    const [row] = await this.#ctx.db
+      .select({ n: count() })
+      .from(notices)
+      .where(and(eq(notices.userId, userId), isNull(notices.readAt)));
     return row?.n ?? 0;
   }
 
@@ -269,7 +299,10 @@ export class Notices {
   async read(userId: string, which: { readonly ids: readonly string[] } | { readonly upTo: Date }): Promise<number> {
     const now = this.#ctx.now();
     const of = 'ids' in which ? (which.ids.length ? inArray(notices.id, [...which.ids]) : sql`false`) : lte(notices.createdAt, which.upTo);
-    await this.#ctx.db.update(notices).set({ readAt: now }).where(and(eq(notices.userId, userId), isNull(notices.readAt), of));
+    await this.#ctx.db
+      .update(notices)
+      .set({ readAt: now })
+      .where(and(eq(notices.userId, userId), isNull(notices.readAt), of));
     return this.unread(userId);
   }
 

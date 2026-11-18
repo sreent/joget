@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { fromModel, opsFor, recordChoices, toModel, type Condition } from './conditions.js';
 import { EXPENSE_APP } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 import type { Definition } from '../types.js';
+import { type Condition, fromModel, opsFor, recordChoices, toModel } from './conditions.js';
 
 const owner = { ref: 'record.owner' };
 const roundTrip = (condition: Condition) => fromModel(toModel(condition)!);
@@ -47,7 +47,13 @@ describe('conditions as builders edit them', () => {
       'record.created_at:date',
       'record.updated_at:date',
     ]);
-    expect(recordChoices(definition, 'expense_line', true).map((c) => c.ref)).toEqual(['record.date', 'record.merchant', 'record.category', 'record.amount', 'record.receipt']);
+    expect(recordChoices(definition, 'expense_line', true).map((c) => c.ref)).toEqual([
+      'record.date',
+      'record.merchant',
+      'record.category',
+      'record.amount',
+      'record.receipt',
+    ]);
     expect(opsFor('date')).toEqual(['lt', 'lte', 'gt', 'gte', 'eq', 'ne', 'exists', 'missing']);
     // A date compares with today or now, so many days or hours away, and comes back as it went.
     const soon: Condition = { lt: [{ ref: 'record.starts' }, { today: 3 }] } as Condition;

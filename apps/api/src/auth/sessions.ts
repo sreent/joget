@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { sha256Hex } from '@platform/audit';
-import { sessions, users, type Database, type Executor } from '@platform/db';
+import { type Database, type Executor, sessions, users } from '@platform/db';
 import { and, eq, gt, isNull } from 'drizzle-orm';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { PolicyService } from '../access/policy-service.js';

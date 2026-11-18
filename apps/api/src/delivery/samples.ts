@@ -37,7 +37,10 @@ function sampleValue(
   switch (field.type) {
     case 'text': {
       if (field.default !== undefined) return field.default;
-      const base = entity.titleField === field.name || field.name === 'title' || field.name === 'name' ? `Sample ${entity.label.toLowerCase()}` : `Sample ${field.label.toLowerCase()}`;
+      const base =
+        entity.titleField === field.name || field.name === 'title' || field.name === 'name'
+          ? `Sample ${entity.label.toLowerCase()}`
+          : `Sample ${field.label.toLowerCase()}`;
       return `${base} ${n}`.slice(0, field.maxLength);
     }
     case 'email':

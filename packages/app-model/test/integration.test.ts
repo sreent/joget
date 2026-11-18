@@ -1,5 +1,5 @@
+import { capabilityChanges, LEAVE_APP, type StoredDefinition, validateDefinition } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { capabilityChanges, LEAVE_APP, validateDefinition, type StoredDefinition } from '@platform/app-model';
 
 const ids = () => {
   let n = 0;
@@ -61,7 +61,13 @@ describe('integration', () => {
           d.flows.balance.steps = [
             { type: 'call_service', connection: 'team_channel' },
             { type: 'call_service', connection: 'payroll', body: { why: { ref: 'leave.reason' } } },
-            { type: 'call_service', connection: 'payroll', method: 'POST', body: { why: { ref: 'leave.reason' } }, results: { answer: { from: 'id', type: 'text' } } },
+            {
+              type: 'call_service',
+              connection: 'payroll',
+              method: 'POST',
+              body: { why: { ref: 'leave.reason' } },
+              results: { answer: { from: 'id', type: 'text' } },
+            },
             { type: 'return', value: { ref: 'answer' } },
           ];
         }),
@@ -116,7 +122,9 @@ describe('integration', () => {
       leave((d) => {
         d.connections.payroll.personalData = true;
         d.webhooks = { from_payroll: { label: 'From payroll', flow: 'balance', input: { leave: 'leave_id' } } };
-        d.flows.leave_approval.steps[0].outcomes[0].steps = [{ type: 'inform', to: [{ role: 'manager' }], title: 'Approved', teams: 'team_channel', email: false }];
+        d.flows.leave_approval.steps[0].outcomes[0].steps = [
+          { type: 'inform', to: [{ role: 'manager' }], title: 'Approved', teams: 'team_channel', email: false },
+        ];
       }),
     );
     const texts = capabilityChanges(before, after).map((change) => change.text);

@@ -146,9 +146,7 @@ export function evaluateCondition(condition: Condition, env: ConditionEnv): bool
   if ('exists' in condition) return resolve(env, condition.exists) !== MISSING;
   if ('in' in condition) {
     const [needle, haystack] = condition.in;
-    const items: Value = Array.isArray(haystack)
-      ? (haystack as readonly Operand[]).map((operand) => valueOf(operand, env))
-      : valueOf(haystack as Operand, env);
+    const items: Value = Array.isArray(haystack) ? (haystack as readonly Operand[]).map((operand) => valueOf(operand, env)) : valueOf(haystack as Operand, env);
     return member(valueOf(needle, env), items);
   }
   const op = binaryOperator(condition);
@@ -314,18 +312,8 @@ export function isCondition(value: unknown, depth = 0): value is Condition {
     case 'exists':
       return typeof arg === 'string' && arg.length > 0;
     case 'in':
-      return (
-        Array.isArray(arg) &&
-        arg.length === 2 &&
-        isOperand(arg[0]) &&
-        (isOperand(arg[1]) || (Array.isArray(arg[1]) && arg[1].every(isOperand)))
-      );
+      return Array.isArray(arg) && arg.length === 2 && isOperand(arg[0]) && (isOperand(arg[1]) || (Array.isArray(arg[1]) && arg[1].every(isOperand)));
     default:
-      return (
-        (BINARY as readonly string[]).includes(key) &&
-        Array.isArray(arg) &&
-        arg.length === 2 &&
-        arg.every(isOperand)
-      );
+      return (BINARY as readonly string[]).includes(key) && Array.isArray(arg) && arg.length === 2 && arg.every(isOperand);
   }
 }

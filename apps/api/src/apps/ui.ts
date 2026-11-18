@@ -1,6 +1,22 @@
-import { appRoleName, covers, defaultValue, entityFields, fieldAccess, formulaOf, isComputed, lineOwners, type ChartBlock, type FieldAccess, type FieldValue, type StatBlock, type StoredDefinition, type StoredField, type TabBlock, type WriteContext } from '@platform/app-model';
-import type { Condition } from '@platform/authz';
-import type { PermissionGrant } from '@platform/authz';
+import {
+  appRoleName,
+  type ChartBlock,
+  covers,
+  defaultValue,
+  entityFields,
+  type FieldAccess,
+  type FieldValue,
+  fieldAccess,
+  formulaOf,
+  isComputed,
+  lineOwners,
+  type StatBlock,
+  type StoredDefinition,
+  type StoredField,
+  type TabBlock,
+  type WriteContext,
+} from '@platform/app-model';
+import type { Condition, PermissionGrant } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
 import type { AppContext, AuthContext } from '../context.js';
 import type { LoadedApp } from './catalog.js';
@@ -51,7 +67,9 @@ function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'u
     ...(field.type === 'choice' ? { options: field.options, multiple: field.multiple } : {}),
     ...(field.type === 'reference' || field.type === 'lines' ? { entity: field.entity } : {}),
     ...(field.type === 'reference' && field.multiple ? { multiple: true } : {}),
-    ...(field.type === 'number' ? { decimals: field.decimals, ...(field.rollup ? { computed: true, rollup: field.rollup as Record<string, string> } : {}) } : {}),
+    ...(field.type === 'number'
+      ? { decimals: field.decimals, ...(field.rollup ? { computed: true, rollup: field.rollup as Record<string, string> } : {}) }
+      : {}),
     // A formula, so that a form shows what it gives as people type.
     ...(formulaOf(field) ? { computed: true, formula: formulaOf(field) } : {}),
     ...(field.type === 'text' ? { maxLength: field.maxLength, multiline: field.multiline } : {}),
@@ -93,7 +111,14 @@ function uiField(
   const owner = definition.entities[of.entity];
   const info = owner ? entityFields(owner, { line: of.line }).get(field.name) : undefined;
   const given = info && canCreate ? defaultValue(info, at) : undefined;
-  return { ...describeField(field), ...(given !== undefined ? { default: given } : {}), ...(lines ? { lines } : {}), read: access === 'hidden' ? null : access, create: canCreate, update: canUpdate };
+  return {
+    ...describeField(field),
+    ...(given !== undefined ? { default: given } : {}),
+    ...(lines ? { lines } : {}),
+    read: access === 'hidden' ? null : access,
+    create: canCreate,
+    update: canUpdate,
+  };
 }
 
 /**
@@ -115,7 +140,9 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
   for (const [name, entity] of Object.entries(loaded.definition.entities)) {
     // Lines are shown with their records, never as records of their own.
     if (owners.has(name)) continue;
-    const [read, create, update, remove, exported] = await Promise.all(['record.read', 'record.create', 'record.update', 'record.delete', 'record.export'].map((action) => decide(action, name)));
+    const [read, create, update, remove, exported] = await Promise.all(
+      ['record.read', 'record.create', 'record.update', 'record.delete', 'record.export'].map((action) => decide(action, name)),
+    );
     if (!read!.allowed && !create!.allowed) continue;
     const grantsOf = (decision: typeof read) => (decision!.allowed ? decision!.grants.map((g) => g.grant) : []);
     const grants = { read: grantsOf(read), create: grantsOf(create), update: grantsOf(update) };
@@ -133,7 +160,14 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
   const actions: Record<string, unknown> = {};
   for (const [name, action] of Object.entries(loaded.definition.actions)) {
     if (!visibleFields.has(action.entity) || !(await allowed('action', name))) continue;
-    actions[name] = { label: action.label, description: action.description, entity: action.entity, operation: action.operation, input: action.input, confirm: action.confirm };
+    actions[name] = {
+      label: action.label,
+      description: action.description,
+      entity: action.entity,
+      operation: action.operation,
+      input: action.input,
+      confirm: action.confirm,
+    };
   }
   const queries: Record<string, unknown> = {};
   for (const [name, query] of Object.entries(loaded.definition.queries)) {
@@ -152,7 +186,10 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
       ...(form.action ? { action: form.action } : {}),
       layout: form.layout,
       sections: form.sections
-        .map((section) => ({ ...section, fields: section.fields.filter((item) => visible.has(item.field) || ['id', 'owner', 'created_at', 'updated_at'].includes(item.field)) }))
+        .map((section) => ({
+          ...section,
+          fields: section.fields.filter((item) => visible.has(item.field) || ['id', 'owner', 'created_at', 'updated_at'].includes(item.field)),
+        }))
         .filter((section) => section.fields.length),
     };
   }
@@ -221,7 +258,7 @@ async function describePages(ctx: AppContext, auth: AuthContext, loaded: LoadedA
       .map((binding) => appRoleName(loaded.app.id, binding.roleId!))
       .filter((name): name is string => name !== null),
   );
-  const fieldsOf = (entity: string) => (visible.entities[entity] as { fields: UiField[]; can: { read: boolean } } | undefined);
+  const fieldsOf = (entity: string) => visible.entities[entity] as { fields: UiField[]; can: { read: boolean } } | undefined;
 
   type Block = Record<string, unknown> & { type: string };
   const shown = new Map<string, { label: string; description?: string; record?: { entity: string }; blocks: Block[]; usable: boolean }>();
@@ -247,7 +284,13 @@ async function describePages(ctx: AppContext, auth: AuthContext, loaded: LoadedA
         const fields = block.fields.filter((field) => field in SYSTEM_COLUMNS || about.fields.some((f) => f.name === field && f.read));
         if (!fields.length) return null;
         usable++;
-        return { type: 'fields', path, ...(block.title ? { title: block.title } : {}), fields, actions: block.actions.filter((action) => action in visible.actions) };
+        return {
+          type: 'fields',
+          path,
+          ...(block.title ? { title: block.title } : {}),
+          fields,
+          actions: block.actions.filter((action) => action in visible.actions),
+        };
       }
       const entity = fieldsOf(block.entity);
       if (!entity?.can.read) return null;
@@ -259,7 +302,9 @@ async function describePages(ctx: AppContext, auth: AuthContext, loaded: LoadedA
           const found = entity.fields.find((f) => f.name === first);
           return sub ? (found?.lines?.fields.find((f) => f.name === sub)?.read ?? null) : (found?.read ?? null);
         };
-        const paths = [block.measure.field, block.type === 'chart' ? block.group.field : undefined, block.range?.field].filter((each): each is string => each !== undefined);
+        const paths = [block.measure.field, block.type === 'chart' ? block.group.field : undefined, block.range?.field].filter(
+          (each): each is string => each !== undefined,
+        );
         if (paths.some((each) => read(each) !== 'full')) return null;
         usable++;
         return { ...describeSummary(definition, path, block), ...(block.of ? { of: block.of } : {}) };
@@ -267,7 +312,16 @@ async function describePages(ctx: AppContext, auth: AuthContext, loaded: LoadedA
       const fields = new Map(entity.fields.filter((field) => field.read).map((field) => [field.name, field]));
       const columns = block.columns.flatMap((column) => {
         const field = fields.get(column);
-        if (field) return [{ name: column, label: field.label, type: field.type, ...(field.options ? { options: field.options } : {}), ...(field.decimals !== undefined ? { decimals: field.decimals } : {}) }];
+        if (field)
+          return [
+            {
+              name: column,
+              label: field.label,
+              type: field.type,
+              ...(field.options ? { options: field.options } : {}),
+              ...(field.decimals !== undefined ? { decimals: field.decimals } : {}),
+            },
+          ];
         return column in SYSTEM_COLUMNS ? [{ name: column, label: SYSTEM_COLUMNS[column]!, type: column.endsWith('_at') ? 'datetime' : 'user' }] : [];
       });
       if (!columns.length) return null;
@@ -327,12 +381,20 @@ async function describePages(ctx: AppContext, auth: AuthContext, loaded: LoadedA
     return [block];
   };
   const holdsButtons = (blocks: readonly Block[]): boolean =>
-    blocks.some((block) => block.type === 'buttons' || (block.type === 'tabs' && (block['tabs'] as Array<{ blocks: Block[] }>).some((tab) => holdsButtons(tab.blocks))));
+    blocks.some(
+      (block) => block.type === 'buttons' || (block.type === 'tabs' && (block['tabs'] as Array<{ blocks: Block[] }>).some((tab) => holdsButtons(tab.blocks))),
+    );
   const pages: Record<string, unknown> = {};
   for (const [name, page] of shown) {
     const blocks = page.blocks.flatMap(finish);
     const usable = page.usable || holdsButtons(blocks);
-    if (usable) pages[name] = { label: page.label, ...(page.description ? { description: page.description } : {}), ...(page.record ? { record: page.record } : {}), blocks };
+    if (usable)
+      pages[name] = {
+        label: page.label,
+        ...(page.description ? { description: page.description } : {}),
+        ...(page.record ? { record: page.record } : {}),
+        blocks,
+      };
   }
 
   let navigation: { home: string | null; items: Array<Record<string, string>> } | null = null;

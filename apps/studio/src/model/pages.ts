@@ -39,7 +39,10 @@ export const listable = (definition: Definition): string[] => Object.keys(defini
 
 /** A list of an entity's records: its first fields and when each was made, newest first. */
 export function newList(definition: Definition, entity: string): ListBlock {
-  const fields = (definition.entities[entity]?.fields ?? []).filter((field) => field.type !== 'lines').slice(0, 3).map((field) => field.name);
+  const fields = (definition.entities[entity]?.fields ?? [])
+    .filter((field) => field.type !== 'lines')
+    .slice(0, 3)
+    .map((field) => field.name);
   return { type: 'list', entity, columns: [...fields, 'created_at'], sort: [{ field: 'created_at', direction: 'desc' }], limit: 20, actions: [] };
 }
 
@@ -49,7 +52,10 @@ export function newBlock(definition: Definition, type: BlockType, about?: string
     case 'text':
       return { type: 'text', style: 'paragraph', text: 'Say what this part of the page is for.' };
     case 'fields': {
-      const fields = (about ? (definition.entities[about]?.fields ?? []) : []).filter((field) => field.type !== 'file').slice(0, 6).map((field) => field.name);
+      const fields = (about ? (definition.entities[about]?.fields ?? []) : [])
+        .filter((field) => field.type !== 'file')
+        .slice(0, 6)
+        .map((field) => field.name);
       return fields.length ? { type: 'fields', fields, actions: [] } : null;
     }
     case 'tabs':
@@ -87,8 +93,26 @@ export function newChart(definition: Definition, entity: string): ChartBlock {
   const plural = definition.entities[entity]!.pluralLabel ?? definition.entities[entity]!.label;
   const choice = definition.entities[entity]!.fields.find((field) => field.type === 'choice' && !field.multiple);
   return choice
-    ? { type: 'chart', title: `${plural} by ${choice.label.toLowerCase()}`, entity, measure: { op: 'count' }, group: { field: choice.name }, show: 'bar', limit: 8, width: 'half' }
-    : { type: 'chart', title: `${plural} by month`, entity, measure: { op: 'count' }, group: { field: 'created_at', period: 'month' }, show: 'column', limit: 12, width: 'half' };
+    ? {
+        type: 'chart',
+        title: `${plural} by ${choice.label.toLowerCase()}`,
+        entity,
+        measure: { op: 'count' },
+        group: { field: choice.name },
+        show: 'bar',
+        limit: 8,
+        width: 'half',
+      }
+    : {
+        type: 'chart',
+        title: `${plural} by month`,
+        entity,
+        measure: { op: 'count' },
+        group: { field: 'created_at', period: 'month' },
+        show: 'column',
+        limit: 12,
+        width: 'half',
+      };
 }
 
 /** A field of the lines, after the lines that hold it: "Receipts › Amount (SGD)". Labels keep their case. */
@@ -122,7 +146,11 @@ export function groupPaths(definition: Definition, entity: string): Array<{ valu
       }
     }
   }
-  paths.push({ value: 'owner', label: 'Owner', dated: false }, { value: 'created_at', label: 'Created', dated: true }, { value: 'updated_at', label: 'Last changed', dated: true });
+  paths.push(
+    { value: 'owner', label: 'Owner', dated: false },
+    { value: 'created_at', label: 'Created', dated: true },
+    { value: 'updated_at', label: 'Last changed', dated: true },
+  );
   return paths;
 }
 
@@ -167,7 +195,14 @@ function aboutChanged(definition: Definition, name: string, entity: string | und
   const keep = (block: InnerBlock) => block.type !== 'fields' && !('of' in block && block.of !== undefined);
   page.blocks = page.blocks.flatMap((block): Block[] => {
     if (block.type !== 'tabs') return keep(block) ? [block] : [];
-    return [{ ...block, tabs: block.tabs.map((tab) => ({ ...tab, blocks: tab.blocks.filter(keep) })).map((tab) => (tab.blocks.length ? tab : { ...tab, blocks: [placeholder() as InnerBlock] })) }];
+    return [
+      {
+        ...block,
+        tabs: block.tabs
+          .map((tab) => ({ ...tab, blocks: tab.blocks.filter(keep) }))
+          .map((tab) => (tab.blocks.length ? tab : { ...tab, blocks: [placeholder() as InnerBlock] })),
+      },
+    ];
   });
   if (!page.blocks.length) page.blocks = [placeholder()];
   eachBlock(definition, (block) => {
@@ -232,7 +267,12 @@ function listOf(page: Page, path: string): { list: Array<Block | InnerBlock>; at
 }
 
 /** Add a block at the end of the page, or of a tab. Returns where it went, or "" if nothing could be added. */
-export function addBlock(definition: Definition, page: string, type: BlockType, into?: { readonly index: number; readonly tab: number }): { definition: Definition; path: string } {
+export function addBlock(
+  definition: Definition,
+  page: string,
+  type: BlockType,
+  into?: { readonly index: number; readonly tab: number },
+): { definition: Definition; path: string } {
   const block = newBlock(definition, type, definition.pages[page]?.record?.entity);
   if (!block || (into && block.type === 'tabs')) return { definition, path: '' };
   const next = clone(definition);
@@ -317,7 +357,9 @@ export function recordPages(definition: Definition, entity: string): Array<{ nam
 
 /** Reference fields of an entity that point at another: what a list on a page about one record shows its records by. */
 export function referringFields(definition: Definition, entity: string, to: string): Array<{ name: string; label: string }> {
-  return (definition.entities[entity]?.fields ?? []).flatMap((field) => (field.type === 'reference' && field.entity === to ? [{ name: field.name, label: field.label }] : []));
+  return (definition.entities[entity]?.fields ?? []).flatMap((field) =>
+    field.type === 'reference' && field.entity === to ? [{ name: field.name, label: field.label }] : [],
+  );
 }
 
 // The menu
@@ -327,7 +369,11 @@ export function defaultMenu(definition: Definition): Navigation {
   const pages = Object.keys(definition.pages);
   return {
     ...(pages[0] ? { home: pages[0] } : {}),
-    items: [...pages.map((page) => ({ page })), ...Object.keys(definition.forms).map((form) => ({ form })), ...listable(definition).map((entity) => ({ entity }))],
+    items: [
+      ...pages.map((page) => ({ page })),
+      ...Object.keys(definition.forms).map((form) => ({ form })),
+      ...listable(definition).map((entity) => ({ entity })),
+    ],
   };
 }
 
@@ -388,7 +434,14 @@ function eachBlock(definition: Definition, edit: (block: InnerBlock, page: Page)
   for (const page of Object.values(definition.pages)) {
     page.blocks = page.blocks.flatMap((block): Block[] => {
       if (block.type !== 'tabs') return edit(block, page);
-      return [{ ...block, tabs: block.tabs.map((tab) => ({ ...tab, blocks: tab.blocks.flatMap((inner) => edit(inner, page)) })).map((tab) => (tab.blocks.length ? tab : { ...tab, blocks: [placeholder() as InnerBlock] })) }];
+      return [
+        {
+          ...block,
+          tabs: block.tabs
+            .map((tab) => ({ ...tab, blocks: tab.blocks.flatMap((inner) => edit(inner, page)) }))
+            .map((tab) => (tab.blocks.length ? tab : { ...tab, blocks: [placeholder() as InnerBlock] })),
+        },
+      ];
     });
     if (!page.blocks.length) page.blocks = [placeholder()];
   }
@@ -502,7 +555,10 @@ export function describeBlock(definition: Definition, block: Block): string {
     }
     case 'buttons':
       return block.buttons
-        .map((button) => button.label ?? ('form' in button ? (definition.forms[button.form]?.label ?? button.form) : (definition.pages[button.page]?.label ?? button.page)))
+        .map(
+          (button) =>
+            button.label ?? ('form' in button ? (definition.forms[button.form]?.label ?? button.form) : (definition.pages[button.page]?.label ?? button.page)),
+        )
         .join(' · ');
     case 'stat':
       return `${block.label}: ${describeMeasure(definition, block.entity, block.measure)}`;

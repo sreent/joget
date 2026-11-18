@@ -1,5 +1,5 @@
 import { appRoleId } from '@platform/app-model';
-import { apps, bindings, groupMembers, users, type Database } from '@platform/db';
+import { apps, bindings, type Database, groupMembers, users } from '@platform/db';
 import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 
 /*
@@ -23,10 +23,16 @@ async function holders(db: Database, environmentId: string, now: Date, roles: re
     );
   const direct = held.filter((binding) => binding.type === 'user').map((binding) => binding.id);
   const groupIds = held.filter((binding) => binding.type === 'group').map((binding) => binding.id);
-  const viaGroups = groupIds.length ? (await db.select({ id: groupMembers.userId }).from(groupMembers).where(inArray(groupMembers.groupId, groupIds))).map((row) => row.id) : [];
+  const viaGroups = groupIds.length
+    ? (await db.select({ id: groupMembers.userId }).from(groupMembers).where(inArray(groupMembers.groupId, groupIds))).map((row) => row.id)
+    : [];
   const candidates = [...new Set([...direct, ...viaGroups])];
   if (!candidates.length) return [];
-  const active = await db.select({ id: users.id }).from(users).where(and(inArray(users.id, candidates), eq(users.status, 'active'))).orderBy(asc(users.displayName), asc(users.id));
+  const active = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(inArray(users.id, candidates), eq(users.status, 'active')))
+    .orderBy(asc(users.displayName), asc(users.id));
   return active.map((row) => row.id);
 }
 
@@ -44,7 +50,10 @@ export async function inAudience(db: Database, appId: string, environmentId: str
   const [app] = await db.select({ owner: apps.ownerUserId }).from(apps).where(eq(apps.id, appId));
   const allowed = new Set(await holders(db, environmentId, now, null));
   if (app?.owner) {
-    const [owner] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, app.owner), eq(users.status, 'active')));
+    const [owner] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, app.owner), eq(users.status, 'active')));
     if (owner) allowed.add(owner.id);
   }
   return [...new Set(people)].filter((person) => allowed.has(person));

@@ -1,4 +1,4 @@
-import { isWorkedOut, type Definition } from '../types.js';
+import { type Definition, isWorkedOut } from '../types.js';
 import { isName, lineOwner, toName } from './edit.js';
 import { forgetRole, renameRowAction } from './pages.js';
 import { forgetInWaits } from './waits.js';
@@ -116,11 +116,19 @@ export function removeItem(definition: Definition, section: Section, name: strin
 }
 
 /** Set what a role may do with an entity's records. An empty set of permissions removes the entity from the role. */
-export function setRoleEntity(definition: Definition, role: string, entity: string, permissions: Definition['roles'][string]['entities'][string] | undefined): Definition {
+export function setRoleEntity(
+  definition: Definition,
+  role: string,
+  entity: string,
+  permissions: Definition['roles'][string]['entities'][string] | undefined,
+): Definition {
   const next = clone(definition);
   const target = next.roles[role]!;
   if (!permissions || Object.values(permissions).every((value) => value === undefined || value === false)) delete target.entities[entity];
-  else target.entities[entity] = Object.fromEntries(Object.entries(permissions).filter(([, value]) => value !== undefined && value !== false)) as typeof permissions;
+  else
+    target.entities[entity] = Object.fromEntries(
+      Object.entries(permissions).filter(([, value]) => value !== undefined && value !== false),
+    ) as typeof permissions;
   return next;
 }
 

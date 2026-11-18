@@ -3,7 +3,7 @@ import { auditEvents } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Flows, end to end (design §6.2): an action runs one in its own transaction; a process task runs
@@ -31,10 +31,18 @@ const run = (session: Session | string, flow: string, payload: Json = {}, expect
   inject({ method: 'POST', url: `/v1/apps/${appId}/flows/${flow}/run`, ...(typeof session === 'string' ? bearer(session) : as(session)), payload }, expected);
 const budgets = async () =>
   Object.fromEntries(
-    ((await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/budget/records?limit=50`, ...as(alice) }, 200)).records as Json[]).map((record) => [record.values.category, record.values.spent]),
+    ((await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/budget/records?limit=50`, ...as(alice) }, 200)).records as Json[]).map((record) => [
+      record.values.category,
+      record.values.spent,
+    ]),
   );
 async function claim(title: string, lines: Json[], trip = 'Singapore') {
-  return (await inject({ method: 'POST', url: `/v1/apps/${appId}/actions/submit_claim/run`, ...as(bob), payload: { values: { title, trip, lines, iban: 'SG11 BOB' } } }, 201)).record;
+  return (
+    await inject(
+      { method: 'POST', url: `/v1/apps/${appId}/actions/submit_claim/run`, ...as(bob), payload: { values: { title, trip, lines, iban: 'SG11 BOB' } } },
+      201,
+    )
+  ).record;
 }
 
 /** The example app, with a budget for each category that its approval keeps up to date. */
@@ -68,7 +76,9 @@ function withFlows(): Json {
               type: 'if',
               when: { exists: 'budget.id' },
               then: [{ type: 'change', record: 'budget', values: { spent: { add: [{ ref: 'budget.spent' }, { ref: 'line.amount' }] } } }],
-              else: [{ type: 'create', entity: 'budget', values: { category: { ref: 'line.category' }, spent: { ref: 'line.amount' }, cap: 500 }, var: 'budget' }],
+              else: [
+                { type: 'create', entity: 'budget', values: { category: { ref: 'line.category' }, spent: { ref: 'line.amount' }, cap: 500 }, var: 'budget' },
+              ],
             },
           ],
         },
@@ -82,7 +92,18 @@ function withFlows(): Json {
       steps: [
         { type: 'find', var: 'all', entity: 'budget', limit: 100 },
         { type: 'set', var: 'over', value: 0 },
-        { type: 'each', in: 'all', as: 'budget', steps: [{ type: 'if', when: { gt: [{ ref: 'budget.spent' }, { ref: 'budget.cap' }] }, then: [{ type: 'set', var: 'over', value: { add: [{ ref: 'over' }, 1] } }] }] },
+        {
+          type: 'each',
+          in: 'all',
+          as: 'budget',
+          steps: [
+            {
+              type: 'if',
+              when: { gt: [{ ref: 'budget.spent' }, { ref: 'budget.cap' }] },
+              then: [{ type: 'set', var: 'over', value: { add: [{ ref: 'over' }, 1] } }],
+            },
+          ],
+        },
         { type: 'return', value: { ref: 'over' } },
       ],
     },
@@ -128,7 +149,9 @@ function withFlows(): Json {
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
-  appId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withFlows() } }, 201)).app.id;
+  appId = (
+    await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withFlows() } }, 201)
+  ).app.id;
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'carol@example.com', role: 'approver' } }, 201);
 });
@@ -148,10 +171,19 @@ describe('flows', () => {
     expect(await budgets()).toEqual({ meals: 20.5, hotel: 580 });
 
     // The writes are Carol's, made through the flow; the audit log names both.
-    const runs = await t.handle.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'flow.run'), eq(auditEvents.appId, appId)));
+    const runs = await t.handle.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'flow.run'), eq(auditEvents.appId, appId)));
     expect(runs).toHaveLength(2);
-    expect(runs[0]).toMatchObject({ actor: { type: 'user', id: carol.userId }, reason: { trigger: { kind: 'action', name: 'approve_claim' }, writes: { created: 2, changed: 0, deleted: 0 } } });
-    const created = await t.handle.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'record.create'), eq(auditEvents.appId, appId)));
+    expect(runs[0]).toMatchObject({
+      actor: { type: 'user', id: carol.userId },
+      reason: { trigger: { kind: 'action', name: 'approve_claim' }, writes: { created: 2, changed: 0, deleted: 0 } },
+    });
+    const created = await t.handle.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'record.create'), eq(auditEvents.appId, appId)));
     expect(created.filter((event) => (event.context as Json)['flow'] === 'record_spend')).toHaveLength(2);
   });
 
@@ -159,12 +191,22 @@ describe('flows', () => {
     const mars = await claim('Red planet', [line('Rocket', 'travel', 99)], 'Mars');
     const refused = await inject({ method: 'POST', url: `/v1/apps/${appId}/actions/approve_claim/run`, ...as(carol), payload: { recordId: mars.id } }, 422);
     expect(refused).toMatchObject({ error: 'rule_failed', message: 'Nobody travels to Mars on expenses' });
-    expect((await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records/${mars.id}`, ...as(bob) }, 200)).values.status).toBe('submitted');
+    expect((await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records/${mars.id}`, ...as(bob) }, 200)).values.status).toBe(
+      'submitted',
+    );
     expect(await budgets()).toEqual({ meals: 20.5, hotel: 580 });
   });
 
   it('run through the API for the roles that name them, call other flows, and show a dry run', async () => {
-    await inject({ method: 'PATCH', url: `/v1/apps/${appId}/entities/budget/records/${(await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/budget/records?limit=50`, ...as(alice) }, 200)).records.find((r: Json) => r.values.category === 'hotel').id}`, ...as(alice), payload: { values: { cap: 500 } } }, 200);
+    await inject(
+      {
+        method: 'PATCH',
+        url: `/v1/apps/${appId}/entities/budget/records/${(await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/budget/records?limit=50`, ...as(alice) }, 200)).records.find((r: Json) => r.values.category === 'hotel').id}`,
+        ...as(alice),
+        payload: { values: { cap: 500 } },
+      },
+      200,
+    );
     expect(await run(carol, 'over_budget')).toEqual({ output: 1, findings: [], writes: { created: 0, changed: 0, deleted: 0 }, dryRun: false });
     expect((await run(carol, 'report', { input: { prefix: 'Over: ' } })).output).toBe('Over: 1');
     expect((await run(bob, 'over_budget', {}, 403)).error).toBe('forbidden');
@@ -184,7 +226,9 @@ describe('flows', () => {
   });
 
   it("delete only by a person's hand: a token may try it, and a person does it", async () => {
-    const script = (await inject({ method: 'POST', url: '/v1/me/tokens', ...as(alice), payload: { name: 'script', scopes: ['app.run', 'flow.run', 'record.read'] } }, 201)).token;
+    const script = (
+      await inject({ method: 'POST', url: '/v1/me/tokens', ...as(alice), payload: { name: 'script', scopes: ['app.run', 'flow.run', 'record.read'] } }, 201)
+    ).token;
     expect(await run(script, 'clear_unused', {}, 403)).toMatchObject({ error: 'session_required', details: { step: 'data.delete' } });
     expect(await run(script, 'clear_unused', { dryRun: true })).toMatchObject({ output: 1, writes: { deleted: 1 }, dryRun: true });
     expect(Object.keys(await budgets())).toContain('parking');
@@ -200,31 +244,49 @@ describe('flows', () => {
       { type: 'change', record: 'leave', values: { remark: { concat: ['Approved for ', { ref: 'leave.days' }, ' days'] } } },
       { type: 'check', assert: { lt: [{ ref: 'leave.days' }, 20] }, message: 'Long leave needs HR' },
     ];
-    const leaveId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave', definition: leave } }, 201)).app.id;
+    const leaveId = (
+      await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave', definition: leave } }, 201)
+    ).app.id;
     await inject({ method: 'POST', url: `/v1/apps/${leaveId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'manager' } }, 201);
 
     const ask = async (days: number) =>
-      (await inject({ method: 'POST', url: `/v1/apps/${leaveId}/actions/request_leave/run`, ...as(alice), payload: { values: { kind: 'annual', starts: '2026-12-21', ends: '2026-12-24', days, manager: bob.userId } } }, 201)).record;
+      (
+        await inject(
+          {
+            method: 'POST',
+            url: `/v1/apps/${leaveId}/actions/request_leave/run`,
+            ...as(alice),
+            payload: { values: { kind: 'annual', starts: '2026-12-21', ends: '2026-12-24', days, manager: bob.userId } },
+          },
+          201,
+        )
+      ).record;
     const decide = async (recordId: string) => {
       const task = (await inject({ method: 'GET', url: '/v1/me/tasks', ...as(bob) }, 200)).tasks.find((each: Json) => each.recordId === recordId);
       await inject({ method: 'POST', url: `/v1/tasks/${task.id}/complete`, ...as(bob), payload: { outcome: 'approve' } }, 200);
     };
     const short = await ask(4);
     await decide(short.id);
-    expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${short.id}`, ...as(alice) }, 200)).values.remark).toBe('Approved for 4 days');
+    expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${short.id}`, ...as(alice) }, 200)).values.remark).toBe(
+      'Approved for 4 days',
+    );
 
     // A long leave fails the flow's check: its change is undone, and the instance waits for an operator.
     const long = await ask(25);
     await decide(long.id);
     expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.remark).toBeNull();
     const [stuck] = (await inject({ method: 'GET', url: `/v1/apps/${leaveId}/process-instances?stuck=true`, ...as(alice) }, 200)).instances;
-    expect(stuck).toMatchObject({ recordId: long.id, stuck: [{ element: 'steps_0_outcomes_0_steps_0', error: 'Leave approval: change and check: Long leave needs HR' }] });
+    expect(stuck).toMatchObject({
+      recordId: long.id,
+      stuck: [{ element: 'steps_0_outcomes_0_steps_0', error: 'Leave approval: change and check: Long leave needs HR' }],
+    });
     // Live, the canvas shows the case stuck at the stamp.
     expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/flows/leave_approval/live`, ...as(alice) }, 200)).steps).toEqual([
       expect.objectContaining({ path: 'steps[0].outcomes[0].steps[0]', waiting: 0, stuck: 1 }),
     ]);
     // The count opens its cases: each with its record, since when, and why it is stuck.
-    const cases = (path: string) => inject({ method: 'GET', url: `/v1/apps/${leaveId}/flows/leave_approval/live/cases?path=${encodeURIComponent(path)}`, ...as(alice) }, 200);
+    const cases = (path: string) =>
+      inject({ method: 'GET', url: `/v1/apps/${leaveId}/flows/leave_approval/live/cases?path=${encodeURIComponent(path)}`, ...as(alice) }, 200);
     expect((await cases('steps[0].outcomes[0].steps[0]')).cases).toEqual([
       { instanceId: stuck.id, recordId: long.id, since: expect.any(String), stuck: true, error: 'Leave approval: change and check: Long leave needs HR' },
     ]);
@@ -232,6 +294,8 @@ describe('flows', () => {
     expect((await cases('steps[0]')).cases).toEqual([expect.objectContaining({ recordId: waiting.id, stuck: false })]);
     expect((await cases('steps[9]')).cases).toEqual([]);
     // The decision before the stamp stays: a failure after the flow saves can't undo it.
-    expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.status).toBe('approved');
+    expect((await inject({ method: 'GET', url: `/v1/apps/${leaveId}/entities/leave_request/records/${long.id}`, ...as(alice) }, 200)).values.status).toBe(
+      'approved',
+    );
   });
 });

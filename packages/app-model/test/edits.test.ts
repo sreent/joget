@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { applyEdits, DefinitionEdits, pointerKeys, valueAt } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 /** Small checked changes to a definition, as JSON Patch writes them. */
 describe('edits to a definition', () => {
@@ -29,14 +29,28 @@ describe('edits to a definition', () => {
   });
 
   it('refuse all of them when one leads nowhere, and say which', () => {
-    expect(applyEdits(definition, [{ op: 'replace', path: '/entities/claim/label', value: 'x' }, { op: 'remove', path: '/entities/claim/fields/5' }])).toEqual({
+    expect(
+      applyEdits(definition, [
+        { op: 'replace', path: '/entities/claim/label', value: 'x' },
+        { op: 'remove', path: '/entities/claim/fields/5' },
+      ]),
+    ).toEqual({
       ok: false,
       index: 1,
       message: 'remove /entities/claim/fields/5: the list has 2 items',
     });
-    expect(applyEdits(definition, [{ op: 'replace', path: '/entities/trip/label', value: 'x' }])).toMatchObject({ ok: false, message: 'replace /entities/trip/label: nothing is at trip' });
-    expect(applyEdits(definition, [{ op: 'add', path: 'entities', value: 1 }])).toMatchObject({ ok: false, message: 'add entities: a path is a JSON pointer, which starts with /' });
-    expect(applyEdits(definition, [{ op: 'add', path: '/__proto__/polluted', value: true }])).toMatchObject({ ok: false, message: 'add /__proto__/polluted: a path names members of the definition only' });
+    expect(applyEdits(definition, [{ op: 'replace', path: '/entities/trip/label', value: 'x' }])).toMatchObject({
+      ok: false,
+      message: 'replace /entities/trip/label: nothing is at trip',
+    });
+    expect(applyEdits(definition, [{ op: 'add', path: 'entities', value: 1 }])).toMatchObject({
+      ok: false,
+      message: 'add entities: a path is a JSON pointer, which starts with /',
+    });
+    expect(applyEdits(definition, [{ op: 'add', path: '/__proto__/polluted', value: true }])).toMatchObject({
+      ok: false,
+      message: 'add /__proto__/polluted: a path names members of the definition only',
+    });
     expect(applyEdits(definition, [{ op: 'remove', path: '' }])).toMatchObject({ ok: false });
     expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
   });

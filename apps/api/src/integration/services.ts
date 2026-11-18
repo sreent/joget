@@ -1,9 +1,9 @@
-import { uuidv7 } from '@platform/audit';
 import type { Connection } from '@platform/app-model';
+import { uuidv7 } from '@platform/audit';
 import { channelPosts, type Database } from '@platform/db';
 import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
 import type { LoadedApp } from '../apps/catalog.js';
-import { recordAudit, SYSTEM_ACTOR, type AuditScope } from '../audit/writer.js';
+import { type AuditScope, recordAudit, SYSTEM_ACTOR } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import { HttpError, unprocessable } from '../errors.js';
 import { OutboundError, send } from './outbound.js';
@@ -56,7 +56,8 @@ export function asKind(value: unknown, type: ResultType): string | number | bool
 export function callUrl(connection: ServiceConnection, path: string, query: Readonly<Record<string, unknown>>): URL {
   const base = new URL(connection.url.endsWith('/') ? connection.url : `${connection.url}/`);
   const url = new URL(path.replace(/^\/+/, ''), base);
-  if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) throw unprocessable('service_failed', `${connection.label}: a call stays under ${connection.url}`);
+  if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname))
+    throw unprocessable('service_failed', `${connection.label}: a call stays under ${connection.url}`);
   for (const [name, value] of Object.entries(query)) {
     if (value === null || value === undefined) continue;
     url.searchParams.set(name, Array.isArray(value) ? value.join(',') : String(value));
@@ -95,7 +96,12 @@ export class Services {
   async call(
     loaded: LoadedApp,
     name: string,
-    input: { readonly method: string; readonly path: string; readonly query: Readonly<Record<string, unknown>>; readonly body?: Readonly<Record<string, unknown>> | undefined },
+    input: {
+      readonly method: string;
+      readonly path: string;
+      readonly query: Readonly<Record<string, unknown>>;
+      readonly body?: Readonly<Record<string, unknown>> | undefined;
+    },
     scope: AuditScope,
   ): Promise<unknown> {
     const connection = loaded.definition.connections?.[name];
@@ -150,7 +156,13 @@ export class Services {
   }
 
   /** Post to a Teams channel, in the transaction of the flow that posts: a worker sends it after. */
-  async queuePost(db: Database, loaded: LoadedApp, connection: string, post: { readonly title: string; readonly message: string | null; readonly link: string | null }, now: Date): Promise<void> {
+  async queuePost(
+    db: Database,
+    loaded: LoadedApp,
+    connection: string,
+    post: { readonly title: string; readonly message: string | null; readonly link: string | null },
+    now: Date,
+  ): Promise<void> {
     await db.insert(channelPosts).values({
       id: uuidv7(now.getTime()),
       orgId: this.#ctx.org.id,
@@ -180,7 +192,12 @@ export class Services {
       await tx
         .update(channelPosts)
         .set({ attempts: sql`${channelPosts.attempts} + 1`, nextAttemptAt: new Date(now.getTime() + 60_000) })
-        .where(inArray(channelPosts.id, due.map((post) => post.id)));
+        .where(
+          inArray(
+            channelPosts.id,
+            due.map((post) => post.id),
+          ),
+        );
       return due.map((post) => ({ ...post, attempts: post.attempts + 1 }));
     });
     for (const post of claimed) {
@@ -196,13 +213,21 @@ export class Services {
                 $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
                 type: 'AdaptiveCard',
                 version: '1.4',
-                body: [{ type: 'TextBlock', text: post.title, weight: 'Bolder', wrap: true }, ...(post.message ? [{ type: 'TextBlock', text: post.message, wrap: true }] : [])],
+                body: [
+                  { type: 'TextBlock', text: post.title, weight: 'Bolder', wrap: true },
+                  ...(post.message ? [{ type: 'TextBlock', text: post.message, wrap: true }] : []),
+                ],
                 ...(post.link ? { actions: [{ type: 'Action.OpenUrl', title: 'Open it', url: post.link }] } : {}),
               },
             },
           ],
         };
-        const answer = await send(this.#ctx.config, { method: 'POST', url: new URL(address), headers: { 'content-type': 'application/json', 'user-agent': 'a3t' }, body: JSON.stringify(card) });
+        const answer = await send(this.#ctx.config, {
+          method: 'POST',
+          url: new URL(address),
+          headers: { 'content-type': 'application/json', 'user-agent': 'a3t' },
+          body: JSON.stringify(card),
+        });
         if (answer.status < 200 || answer.status > 299) throw new OutboundError(`Teams answered ${answer.status}`);
         await this.#ctx.db.update(channelPosts).set({ status: 'sent', sentAt: this.#ctx.now(), lastError: null }).where(eq(channelPosts.id, post.id));
       } catch (error) {
@@ -210,7 +235,10 @@ export class Services {
         const failed = post.attempts >= 5;
         await this.#ctx.db
           .update(channelPosts)
-          .set({ lastError: message, ...(failed ? { status: 'failed' as const } : { nextAttemptAt: new Date(this.#ctx.now().getTime() + 30_000 * 2 ** post.attempts) }) })
+          .set({
+            lastError: message,
+            ...(failed ? { status: 'failed' as const } : { nextAttemptAt: new Date(this.#ctx.now().getTime() + 30_000 * 2 ** post.attempts) }),
+          })
           .where(eq(channelPosts.id, post.id));
         if (failed) {
           await recordAudit(

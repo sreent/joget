@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError, type AppAt } from '../api.js';
+import { ApiError, type AppAt, api } from '../api.js';
 import { PersonName, PersonPicker } from '../components/people.js';
 import { Badge, Button, Card, EmptyState, Field, Notice, TextInput } from '../components/ui.js';
 import { Link } from '../router.js';
@@ -46,7 +46,13 @@ export function TaskOutcomes({ task, onDone }: { task: Task; onDone?: () => void
     <div className="grid gap-2">
       <div className="flex flex-wrap gap-2">
         {task.outcomes.map((outcome, index) => (
-          <Button key={outcome.name} variant={index === 0 ? 'primary' : 'secondary'} size="sm" onClick={() => decide.mutate(outcome.name)} disabled={decide.isPending}>
+          <Button
+            key={outcome.name}
+            variant={index === 0 ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={() => decide.mutate(outcome.name)}
+            disabled={decide.isPending}
+          >
             {outcome.label}
           </Button>
         ))}
@@ -128,7 +134,13 @@ export function Tasks() {
                   <h2 className="m-0 text-base font-semibold">{task.name}</h2>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {status === 'open' ? <Due task={task} /> : <Badge tone={task.status === 'completed' ? 'good' : 'idle'}>{task.status === 'completed' ? (task.outcomes.find((o) => o.name === task.outcome)?.label ?? task.outcome) : 'Cancelled'}</Badge>}
+                  {status === 'open' ? (
+                    <Due task={task} />
+                  ) : (
+                    <Badge tone={task.status === 'completed' ? 'good' : 'idle'}>
+                      {task.status === 'completed' ? (task.outcomes.find((o) => o.name === task.outcome)?.label ?? task.outcome) : 'Cancelled'}
+                    </Badge>
+                  )}
                   {task.assignee ? null : <Badge>For the role {task.role}</Badge>}
                   {task.several ? <Badge tone="accent">{task.voters ? `Your vote, of ${task.voters}` : 'Your vote'}</Badge> : null}
                 </div>
@@ -161,7 +173,8 @@ function Cover() {
       {current.data.coverId ? (
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span>
-            <PersonName id={current.data.coverId} /> takes your new tasks{current.data.coverUntil ? ` until ${DAY.format(new Date(current.data.coverUntil))}` : ''}.
+            <PersonName id={current.data.coverId} /> takes your new tasks
+            {current.data.coverUntil ? ` until ${DAY.format(new Date(current.data.coverUntil))}` : ''}.
           </span>
           <Button size="sm" onClick={() => save.mutate(null)} disabled={save.isPending}>
             I'm back

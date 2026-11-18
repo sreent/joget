@@ -10,7 +10,7 @@ import type { AppContext, AuthContext } from '../context.js';
 import { forbidden, unprocessable } from '../errors.js';
 import { searchPeople } from '../people/routes.js';
 import type { ProcessEngine } from '../processes/engine.js';
-import { operates, reassignTask, requireOperator, type Operation } from '../processes/operators.js';
+import { type Operation, operates, reassignTask, requireOperator } from '../processes/operators.js';
 
 /*
  * The operators' MCP tools (`/mcp/ops`): watch an app's process instances, try stuck work again,
@@ -76,7 +76,10 @@ export function opsTools(ctx: AppContext, runtime: AppRuntime, engine: ProcessEn
       run: async () => {
         const operated: Array<{ id: string; name: string; kind: 'personal' | 'team'; environments: string[] }> = [];
         for (const app of await visibleApps(ctx, runtime, auth)) {
-          const kinds = app.kind === 'team' ? (app.environments ?? []).map((env) => env.kind).filter((kind) => kind === 'prod' || kind === 'staging') : ['sandbox' as const];
+          const kinds =
+            app.kind === 'team'
+              ? (app.environments ?? []).map((env) => env.kind).filter((kind) => kind === 'prod' || kind === 'staging')
+              : ['sandbox' as const];
           const environments: string[] = [];
           for (const kind of kinds) {
             const loaded = await ctx.apps.load(app.id, kind === 'sandbox' ? 'default' : kind).catch(() => null);
@@ -153,7 +156,8 @@ export function opsTools(ctx: AppContext, runtime: AppRuntime, engine: ProcessEn
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       run: async (args) => {
-        if ((args.entity === undefined) !== (args.record_id === undefined)) throw unprocessable('record_incomplete', 'Name both the entity and the record, or neither');
+        if ((args.entity === undefined) !== (args.record_id === undefined))
+          throw unprocessable('record_incomplete', 'Name both the entity and the record, or neither');
         const loaded = await operated(args, 'process.admin');
         const signal = await engine.throwSignal(request, loaded, args.name, args.entity && args.record_id ? { entity: args.entity, id: args.record_id } : null);
         return { id: signal.id, name: signal.name, status: signal.status, heard: signal.heard, started: signal.started };

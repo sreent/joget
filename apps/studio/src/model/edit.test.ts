@@ -6,9 +6,9 @@ import {
   addSection,
   changeFieldType,
   emptyDefinition,
+  lineOwner,
   moveField,
   placeField,
-  lineOwner,
   removeEntity,
   removeField,
   removeSection,
@@ -57,10 +57,19 @@ describe('editing a draft', () => {
     expect(updateField(definition, entity, 1, { name: 'Bad Name' })).toBe(definition);
   });
 
-  it('drops the old type\'s properties when the type changes', () => {
+  it("drops the old type's properties when the type changes", () => {
     const { definition, entity } = start();
     const changed = changeFieldType(definition, entity, 2, 'text');
-    expect(changed.entities[entity]!.fields[2]).toEqual({ name: 'new_choice', label: 'New choice', required: false, classification: 'internal', type: 'text', maxLength: 1000, multiline: false, unique: false });
+    expect(changed.entities[entity]!.fields[2]).toEqual({
+      name: 'new_choice',
+      label: 'New choice',
+      required: false,
+      classification: 'internal',
+      type: 'text',
+      maxLength: 1000,
+      multiline: false,
+      unique: false,
+    });
   });
 
   it('reorders and removes fields, and takes removed ones off forms', () => {
@@ -72,7 +81,7 @@ describe('editing a draft', () => {
     expect(definition.forms['expense_claim_form']!.sections[0]!.fields.map((f) => f.field)).toEqual(['title', 'new_number']);
   });
 
-  it('renames entities, and the draft\'s forms and links follow', () => {
+  it("renames entities, and the draft's forms and links follow", () => {
     let { definition, entity } = start();
     definition = addForm(definition, entity).definition;
     definition = renameEntity(definition, entity, 'claim');
@@ -98,7 +107,15 @@ describe('editing a draft', () => {
     let { definition, entity } = start();
     const { definition: withForm, name } = addForm(definition, entity);
     definition = removeSection(addSection(withForm, name, 'More'), name, 0);
-    definition.actions['submit'] = { label: 'Submit', description: '', entity, operation: 'create', input: [], set: { new_choice: 'a' }, confirm: 'none' } as unknown as (typeof definition.actions)[string];
+    definition.actions['submit'] = {
+      label: 'Submit',
+      description: '',
+      entity,
+      operation: 'create',
+      input: [],
+      set: { new_choice: 'a' },
+      confirm: 'none',
+    } as unknown as (typeof definition.actions)[string];
     definition.forms[name]!.action = 'submit';
     definition = addField(definition, entity, 'number').definition;
     definition = setFormula(definition, entity, 3, 1);
@@ -142,7 +159,15 @@ describe('editing a draft', () => {
     d = addField(d, entity, 'number').definition;
     d = updateField(d, entity, 2, { name: 'with_tax', label: 'With tax', required: true, default: 1 });
     d = addForm(d, entity).definition;
-    d.actions['submit'] = { label: 'Submit', description: '', entity, operation: 'create', input: ['amount', 'with_tax'], set: {}, confirm: 'none' } as unknown as (typeof d.actions)[string];
+    d.actions['submit'] = {
+      label: 'Submit',
+      description: '',
+      entity,
+      operation: 'create',
+      input: ['amount', 'with_tax'],
+      set: {},
+      confirm: 'none',
+    } as unknown as (typeof d.actions)[string];
     d = setFormula(d, entity, 2, { mul: [{ ref: 'record.amount' }, 1.09] });
     expect(d.entities[entity]!.fields[2]).toMatchObject({ formula: { mul: [{ ref: 'record.amount' }, 1.09] }, required: false });
     expect(d.entities[entity]!.fields[2]).not.toHaveProperty('default');

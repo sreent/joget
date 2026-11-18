@@ -1,19 +1,5 @@
 import { sql } from 'drizzle-orm';
-import {
-  bigint,
-  boolean,
-  check,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  primaryKey,
-  text,
-  timestamp,
-  uniqueIndex,
-  uuid,
-  type AnyPgColumn,
-} from 'drizzle-orm/pg-core';
+import { type AnyPgColumn, bigint, boolean, check, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 type Json = Record<string, unknown>;
 
@@ -338,9 +324,7 @@ export const apps = pgTable(
   (t) => [
     index('apps_space_idx').on(t.spaceId),
     uniqueIndex('apps_space_handle_uq').on(t.spaceId, t.handle).where(sql`${t.status} = 'active'`),
-    uniqueIndex('apps_one_working_copy_uq')
-      .on(t.workingCopyOf, t.ownerUserId)
-      .where(sql`${t.status} = 'active' and ${t.workingCopyOf} is not null`),
+    uniqueIndex('apps_one_working_copy_uq').on(t.workingCopyOf, t.ownerUserId).where(sql`${t.status} = 'active' and ${t.workingCopyOf} is not null`),
     check('apps_working_copy_has_base', sql`(${t.workingCopyOf} is null) = (${t.baseRevision} is null)`),
     // One promotion of a personal app at a time.
     uniqueIndex('apps_one_promotion_uq').on(t.promotedFrom).where(sql`${t.status} = 'active' and ${t.promotedFrom} is not null`),
@@ -406,9 +390,7 @@ export const appEnvironments = pgTable(
   },
   (t) => [
     uniqueIndex('app_environments_schema_uq').on(t.schemaName),
-    uniqueIndex('app_environments_app_kind_uq')
-      .on(t.appId, t.kind)
-      .where(sql`${t.status} = 'active' and ${t.kind} <> 'preview'`),
+    uniqueIndex('app_environments_app_kind_uq').on(t.appId, t.kind).where(sql`${t.status} = 'active' and ${t.kind} <> 'preview'`),
     uniqueIndex('app_environments_preview_uq').on(t.changeRequestId).where(sql`${t.status} = 'active'`),
     check('app_environments_previews_show_changes', sql`(${t.kind} = 'preview') = (${t.changeRequestId} is not null)`),
   ],
@@ -567,9 +549,7 @@ export const deployments = pgTable(
   },
   (t) => [
     index('deployments_app_idx').on(t.appId, t.requestedAt),
-    uniqueIndex('deployments_one_open_per_env_uq')
-      .on(t.appId, t.environmentKind)
-      .where(sql`${t.status} in ('awaiting_approval', 'approved')`),
+    uniqueIndex('deployments_one_open_per_env_uq').on(t.appId, t.environmentKind).where(sql`${t.status} in ('awaiting_approval', 'approved')`),
   ],
 );
 
@@ -1148,9 +1128,7 @@ export const auditEvents = pgTable(
      * Database wall-clock time of the insert (clock_timestamp(), not the transaction start), so it
      * follows insertion order. Used by the sealer's safety window; not part of the digest.
      */
-    recordedAt: timestamp('recorded_at', tz)
-      .notNull()
-      .default(sql`clock_timestamp()`),
+    recordedAt: timestamp('recorded_at', tz).notNull().default(sql`clock_timestamp()`),
     orgId: uuid('org_id').notNull(),
     spaceId: uuid('space_id'),
     appId: uuid('app_id'),

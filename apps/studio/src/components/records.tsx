@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { createContext, Fragment, useContext, useId, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { api, type AppAt } from '../api.js';
+import { createContext, Fragment, type KeyboardEvent, type ReactNode, useContext, useId, useState } from 'react';
+import { type AppAt, api } from '../api.js';
 import { atRoute, Link } from '../router.js';
 import type { RecordOut, RecordValue, UiEntity, UiField } from '../types.js';
 import { Button, cx, TextInput } from './ui.js';
@@ -19,7 +19,17 @@ const TitlesContext = createContext<Titles | null>(null);
  * Gives the screens below it the titles of the records their values name: those the server sent
  * with the records, and those the person picks. A provider inside another adds to its titles.
  */
-export function TitlesProvider({ at, entities, known, children }: { at?: AppAt; entities?: Readonly<Record<string, UiEntity>>; known?: Readonly<Record<string, string>>; children: ReactNode }) {
+export function TitlesProvider({
+  at,
+  entities,
+  known,
+  children,
+}: {
+  at?: AppAt;
+  entities?: Readonly<Record<string, UiEntity>>;
+  known?: Readonly<Record<string, string>>;
+  children: ReactNode;
+}) {
   const parent = useContext(TitlesContext);
   const [picked, setPicked] = useState<Record<string, string>>({});
   const here = at ?? parent?.at;
@@ -106,14 +116,20 @@ export function RecordPicker({
   const chosen = Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : typeof value === 'string' && value ? [value] : [];
   const open = text !== null && term.length >= 1;
   const options = open ? (results.data?.records ?? []).filter((record) => !multiple || !chosen.includes(record.id)) : [];
-  const titleOf = (record: RecordOut) => (titleField ? titleText(about?.fields.find((field) => field.name === titleField), record.values?.[titleField]) : '') || record.id;
+  const titleOf = (record: RecordOut) =>
+    (titleField
+      ? titleText(
+          about?.fields.find((field) => field.name === titleField),
+          record.values?.[titleField],
+        )
+      : '') || record.id;
   const named = (recordId: string) => known?.titles[recordId] ?? `A ${about?.label.toLowerCase() ?? 'record'}`;
 
   // Records the person can't read can't be picked: show what the value holds, and nothing to search.
   if (!known || !about || !titleField) {
     return (
       <p id={id} className="m-0 text-sm text-muted">
-        {chosen.length ? <RecordTitles entity={entity} value={value} link={false} /> : 'You can\'t pick these records.'}
+        {chosen.length ? <RecordTitles entity={entity} value={value} link={false} /> : "You can't pick these records."}
       </p>
     );
   }
@@ -165,7 +181,11 @@ export function RecordPicker({
           aria-controls={listId}
           aria-activedescendant={options.length ? `${listId}-${Math.min(active, options.length - 1)}` : undefined}
           autoComplete="off"
-          placeholder={multiple ? `Add ${about.pluralLabel.toLowerCase()}: search by ${about.fields.find((field) => field.name === titleField)?.label.toLowerCase() ?? 'title'}` : `Search ${about.pluralLabel.toLowerCase()}`}
+          placeholder={
+            multiple
+              ? `Add ${about.pluralLabel.toLowerCase()}: search by ${about.fields.find((field) => field.name === titleField)?.label.toLowerCase() ?? 'title'}`
+              : `Search ${about.pluralLabel.toLowerCase()}`
+          }
           value={text ?? (!multiple && chosen[0] ? named(chosen[0]) : '')}
           onChange={(event) => {
             setText(event.target.value);
@@ -175,7 +195,15 @@ export function RecordPicker({
           onKeyDown={onKeyDown}
           onBlur={() => setText(null)}
         />
-        <ul id={listId} role="listbox" aria-label={`${about.pluralLabel} that match`} className={cx('absolute z-10 mt-1 w-full list-none overflow-auto rounded-md border border-line bg-surface p-1 shadow-raised', options.length ? 'grid max-h-64 gap-0.5' : 'hidden')}>
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label={`${about.pluralLabel} that match`}
+          className={cx(
+            'absolute z-10 mt-1 w-full list-none overflow-auto rounded-md border border-line bg-surface p-1 shadow-raised',
+            options.length ? 'grid max-h-64 gap-0.5' : 'hidden',
+          )}
+        >
           {options.map((record, i) => (
             <li
               key={record.id}

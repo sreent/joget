@@ -2,11 +2,11 @@ import { generateEd25519KeyPair } from '@platform/audit';
 import { createDatabase, migrateDatabase } from '@platform/db';
 import { createAppContext } from './app.js';
 import { startAuditSealer } from './audit/sealer.js';
-import { startFileSweeper } from './files/service.js';
 import { createResilientOidcProvider } from './auth/oidc.js';
 import { loadConfig } from './config.js';
-import { buildServer } from './server.js';
+import { startFileSweeper } from './files/service.js';
 import { startProcessTimers } from './processes/engine.js';
+import { buildServer } from './server.js';
 
 const config = loadConfig();
 const database = createDatabase(config.DATABASE_URL, { applicationName: 'platform-api' });
@@ -40,8 +40,11 @@ const stopSealer =
       })
     : () => {};
 
-const stopSweeper = config.FILE_SWEEP_INTERVAL_SECONDS > 0 ? startFileSweeper(ctx.files, { intervalSeconds: config.FILE_SWEEP_INTERVAL_SECONDS, logger: app.log }) : () => {};
-const stopTimers = config.PROCESS_TIMER_INTERVAL_SECONDS > 0 ? startProcessTimers(
+const stopSweeper =
+  config.FILE_SWEEP_INTERVAL_SECONDS > 0 ? startFileSweeper(ctx.files, { intervalSeconds: config.FILE_SWEEP_INTERVAL_SECONDS, logger: app.log }) : () => {};
+const stopTimers =
+  config.PROCESS_TIMER_INTERVAL_SECONDS > 0
+    ? startProcessTimers(
         [
           ['Firing process timers', () => processes.fireDue()],
           ['Running flows on a schedule', () => schedules.runDue()],
@@ -50,9 +53,15 @@ const stopTimers = config.PROCESS_TIMER_INTERVAL_SECONDS > 0 ? startProcessTimer
           ['Posting notices to Teams', () => services.deliverPosts()],
           ['Removing old notices', () => notices.sweep()],
         ],
-        { intervalSeconds: config.PROCESS_TIMER_INTERVAL_SECONDS, logger: app.log }) : () => {};
+        { intervalSeconds: config.PROCESS_TIMER_INTERVAL_SECONDS, logger: app.log },
+      )
+    : () => {};
 if (config.FILE_SCANNER === 'none') {
-  app.log.warn(config.NODE_ENV === 'production' ? 'FILE_SCANNER is none, so uploads are refused: set up a clamd server' : 'FILE_SCANNER is none: uploads are kept without a malware check');
+  app.log.warn(
+    config.NODE_ENV === 'production'
+      ? 'FILE_SCANNER is none, so uploads are refused: set up a clamd server'
+      : 'FILE_SCANNER is none: uploads are kept without a malware check',
+  );
 }
 
 async function shutdown(signal: string): Promise<void> {

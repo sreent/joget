@@ -13,7 +13,7 @@ import type { AppContext } from '../context.js';
 import { unprocessable } from '../errors.js';
 import { plannedRun } from '../flows/schedules.js';
 import type { ProcessEngine } from './engine.js';
-import { reassignTask, requireOperator, type Operation } from './operators.js';
+import { type Operation, reassignTask, requireOperator } from './operators.js';
 
 const TaskOut = z.object({
   id: z.uuid(),
@@ -60,7 +60,9 @@ const InstanceOut = z.object({
 
 const InstanceDetailOut = InstanceOut.extend({
   tasks: z.array(TaskOut),
-  events: z.array(z.object({ at: z.string(), kind: z.string(), element: z.string().nullable(), name: z.string().nullable(), by: z.uuid().nullable(), detail: z.unknown() })),
+  events: z.array(
+    z.object({ at: z.string(), kind: z.string(), element: z.string().nullable(), name: z.string().nullable(), by: z.uuid().nullable(), detail: z.unknown() }),
+  ),
 });
 
 const InstanceParams = AppParams.extend({ instanceId: z.uuid() });
@@ -83,7 +85,8 @@ const SignalOut = z.object({
 export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: ProcessEngine): FastifyPluginAsyncZod {
   const theApp = (request: FastifyRequest) => once(request, 'app', () => ctx.apps.load((request.params as { appId: string }).appId, envOf(request)));
   // The check needs the space's kind, so the handler makes it, with the same audited refusal an access rule gives.
-  const operate = (request: FastifyRequest, loaded: LoadedApp, operation: Operation) => requireOperator(ctx, runtime, request, requireAuth(request), loaded, operation);
+  const operate = (request: FastifyRequest, loaded: LoadedApp, operation: Operation) =>
+    requireOperator(ctx, runtime, request, requireAuth(request), loaded, operation);
 
   return async (app) => {
     app.get(
@@ -106,14 +109,18 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         config: { access: { kind: 'authenticated' } },
         schema: {
           tags: ['processes'],
-          summary: "Complete a task with one of its outcomes. An outcome that runs an action runs it as you; from an API token it may become a proposal to approve first",
+          summary:
+            'Complete a task with one of its outcomes. An outcome that runs an action runs it as you; from an API token it may become a proposal to approve first',
           params: z.object({ taskId: z.uuid() }),
           body: z.object({
             outcome: z.string().min(1).max(63),
             values: z.record(z.string(), z.unknown()).optional().describe("The action's input, when the outcome's action takes some"),
             provenance: z.unknown().optional(),
           }),
-          response: { 200: z.object({ task: TaskOut, result: ActionResultOut.nullable() }), 202: z.object({ task: TaskOut, result: ActionResultOut.nullable() }) },
+          response: {
+            200: z.object({ task: TaskOut, result: ActionResultOut.nullable() }),
+            202: z.object({ task: TaskOut, result: ActionResultOut.nullable() }),
+          },
         },
       },
       async (request, reply) => {
@@ -130,7 +137,7 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         config: { access: { kind: 'authenticated' } },
         schema: {
           tags: ['processes'],
-          summary: "Give a task to someone else who holds its role: yours to a colleague, or any task of an app you operate",
+          summary: 'Give a task to someone else who holds its role: yours to a colleague, or any task of an app you operate',
           params: z.object({ taskId: z.uuid() }),
           body: z.object({ userId: z.uuid() }),
           response: { 200: TaskOut },
@@ -169,7 +176,9 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
       async (request, reply) => {
         const loaded = await theApp(request);
         const auth = requireAuth(request);
-        await checkPermission(ctx, request, auth, 'process.start', processResource(ctx.org.id, loaded, request.params.process), { policy: await runtime.policy(loaded) });
+        await checkPermission(ctx, request, auth, 'process.start', processResource(ctx.org.id, loaded, request.params.process), {
+          policy: await runtime.policy(loaded),
+        });
         return reply.status(201).send(await engine.start(request, auth, loaded, request.params.process, request.body.recordId));
       },
     );
@@ -216,7 +225,9 @@ export function processRoutes(ctx: AppContext, runtime: AppRuntime, engine: Proc
         const loaded = await theApp(request);
         await operate(request, loaded, 'ops.monitor.read');
         const { status, stuck, recordId, limit } = request.query;
-        return { instances: await engine.instances(loaded, { limit, ...(status ? { status } : {}), ...(stuck ? { stuck } : {}), ...(recordId ? { recordId } : {}) }) };
+        return {
+          instances: await engine.instances(loaded, { limit, ...(status ? { status } : {}), ...(stuck ? { stuck } : {}), ...(recordId ? { recordId } : {}) }),
+        };
       },
     );
 

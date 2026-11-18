@@ -55,7 +55,10 @@ export function flowRoutes(ctx: AppContext, runtime: AppRuntime, flows: FlowEngi
         await checkPermission(ctx, request, auth, 'flow.run', flowResource(ctx.org.id, loaded, name), { policy: await runtime.policy(loaded) });
         // A flow that waits keeps its place on a record, so it starts there, as a process does.
         if (flowWaits(flow, loaded.definition.flows)) {
-          throw conflict('flow_waits', `${flow.label} waits for people or for time, so it runs on a record: start it with POST /v1/apps/${loaded.app.id}/processes/${name}/start`);
+          throw conflict(
+            'flow_waits',
+            `${flow.label} waits for people or for time, so it runs on a record: start it with POST /v1/apps/${loaded.app.id}/processes/${name}/start`,
+          );
         }
         const { dryRun } = request.body;
         const caller = {
@@ -66,7 +69,12 @@ export function flowRoutes(ctx: AppContext, runtime: AppRuntime, flows: FlowEngi
           trigger: { kind: 'api' as const, name },
           dryRun,
         };
-        const shape = (result: FlowResult, dry: boolean) => ({ output: result.output ?? null, findings: [...result.findings], writes: result.writes, dryRun: dry });
+        const shape = (result: FlowResult, dry: boolean) => ({
+          output: result.output ?? null,
+          findings: [...result.findings],
+          writes: result.writes,
+          dryRun: dry,
+        });
         try {
           const result = await withAppTransaction(ctx.pool, loaded.env, 'records', async (tx) => {
             const input = await flows.inputFromIds(tx, loaded, flow, request.body.input);

@@ -1,19 +1,19 @@
-import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   compileCondition,
+  EXPENSE_APP,
   entityFields,
   environmentNames,
-  EXPENSE_APP,
   insertRecord,
   parseRecord,
   planMigration,
   provisionEnvironment,
-  selectRecords,
   SqlBuilder,
-  validateDefinition,
   type StoredDefinition,
+  selectRecords,
+  validateDefinition,
 } from '@platform/app-model';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
  * References to several records in a real PostgreSQL: a reference to one record grows into a
@@ -35,14 +35,26 @@ function withTrips(multiple: boolean, previous?: StoredDefinition): StoredDefini
   draft.entities.trip = { label: 'Trip', pluralLabel: 'Trips', titleField: 'name', fields: [{ name: 'name', label: 'Name', type: 'text', required: true }] };
   draft.entities.expense_claim.fields.push({ name: 'trips', label: 'Trips', type: 'reference', entity: 'trip', ...(multiple ? { multiple: true } : {}) });
   // A new version keeps the IDs of the one before, as the builder does.
-  const result = validateDefinition(previous ? { ...draft, entities: Object.fromEntries(Object.entries(draft.entities).map(([name, entity]: [string, any]) => [name, keepIds(entity, previous.entities[name])])) } : draft, previous);
+  const result = validateDefinition(
+    previous
+      ? {
+          ...draft,
+          entities: Object.fromEntries(Object.entries(draft.entities).map(([name, entity]: [string, any]) => [name, keepIds(entity, previous.entities[name])])),
+        }
+      : draft,
+    previous,
+  );
   if (!result.ok) throw new Error(JSON.stringify(result.issues));
   return result.definition;
 }
 
 function keepIds(entity: Record<string, any>, before: StoredDefinition['entities'][string] | undefined): Record<string, any> {
   if (!before) return entity;
-  return { ...entity, id: before.id, fields: entity.fields.map((field: Record<string, unknown>) => ({ ...field, id: before.fields.find((f) => f.name === field['name'])?.id })) };
+  return {
+    ...entity,
+    id: before.id,
+    fields: entity.fields.map((field: Record<string, unknown>) => ({ ...field, id: before.fields.find((f) => f.name === field['name'])?.id })),
+  };
 }
 
 async function claims(definition: StoredDefinition): Promise<Map<string, unknown>> {
@@ -66,7 +78,13 @@ beforeAll(async () => {
     const insert = insertRecord(names, trip, { id: id(n + 1), owner: ALICE, actor: ALICE, at: AT, values: { name } });
     await client.query(insert.text, insert.values as unknown[]);
   }
-  for (const [n, [title, trips]] of ([['Hotel', id(1)], ['Flight', id(2)], ['Lunch', null]] as const).entries()) {
+  for (const [n, [title, trips]] of (
+    [
+      ['Hotel', id(1)],
+      ['Flight', id(2)],
+      ['Lunch', null],
+    ] as const
+  ).entries()) {
     const insert = insertRecord(names, claim, { id: id(n + 11), owner: ALICE, actor: ALICE, at: AT, values: { title, trips, status: 'submitted' } });
     await client.query(insert.text, insert.values as unknown[]);
   }
@@ -80,11 +98,23 @@ afterAll(async () => {
 
 describe('references to several records in PostgreSQL', () => {
   it('grow from a reference to one record, each record keeping the one it had', async () => {
-    expect(await claims(single)).toEqual(new Map([['Hotel', id(1)], ['Flight', id(2)], ['Lunch', null]]));
+    expect(await claims(single)).toEqual(
+      new Map([
+        ['Hotel', id(1)],
+        ['Flight', id(2)],
+        ['Lunch', null],
+      ]),
+    );
     const plan = planMigration(single, many, names);
     expect(plan.steps.map((step) => step.destructive)).toEqual([false]);
     for (const statement of plan.statements) await client.query(statement);
-    expect(await claims(many)).toEqual(new Map([['Hotel', [id(1)]], ['Flight', [id(2)]], ['Lunch', null]]));
+    expect(await claims(many)).toEqual(
+      new Map([
+        ['Hotel', [id(1)]],
+        ['Flight', [id(2)]],
+        ['Lunch', null],
+      ]),
+    );
   });
 
   it('find the records whose list holds one', async () => {

@@ -1,18 +1,18 @@
-import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  EXPENSE_APP,
   entityFields,
   environmentNames,
-  EXPENSE_APP,
   insertRecord,
   planMigration,
   provisionEnvironment,
+  type StoredDefinition,
+  type Summarize,
   summarize,
   validateDefinition,
   writeLines,
-  type StoredDefinition,
-  type Summarize,
 } from '@platform/app-model';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
  * Numbers and charts in a real PostgreSQL: counts and totals over records and over their lines,
@@ -48,14 +48,26 @@ beforeAll(async () => {
   definition = result.definition;
   for (const statement of [...provisionEnvironment(names), ...planMigration(undefined, definition, names).statements]) await client.query(statement);
   const claim = async (n: number, owner: string, status: string, total: number, lines: Array<[string, string, number]>) => {
-    const insert = insertRecord(names, claims(), { id: id(n), owner, actor: owner, at: '2026-11-15T00:00:00.000Z', values: { title: `Claim ${n}`, status, total } });
+    const insert = insertRecord(names, claims(), {
+      id: id(n),
+      owner,
+      actor: owner,
+      at: '2026-11-15T00:00:00.000Z',
+      values: { title: `Claim ${n}`, status, total },
+    });
     await client.query(insert.text, insert.values as unknown[]);
     const next = lines.map(([date, category, amount], i) => ({ id: id(n * 100 + i), values: { date, merchant: 'Shop', category, amount, receipt: null } }));
     for (const statement of writeLines(names, lineEntity(), id(n), [], next)) await client.query(statement.text, statement.values as unknown[]);
   };
-  await claim(1, ALICE, 'submitted', 300, [['2026-10-03', 'hotel', 250], ['2026-10-04', 'meals', 50]]);
+  await claim(1, ALICE, 'submitted', 300, [
+    ['2026-10-03', 'hotel', 250],
+    ['2026-10-04', 'meals', 50],
+  ]);
   await claim(2, ALICE, 'approved', 40, [['2026-11-01', 'travel', 40]]);
-  await claim(3, BOB, 'submitted', 120, [['2026-11-02', 'hotel', 100], ['2026-11-02', 'meals', 20]]);
+  await claim(3, BOB, 'submitted', 120, [
+    ['2026-11-02', 'hotel', 100],
+    ['2026-11-02', 'meals', 20],
+  ]);
 });
 
 afterAll(async () => {
@@ -118,7 +130,11 @@ describe('summaries in PostgreSQL', () => {
       ['submitted', '2'],
       ['approved', '1'],
     ]);
-    const byOwner = await run({ grants: [true], measure: { op: 'sum', info: claimField('total'), onLines: false }, group: { info: claimField('owner'), onLines: false, limit: 8 } });
+    const byOwner = await run({
+      grants: [true],
+      measure: { op: 'sum', info: claimField('total'), onLines: false },
+      group: { info: claimField('owner'), onLines: false, limit: 8 },
+    });
     expect(byOwner.map(({ key, value }) => [key, value])).toEqual([
       [ALICE, '340'],
       [BOB, '120'],

@@ -147,7 +147,7 @@ class Api {
 
 function connect(io: Io): Api {
   const token = io.env['AMBIT_TOKEN'];
-  if (!token) throw new CliError('Set AMBIT_TOKEN to an API token. Create one in Ambit, or use a service account\'s in CI.', 2);
+  if (!token) throw new CliError("Set AMBIT_TOKEN to an API token. Create one in Ambit, or use a service account's in CI.", 2);
   return new Api(io, io.env['AMBIT_URL'] ?? 'http://localhost:3000', token);
 }
 
@@ -266,7 +266,9 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const definition = isObject(raw) && 'format' in raw && 'definition' in raw ? raw['definition'] : raw;
         const result = validateDefinition(definition);
         print(result.ok ? { ok: true, notes: result.notes } : { ok: false, issues: result.issues }, () =>
-          result.ok ? `${file}: no problems.` : `${file} has ${result.issues.length} problem(s):\n${result.issues.map((issue) => `  ${issue.path}: ${issue.message}`).join('\n')}`,
+          result.ok
+            ? `${file}: no problems.`
+            : `${file} has ${result.issues.length} problem(s):\n${result.issues.map((issue) => `  ${issue.path}: ${issue.message}`).join('\n')}`,
         );
         return result.ok ? 0 : 1;
       }
@@ -278,7 +280,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
       case 'apps': {
         const { apps } = await connect(io).call<{ apps: AppInfo[] }>('GET', '/v1/apps');
         print(apps, () =>
-          table([['HANDLE', 'NAME', 'KIND', 'REVISION', 'ID'], ...apps.map((app) => [app.handle, app.name, app.workingCopyOf ? 'working copy' : app.kind, String(app.revision), app.id])]),
+          table([
+            ['HANDLE', 'NAME', 'KIND', 'REVISION', 'ID'],
+            ...apps.map((app) => [app.handle, app.name, app.workingCopyOf ? 'working copy' : app.kind, String(app.revision), app.id]),
+          ]),
         );
         return 0;
       }
@@ -288,7 +293,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const bundle = await api.call<Bundle>('GET', `/v1/apps/${id}/export`);
         const out = values.out ?? `${bundle.app.handle}.ambit.json`;
         await io.writeFile(out, `${JSON.stringify(bundle, null, 2)}\n`);
-        print({ file: out, revision: bundle.revision, digest: bundle.digest }, () => `Saved revision ${bundle.revision} of ${bundle.app.name} to ${out}. It holds no data.`);
+        print(
+          { file: out, revision: bundle.revision, digest: bundle.digest },
+          () => `Saved revision ${bundle.revision} of ${bundle.app.name} to ${out}. It holds no data.`,
+        );
         return 0;
       }
       case 'import': {
@@ -319,8 +327,14 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const id = await appId(api, one('the app'));
         const revision = values.revision === undefined ? undefined : Number(values.revision);
         if (revision !== undefined && (!Number.isInteger(revision) || revision < 1)) throw new CliError('--revision is a revision number', 2);
-        const release = await api.call<ReleaseInfo>('POST', `/v1/apps/${id}/releases`, { ...(revision ? { revision } : {}), ...(values.notes ? { notes: values.notes } : {}) });
-        print(release, () => `Cut release ${release.number}, of revision ${release.revision}${release.destructive ? '. It deletes data, so it deploys on its own' : ''}.`);
+        const release = await api.call<ReleaseInfo>('POST', `/v1/apps/${id}/releases`, {
+          ...(revision ? { revision } : {}),
+          ...(values.notes ? { notes: values.notes } : {}),
+        });
+        print(
+          release,
+          () => `Cut release ${release.number}, of revision ${release.revision}${release.destructive ? '. It deletes data, so it deploys on its own' : ''}.`,
+        );
         return 0;
       }
       case 'releases': {
@@ -341,7 +355,12 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const api = connect(io);
         const id = await appId(api, one('the app'));
         const release = await releaseOf(api, id, values.release);
-        let deployment = await api.call<DeploymentInfo>('POST', `/v1/apps/${id}/deployments`, { releaseId: release.id, env: target, confirmDestructive: values['confirm-destructive'], execute: true });
+        let deployment = await api.call<DeploymentInfo>('POST', `/v1/apps/${id}/deployments`, {
+          releaseId: release.id,
+          env: target,
+          confirmDestructive: values['confirm-destructive'],
+          execute: true,
+        });
         const deadline = io.now() + Number(values.timeout) * 1000;
         // Waiting follows the deployment until it ends: approvals come from people, in Ambit. Prod
         // goes live only by a person's hand, so for Prod the wait ends once it is approved.
@@ -370,7 +389,10 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         const id = await appId(api, one('the app'));
         const { deployments } = await api.call<{ deployments: DeploymentInfo[] }>('GET', `/v1/apps/${id}/deployments`);
         print(deployments, () =>
-          table([['ENV', 'KIND', 'RELEASE', 'STATUS', 'REQUESTED'], ...deployments.map((d) => [d.environment, d.kind, String(d.release.number), d.status, d.requestedAt])]),
+          table([
+            ['ENV', 'KIND', 'RELEASE', 'STATUS', 'REQUESTED'],
+            ...deployments.map((d) => [d.environment, d.kind, String(d.release.number), d.status, d.requestedAt]),
+          ]),
         );
         return 0;
       }

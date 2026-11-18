@@ -1,7 +1,7 @@
-import { evaluateCondition, type Condition, type Operand } from '@platform/authz';
+import { afterCursor, compileCondition, type FieldInfo, orderBy, type SortKey, SqlBuilder } from '@platform/app-model';
+import { type Condition, evaluateCondition, type Operand } from '@platform/authz';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { afterCursor, compileCondition, orderBy, SqlBuilder, type FieldInfo, type SortKey } from '@platform/app-model';
 import { conditionRecord, type FieldValue } from '../src/values.js';
 
 /**
@@ -75,9 +75,7 @@ beforeAll(async () => {
   if (!url) throw new Error('Integration tests need TEST_DATABASE_URL');
   client = new pg.Client({ connectionString: url });
   await client.connect();
-  await client.query(
-    'create temp table r (id int primary key, t1 text, t2 text, u1 uuid, n1 numeric, n2 numeric, b1 boolean, m1 text[], r1 uuid[])',
-  );
+  await client.query('create temp table r (id int primary key, t1 text, t2 text, u1 uuid, n1 numeric, n2 numeric, b1 boolean, m1 text[], r1 uuid[])');
   // Every combination would be too many: take a deterministic sample with every value of every field.
   const { pick } = random(42);
   for (let id = 1; id <= 160; id++) {

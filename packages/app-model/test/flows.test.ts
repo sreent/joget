@@ -1,5 +1,13 @@
+import {
+  capabilityChanges,
+  compileAppPolicy,
+  EXPENSE_APP,
+  LEAVE_PROCESS_APP,
+  lintDefinition,
+  type StoredDefinition,
+  validateDefinition,
+} from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { capabilityChanges, compileAppPolicy, EXPENSE_APP, LEAVE_PROCESS_APP, lintDefinition, validateDefinition, type StoredDefinition } from '@platform/app-model';
 
 const ids = () => {
   let n = 0;
@@ -67,7 +75,13 @@ function withFlows(edit: (draft: Record<string, any>) => void = () => undefined)
           type: 'each',
           in: 'budgets',
           as: 'budget',
-          steps: [{ type: 'if', when: { gt: [{ ref: 'budget.spent' }, { ref: 'budget.cap' }] }, then: [{ type: 'set', var: 'over', value: { add: [{ ref: 'over' }, 1] } }] }],
+          steps: [
+            {
+              type: 'if',
+              when: { gt: [{ ref: 'budget.spent' }, { ref: 'budget.cap' }] },
+              then: [{ type: 'set', var: 'over', value: { add: [{ ref: 'over' }, 1] } }],
+            },
+          ],
         },
         { type: 'return', value: { ref: 'over' } },
       ],
@@ -114,15 +128,15 @@ describe('flows', () => {
     expect(issues).toEqual([
       'flows.broken.input.record: record is a name the platform keeps: choose another',
       'flows.broken.steps[0].value: claim.colour: Expense claim has no field colour',
-      'flows.broken.steps[1].value: record.owner: a flow names records by its variables. record.<field> is for a find\'s condition',
+      "flows.broken.steps[1].value: record.owner: a flow names records by its variables. record.<field> is for a find's condition",
       'flows.broken.steps[2].entity: expense_line holds the lines of expense_claim: work with them through expense_claim',
       'flows.broken.steps[3].where: record.size: no such field',
       'flows.broken.steps[4].value: budgets is a list, not a value. Count it with a total step',
       'flows.broken.steps[5].values.spent: Spent: Expected a number',
       'flows.broken.steps[5].values: A new Budget needs Category: give it a value',
       'flows.broken.steps[6].record: budgets holds a list of budget, not a record',
-      'flows.broken.steps[7].field: title isn\'t a lines field of expense_claim',
-      'flows.broken.steps[8].in: title isn\'t a lines field of expense_claim',
+      "flows.broken.steps[7].field: title isn't a lines field of expense_claim",
+      "flows.broken.steps[8].in: title isn't a lines field of expense_claim",
       'flows.broken.steps[9].field: Say which number field to total',
       'flows.broken.steps[10].assert: gt compares numbers, dates and times, and claim.title is none of them',
       'flows.broken.steps[11].input.claim: Give a record of expense_claim: a variable that holds one',
@@ -179,9 +193,17 @@ describe('flows', () => {
     const leave = structuredClone(LEAVE_PROCESS_APP) as unknown as Record<string, any>;
     leave.flows = {
       ...leave.flows,
-      note: { label: 'Note', input: { days: { type: 'number' }, by: { type: 'text' } }, steps: [{ type: 'check', assert: { gt: [{ ref: 'days' }, 0] }, message: 'Days' }] },
+      note: {
+        label: 'Note',
+        input: { days: { type: 'number' }, by: { type: 'text' } },
+        steps: [{ type: 'check', assert: { gt: [{ ref: 'days' }, 0] }, message: 'Days' }],
+      },
     };
-    leave.processes.leave_approval.elements.decide_note = { type: 'serviceTask', name: 'Note it', flow: { flow: 'note', input: { days: { ref: 'record.days' }, by: { ref: 'principal.id' } } } };
+    leave.processes.leave_approval.elements.decide_note = {
+      type: 'serviceTask',
+      name: 'Note it',
+      flow: { flow: 'note', input: { days: { ref: 'record.days' }, by: { ref: 'principal.id' } } },
+    };
     leave.processes.leave_approval.flows.on_approve.to = 'decide_note';
     leave.processes.leave_approval.flows.noted = { from: 'decide_note', to: 'approved' };
     delete leave.processes.leave_approval.diagram;
@@ -211,7 +233,10 @@ describe('flows', () => {
 
   it('tell reviewers what a flow does to records, and who may run it', () => {
     const base = valid(EXPENSE_APP);
-    const head = valid(withFlows((d) => void (d.roles.approver.flows = ['over_budget'])), base);
+    const head = valid(
+      withFlows((d) => void (d.roles.approver.flows = ['over_budget'])),
+      base,
+    );
     const texts = capabilityChanges(base, head).map((change) => change.text);
     expect(texts).toEqual(
       expect.arrayContaining([

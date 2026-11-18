@@ -7,7 +7,11 @@ import type { AppTest } from './schema.js';
  */
 
 const isGiven = (value: unknown): value is { readonly given: string } =>
-  typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { given?: unknown }).given === 'string';
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === 1 &&
+  typeof (value as { given?: unknown }).given === 'string';
 
 /** The records a value names as `{ "given": "<name>" }`, itself or in its list. */
 export function givenRefs(value: unknown): string[] {
@@ -28,7 +32,9 @@ export function testMismatches(
 ): Array<{ readonly field: string; readonly expected: unknown; readonly actual: unknown }> {
   // An empty value is null, as records hold it.
   const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-  return Object.entries(expected).flatMap(([field, value]) => (same(value, actual[field]) ? [] : [{ field, expected: value ?? null, actual: actual[field] ?? null }]));
+  return Object.entries(expected).flatMap(([field, value]) =>
+    same(value, actual[field]) ? [] : [{ field, expected: value ?? null, actual: actual[field] ?? null }],
+  );
 }
 
 /** The names of the records a test makes, in the order it makes them. */

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { cellValue, EXPENSE_APP, importColumns, parseCsv, safeCell, validateDefinition, writeCsv } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 /** CSV, to bring records in from spreadsheets and other systems, and take them out (design §6.1). */
 
@@ -9,7 +9,16 @@ const definition = (() => {
   draft.entities.expense_claim.fields.push(
     { name: 'trips', label: 'Trips', type: 'reference', entity: 'trip', multiple: true },
     { name: 'urgent', label: 'Urgent', type: 'boolean' },
-    { name: 'tags', label: 'Tags', type: 'choice', multiple: true, options: [{ value: 'client', label: 'Client' }, { value: 'team', label: 'Team, internal' }] },
+    {
+      name: 'tags',
+      label: 'Tags',
+      type: 'choice',
+      multiple: true,
+      options: [
+        { value: 'client', label: 'Client' },
+        { value: 'team', label: 'Team, internal' },
+      ],
+    },
   );
   const result = validateDefinition(draft);
   if (!result.ok) throw new Error(JSON.stringify(result.issues));
@@ -21,17 +30,41 @@ const field = (name: string) => claim.fields.find((f) => f.name === name)!;
 describe('CSV', () => {
   it('reads quoted cells with separators, quotes and line breaks, and drops blank lines and a byte order mark', () => {
     const text = '﻿Title,Amount\r\n"Hotel, Tokyo","1,234.50"\n\n"He said ""fine""","line one\nline two"\n';
-    expect(parseCsv(text)).toEqual({ ok: true, rows: [['Title', 'Amount'], ['Hotel, Tokyo', '1,234.50'], ['He said "fine"', 'line one\nline two']] });
+    expect(parseCsv(text)).toEqual({
+      ok: true,
+      rows: [
+        ['Title', 'Amount'],
+        ['Hotel, Tokyo', '1,234.50'],
+        ['He said "fine"', 'line one\nline two'],
+      ],
+    });
     // Some spreadsheets write semicolons.
-    expect(parseCsv('Title;Amount\nTaxi;12,50')).toEqual({ ok: true, rows: [['Title', 'Amount'], ['Taxi', '12,50']] });
+    expect(parseCsv('Title;Amount\nTaxi;12,50')).toEqual({
+      ok: true,
+      rows: [
+        ['Title', 'Amount'],
+        ['Taxi', '12,50'],
+      ],
+    });
     expect(parseCsv('Title\n"Open')).toEqual({ ok: false, message: 'A quoted cell has no closing quote' });
   });
 
   it('writes what it reads back, and keeps a spreadsheet from running a cell as a formula', () => {
-    const rows = [['Title', 'Note'], ['Hotel, Tokyo', 'He said "fine"'], [safeCell('=HYPERLINK("x")'), safeCell('-5 days')]];
+    const rows = [
+      ['Title', 'Note'],
+      ['Hotel, Tokyo', 'He said "fine"'],
+      [safeCell('=HYPERLINK("x")'), safeCell('-5 days')],
+    ];
     const text = writeCsv(rows);
     expect(text.startsWith('﻿Title,Note\r\n')).toBe(true);
-    expect(parseCsv(text)).toEqual({ ok: true, rows: [['Title', 'Note'], ['Hotel, Tokyo', 'He said "fine"'], ["'=HYPERLINK(\"x\")", "'-5 days"]] });
+    expect(parseCsv(text)).toEqual({
+      ok: true,
+      rows: [
+        ['Title', 'Note'],
+        ['Hotel, Tokyo', 'He said "fine"'],
+        ['\'=HYPERLINK("x")', "'-5 days"],
+      ],
+    });
     expect(safeCell('Taxi')).toBe('Taxi');
   });
 

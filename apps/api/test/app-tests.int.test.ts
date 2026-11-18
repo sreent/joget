@@ -3,7 +3,7 @@ import { auditEvents } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * An app's tests, end to end (design §6.7): each makes its records, has someone in a role run an
@@ -74,7 +74,12 @@ afterAll(async () => {
 
 describe("a personal app's tests", () => {
   it('run each as someone in its role, report what came of it, and leave nothing behind', async () => {
-    const appId = (await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withTests(TESTS) } }, 201)).app.id;
+    const appId = (
+      await json(
+        { method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withTests(TESTS) } },
+        201,
+      )
+    ).app.id;
     const ran = await json({ method: 'POST', url: `/v1/apps/${appId}/tests/run`, ...as(alice), payload: {} }, 200);
     const byName = Object.fromEntries((ran.results as Json[]).map((result) => [result.name, result]));
     expect(ran).toMatchObject({ passed: 3, failed: 2 });
@@ -88,7 +93,10 @@ describe("a personal app's tests", () => {
 
     // Nothing stays: no record, and no refusal on the audit log for the person a test acts as.
     expect((await json({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_claim/records`, ...as(alice) }, 200)).records).toEqual([]);
-    const denied = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'access.denied'), eq(auditEvents.appId, appId)));
+    const denied = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'access.denied'), eq(auditEvents.appId, appId)));
     expect(denied).toEqual([]);
   });
 });
@@ -97,7 +105,15 @@ describe("a change request's tests", () => {
   it('run on its preview, and stop the merge while one fails', async () => {
     const spaceId = (await json({ method: 'POST', url: '/v1/spaces', ...as(alice), payload: { name: 'Finance', coOwnerUserIds: [olivia.userId] } }, 201)).id;
     const grant = (session: Session, roleId: string) =>
-      inject({ method: 'POST', url: '/v1/bindings', ...as(alice), payload: { principal: { type: 'user', id: session.userId }, roleId, scope: { type: 'space', id: spaceId } } }, 201);
+      inject(
+        {
+          method: 'POST',
+          url: '/v1/bindings',
+          ...as(alice),
+          payload: { principal: { type: 'user', id: session.userId }, roleId, scope: { type: 'space', id: spaceId } },
+        },
+        201,
+      );
     await grant(carol, 'space.builder');
     await grant(dave, 'space.reviewer');
     await grant(erin, 'space.release_manager');
@@ -105,12 +121,19 @@ describe("a change request's tests", () => {
     const copyId = (await json({ method: 'POST', url: `/v1/apps/${teamId}/working-copy`, ...as(carol) }, 200)).app.id;
     const edit = async (tests: Json) => {
       const current = await json({ method: 'GET', url: `/v1/apps/${copyId}/definition`, ...as(carol) }, 200);
-      await json({ method: 'PUT', url: `/v1/apps/${copyId}/definition`, ...as(carol), payload: { definition: withTests(tests), baseRevision: current.revision } }, 200);
+      await json(
+        { method: 'PUT', url: `/v1/apps/${copyId}/definition`, ...as(carol), payload: { definition: withTests(tests), baseRevision: current.revision } },
+        200,
+      );
     };
 
     await edit({ submits: TESTS.submits, wrong_total: TESTS.wrong_total });
     const cr = await json({ method: 'POST', url: `/v1/apps/${copyId}/submit`, ...as(carol), payload: { title: 'Expense claims, with tests' } }, 201);
-    expect(cr.checks.tests).toMatchObject({ passed: 1, failed: 1, results: expect.arrayContaining([expect.objectContaining({ name: 'wrong_total', passed: false })]) });
+    expect(cr.checks.tests).toMatchObject({
+      passed: 1,
+      failed: 1,
+      results: expect.arrayContaining([expect.objectContaining({ name: 'wrong_total', passed: false })]),
+    });
     await inject({ method: 'POST', url: `/v1/change-requests/${cr.id}/reviews`, ...as(dave), payload: { verdict: 'approve' } }, 200);
     const stopped = await inject({ method: 'POST', url: `/v1/change-requests/${cr.id}/merge`, ...as(erin) }, 409);
     expect(stopped.json()).toMatchObject({ error: 'tests_failing', message: expect.stringContaining('A claim adds up its receipts') });

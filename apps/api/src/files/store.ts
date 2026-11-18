@@ -31,7 +31,9 @@ export const postgresBlobStore: BlobStore = {
     return `db:${id}`;
   },
   async get(tx, env, key) {
-    const { rows } = await tx.query<{ content: Buffer }>(`select content from ${ident(env.schemaName)}.file_contents where file_id = $1::uuid`, [key.slice('db:'.length)]);
+    const { rows } = await tx.query<{ content: Buffer }>(`select content from ${ident(env.schemaName)}.file_contents where file_id = $1::uuid`, [
+      key.slice('db:'.length),
+    ]);
     return rows[0]?.content ?? null;
   },
   async remove() {
@@ -74,7 +76,9 @@ export function s3BlobStore(options: {
     async remove(env, keys) {
       const own = keys.filter((key) => key.startsWith(`${env.schemaName}/`));
       for (let i = 0; i < own.length; i += 1000) {
-        await client.send(new DeleteObjectsCommand({ Bucket: options.bucket, Delete: { Objects: own.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true } }));
+        await client.send(
+          new DeleteObjectsCommand({ Bucket: options.bucket, Delete: { Objects: own.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true } }),
+        );
       }
     },
   };
@@ -87,6 +91,8 @@ export function createBlobStore(config: Config): BlobStore {
     region: config.S3_REGION,
     ...(config.S3_ENDPOINT ? { endpoint: config.S3_ENDPOINT } : {}),
     forcePathStyle: config.S3_FORCE_PATH_STYLE,
-    ...(config.S3_ACCESS_KEY_ID && config.S3_SECRET_ACCESS_KEY ? { credentials: { accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY } } : {}),
+    ...(config.S3_ACCESS_KEY_ID && config.S3_SECRET_ACCESS_KEY
+      ? { credentials: { accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY } }
+      : {}),
   });
 }

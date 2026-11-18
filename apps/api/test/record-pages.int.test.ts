@@ -1,7 +1,7 @@
 import { EXPENSE_APP } from '@platform/app-model';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Pages about one record, end to end (design §6.5): a page shows a record's fields, and in tabs
@@ -17,7 +17,8 @@ let trip: string;
 let other: string;
 
 const as = (session: Session) => ({ cookies: session.cookies });
-const block = (path: string, kind: 'records' | 'summary', record?: string) => `/v1/apps/${appId}/pages/trip_page/blocks/${path}/${kind}${record ? `?record=${record}` : ''}`;
+const block = (path: string, kind: 'records' | 'summary', record?: string) =>
+  `/v1/apps/${appId}/pages/trip_page/blocks/${path}/${kind}${record ? `?record=${record}` : ''}`;
 
 async function inject(options: InjectOptions, expected?: number) {
   const response = await t.app.inject(options);
@@ -58,7 +59,9 @@ async function claim(session: Session, title: string, amount: number, forTrip: s
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob] = [await t.login('alice'), await t.login('bob')];
-  appId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withTrips() } }, 201)).json().app.id;
+  appId = (
+    await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withTrips() } }, 201)
+  ).json().app.id;
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
   const trips = `/v1/apps/${appId}/entities/trip/records`;
   trip = (await inject({ method: 'POST', url: trips, ...as(alice), payload: { values: { name: 'Tokyo summit' } } }, 201)).json().id;
@@ -92,7 +95,9 @@ describe('a page about one record', () => {
 
   it('lists the records that refer to it, of those the person may read, and works out a number over them', async () => {
     const titles = async (session: Session, record: string) =>
-      ((await inject({ method: 'GET', url: block('1.0.0', 'records', record), ...as(session) }, 200)).json().records as Array<{ values: { title: string } }>).map((r) => r.values.title).sort();
+      ((await inject({ method: 'GET', url: block('1.0.0', 'records', record), ...as(session) }, 200)).json().records as Array<{ values: { title: string } }>)
+        .map((r) => r.values.title)
+        .sort();
     expect(await titles(alice, trip)).toEqual(['Flight', 'Hotel']);
     // Bob reads only his own claims, on any page.
     expect(await titles(bob, trip)).toEqual(['Flight']);

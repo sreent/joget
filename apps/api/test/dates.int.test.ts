@@ -1,7 +1,7 @@
 import { LEAVE_APP } from '@platform/app-model';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Dates in conditions (design §6.2): a rule that a leave can't start in the past, a query of the
@@ -50,16 +50,42 @@ describe('dates in conditions', () => {
       description: 'The leave of the person you act for that starts within the next 30 days.',
       entity: 'leave_request',
       fields: ['starts', 'days'],
-      filter: { all: [{ eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] }, { gte: [{ ref: 'record.starts' }, { today: 0 }] }, { lt: [{ ref: 'record.starts' }, { today: 30 }] }] },
+      filter: {
+        all: [
+          { eq: [{ ref: 'record.owner' }, { ref: 'principal.id' }] },
+          { gte: [{ ref: 'record.starts' }, { today: 0 }] },
+          { lt: [{ ref: 'record.starts' }, { today: 30 }] },
+        ],
+      },
     };
     definition['roles'].employee.queries.push('upcoming');
     // The request works out its reason from the dates, in capitals, when the employee gives none.
     definition['actions'].request_leave.steps = [
-      { type: 'set', field: 'reason', value: { if: [{ exists: 'record.reason' }, { ref: 'record.reason' }, { upper: [{ concat: ['Leave of ', { days_between: [{ ref: 'record.starts' }, { ref: 'record.ends' }] }, ' days'] }] }] } },
+      {
+        type: 'set',
+        field: 'reason',
+        value: {
+          if: [
+            { exists: 'record.reason' },
+            { ref: 'record.reason' },
+            { upper: [{ concat: ['Leave of ', { days_between: [{ ref: 'record.starts' }, { ref: 'record.ends' }] }, ' days'] }] },
+          ],
+        },
+      },
     ];
-    const app = (await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave, with dates', definition } }, 201)).app.id;
+    const app = (
+      await json({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Leave, with dates', definition } }, 201)
+    ).app.id;
     const ask = (starts: string, ends: string, expected: number) =>
-      inject({ method: 'POST', url: `/v1/apps/${app}/actions/request_leave/run`, ...as(alice), payload: { values: { kind: 'annual', starts, ends, days: 2, manager: bob.userId } } }, expected);
+      inject(
+        {
+          method: 'POST',
+          url: `/v1/apps/${app}/actions/request_leave/run`,
+          ...as(alice),
+          payload: { values: { kind: 'annual', starts, ends, days: 2, manager: bob.userId } },
+        },
+        expected,
+      );
 
     const late = (await ask(day(-1), day(1), 422)).json();
     expect(JSON.stringify(late)).toContain("The leave can't start in the past");

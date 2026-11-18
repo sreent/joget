@@ -1,19 +1,22 @@
+import { BLOCK_PATH } from '@platform/app-model';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { BLOCK_PATH } from '@platform/app-model';
 import { once, requireAuth, requireQueryDecision } from '../access/rules.js';
 import type { AppContext } from '../context.js';
 import { badRequest, notFound, unprocessable } from '../errors.js';
 import { recordResource } from './resources.js';
-import type { AppRuntime } from './runtime.js';
 import { envOf } from './routes.js';
+import type { AppRuntime } from './runtime.js';
 import { ActionResultOut, AppParams, EntityParams, EnvQuery, ImportOut, PageOut, ProvenanceIn, RecordOut, RecordParams } from './schemas.js';
 
 /** `amount,-created_at` → ascending amount, then newest first. */
 function parseSort(sort: string | undefined) {
   if (!sort) return undefined;
-  const keys = sort.split(',').map((key) => key.trim()).filter(Boolean);
+  const keys = sort
+    .split(',')
+    .map((key) => key.trim())
+    .filter(Boolean);
   if (keys.length > 3) throw badRequest('invalid_sort', 'Sort by at most three fields');
   return keys.map((key) => (key.startsWith('-') ? { field: key.slice(1), direction: 'desc' as const } : { field: key, direction: 'asc' as const }));
 }
@@ -101,7 +104,14 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         },
       },
       async (request, reply) => {
-        const result = await runtime.importRecords(request, requireAuth(request), await theApp(request), request.params.entity, request.body, requireQueryDecision(request));
+        const result = await runtime.importRecords(
+          request,
+          requireAuth(request),
+          await theApp(request),
+          request.params.entity,
+          request.body,
+          requireQueryDecision(request),
+        );
         if (request.body.dryRun) return result;
         const first = result.issues[0];
         if (first) throw unprocessable('invalid_import', `Line ${first.row}: ${first.message}`, result);
@@ -113,12 +123,18 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
       '/v1/apps/:appId/entities/:entity/export',
       {
         config: { access: recordRule('record.export') },
-        schema: { tags: ['records'], summary: 'Take the records you can read out as CSV. Your role must allow exporting; the audit log records it', params: EntityParams, querystring: EnvQuery },
+        schema: {
+          tags: ['records'],
+          summary: 'Take the records you can read out as CSV. Your role must allow exporting; the audit log records it',
+          params: EntityParams,
+          querystring: EnvQuery,
+        },
       },
       async (request, reply) => {
         const loaded = await theApp(request);
         const { csv } = await runtime.exportRecords(request, requireAuth(request), loaded, request.params.entity);
-        const name = (loaded.definition.entities[request.params.entity]?.pluralLabel ?? request.params.entity).replace(/[^A-Za-z0-9 _-]/g, '').trim() || 'records';
+        const name =
+          (loaded.definition.entities[request.params.entity]?.pluralLabel ?? request.params.entity).replace(/[^A-Za-z0-9 _-]/g, '').trim() || 'records';
         return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${name}.csv"`).send(csv);
       },
     );
@@ -147,7 +163,14 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         },
       },
       async (request, reply) => {
-        const record = await runtime.create(request, requireAuth(request), await theApp(request), request.params.entity, request.body, requireQueryDecision(request));
+        const record = await runtime.create(
+          request,
+          requireAuth(request),
+          await theApp(request),
+          request.params.entity,
+          request.body,
+          requireQueryDecision(request),
+        );
         return reply.status(201).send(record);
       },
     );
@@ -166,7 +189,15 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         },
       },
       async (request) =>
-        runtime.update(request, requireAuth(request), await theApp(request), request.params.entity, request.params.recordId, request.body, requireQueryDecision(request)),
+        runtime.update(
+          request,
+          requireAuth(request),
+          await theApp(request),
+          request.params.entity,
+          request.params.recordId,
+          request.body,
+          requireQueryDecision(request),
+        ),
     );
 
     app.delete(
@@ -176,7 +207,14 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         schema: { tags: ['records'], summary: 'Delete a record. Its history is kept', params: RecordParams, querystring: EnvQuery },
       },
       async (request, reply) => {
-        await runtime.remove(request, requireAuth(request), await theApp(request), request.params.entity, request.params.recordId, requireQueryDecision(request));
+        await runtime.remove(
+          request,
+          requireAuth(request),
+          await theApp(request),
+          request.params.entity,
+          request.params.recordId,
+          requireQueryDecision(request),
+        );
         return reply.status(204).send();
       },
     );
@@ -259,14 +297,23 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
         },
         schema: {
           tags: ['records'],
-          summary: "A number, or a chart's numbers, on one of the app's pages: worked out over the records you may read. On a page about one record, give it as record",
+          summary:
+            "A number, or a chart's numbers, on one of the app's pages: worked out over the records you may read. On a page about one record, give it as record",
           params: AppParams.extend({ page: z.string().min(1).max(63), block: BlockPath }),
           querystring: EnvQuery.extend({ record: z.uuid().optional() }),
           response: { 200: SummaryOutSchema },
         },
       },
       async (request) =>
-        runtime.runSummary(request, requireAuth(request), await theApp(request), request.params.page, request.params.block, requireQueryDecision(request), request.query.record),
+        runtime.runSummary(
+          request,
+          requireAuth(request),
+          await theApp(request),
+          request.params.page,
+          request.params.block,
+          requireQueryDecision(request),
+          request.query.record,
+        ),
     );
 
     app.post(

@@ -1,20 +1,24 @@
-import { useState, type ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { GroupFields, MeasureFields, RangeFields } from '../components/summary.js';
 import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
-import { recordChoices, type RefChoice } from '../model/conditions.js';
+import { type RefChoice, recordChoices } from '../model/conditions.js';
 import { isName, lineOwner } from '../model/edit.js';
-import { groupPaths } from '../model/pages.js';
-import { addItem, recordEntities, removeItem, renameItem, updateItem, writableFields, type Section } from '../model/logic.js';
-import type { Definition, Field as FieldDef } from '../types.js';
 import { addBeforeFlow } from '../model/flows.js';
+import { addItem, recordEntities, removeItem, renameItem, type Section, updateItem, writableFields } from '../model/logic.js';
+import { groupPaths } from '../model/pages.js';
 import { Link, navigate } from '../router.js';
+import type { Definition, Field as FieldDef } from '../types.js';
 import { FlowRunEditor } from './FlowRunEditor.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
 const ADD_LABEL: Record<Exclude<Section, 'roles'>, { noun: string; example: string; empty: string }> = {
-  rules: { noun: 'rule', example: 'e.g. Hotel cap', empty: 'A rule is a check the platform runs on every change, whoever makes it: a form, an agent or the API.' },
+  rules: {
+    noun: 'rule',
+    example: 'e.g. Hotel cap',
+    empty: 'A rule is a check the platform runs on every change, whoever makes it: a form, an agent or the API.',
+  },
   actions: { noun: 'action', example: 'e.g. Approve a claim', empty: 'An action changes records: people use it in forms, and agents as a tool.' },
   queries: { noun: 'query', example: 'e.g. My open claims', empty: 'A query is a named question about records, which agents can ask too.' },
   cards: { noun: 'review card', example: 'e.g. Claim review', empty: 'A review card is what a person checks before they confirm what an agent prepared.' },
@@ -56,7 +60,12 @@ function ItemsLayout(props: Props & { section: Exclude<Section, 'roles'>; descri
             setLabel('');
           }}
         >
-          <TextInput aria-label={`New ${words.noun}`} placeholder={`New ${words.noun}, ${words.example}`} value={label} onChange={(e) => setLabel(e.target.value)} />
+          <TextInput
+            aria-label={`New ${words.noun}`}
+            placeholder={`New ${words.noun}, ${words.example}`}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
           <Button type="submit" size="sm" disabled={!label.trim() || !Object.keys(definition.entities).length}>
             Add {words.noun}
           </Button>
@@ -90,14 +99,39 @@ function NameEditor({ name, taken, onRename }: { name: string; taken: readonly s
   const [value, setValue] = useState(name);
   const valid = isName(value) && (value === name || !taken.includes(value));
   return (
-    <Field label="Name" hint={valid ? 'Agents and the API use this name. Renaming carries through to what uses it.' : 'Lowercase letters, digits and underscores, not used by another'}>
-      {(id) => <TextInput id={id} className="mono" value={value} onChange={(e) => setValue(e.target.value)} onBlur={() => (valid && value !== name ? onRename(value) : setValue(name))} />}
+    <Field
+      label="Name"
+      hint={
+        valid ? 'Agents and the API use this name. Renaming carries through to what uses it.' : 'Lowercase letters, digits and underscores, not used by another'
+      }
+    >
+      {(id) => (
+        <TextInput
+          id={id}
+          className="mono"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={() => (valid && value !== name ? onRename(value) : setValue(name))}
+        />
+      )}
     </Field>
   );
 }
 
 /** Checkboxes for a set of names, kept in the options' order. */
-export function Checklist({ label, options, selected, onChange, hint }: { label: string; options: ReadonlyArray<{ value: string; label: string }>; selected: readonly string[]; onChange: (next: string[]) => void; hint?: ReactNode }) {
+export function Checklist({
+  label,
+  options,
+  selected,
+  onChange,
+  hint,
+}: {
+  label: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  selected: readonly string[];
+  onChange: (next: string[]) => void;
+  hint?: ReactNode;
+}) {
   return (
     <fieldset className="m-0 grid gap-1.5 border-0 p-0">
       <legend className="mb-1 text-sm text-muted">{label}</legend>
@@ -117,7 +151,17 @@ export function Checklist({ label, options, selected, onChange, hint }: { label:
 }
 
 /** Radio buttons, as a choice of a few. */
-export function Choice<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: ReadonlyArray<{ value: T; label: string; hint?: string }>; onChange: (value: T) => void }) {
+export function Choice<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: ReadonlyArray<{ value: T; label: string; hint?: string }>;
+  onChange: (value: T) => void;
+}) {
   return (
     <fieldset className="m-0 grid gap-1.5 border-0 p-0">
       <legend className="mb-1 text-sm text-muted">{label}</legend>
@@ -194,8 +238,21 @@ function RulePanel({ definition, onChange, name }: Props & { name: string }) {
           </Select>
         )}
       </Field>
-      <ConditionEditor label="Only when" value={rule.when} onChange={(when) => set({ when })} choices={choices} compareWith={[THE_PERSON]} empty="Always: the rule checks every record." />
-      <ConditionEditor label="Must hold" value={rule.assert} onChange={(assert) => (assert ? set({ assert }) : undefined)} choices={choices} compareWith={[THE_PERSON]} />
+      <ConditionEditor
+        label="Only when"
+        value={rule.when}
+        onChange={(when) => set({ when })}
+        choices={choices}
+        compareWith={[THE_PERSON]}
+        empty="Always: the rule checks every record."
+      />
+      <ConditionEditor
+        label="Must hold"
+        value={rule.assert}
+        onChange={(assert) => (assert ? set({ assert }) : undefined)}
+        choices={choices}
+        compareWith={[THE_PERSON]}
+      />
       <Choice
         label="When it doesn't hold"
         value={rule.severity ?? 'error'}
@@ -208,7 +265,9 @@ function RulePanel({ definition, onChange, name }: Props & { name: string }) {
       <Field label="Message">{(id) => <TextInput id={id} value={rule.message} onChange={(e) => set({ message: e.target.value })} />}</Field>
       <Checklist
         label="Points at"
-        options={fieldsOf(definition, rule.entity).filter((f) => f.type !== 'lines').map((f) => ({ value: f.name, label: f.label }))}
+        options={fieldsOf(definition, rule.entity)
+          .filter((f) => f.type !== 'lines')
+          .map((f) => ({ value: f.name, label: f.label }))}
         selected={rule.fields ?? []}
         onChange={(fields) => set({ fields: fields.length ? fields : undefined })}
         hint="Screens highlight these fields when the rule doesn't hold."
@@ -237,7 +296,8 @@ export function ActionsDesigner({ appId, definition, onChange }: Props & { appId
           <>
             <span className="block font-medium">{action.label}</span>
             <span className="text-xs text-faint">
-              {action.operation === 'create' ? 'Creates' : 'Changes'} {definition.entities[action.entity]?.label.toLowerCase() ?? action.entity} · confirm: {action.confirm ?? 'preview'}
+              {action.operation === 'create' ? 'Creates' : 'Changes'} {definition.entities[action.entity]?.label.toLowerCase() ?? action.entity} · confirm:{' '}
+              {action.confirm ?? 'preview'}
             </span>
           </>
         );
@@ -262,7 +322,21 @@ function ActionPanel({ appId, definition, onChange, name }: Props & { appId: str
         <Field label="Label">{(id) => <TextInput id={id} value={action.label} onChange={(e) => set({ label: e.target.value })} />}</Field>
         <Field label="Works on">
           {(id) => (
-            <Select id={id} value={action.entity} onChange={(e) => set({ entity: e.target.value, input: writableFields(definition, e.target.value), set: {}, where: undefined, card: undefined, before: undefined, flow: undefined })}>
+            <Select
+              id={id}
+              value={action.entity}
+              onChange={(e) =>
+                set({
+                  entity: e.target.value,
+                  input: writableFields(definition, e.target.value),
+                  set: {},
+                  where: undefined,
+                  card: undefined,
+                  before: undefined,
+                  flow: undefined,
+                })
+              }
+            >
               {entityOptions(definition, false).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -273,7 +347,14 @@ function ActionPanel({ appId, definition, onChange, name }: Props & { appId: str
         </Field>
       </div>
       <Field label="Description" hint="Agents read this to choose the action: say what it does, and when to use it.">
-        {(id) => <textarea id={id} className="min-h-20 w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5" value={action.description} onChange={(e) => set({ description: e.target.value })} />}
+        {(id) => (
+          <textarea
+            id={id}
+            className="min-h-20 w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5"
+            value={action.description}
+            onChange={(e) => set({ description: e.target.value })}
+          />
+        )}
       </Field>
       <Choice
         label="It"
@@ -286,7 +367,10 @@ function ActionPanel({ appId, definition, onChange, name }: Props & { appId: str
       />
       <Checklist
         label="Takes as input"
-        options={[...fields.filter((f) => writable.includes(f.name)).map((f) => ({ value: f.name, label: f.label })), { value: 'owner', label: "Owner (who it's for)" }]}
+        options={[
+          ...fields.filter((f) => writable.includes(f.name)).map((f) => ({ value: f.name, label: f.label })),
+          { value: 'owner', label: "Owner (who it's for)" },
+        ]}
         selected={inputs}
         onChange={(input) => set({ input, set: Object.fromEntries(Object.entries(setValues).filter(([field]) => !input.includes(field))) })}
         hint="What a person fills in, or an agent provides. Required fields must be inputs, set here, or have a default."
@@ -300,7 +384,12 @@ function ActionPanel({ appId, definition, onChange, name }: Props & { appId: str
               <span className="min-w-28 font-medium">{declared?.label ?? field}</span>
               <span className="text-muted">to</span>
               {declared ? <LiteralInput field={declared} value={value} onChange={(next) => set({ set: { ...setValues, [field]: next } })} /> : null}
-              <Button size="sm" variant="ghost" aria-label={`Stop setting ${declared?.label ?? field}`} onClick={() => set({ set: Object.fromEntries(Object.entries(setValues).filter(([f]) => f !== field)) })}>
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Stop setting ${declared?.label ?? field}`}
+                onClick={() => set({ set: Object.fromEntries(Object.entries(setValues).filter(([f]) => f !== field)) })}
+              >
                 ✕
               </Button>
             </div>
@@ -350,7 +439,12 @@ function ActionPanel({ appId, definition, onChange, name }: Props & { appId: str
           onChange={(flow) => set({ flow })}
         />
       ) : null}
-      <Choice label="Before it commits, when an agent runs it" value={action.confirm ?? 'preview'} onChange={(confirm) => set({ confirm })} options={CONFIRM_OPTIONS} />
+      <Choice
+        label="Before it commits, when an agent runs it"
+        value={action.confirm ?? 'preview'}
+        onChange={(confirm) => set({ confirm })}
+        options={CONFIRM_OPTIONS}
+      />
       <Field label="Review card" hint="What the person checks before they confirm.">
         {(id) => (
           <Select id={id} value={action.card ?? ''} onChange={(e) => set({ card: e.target.value || undefined })}>
@@ -444,9 +538,28 @@ function LiteralInput({ field, value, onChange }: { field: FieldDef; value: SetV
       </Select>
     );
   }
-  if (field.type === 'number') return <TextInput aria-label={label} type="number" className="w-32" value={typeof value === 'number' ? value : ''} onChange={(e) => onChange(Number(e.target.value))} />;
-  if (field.type === 'date') return <TextInput aria-label={label} type="date" className="w-auto" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />;
-  return <TextInput aria-label={label} className="w-56" value={typeof value === 'string' ? value : Array.isArray(value) ? value.join(', ') : ''} onChange={(e) => onChange(e.target.value)} />;
+  if (field.type === 'number')
+    return (
+      <TextInput
+        aria-label={label}
+        type="number"
+        className="w-32"
+        value={typeof value === 'number' ? value : ''}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    );
+  if (field.type === 'date')
+    return (
+      <TextInput aria-label={label} type="date" className="w-auto" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />
+    );
+  return (
+    <TextInput
+      aria-label={label}
+      className="w-56"
+      value={typeof value === 'string' ? value : Array.isArray(value) ? value.join(', ') : ''}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
 }
 
 // Queries
@@ -483,8 +596,15 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
   const set = (patch: Partial<typeof query>) => onChange(updateItem(definition, 'queries', name, patch));
   const fields = fieldsOf(definition, query.entity);
   const parameters = Object.entries(query.parameters ?? {});
-  const params: RefChoice[] = parameters.map(([param, spec]) => ({ ref: `input.${param}`, label: `the input ${param}`, kind: spec.type === 'text' ? 'text' : spec.type }));
-  const sortable = [...fields.filter((f) => f.type !== 'lines' && !(f.type === 'choice' && f.multiple)).map((f) => ({ value: f.name, label: f.label })), ...SYSTEM_RESULTS];
+  const params: RefChoice[] = parameters.map(([param, spec]) => ({
+    ref: `input.${param}`,
+    label: `the input ${param}`,
+    kind: spec.type === 'text' ? 'text' : spec.type,
+  }));
+  const sortable = [
+    ...fields.filter((f) => f.type !== 'lines' && !(f.type === 'choice' && f.multiple)).map((f) => ({ value: f.name, label: f.label })),
+    ...SYSTEM_RESULTS,
+  ];
   const sort = query.sort ?? [];
   const [newParam, setNewParam] = useState('');
   return (
@@ -493,7 +613,11 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
         <Field label="Label">{(id) => <TextInput id={id} value={query.label} onChange={(e) => set({ label: e.target.value })} />}</Field>
         <Field label="Asks about">
           {(id) => (
-            <Select id={id} value={query.entity} onChange={(e) => set({ entity: e.target.value, fields: ['created_at'], filter: undefined, sort: [], summary: undefined })}>
+            <Select
+              id={id}
+              value={query.entity}
+              onChange={(e) => set({ entity: e.target.value, fields: ['created_at'], filter: undefined, sort: [], summary: undefined })}
+            >
               {entityOptions(definition, false).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -504,7 +628,14 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
         </Field>
       </div>
       <Field label="Description" hint="Agents read this to choose the query: say what it answers.">
-        {(id) => <textarea id={id} className="min-h-16 w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5" value={query.description} onChange={(e) => set({ description: e.target.value })} />}
+        {(id) => (
+          <textarea
+            id={id}
+            className="min-h-16 w-full rounded-sm border border-line-strong bg-surface px-2.5 py-1.5"
+            value={query.description}
+            onChange={(e) => set({ description: e.target.value })}
+          />
+        )}
       </Field>
       <Choice
         label="It answers with"
@@ -518,13 +649,29 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
       />
       {summary ? (
         <>
-          <MeasureFields definition={definition} entity={query.entity} measure={summary.measure} onChange={(measure) => set({ summary: { ...summary, measure } })} />
+          <MeasureFields
+            definition={definition}
+            entity={query.entity}
+            measure={summary.measure}
+            onChange={(measure) => set({ summary: { ...summary, measure } })}
+          />
           {summary.group ? (
             <>
               <GroupFields definition={definition} entity={query.entity} group={summary.group} onChange={(group) => set({ summary: { ...summary, group } })} />
-              <Field label={summary.group.period ? 'Latest periods' : 'Largest groups'} hint={summary.group.period ? undefined : 'The rest come back as one number, where they add up.'}>
+              <Field
+                label={summary.group.period ? 'Latest periods' : 'Largest groups'}
+                hint={summary.group.period ? undefined : 'The rest come back as one number, where they add up.'}
+              >
                 {(id) => (
-                  <TextInput id={id} type="number" className="w-32" min={2} max={24} value={summary.limit ?? 8} onChange={(e) => set({ summary: { ...summary, limit: Math.min(24, Math.max(2, Number(e.target.value) || 2)) } })} />
+                  <TextInput
+                    id={id}
+                    type="number"
+                    className="w-32"
+                    min={2}
+                    max={24}
+                    value={summary.limit ?? 8}
+                    onChange={(e) => set({ summary: { ...summary, limit: Math.min(24, Math.max(2, Number(e.target.value) || 2)) } })}
+                  />
                 )}
               </Field>
             </>
@@ -533,7 +680,11 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
             definition={definition}
             entity={query.entity}
             range={summary.range}
-            onChange={(range) => set({ summary: range ? { ...summary, range } : Object.fromEntries(Object.entries(summary).filter(([key]) => key !== 'range')) as typeof summary })}
+            onChange={(range) =>
+              set({
+                summary: range ? { ...summary, range } : (Object.fromEntries(Object.entries(summary).filter(([key]) => key !== 'range')) as typeof summary),
+              })
+            }
           />
         </>
       ) : (
@@ -549,14 +700,33 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
         {parameters.map(([param, spec]) => (
           <div key={param} className="flex flex-wrap items-center gap-2">
             <code className="min-w-24">{param}</code>
-            <Select aria-label={`Type of ${param}`} className="w-auto" value={spec.type} onChange={(e) => set({ parameters: { ...query.parameters, [param]: { ...spec, type: e.target.value as typeof spec.type } } })}>
+            <Select
+              aria-label={`Type of ${param}`}
+              className="w-auto"
+              value={spec.type}
+              onChange={(e) => set({ parameters: { ...query.parameters, [param]: { ...spec, type: e.target.value as typeof spec.type } } })}
+            >
               <option value="text">Text</option>
               <option value="number">Number</option>
               <option value="boolean">Yes or no</option>
             </Select>
-            <TextInput aria-label={`What ${param} is`} className="min-w-48 flex-1" value={spec.description} onChange={(e) => set({ parameters: { ...query.parameters, [param]: { ...spec, description: e.target.value } } })} />
-            <Checkbox label="Required" checked={spec.required ?? false} onChange={(required) => set({ parameters: { ...query.parameters, [param]: { ...spec, required } } })} />
-            <Button size="sm" variant="ghost" aria-label={`Remove ${param}`} onClick={() => set({ parameters: Object.fromEntries(parameters.filter(([p]) => p !== param)) })}>
+            <TextInput
+              aria-label={`What ${param} is`}
+              className="min-w-48 flex-1"
+              value={spec.description}
+              onChange={(e) => set({ parameters: { ...query.parameters, [param]: { ...spec, description: e.target.value } } })}
+            />
+            <Checkbox
+              label="Required"
+              checked={spec.required ?? false}
+              onChange={(required) => set({ parameters: { ...query.parameters, [param]: { ...spec, required } } })}
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label={`Remove ${param}`}
+              onClick={() => set({ parameters: Object.fromEntries(parameters.filter(([p]) => p !== param)) })}
+            >
               ✕
             </Button>
           </div>
@@ -585,39 +755,59 @@ function QueryPanel({ definition, onChange, name }: Props & { name: string }) {
         empty="Every record the person may see."
       />
       {summary ? null : (
-      <>
-      <div className="grid gap-2">
-        <span className="text-sm text-muted">Sorted by</span>
-        {sort.map((key, index) => (
-          <div key={index} className="flex flex-wrap items-center gap-2">
-            <Select aria-label={`Sort ${index + 1}`} className="w-auto" value={key.field} onChange={(e) => set({ sort: sort.map((k, i) => (i === index ? { ...k, field: e.target.value } : k)) })}>
-              {sortable.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-            <Select aria-label={`Direction ${index + 1}`} className="w-auto" value={key.direction ?? 'asc'} onChange={(e) => set({ sort: sort.map((k, i) => (i === index ? { ...k, direction: e.target.value as 'asc' | 'desc' } : k)) })}>
-              <option value="asc">lowest or oldest first</option>
-              <option value="desc">highest or newest first</option>
-            </Select>
-            <Button size="sm" variant="ghost" aria-label={`Remove sort ${index + 1}`} onClick={() => set({ sort: sort.filter((_, i) => i !== index) })}>
-              ✕
-            </Button>
+        <>
+          <div className="grid gap-2">
+            <span className="text-sm text-muted">Sorted by</span>
+            {sort.map((key, index) => (
+              <div key={index} className="flex flex-wrap items-center gap-2">
+                <Select
+                  aria-label={`Sort ${index + 1}`}
+                  className="w-auto"
+                  value={key.field}
+                  onChange={(e) => set({ sort: sort.map((k, i) => (i === index ? { ...k, field: e.target.value } : k)) })}
+                >
+                  {sortable.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  aria-label={`Direction ${index + 1}`}
+                  className="w-auto"
+                  value={key.direction ?? 'asc'}
+                  onChange={(e) => set({ sort: sort.map((k, i) => (i === index ? { ...k, direction: e.target.value as 'asc' | 'desc' } : k)) })}
+                >
+                  <option value="asc">lowest or oldest first</option>
+                  <option value="desc">highest or newest first</option>
+                </Select>
+                <Button size="sm" variant="ghost" aria-label={`Remove sort ${index + 1}`} onClick={() => set({ sort: sort.filter((_, i) => i !== index) })}>
+                  ✕
+                </Button>
+              </div>
+            ))}
+            {sort.length < 3 && sortable[0] ? (
+              <div>
+                <Button size="sm" onClick={() => set({ sort: [...sort, { field: sortable[0]!.value, direction: 'asc' }] })}>
+                  Add a sort
+                </Button>
+              </div>
+            ) : null}
           </div>
-        ))}
-        {sort.length < 3 && sortable[0] ? (
-          <div>
-            <Button size="sm" onClick={() => set({ sort: [...sort, { field: sortable[0]!.value, direction: 'asc' }] })}>
-              Add a sort
-            </Button>
-          </div>
-        ) : null}
-      </div>
-      <Field label="At most this many results at a time">
-        {(id) => <TextInput id={id} type="number" className="w-32" min={1} max={200} value={query.limit ?? 50} onChange={(e) => set({ limit: Math.min(200, Math.max(1, Number(e.target.value) || 1)) })} />}
-      </Field>
-      </>
+          <Field label="At most this many results at a time">
+            {(id) => (
+              <TextInput
+                id={id}
+                type="number"
+                className="w-32"
+                min={1}
+                max={200}
+                value={query.limit ?? 50}
+                onChange={(e) => set({ limit: Math.min(200, Math.max(1, Number(e.target.value) || 1)) })}
+              />
+            )}
+          </Field>
+        </>
       )}
     </>
   );
@@ -633,7 +823,9 @@ function answerWith(definition: Definition, query: Query, kind: 'records' | 'num
   if (kind === 'number') return { summary: { measure, ...range, limit: query.summary?.limit ?? 8 }, fields: [], sort: [] };
   const groups = groupPaths(definition, query.entity);
   const first = query.summary?.group ? undefined : (groups.find((g) => !g.dated) ?? groups[0]);
-  const group = query.summary?.group ?? (first ? (first.dated ? { field: first.value, period: 'month' as const } : { field: first.value }) : { field: 'created_at', period: 'month' as const });
+  const group =
+    query.summary?.group ??
+    (first ? (first.dated ? { field: first.value, period: 'month' as const } : { field: first.value }) : { field: 'created_at', period: 'month' as const });
   return { summary: { measure, group, ...range, limit: query.summary?.limit ?? 8 }, fields: [], sort: [] };
 }
 
@@ -670,7 +862,13 @@ function CardPanel({ definition, onChange, name }: Props & { name: string }) {
       <div className="grid content-start gap-4">
         <Field label="Shows">
           {(id) => (
-            <Select id={id} value={card.entity} onChange={(e) => set({ entity: e.target.value, title: `{{${fieldsOf(definition, e.target.value)[0]?.name ?? 'id'}}}`, show: [], table: undefined })}>
+            <Select
+              id={id}
+              value={card.entity}
+              onChange={(e) =>
+                set({ entity: e.target.value, title: `{{${fieldsOf(definition, e.target.value)[0]?.name ?? 'id'}}}`, show: [], table: undefined })
+              }
+            >
               {entityOptions(definition, false).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -683,7 +881,12 @@ function CardPanel({ definition, onChange, name }: Props & { name: string }) {
           {(id) => (
             <div className="flex flex-wrap gap-2">
               <TextInput id={id} className="min-w-48 flex-1" value={card.title} onChange={(e) => set({ title: e.target.value })} />
-              <Select aria-label="Insert a field" className="w-auto" value="" onChange={(e) => e.target.value && set({ title: `${card.title} {{${e.target.value}}}`.trim() })}>
+              <Select
+                aria-label="Insert a field"
+                className="w-auto"
+                value=""
+                onChange={(e) => e.target.value && set({ title: `${card.title} {{${e.target.value}}}`.trim() })}
+              >
                 <option value="">Insert a field…</option>
                 {single.map((f) => (
                   <option key={f.name} value={f.name}>
@@ -694,7 +897,12 @@ function CardPanel({ definition, onChange, name }: Props & { name: string }) {
             </div>
           )}
         </Field>
-        <Checklist label="Fields it shows, after any rule findings" options={single.map((f) => ({ value: f.name, label: f.label }))} selected={card.show} onChange={(show) => (show.length ? set({ show }) : undefined)} />
+        <Checklist
+          label="Fields it shows, after any rule findings"
+          options={single.map((f) => ({ value: f.name, label: f.label }))}
+          selected={card.show}
+          onChange={(show) => (show.length ? set({ show }) : undefined)}
+        />
         {linesFields.length ? (
           <>
             <Field label="Lines, as a table">

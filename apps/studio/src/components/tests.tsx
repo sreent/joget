@@ -32,13 +32,17 @@ function TestResultItem({ result }: { result: TestResult }) {
       </span>
       {!result.passed && result.outcome === 'refused' ? <span className="text-xs text-bad">Refused: {result.message}</span> : null}
       {!result.passed && result.outcome === 'error' ? <span className="text-xs text-bad">{result.message}</span> : null}
-      {result.passed && result.outcome === 'refused' && result.message ? <span className="text-xs text-muted">Refused, as it should be: {result.message}</span> : null}
+      {result.passed && result.outcome === 'refused' && result.message ? (
+        <span className="text-xs text-muted">Refused, as it should be: {result.message}</span>
+      ) : null}
       {result.mismatches?.map((mismatch) => (
         <span key={mismatch.field} className="text-xs text-bad">
           {mismatch.field} is {shown(mismatch.actual)}, not {shown(mismatch.expected)}
         </span>
       ))}
-      {!result.passed && result.outcome === 'saved' && !result.mismatches?.length ? <span className="text-xs text-bad">It saved, and the test expects a refusal</span> : null}
+      {!result.passed && result.outcome === 'saved' && !result.mismatches?.length ? (
+        <span className="text-xs text-bad">It saved, and the test expects a refusal</span>
+      ) : null}
     </li>
   );
 }

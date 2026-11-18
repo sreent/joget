@@ -25,7 +25,13 @@ const ANY: readonly ValueMode[] = ['fixed', 'field', 'calc', 'join', 'today', 'n
 const NAME = /^[a-z][a-z0-9_]{0,62}$/;
 
 /** Values by name: what a call sends as its query or its body. */
-function NamedValues(props: { definition: Definition; label: string; values: Readonly<Record<string, Expression>>; sources: ValueSources; onChange: (values: Record<string, Expression>) => void }) {
+function NamedValues(props: {
+  definition: Definition;
+  label: string;
+  values: Readonly<Record<string, Expression>>;
+  sources: ValueSources;
+  onChange: (values: Record<string, Expression>) => void;
+}) {
   const { definition, label, values, sources, onChange } = props;
   const [name, setName] = useState('');
   return (
@@ -35,15 +41,34 @@ function NamedValues(props: { definition: Definition; label: string; values: Rea
         <div key={key} className="grid gap-1">
           <div className="flex items-center justify-between gap-2">
             <code className="text-sm">{key}</code>
-            <Button size="sm" variant="ghost" aria-label={`${label}: remove ${key}`} onClick={() => onChange(Object.fromEntries(Object.entries(values).filter(([k]) => k !== key)))}>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label={`${label}: remove ${key}`}
+              onClick={() => onChange(Object.fromEntries(Object.entries(values).filter(([k]) => k !== key)))}
+            >
               ✕
             </Button>
           </div>
-          <ValueEditor definition={definition} entity="" label={`${label}: ${key}`} value={value} from={sources} only={ANY} onChange={(next) => onChange({ ...values, [key]: next })} />
+          <ValueEditor
+            definition={definition}
+            entity=""
+            label={`${label}: ${key}`}
+            value={value}
+            from={sources}
+            only={ANY}
+            onChange={(next) => onChange({ ...values, [key]: next })}
+          />
         </div>
       ))}
       <div className="flex gap-2">
-        <TextInput aria-label={`${label}: new name`} className="w-40 font-mono" placeholder="e.g. customer" value={name} onChange={(e) => setName(e.target.value.trim())} />
+        <TextInput
+          aria-label={`${label}: new name`}
+          className="w-40 font-mono"
+          placeholder="e.g. customer"
+          value={name}
+          onChange={(e) => setName(e.target.value.trim())}
+        />
         <Button
           size="sm"
           disabled={!/^[A-Za-z0-9_]{1,63}$/.test(name) || name in values}
@@ -67,7 +92,10 @@ export function CallServiceFields(props: { definition: Definition; step: CallSte
   const sends = step.method !== 'GET';
   return (
     <>
-      <Field label="The service" hint={connection?.kind === 'service' ? `It calls ${connection.url}, which its connection names.` : 'Add a connection under Flows, Connections, first.'}>
+      <Field
+        label="The service"
+        hint={connection?.kind === 'service' ? `It calls ${connection.url}, which its connection names.` : 'Add a connection under Flows, Connections, first.'}
+      >
         {(id) => (
           <Select id={id} value={step.connection} onChange={(e) => set({ ...step, connection: e.target.value })}>
             <option value="" disabled>
@@ -103,17 +131,34 @@ export function CallServiceFields(props: { definition: Definition; step: CallSte
         )}
       </Field>
       <Field label="Where" hint="Under the connection's address, such as /customers/42.">
-        {() => <ValueEditor definition={definition} entity="" label="Path" value={step.path} from={sources} only={TEXT} onChange={(path) => set({ ...step, path })} />}
+        {() => (
+          <ValueEditor
+            definition={definition}
+            entity=""
+            label="Path"
+            value={step.path}
+            from={sources}
+            only={TEXT}
+            onChange={(path) => set({ ...step, path })}
+          />
+        )}
       </Field>
       <NamedValues definition={definition} label="The query" values={step.query} sources={sources} onChange={(query) => set({ ...step, query })} />
-      {sends ? <NamedValues definition={definition} label="What it sends" values={step.body ?? {}} sources={sources} onChange={(body) => set({ ...step, body })} /> : null}
+      {sends ? (
+        <NamedValues definition={definition} label="What it sends" values={step.body ?? {}} sources={sources} onChange={(body) => set({ ...step, body })} />
+      ) : null}
       <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
         <legend className="px-1 text-sm text-muted">What its answer gives</legend>
         {Object.entries(step.results).map(([name, each]) => (
           <div key={name} className="grid gap-1 rounded-md border border-line p-2">
             <div className="flex items-center justify-between gap-2">
               <code className="text-sm">{name}</code>
-              <Button size="sm" variant="ghost" aria-label={`Remove the variable ${name}`} onClick={() => set({ ...step, results: Object.fromEntries(Object.entries(step.results).filter(([k]) => k !== name)) })}>
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Remove the variable ${name}`}
+                onClick={() => set({ ...step, results: Object.fromEntries(Object.entries(step.results).filter(([k]) => k !== name)) })}
+              >
                 ✕
               </Button>
             </div>
@@ -125,7 +170,17 @@ export function CallServiceFields(props: { definition: Definition; step: CallSte
                 value={each.from}
                 onChange={(e) => set({ ...step, results: { ...step.results, [name]: { ...each, from: e.target.value.trim() } } })}
               />
-              <Select aria-label={`${name}: kind`} className="w-auto" value={each.type} onChange={(e) => set({ ...step, results: { ...step.results, [name]: { ...each, type: TYPES.find((type) => type.value === e.target.value)?.value ?? 'text' } } })}>
+              <Select
+                aria-label={`${name}: kind`}
+                className="w-auto"
+                value={each.type}
+                onChange={(e) =>
+                  set({
+                    ...step,
+                    results: { ...step.results, [name]: { ...each, type: TYPES.find((type) => type.value === e.target.value)?.value ?? 'text' } },
+                  })
+                }
+              >
                 {TYPES.map((type) => (
                   <option key={type.value} value={type.value}>
                     {type.label}
@@ -136,7 +191,13 @@ export function CallServiceFields(props: { definition: Definition; step: CallSte
           </div>
         ))}
         <div className="flex gap-2">
-          <TextInput aria-label="New variable" className="w-40 font-mono" placeholder="e.g. customer_id" value={result} onChange={(e) => setResult(e.target.value.trim())} />
+          <TextInput
+            aria-label="New variable"
+            className="w-40 font-mono"
+            placeholder="e.g. customer_id"
+            value={result}
+            onChange={(e) => setResult(e.target.value.trim())}
+          />
           <Button
             size="sm"
             disabled={!NAME.test(result) || result in step.results}
@@ -148,7 +209,9 @@ export function CallServiceFields(props: { definition: Definition; step: CallSte
             Keep a value
           </Button>
         </div>
-        <p className="m-0 text-xs text-muted">Each is a place in the answer's JSON, such as data.items.0.id. An answer that isn't a success stops the flow, unless an error handler catches it.</p>
+        <p className="m-0 text-xs text-muted">
+          Each is a place in the answer's JSON, such as data.items.0.id. An answer that isn't a success stops the flow, unless an error handler catches it.
+        </p>
       </fieldset>
       {sends ? <p className="m-0 text-xs text-muted">Trying the flow doesn't make this call: a {step.method} changes something there for real.</p> : null}
     </>

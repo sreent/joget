@@ -1,4 +1,4 @@
-import { flowSubject, withLists, type FlowStep, type WaitFor } from '@platform/app-model';
+import { type FlowStep, flowSubject, type WaitFor, withLists } from '@platform/app-model';
 import type { Definition } from '../types.js';
 
 /*
@@ -69,7 +69,9 @@ function stepsWithout(steps: readonly FlowStep[], gone: Gone, about: string | un
  */
 export function forgetInWaits(definition: Definition, gone: Gone): Definition {
   const flows = definition.flows
-    ? Object.fromEntries(Object.entries(definition.flows).map(([name, flow]) => [name, { ...flow, steps: stepsWithout(flow.steps, gone, flowSubject(flow)?.entity) }]))
+    ? Object.fromEntries(
+        Object.entries(definition.flows).map(([name, flow]) => [name, { ...flow, steps: stepsWithout(flow.steps, gone, flowSubject(flow)?.entity) }]),
+      )
     : undefined;
   const processes = definition.processes
     ? Object.fromEntries(
@@ -77,9 +79,12 @@ export function forgetInWaits(definition: Definition, gone: Gone): Definition {
           const about = gone.field && gone.entity === process.entity;
           const elements = Object.fromEntries(
             Object.entries(process.elements).map(([id, element]) => {
-              if (element.type === 'startEvent' && gone.action) return [id, { ...element, actions: element.actions.filter((action) => action !== gone.action) }];
+              if (element.type === 'startEvent' && gone.action)
+                return [id, { ...element, actions: element.actions.filter((action) => action !== gone.action) }];
               if (element.type === 'userTask') {
-                const outcomes = element.outcomes.map((outcome) => (gone.action && outcome.action === gone.action ? { name: outcome.name, label: outcome.label } : outcome));
+                const outcomes = element.outcomes.map((outcome) =>
+                  gone.action && outcome.action === gone.action ? { name: outcome.name, label: outcome.label } : outcome,
+                );
                 const task = { ...element, outcomes, ...(gone.card && element.card === gone.card ? { card: undefined } : {}) };
                 return [id, about ? routingWithout(task, gone.field!) : task];
               }
@@ -88,7 +93,13 @@ export function forgetInWaits(definition: Definition, gone: Gone): Definition {
                 const { record: _record, ...rest } = element;
                 return [id, rest];
               }
-              if ((element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') && about && element.timer && 'date' in element.timer && element.timer.date === gone.field) {
+              if (
+                (element.type === 'intermediateCatchEvent' || element.type === 'boundaryEvent') &&
+                about &&
+                element.timer &&
+                'date' in element.timer &&
+                element.timer.date === gone.field
+              ) {
                 return [id, { ...element, timer: { duration: 'P1D' } }];
               }
               return [id, element];

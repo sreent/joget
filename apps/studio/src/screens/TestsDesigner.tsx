@@ -1,11 +1,11 @@
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError } from '../api.js';
+import { ApiError, api } from '../api.js';
 import { TestResults } from '../components/tests.js';
 import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
-import { isWorkedOut, type Definition, type Field as FieldDef } from '../types.js';
 import { lineOwner } from '../model/edit.js';
-import { addTest, givenName, givenOf, removeTest, updateTest, type AppTest } from '../model/tests.js';
+import { type AppTest, addTest, givenName, givenOf, removeTest, updateTest } from '../model/tests.js';
+import { type Definition, type Field as FieldDef, isWorkedOut } from '../types.js';
 
 type Values = Readonly<Record<string, unknown>>;
 
@@ -14,7 +14,17 @@ type Values = Readonly<Record<string, unknown>>;
  * the app's roles run an action, and says what must come of it. They run on the saved app, each in
  * a transaction that is undone; every change request runs them, and a test that fails stops it.
  */
-export function TestsDesigner({ appId, definition, onChange, dirty }: { appId: string; definition: Definition; onChange: (definition: Definition) => void; dirty: boolean }) {
+export function TestsDesigner({
+  appId,
+  definition,
+  onChange,
+  dirty,
+}: {
+  appId: string;
+  definition: Definition;
+  onChange: (definition: Definition) => void;
+  dirty: boolean;
+}) {
   const tests = definition.tests ?? {};
   const names = Object.keys(tests);
   const [chosen, setChosen] = useState<string | null>(names[0] ?? null);
@@ -35,7 +45,10 @@ export function TestsDesigner({ appId, definition, onChange, dirty }: { appId: s
                 type="button"
                 aria-current={each === name ? 'true' : undefined}
                 onClick={() => setChosen(each)}
-                className={cx('flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm', each === name ? 'bg-accent-soft font-semibold text-accent' : 'hover:bg-sunken')}
+                className={cx(
+                  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm',
+                  each === name ? 'bg-accent-soft font-semibold text-accent' : 'hover:bg-sunken',
+                )}
               >
                 <span className="flex-1">{tests[each]!.label}</span>
                 {last(each) ? <Badge tone={last(each)!.passed ? 'good' : 'bad'}>{last(each)!.passed ? 'passed' : 'failed'}</Badge> : null}
@@ -54,7 +67,12 @@ export function TestsDesigner({ appId, definition, onChange, dirty }: { appId: s
             setLabel('');
           }}
         >
-          <TextInput aria-label="New test" placeholder="New test, e.g. A requester submits a claim" value={label} onChange={(event) => setLabel(event.target.value)} />
+          <TextInput
+            aria-label="New test"
+            placeholder="New test, e.g. A requester submits a claim"
+            value={label}
+            onChange={(event) => setLabel(event.target.value)}
+          />
           <Button type="submit" disabled={!label.trim()}>
             Add test
           </Button>
@@ -86,16 +104,31 @@ export function TestsDesigner({ appId, definition, onChange, dirty }: { appId: s
   );
 }
 
-function TestEditor({ definition, test, onChange, onRemove }: { definition: Definition; test: AppTest; onChange: (test: AppTest) => void; onRemove: () => void }) {
+function TestEditor({
+  definition,
+  test,
+  onChange,
+  onRemove,
+}: {
+  definition: Definition;
+  test: AppTest;
+  onChange: (test: AppTest) => void;
+  onRemove: () => void;
+}) {
   const action = definition.actions[test.when.action];
   const entities = Object.entries(definition.entities).filter(([entity]) => !lineOwner(definition, entity));
   const subject = action ? definition.entities[action.entity] : undefined;
-  const writable = (entity: string) => (definition.entities[entity]?.fields ?? []).filter((field) => !isWorkedOut(field) && field.type !== 'file' && field.type !== 'user').map((field) => field.name);
+  const writable = (entity: string) =>
+    (definition.entities[entity]?.fields ?? [])
+      .filter((field) => !isWorkedOut(field) && field.type !== 'file' && field.type !== 'user')
+      .map((field) => field.name);
   const setWhen = (when: Partial<AppTest['when']>) => onChange({ ...test, when: { ...test.when, ...when } });
 
   return (
     <Card aria-label="Test" className="grid content-start gap-5 p-4">
-      <Field label="What it shows">{(id) => <TextInput id={id} value={test.label} onChange={(event) => onChange({ ...test, label: event.target.value })} />}</Field>
+      <Field label="What it shows">
+        {(id) => <TextInput id={id} value={test.label} onChange={(event) => onChange({ ...test, label: event.target.value })} />}
+      </Field>
 
       <section className="grid gap-2">
         <h3 className="m-0 text-sm font-semibold">First, there are</h3>
@@ -127,7 +160,15 @@ function TestEditor({ definition, test, onChange, onRemove }: { definition: Defi
                 Remove
               </Button>
             </div>
-            <ValuesEditor definition={definition} entity={record.entity} test={test} fields={writable(record.entity)} values={record.values} label={`${given}'s values`} onChange={(values) => onChange({ ...test, given: { ...test.given, [given]: { ...record, values } } })} />
+            <ValuesEditor
+              definition={definition}
+              entity={record.entity}
+              test={test}
+              fields={writable(record.entity)}
+              values={record.values}
+              label={`${given}'s values`}
+              onChange={(values) => onChange({ ...test, given: { ...test.given, [given]: { ...record, values } } })}
+            />
           </div>
         ))}
         <Select
@@ -179,7 +220,12 @@ function TestEditor({ definition, test, onChange, onRemove }: { definition: Defi
           {action?.operation === 'update' ? (
             <>
               on
-              <Select aria-label="On the record" className="w-auto" value={test.when.record ?? ''} onChange={(event) => setWhen({ record: event.target.value })}>
+              <Select
+                aria-label="On the record"
+                className="w-auto"
+                value={test.when.record ?? ''}
+                onChange={(event) => setWhen({ record: event.target.value })}
+              >
                 <option value="">—</option>
                 {givenOf(test, action.entity).map((given) => (
                   <option key={given} value={given}>
@@ -190,7 +236,17 @@ function TestEditor({ definition, test, onChange, onRemove }: { definition: Defi
             </>
           ) : null}
         </div>
-        {action ? <ValuesEditor definition={definition} entity={action.entity} test={test} fields={[...action.input]} values={test.when.values} label="What they give" onChange={(values) => setWhen({ values })} /> : null}
+        {action ? (
+          <ValuesEditor
+            definition={definition}
+            entity={action.entity}
+            test={test}
+            fields={[...action.input]}
+            values={test.when.values}
+            label="What they give"
+            onChange={(values) => setWhen({ values })}
+          />
+        ) : null}
       </section>
 
       <section className="grid gap-2">
@@ -221,7 +277,9 @@ function TestEditor({ definition, test, onChange, onRemove }: { definition: Defi
               <TextInput
                 id={id}
                 value={test.then.outcome === 'refused' ? (test.then.message ?? '') : ''}
-                onChange={(event) => onChange({ ...test, then: event.target.value ? { outcome: 'refused', message: event.target.value } : { outcome: 'refused' } })}
+                onChange={(event) =>
+                  onChange({ ...test, then: event.target.value ? { outcome: 'refused', message: event.target.value } : { outcome: 'refused' } })
+                }
               />
             )}
           </Field>
@@ -263,7 +321,15 @@ function startingValue(definition: Definition, test: AppTest, field: FieldDef): 
 }
 
 /** A record's values in a test, field by field: those the test gives, and a way to add another. */
-function ValuesEditor(props: { definition: Definition; entity: string; test: AppTest; fields: readonly string[]; values: Values; label: string; onChange: (values: Record<string, unknown>) => void }) {
+function ValuesEditor(props: {
+  definition: Definition;
+  entity: string;
+  test: AppTest;
+  fields: readonly string[];
+  values: Values;
+  label: string;
+  onChange: (values: Record<string, unknown>) => void;
+}) {
   const { definition, entity, test, fields, values, label, onChange } = props;
   const declared = definition.entities[entity]?.fields ?? [];
   const unused = declared.filter((field) => fields.includes(field.name) && !(field.name in values));
@@ -275,7 +341,18 @@ function ValuesEditor(props: { definition: Definition; entity: string; test: App
           <div key={name} className="flex flex-wrap items-start gap-2">
             <span className="min-w-32 pt-1.5 text-sm text-muted">{field?.label ?? name}</span>
             <div className="min-w-0 flex-1">
-              {field ? <ValueField definition={definition} test={test} field={field} value={value} label={`${label}: ${field.label}`} onChange={(next) => onChange({ ...values, [name]: next })} /> : <code className="text-sm">{JSON.stringify(value)}</code>}
+              {field ? (
+                <ValueField
+                  definition={definition}
+                  test={test}
+                  field={field}
+                  value={value}
+                  label={`${label}: ${field.label}`}
+                  onChange={(next) => onChange({ ...values, [name]: next })}
+                />
+              ) : (
+                <code className="text-sm">{JSON.stringify(value)}</code>
+              )}
             </div>
             <Button
               size="sm"
@@ -314,10 +391,32 @@ function ValuesEditor(props: { definition: Definition; entity: string; test: App
 }
 
 /** One value of a test, in the input its field's type needs. A reference names a record the test makes. */
-function ValueField({ definition, test, field, value, label, onChange }: { definition: Definition; test: AppTest; field: FieldDef; value: unknown; label: string; onChange: (value: unknown) => void }) {
+function ValueField({
+  definition,
+  test,
+  field,
+  value,
+  label,
+  onChange,
+}: {
+  definition: Definition;
+  test: AppTest;
+  field: FieldDef;
+  value: unknown;
+  label: string;
+  onChange: (value: unknown) => void;
+}) {
   switch (field.type) {
     case 'number':
-      return <TextInput aria-label={label} type="number" className="w-36" value={typeof value === 'number' ? value : ''} onChange={(event) => onChange(event.target.value === '' ? null : Number(event.target.value))} />;
+      return (
+        <TextInput
+          aria-label={label}
+          type="number"
+          className="w-36"
+          value={typeof value === 'number' ? value : ''}
+          onChange={(event) => onChange(event.target.value === '' ? null : Number(event.target.value))}
+        />
+      );
     case 'boolean':
       return (
         <Select aria-label={label} className="w-auto" value={value === false ? 'no' : 'yes'} onChange={(event) => onChange(event.target.value === 'yes')}>
@@ -326,7 +425,15 @@ function ValueField({ definition, test, field, value, label, onChange }: { defin
         </Select>
       );
     case 'date':
-      return <TextInput aria-label={label} type="date" className="w-auto" value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value || null)} />;
+      return (
+        <TextInput
+          aria-label={label}
+          type="date"
+          className="w-auto"
+          value={typeof value === 'string' ? value : ''}
+          onChange={(event) => onChange(event.target.value || null)}
+        />
+      );
     case 'choice':
       return field.multiple ? (
         <div className="flex flex-wrap gap-3">
@@ -351,7 +458,8 @@ function ValueField({ definition, test, field, value, label, onChange }: { defin
     case 'reference': {
       const named = (entry: unknown) => (typeof entry === 'object' && entry !== null && 'given' in entry ? String((entry as { given: unknown }).given) : '');
       const choices = givenOf(test, field.entity);
-      if (!choices.length) return <span className="text-sm text-muted">Add a record of {definition.entities[field.entity]?.label ?? field.entity} first, for this to name.</span>;
+      if (!choices.length)
+        return <span className="text-sm text-muted">Add a record of {definition.entities[field.entity]?.label ?? field.entity} first, for this to name.</span>;
       return field.multiple ? (
         <div className="flex flex-wrap gap-3">
           {choices.map((given) => (
@@ -364,7 +472,12 @@ function ValueField({ definition, test, field, value, label, onChange }: { defin
           ))}
         </div>
       ) : (
-        <Select aria-label={label} className="w-auto" value={named(value)} onChange={(event) => onChange(event.target.value ? { given: event.target.value } : null)}>
+        <Select
+          aria-label={label}
+          className="w-auto"
+          value={named(value)}
+          onChange={(event) => onChange(event.target.value ? { given: event.target.value } : null)}
+        >
           <option value="">—</option>
           {choices.map((given) => (
             <option key={given} value={given}>
@@ -376,7 +489,9 @@ function ValueField({ definition, test, field, value, label, onChange }: { defin
     }
     case 'lines': {
       const lines = Array.isArray(value) ? (value as Values[]) : [];
-      const lineFields = (definition.entities[field.entity]?.fields ?? []).filter((each) => !isWorkedOut(each) && each.type !== 'file' && each.type !== 'user').map((each) => each.name);
+      const lineFields = (definition.entities[field.entity]?.fields ?? [])
+        .filter((each) => !isWorkedOut(each) && each.type !== 'file' && each.type !== 'user')
+        .map((each) => each.name);
       return (
         <div className="grid gap-2">
           {lines.map((line, index) => (

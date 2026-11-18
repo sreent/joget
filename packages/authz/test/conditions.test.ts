@@ -1,15 +1,15 @@
-import { describe, expect, it } from 'vitest';
 import {
+  type Condition,
   conditionRefs,
   evaluateCondition,
   isCondition,
-  partialEvaluate,
-  relativeValue,
   isKnownPermissionPattern,
   matchesPermission,
+  partialEvaluate,
   patternCovers,
-  type Condition,
+  relativeValue,
 } from '@platform/authz';
+import { describe, expect, it } from 'vitest';
 
 const env = {
   principal: { id: 'alice', department: 'finance', level: 3 },
@@ -58,7 +58,18 @@ describe('isCondition', () => {
   });
 
   it('rejects malformed or unbounded input', () => {
-    for (const bad of [null, [], {}, { eq: [1] }, { all: [] }, { foo: [1, 2] }, { eq: [1, 2], ne: [1, 2] }, { exists: '' }, { eq: [{ ref: '' }, 1] }, { lt: [Number.NaN, 1] }]) {
+    for (const bad of [
+      null,
+      [],
+      {},
+      { eq: [1] },
+      { all: [] },
+      { foo: [1, 2] },
+      { eq: [1, 2], ne: [1, 2] },
+      { exists: '' },
+      { eq: [{ ref: '' }, 1] },
+      { lt: [Number.NaN, 1] },
+    ]) {
       expect(isCondition(bad)).toBe(false);
     }
     let deep: unknown = { exists: 'x' };
@@ -116,6 +127,8 @@ describe('dates and times', () => {
   });
 
   it('fill today in when they leave the record for the database', () => {
-    expect(partialEvaluate({ lt: [{ ref: 'record.starts' }, { today: 0 }] }, { $now: '2026-11-18T09:30:00Z' }, ['record'])).toEqual({ lt: [{ ref: 'record.starts' }, '2026-11-18'] });
+    expect(partialEvaluate({ lt: [{ ref: 'record.starts' }, { today: 0 }] }, { $now: '2026-11-18T09:30:00Z' }, ['record'])).toEqual({
+      lt: [{ ref: 'record.starts' }, '2026-11-18'],
+    });
   });
 });

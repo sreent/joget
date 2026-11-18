@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MALWARE_MARKER, startFakeClamd } from './fake-clamd.js';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * Receipts: uploaded, checked for what they are and for malware, attached to the line that names
@@ -47,10 +47,23 @@ const claim = (session: Session, receipt: string | null, expected = 201) =>
 
 beforeAll(async () => {
   clamd = await startFakeClamd();
-  t = await startTestApp({ FILE_SCANNER: 'clamav', CLAMAV_HOST: '127.0.0.1', CLAMAV_PORT: String(clamd.port), FILE_MAX_BYTES: '65536', PROPOSAL_TTL_HOURS: '1', FILE_UNATTACHED_TTL_HOURS: '1' });
+  t = await startTestApp({
+    FILE_SCANNER: 'clamav',
+    CLAMAV_HOST: '127.0.0.1',
+    CLAMAV_PORT: String(clamd.port),
+    FILE_MAX_BYTES: '65536',
+    PROPOSAL_TTL_HOURS: '1',
+    FILE_UNATTACHED_TTL_HOURS: '1',
+  });
   [alice, bob, carol, erin, dave] = [await t.login('alice'), await t.login('bob'), await t.login('carol'), await t.login('erin'), await t.login('dave')];
-  appId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } }, 201)).json().app.id;
-  for (const [email, role] of [['bob@example.com', 'requester'], ['carol@example.com', 'approver'], ['erin@example.com', 'requester']] as const) {
+  appId = (
+    await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: EXPENSE_APP } }, 201)
+  ).json().app.id;
+  for (const [email, role] of [
+    ['bob@example.com', 'requester'],
+    ['carol@example.com', 'approver'],
+    ['erin@example.com', 'requester'],
+  ] as const) {
     await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email, role } }, 201);
   }
 });
@@ -63,7 +76,15 @@ afterAll(async () => {
 describe('uploading', () => {
   it('reads what a file is from its content, cleans its name, and scans it', async () => {
     const file = (await upload(bob, JPEG, 'application/octet-stream', '../../etc/my receipt.png')).json();
-    expect(file).toEqual({ id: expect.any(String), name: 'my receipt.jpg', contentType: 'image/jpeg', size: JPEG.length, sha256: expect.stringMatching(/^[0-9a-f]{64}$/), scan: 'clean', attached: false });
+    expect(file).toEqual({
+      id: expect.any(String),
+      name: 'my receipt.jpg',
+      contentType: 'image/jpeg',
+      size: JPEG.length,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      scan: 'clean',
+      attached: false,
+    });
     expect(clamd.scans).toBeGreaterThan(0);
   });
 
@@ -72,7 +93,10 @@ describe('uploading', () => {
     await upload(bob, Buffer.concat([JPEG, Buffer.alloc(70_000)]), 'image/jpeg', 'big.jpg', 413);
     const infected = await upload(bob, Buffer.concat([PDF, Buffer.from(MALWARE_MARKER)]), 'application/pdf', 'invoice.pdf', 422);
     expect(infected.json()).toMatchObject({ error: 'file_rejected', message: expect.stringContaining('Ambit.Test.Marker') });
-    const [event] = await t.ctx.db.select().from(auditEvents).where(and(eq(auditEvents.action, 'file.upload'), eq(auditEvents.outcome, 'denied')));
+    const [event] = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'file.upload'), eq(auditEvents.outcome, 'denied')));
     expect(event!.reason).toMatchObject({ threat: 'Ambit.Test.Marker' });
   });
 
@@ -124,9 +148,16 @@ describe('attaching and downloading', () => {
   });
 
   it('keeps an upload an agent proposes waiting until the person approves it', async () => {
-    const token = (await inject({ method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } }, 201)).json().token;
+    const token = (
+      await inject({ method: 'POST', url: '/v1/me/tokens', ...as(bob), payload: { name: 'agent', scopes: ['app.run', 'action.run'], expiresInDays: 1 } }, 201)
+    ).json().token;
     const bearer = { headers: { authorization: `Bearer ${token}` } };
-    const pdf = (await inject({ method: 'POST', url: `${files()}?name=hotel.pdf`, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/pdf' }, payload: PDF }, 201)).json();
+    const pdf = (
+      await inject(
+        { method: 'POST', url: `${files()}?name=hotel.pdf`, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/pdf' }, payload: PDF },
+        201,
+      )
+    ).json();
     const proposed = await inject(
       {
         method: 'POST',

@@ -1,5 +1,5 @@
+import { EXPENSE_APP, type FlowStep, LEAVE_APP, validateDefinition } from '@platform/app-model';
 import { describe, expect, it } from 'vitest';
-import { EXPENSE_APP, LEAVE_APP, validateDefinition, type FlowStep } from '@platform/app-model';
 import type { Definition } from '../types.js';
 import { normalize } from './edit.js';
 import {
@@ -15,17 +15,17 @@ import {
   moveStepTo,
   newStep,
   problemsByStep,
+  recipientWords,
   removeFlow,
   removeStep,
-  recipientWords,
   replaceStep,
+  type StepType,
   scopeAt,
   startRun,
   stepAt,
   stepWords,
   updateFlow,
   variableChoices,
-  type StepType,
 } from './flows.js';
 
 /** The example app, with budgets that a flow keeps up to date as claims are approved. */
@@ -61,9 +61,18 @@ function app(): Definition {
   return {
     ...definition,
     entities: { ...definition.entities, budget },
-    roles: { ...definition.roles, approver: { ...definition.roles['approver']!, entities: { ...definition.roles['approver']!.entities, budget: { read: true } }, flows: ['record_spend'] } },
-    flows: { ...definition.flows, record_spend: { label: 'Record the spend', input: { claim: { type: 'record', entity: 'expense_claim' } }, output: { type: 'number' }, steps } },
-    actions: { ...definition.actions, approve_claim: { ...definition.actions['approve_claim']!, flow: { flow: 'record_spend', input: { claim: { ref: 'record' } } } } },
+    roles: {
+      ...definition.roles,
+      approver: { ...definition.roles['approver']!, entities: { ...definition.roles['approver']!.entities, budget: { read: true } }, flows: ['record_spend'] },
+    },
+    flows: {
+      ...definition.flows,
+      record_spend: { label: 'Record the spend', input: { claim: { type: 'record', entity: 'expense_claim' } }, output: { type: 'number' }, steps },
+    },
+    actions: {
+      ...definition.actions,
+      approve_claim: { ...definition.actions['approve_claim']!, flow: { flow: 'record_spend', input: { claim: { ref: 'record' } } } },
+    },
   };
 }
 
@@ -184,7 +193,11 @@ describe('editing flows', () => {
       `flows.${name}.steps[5].steps: Put the steps that the handler guards inside it`,
       `flows.${name}.steps[6].input: Check the approval needs claim`,
     ]);
-    definition = replaceStep(definition, name, 'steps[3].then[0]', { type: 'change', record: 'claim', values: { title: { concat: [{ ref: 'claim.title' }, ' (checked)'] } } });
+    definition = replaceStep(definition, name, 'steps[3].then[0]', {
+      type: 'change',
+      record: 'claim',
+      values: { title: { concat: [{ ref: 'claim.title' }, ' (checked)'] } },
+    });
     // The loop's `value` is gone outside the loop, so the name is free again.
     expect(add('steps[5].steps', 0, 'set')).toEqual({ type: 'set', var: 'value', value: 0 });
     definition = replaceStep(definition, name, 'steps[6]', { type: 'call', flow: 'record_spend', input: { claim: { ref: 'claim' } } });
@@ -194,7 +207,12 @@ describe('editing flows', () => {
   it('describes steps in words for the canvas', () => {
     const definition = app();
     const flow = spend(definition);
-    expect(flow.steps.map((step) => describeFlowStep(definition, step))).toEqual(['For each line in claim.lines', 'Total amount of claim.lines → spent', 'Stop unless spent is more than 0', 'Return spent']);
+    expect(flow.steps.map((step) => describeFlowStep(definition, step))).toEqual([
+      'For each line in claim.lines',
+      'Total amount of claim.lines → spent',
+      'Stop unless spent is more than 0',
+      'Return spent',
+    ]);
     expect(describeFlowStep(definition, stepAt(flow, 'steps[0].steps[0]')!)).toBe('Find a Budget where Category is line.category → budget');
     expect(describeFlowStep(definition, stepAt(flow, 'steps[0].steps[1].then[0]')!)).toBe('Change budget: spent');
   });
@@ -210,7 +228,11 @@ describe('editing flows', () => {
   it('writes a flow for an action to run before it saves, which takes the record', () => {
     const made = addBeforeFlow(removeFlow(app(), 'check_approval'), 'approve_claim');
     expect(made.name).toBe('approve_an_expense_claim_before_it_saves');
-    expect(made.definition.flows![made.name]).toEqual({ label: 'Approve an expense claim: before it saves', input: { expense_claim: { type: 'record', entity: 'expense_claim' } }, steps: [] });
+    expect(made.definition.flows![made.name]).toEqual({
+      label: 'Approve an expense claim: before it saves',
+      input: { expense_claim: { type: 'record', entity: 'expense_claim' } },
+      steps: [],
+    });
     expect(made.definition.actions['approve_claim']!.before).toEqual({ flow: made.name, input: { expense_claim: { ref: 'record' } } });
     // A flow needs a step: the checks say so, on the flow, until the builder adds one.
     expect(issues(made.definition)).toEqual([`flows.${made.name}.steps: A flow needs a step`]);
@@ -223,9 +245,23 @@ describe('editing flows', () => {
     // A record of another entity, or a list, is left out for the checks to name.
     expect(startRun(definition, 'record_spend', 'budget')).toEqual({ flow: 'record_spend', input: {} });
     definition = updateFlow(definition, 'record_spend', {
-      input: { claim: { type: 'record', entity: 'expense_claim' }, rate: { type: 'number' }, note: { type: 'text' }, on: { type: 'date' }, at: { type: 'datetime' }, urgent: { type: 'boolean' } },
+      input: {
+        claim: { type: 'record', entity: 'expense_claim' },
+        rate: { type: 'number' },
+        note: { type: 'text' },
+        on: { type: 'date' },
+        at: { type: 'datetime' },
+        urgent: { type: 'boolean' },
+      },
     });
-    expect(startRun(definition, 'record_spend', 'expense_claim').input).toEqual({ claim: { ref: 'record' }, rate: 0, note: '', on: { today: true }, at: { now: true }, urgent: false });
+    expect(startRun(definition, 'record_spend', 'expense_claim').input).toEqual({
+      claim: { ref: 'record' },
+      rate: 0,
+      note: '',
+      on: { today: true },
+      at: { now: true },
+      urgent: false,
+    });
   });
 });
 
@@ -326,13 +362,25 @@ describe('the flow canvas', () => {
     const steps: FlowStep[] = [
       { ...task, deadline: { after: 'P3D', steps: [] } },
       { type: 'wait', for: { date: 'starts' } },
-      { type: 'first_of', ways: [{ for: { action: 'reject_leave' }, steps: [{ type: 'return' }] }, { for: { duration: 'P2D' }, steps: [] }] },
+      {
+        type: 'first_of',
+        ways: [
+          { for: { action: 'reject_leave' }, steps: [{ type: 'return' }] },
+          { for: { duration: 'P2D' }, steps: [] },
+        ],
+      },
       { type: 'all_at_once', ways: [{ steps: [] }, { steps: [] }] },
     ];
     const waits = { ...definition, flows: { leave_approval: { ...flow, steps } } };
     const { nodes, edges } = layoutFlow(waits, waits.flows.leave_approval, 5000);
     const at = (id: string) => nodes.find((node) => node.id === id)!;
-    expect(at('steps[0]')).toMatchObject({ kind: 'step', kindLabel: "Person's task", label: 'Decide on the leave', about: 'within 3 days', who: { kind: 'person', initial: 'M', words: 'the manager' } });
+    expect(at('steps[0]')).toMatchObject({
+      kind: 'step',
+      kindLabel: "Person's task",
+      label: 'Decide on the leave',
+      about: 'within 3 days',
+      who: { kind: 'person', initial: 'M', words: 'the manager' },
+    });
     // A way on for each outcome, which meet again; the deadline hangs below the task by a dashed line.
     expect(edges.filter((edge) => edge.source === 'steps[0]' && edge.label).map((edge) => edge.label!.text)).toEqual(['Approve', 'Reject']);
     expect(at('steps[0]:deadline')).toMatchObject({ kind: 'wait', label: 'After 3 days', caption: 'below', path: 'steps[0]' });
@@ -345,7 +393,12 @@ describe('the flow canvas', () => {
     expect(at('steps[2].ways[0]')).toMatchObject({ kind: 'wait', label: 'Waits for Reject the leave', icon: 'message' });
     expect(at('steps[3]')).toMatchObject({ kind: 'frame', label: 'All at once', about: 'when both are done' });
     // The flow saves before each place where it waits: the task, the wait, and the first of.
-    expect(edges.filter((edge) => edge.save).map((edge) => edge.target).sort()).toEqual(['steps[0]', 'steps[1]', 'steps[2]:in']);
+    expect(
+      edges
+        .filter((edge) => edge.save)
+        .map((edge) => edge.target)
+        .sort(),
+    ).toEqual(['steps[0]', 'steps[1]', 'steps[2]:in']);
     // Every way takes a step; what a way of the first of waits for is not a step.
     expect(places(waits, 'leave_approval')).toEqual(
       [
@@ -375,7 +428,11 @@ describe('the flow canvas', () => {
         { for: { duration: 'P3D' }, steps: [] },
       ],
     });
-    expect(newStep(definition, 'leave_approval', scope, 'task')).toMatchObject({ type: 'task', role: 'employee', outcomes: [{ name: 'approve' }, { name: 'reject' }] });
+    expect(newStep(definition, 'leave_approval', scope, 'task')).toMatchObject({
+      type: 'task',
+      role: 'employee',
+      outcomes: [{ name: 'approve' }, { name: 'reject' }],
+    });
     // Steps on a task's way are found by their paths, as any other.
     const next = insertStep(definition, 'leave_approval', 'steps[0].outcomes[1].steps', 0, { type: 'change', record: 'leave', values: { reason: 'Rejected' } });
     expect(stepAt(next.flows!['leave_approval']!, 'steps[0].outcomes[1].steps[0]')).toMatchObject({ type: 'change' });
@@ -426,7 +483,13 @@ describe('the flow canvas', () => {
         type: 'repeat',
         while: { eq: [{ ref: 'leave.status' }, 'submitted'] },
         max: 3,
-        steps: [{ ...task, reminders: [{ after: 'P1D', steps: [{ type: 'change', record: 'leave', values: { reason: 'Reminded' } }] }], deadline: { after: 'P3D', steps: [] } }],
+        steps: [
+          {
+            ...task,
+            reminders: [{ after: 'P1D', steps: [{ type: 'change', record: 'leave', values: { reason: 'Reminded' } }] }],
+            deadline: { after: 'P3D', steps: [] },
+          },
+        ],
       },
     ];
     const waits = { ...definition, flows: { leave_approval: { ...flow, starts: [{ date: 'starts', before: 'P2D' }, { created: true as const }], steps } } };
@@ -447,8 +510,13 @@ describe('the flow canvas', () => {
       'After 3 days, the task ends',
     ]);
     expect(at('start')).toMatchObject({ about: 'on 2 days before First day, or 1 more way' });
-    const scheduled = { ...definition, flows: { tidy: { label: 'Tidy', input: {}, schedule: { every: 'weekday' as const, at: '07:30', zone: 'Europe/London' }, steps: [] } } };
-    expect(layoutFlow(scheduled, scheduled.flows.tidy).nodes.find((node) => node.id === 'start')).toMatchObject({ about: 'every weekday at 07:30, Europe/London time' });
+    const scheduled = {
+      ...definition,
+      flows: { tidy: { label: 'Tidy', input: {}, schedule: { every: 'weekday' as const, at: '07:30', zone: 'Europe/London' }, steps: [] } },
+    };
+    expect(layoutFlow(scheduled, scheduled.flows.tidy).nodes.find((node) => node.id === 'start')).toMatchObject({
+      about: 'every weekday at 07:30, Europe/London time',
+    });
   });
   it('tells people: whom the record names first, in words, and outside the app when it emails', () => {
     const definition = leave();
@@ -456,9 +524,18 @@ describe('the flow canvas', () => {
     const scope = scopeAt(definition, 'leave_approval', { list: 'steps', index: 1 });
     const step = newStep(definition, 'leave_approval', scope, 'inform');
     expect(step).toEqual({ type: 'inform', to: [{ person: { ref: 'leave.manager' } }], title: 'Say what happened', about: 'leave', email: true });
-    const told = { ...step, to: [{ person: { ref: 'leave.owner' } }, { role: 'manager' }], title: { concat: ['Approved: ', { ref: 'leave.days' }, ' days'] } } as Extract<FlowStep, { type: 'inform' }>;
+    const told = {
+      ...step,
+      to: [{ person: { ref: 'leave.owner' } }, { role: 'manager' }],
+      title: { concat: ['Approved: ', { ref: 'leave.days' }, ' days'] },
+    } as Extract<FlowStep, { type: 'inform' }>;
     expect(recipientWords(definition, told)).toBe('the owner and Manager');
-    expect(stepWords(definition, told)).toEqual({ kind: 'Informs people', words: '"Approved: " & leave.days & " days"', about: 'to the owner and Manager, by email too', tone: 'outside' });
+    expect(stepWords(definition, told)).toEqual({
+      kind: 'Informs people',
+      words: '"Approved: " & leave.days & " days"',
+      about: 'to the owner and Manager, by email too',
+      tone: 'outside',
+    });
     expect(stepWords(definition, { ...told, title: 'Approved' })).toMatchObject({ words: 'Approved' });
     expect(stepWords(definition, { ...told, email: false })).not.toHaveProperty('tone');
     expect(describeFlowStep(definition, told)).toBe('Tell the owner and Manager: "Approved: " & leave.days & " days"');
@@ -467,7 +544,9 @@ describe('the flow canvas', () => {
   it('calls a service through a connection, outside the app', () => {
     const definition = {
       ...leave(),
-      connections: { payroll: { kind: 'service' as const, label: 'Payroll', url: 'https://payroll.example.com/api', auth: { type: 'bearer' as const }, personalData: false } },
+      connections: {
+        payroll: { kind: 'service' as const, label: 'Payroll', url: 'https://payroll.example.com/api', auth: { type: 'bearer' as const }, personalData: false },
+      },
     } as Definition;
     const scope = scopeAt(definition, 'leave_approval', { list: 'steps', index: 1 });
     const step = newStep(definition, 'leave_approval', scope, 'call_service');

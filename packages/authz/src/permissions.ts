@@ -98,10 +98,7 @@ export function isValidPermissionPattern(pattern: string): boolean {
 
 /** True if a pattern matches at least one permission in the platform catalog. */
 export function isKnownPermissionPattern(pattern: string): boolean {
-  return (
-    isValidPermissionPattern(pattern) &&
-    Object.keys(PLATFORM_PERMISSIONS).some((permission) => matchesPermission(pattern, permission))
-  );
+  return isValidPermissionPattern(pattern) && Object.keys(PLATFORM_PERMISSIONS).some((permission) => matchesPermission(pattern, permission));
 }
 
 /** True if `pattern` grants `permission`. */

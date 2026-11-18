@@ -3,7 +3,7 @@ import { users } from '@platform/db';
 import { eq } from 'drizzle-orm';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /** The directory that apps need: naming who records mention, and finding a colleague for a person field. */
 
@@ -21,15 +21,22 @@ async function inject(options: InjectOptions, expected?: number) {
   if (expected !== undefined) expect(response.statusCode, response.body).toBe(expected);
   return response;
 }
-const people = async (query: string, session: Session = alice) => (await inject({ method: 'GET', url: `/v1/people?${query}`, ...as(session) }, 200)).json().people;
+const people = async (query: string, session: Session = alice) =>
+  (await inject({ method: 'GET', url: `/v1/people?${query}`, ...as(session) }, 200)).json().people;
 
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob, dave] = [await t.login('alice'), await t.login('bob'), await t.login('dave')];
   const team = await inject({ method: 'POST', url: '/v1/spaces', ...as(alice), payload: { name: 'Finance', coOwnerUserIds: [bob.userId] } }, 201);
-  const account = await inject({ method: 'POST', url: `/v1/spaces/${team.json().id}/service-accounts`, ...as(alice), payload: { name: 'Importer', description: 'Loads claims' } }, 201);
+  const account = await inject(
+    { method: 'POST', url: `/v1/spaces/${team.json().id}/service-accounts`, ...as(alice), payload: { name: 'Importer', description: 'Loads claims' } },
+    201,
+  );
   accountId = account.json().id;
-  const token = await inject({ method: 'POST', url: `/v1/service-accounts/${accountId}/tokens`, ...as(alice), payload: { name: 'importer', scopes: ['space.read'], expiresInDays: 1 } }, 201);
+  const token = await inject(
+    { method: 'POST', url: `/v1/service-accounts/${accountId}/tokens`, ...as(alice), payload: { name: 'importer', scopes: ['space.read'], expiresInDays: 1 } },
+    201,
+  );
   accountToken = token.json().token;
   // Dave has left: records still name him, but he can't be picked any more.
   await t.ctx.db.update(users).set({ status: 'deprovisioned' }).where(eq(users.id, dave.userId));

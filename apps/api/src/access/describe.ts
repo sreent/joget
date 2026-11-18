@@ -1,4 +1,4 @@
-import { groups, serviceAccounts, users, type Executor } from '@platform/db';
+import { type Executor, groups, serviceAccounts, users } from '@platform/db';
 import { inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { BindingRow } from './policy-service.js';
@@ -45,7 +45,10 @@ export async function describeBindings(db: Executor, rows: readonly BindingRow[]
   }
   const accountIds = idsOf('service_account');
   if (accountIds.length) {
-    for (const s of await db.select({ id: serviceAccounts.id, name: serviceAccounts.name }).from(serviceAccounts).where(inArray(serviceAccounts.id, accountIds))) {
+    for (const s of await db
+      .select({ id: serviceAccounts.id, name: serviceAccounts.name })
+      .from(serviceAccounts)
+      .where(inArray(serviceAccounts.id, accountIds))) {
       names.set(s.id, s.name);
     }
   }

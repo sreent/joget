@@ -1,4 +1,4 @@
-import { CLOCK, conditionRefs, evaluateCondition, isCondition, timeOf, type Condition } from '@platform/authz';
+import { CLOCK, type Condition, conditionRefs, evaluateCondition, isCondition, timeOf } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
 
 /**
@@ -46,7 +46,24 @@ export type Expression =
 /** A value an expression gives: what a field holds, in its canonical JSON form. */
 export type ExpressionValue = string | number | boolean | readonly string[] | null;
 
-export const EXPRESSION_OPERATORS = ['add', 'sub', 'mul', 'div', 'round', 'concat', 'add_days', 'add_hours', 'days_between', 'if', 'upper', 'lower', 'trim', 'text_length', 'left', 'coalesce'] as const;
+export const EXPRESSION_OPERATORS = [
+  'add',
+  'sub',
+  'mul',
+  'div',
+  'round',
+  'concat',
+  'add_days',
+  'add_hours',
+  'days_between',
+  'if',
+  'upper',
+  'lower',
+  'trim',
+  'text_length',
+  'left',
+  'coalesce',
+] as const;
 export type ExpressionOperator = (typeof EXPRESSION_OPERATORS)[number];
 
 const MAX_DEPTH = 8;
@@ -99,7 +116,13 @@ export function isExpression(value: unknown, depth = 0): value is Expression {
     case 'text_length':
       return operands(1, 1);
     case 'if':
-      return Array.isArray(argument) && argument.length === 3 && isCondition(argument[0]) && isExpression(argument[1], depth + 1) && isExpression(argument[2], depth + 1);
+      return (
+        Array.isArray(argument) &&
+        argument.length === 3 &&
+        isCondition(argument[0]) &&
+        isExpression(argument[1], depth + 1) &&
+        isExpression(argument[2], depth + 1)
+      );
     case 'round':
       return (
         Array.isArray(argument) &&
@@ -175,7 +198,10 @@ const KIND_WORDS: Readonly<Record<CalculationKind, string>> = {
  * The kind of value a calculation gives, from the kinds of its operands (for a choice, of its two
  * values), and what doesn't fit, in words. The checks of steps and of flows share it.
  */
-export function calculationKind(op: ExpressionOperator, kinds: readonly CalculationKind[]): { readonly kind: CalculationKind; readonly problems: readonly string[] } {
+export function calculationKind(
+  op: ExpressionOperator,
+  kinds: readonly CalculationKind[],
+): { readonly kind: CalculationKind; readonly problems: readonly string[] } {
   const loose = (kind: CalculationKind | undefined) => kind === undefined || kind === 'null' || kind === 'any';
   const problems: string[] = [];
   const need = (kind: CalculationKind | undefined, fit: readonly CalculationKind[], what: string) => {

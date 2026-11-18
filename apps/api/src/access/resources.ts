@@ -1,5 +1,5 @@
-import { orgScopes, spaceScopes, type Resource } from '@platform/authz';
-import { spaces, type Executor } from '@platform/db';
+import { orgScopes, type Resource, spaceScopes } from '@platform/authz';
+import { type Executor, spaces } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
 import { notFound } from '../errors.js';
 

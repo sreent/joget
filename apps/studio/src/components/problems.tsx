@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import { Link, type BuildTab } from '../router.js';
+import { type BuildTab, Link } from '../router.js';
 import type { Definition, Issue } from '../types.js';
 import { Card, cx } from './ui.js';
 
@@ -59,7 +59,11 @@ export function ProblemsList({ appId, definition, problems }: { appId: string; d
             <li key={i} className="grid gap-0.5">
               <span className="font-medium">{problem.message}</span>
               <span className="text-xs text-muted">
-                {place.tab ? <Link to={{ name: 'build', appId, tab: place.tab, ...(place.item ? { item: place.item } : {}) }}>{place.label}</Link> : place.label}{' '}
+                {place.tab ? (
+                  <Link to={{ name: 'build', appId, tab: place.tab, ...(place.item ? { item: place.item } : {}) }}>{place.label}</Link>
+                ) : (
+                  place.label
+                )}{' '}
                 <code className="text-faint">{problem.path}</code>
               </span>
             </li>

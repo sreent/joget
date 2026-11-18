@@ -1,8 +1,8 @@
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { uuidv7 } from '@platform/audit';
 import { appSecrets, type Database } from '@platform/db';
 import { and, eq } from 'drizzle-orm';
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import type { AppContext, AuthContext } from '../context.js';
 import { HttpError } from '../errors.js';
 
@@ -62,13 +62,34 @@ export class Secrets {
   }
 
   /** Keep a secret for an environment, in place of the one it had. */
-  async set(db: Database, env: { readonly id: string; readonly appId: string }, kind: SecretKind, name: string, value: string, auth: AuthContext): Promise<SecretState> {
+  async set(
+    db: Database,
+    env: { readonly id: string; readonly appId: string },
+    kind: SecretKind,
+    name: string,
+    value: string,
+    auth: AuthContext,
+  ): Promise<SecretState> {
     const now = this.#ctx.now();
     const sealed = this.#seal(value, `${env.id}/${kind}/${name}`);
     await db
       .insert(appSecrets)
-      .values({ id: uuidv7(now.getTime()), orgId: this.#ctx.org.id, appId: env.appId, environmentId: env.id, kind, name, sealed, setByType: auth.actor.type, setBy: auth.actor.id, setAt: now })
-      .onConflictDoUpdate({ target: [appSecrets.environmentId, appSecrets.kind, appSecrets.name], set: { sealed, setByType: auth.actor.type, setBy: auth.actor.id, setAt: now } });
+      .values({
+        id: uuidv7(now.getTime()),
+        orgId: this.#ctx.org.id,
+        appId: env.appId,
+        environmentId: env.id,
+        kind,
+        name,
+        sealed,
+        setByType: auth.actor.type,
+        setBy: auth.actor.id,
+        setAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [appSecrets.environmentId, appSecrets.kind, appSecrets.name],
+        set: { sealed, setByType: auth.actor.type, setBy: auth.actor.id, setAt: now },
+      });
     return { set: true, setAt: now.toISOString() };
   }
 
@@ -82,7 +103,10 @@ export class Secrets {
 
   /** Whether an environment keeps each secret, and since when: never the secrets themselves. */
   async states(db: Database, environmentId: string): Promise<ReadonlyMap<string, SecretState>> {
-    const rows = await db.select({ kind: appSecrets.kind, name: appSecrets.name, setAt: appSecrets.setAt }).from(appSecrets).where(eq(appSecrets.environmentId, environmentId));
+    const rows = await db
+      .select({ kind: appSecrets.kind, name: appSecrets.name, setAt: appSecrets.setAt })
+      .from(appSecrets)
+      .where(eq(appSecrets.environmentId, environmentId));
     return new Map(rows.map((row) => [`${row.kind}/${row.name}`, { set: true, setAt: row.setAt.toISOString() }]));
   }
 

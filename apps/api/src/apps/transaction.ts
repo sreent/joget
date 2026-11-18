@@ -1,5 +1,5 @@
 import { ident } from '@platform/app-model';
-import { schema, type Database } from '@platform/db';
+import { type Database, schema } from '@platform/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type pg from 'pg';
 import { HttpError } from '../errors.js';
@@ -44,7 +44,10 @@ export function isTransient(error: unknown): boolean {
  * beginning each time, so it must change nothing outside the database. After the last try, the
  * request fails with 503, and the person can try again.
  */
-export async function retryTransient<T>(run: () => Promise<T>, options: { readonly attempts?: number; readonly onRetry?: (attempt: number) => void } = {}): Promise<T> {
+export async function retryTransient<T>(
+  run: () => Promise<T>,
+  options: { readonly attempts?: number; readonly onRetry?: (attempt: number) => void } = {},
+): Promise<T> {
   const attempts = options.attempts ?? TRANSACTION_ATTEMPTS;
   for (let attempt = 1; ; attempt++) {
     try {

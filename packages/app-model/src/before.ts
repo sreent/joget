@@ -1,11 +1,22 @@
 import type { Condition } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
-import { mapExpressionRefs, type Expression, type ExpressionValue } from './expressions.js';
-import { entityFields, isWritable, type FieldInfo, type StoredDefinition } from './fields.js';
+import { type Expression, type ExpressionValue, mapExpressionRefs } from './expressions.js';
+import { entityFields, type FieldInfo, isWritable, type StoredDefinition } from './fields.js';
 import { checkFlowRun, flowSteps, RESERVED_VARIABLES } from './flows.js';
 import { withFormulas } from './formulas.js';
 import type { Action, AppFlow, FlowRun, FlowStep, SimpleStep, Step } from './schema.js';
-import { canonicalValue, defaultValue, fitValue, rollupValues, type FieldValue, type LineValues, type RecordLines, type RecordValues, type ValueIssue, type WriteContext } from './values.js';
+import {
+  canonicalValue,
+  defaultValue,
+  type FieldValue,
+  fitValue,
+  type LineValues,
+  type RecordLines,
+  type RecordValues,
+  rollupValues,
+  type ValueIssue,
+  type WriteContext,
+} from './values.js';
 import { flowWaits } from './waiting.js';
 
 /*
@@ -22,7 +33,14 @@ interface Issue {
 }
 
 /** A value as its field holds it; or undefined, with the issue, when the field can't hold it. */
-function assign(info: FieldInfo | undefined, raw: ExpressionValue, field: string, where: string, issues: ValueIssue[], label = info?.field?.label ?? field): FieldValue | undefined {
+function assign(
+  info: FieldInfo | undefined,
+  raw: ExpressionValue,
+  field: string,
+  where: string,
+  issues: ValueIssue[],
+  label = info?.field?.label ?? field,
+): FieldValue | undefined {
   if (!info || !isWritable(info) || info.field?.type === 'file') {
     issues.push({ field, code: 'not_writable', message: `${where}: ${label} can't be set here` });
     return undefined;
@@ -91,7 +109,12 @@ export class Draft {
 
   /** The draft as it is now, to go back to: what an error handler undoes. */
   snapshot(): DraftState {
-    return { record: { ...this.#record }, lines: Object.fromEntries(Object.entries(this.#lines).map(([name, list]) => [name, [...list]])), set: this.set, linesAdded: this.linesAdded };
+    return {
+      record: { ...this.#record },
+      lines: Object.fromEntries(Object.entries(this.#lines).map(([name, list]) => [name, [...list]])),
+      set: this.set,
+      linesAdded: this.linesAdded,
+    };
   }
 
   restore(state: DraftState): void {
@@ -133,7 +156,8 @@ export class Draft {
     const linesField = entity.fields.find((f) => f.name === field);
     if (linesField?.type !== 'lines') return [{ field, code: 'unknown_field', message: `${where}: ${entity.label} has no lines field ${field}` }];
     const current = this.#lines[field] ?? [];
-    if (current.length >= linesField.max) return [{ field, code: 'too_big', message: `${where}: ${linesField.label} can have at most ${linesField.max} lines` }];
+    if (current.length >= linesField.max)
+      return [{ field, code: 'too_big', message: `${where}: ${linesField.label} can have at most ${linesField.max} lines` }];
     const lineEntity = this.#definition.entities[linesField.entity]!;
     const lineFields = entityFields(lineEntity, { line: true });
     const position = `${field}[${current.length}]`;
@@ -141,10 +165,12 @@ export class Draft {
     const line: Record<string, FieldValue> = {};
     for (const declared of lineEntity.fields) {
       let value: FieldValue | undefined = null;
-      if (Object.hasOwn(values, declared.name)) value = assign(lineFields.get(declared.name), values[declared.name]!, `${position}.${declared.name}`, where, issues, declared.label);
+      if (Object.hasOwn(values, declared.name))
+        value = assign(lineFields.get(declared.name), values[declared.name]!, `${position}.${declared.name}`, where, issues, declared.label);
       else value = defaultValue(lineFields.get(declared.name)!, this.#at) ?? null;
       if (value === undefined) continue;
-      if (declared.required && value === null) issues.push({ field: `${position}.${declared.name}`, code: 'required', message: `${where}: ${declared.label} is required` });
+      if (declared.required && value === null)
+        issues.push({ field: `${position}.${declared.name}`, code: 'required', message: `${where}: ${declared.label} is required` });
       line[declared.name] = value;
     }
     if (issues.length) return issues;
@@ -170,7 +196,9 @@ export function beforeOf(
   const run = action.before;
   const flow = run ? definition.flows?.[run.flow] : undefined;
   if (!run || !flow) return undefined;
-  const drafts = Object.entries(flow.input).flatMap(([input, type]) => (type.type === 'record' && type.entity === action.entity && isRecordRef(run.input[input]) ? [input] : []));
+  const drafts = Object.entries(flow.input).flatMap(([input, type]) =>
+    type.type === 'record' && type.entity === action.entity && isRecordRef(run.input[input]) ? [input] : [],
+  );
   return { name: run.flow, flow, drafts: new Set(drafts) };
 }
 
@@ -182,7 +210,10 @@ function isRecordRef(expression: Expression | undefined): boolean {
  * The fields and lines fields that an action's flow before it saves always gives a value: at its
  * top level, or on both sides of a branch. The caller need not give them.
  */
-export function beforeGives(definition: { readonly flows?: Readonly<Record<string, AppFlow>> | undefined }, action: Pick<Action, 'entity' | 'before'>): Set<string> {
+export function beforeGives(
+  definition: { readonly flows?: Readonly<Record<string, AppFlow>> | undefined },
+  action: Pick<Action, 'entity' | 'before'>,
+): Set<string> {
   const found = beforeOf(definition, action);
   if (!found) return new Set();
   const given = (steps: readonly FlowStep[]): Set<string> => {
@@ -205,7 +236,9 @@ function mentionsPrincipal(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(mentionsPrincipal);
   if (value === null || typeof value !== 'object') return false;
   return Object.entries(value).some(
-    ([key, inner]) => ((key === 'ref' || key === 'exists') && typeof inner === 'string' && (inner === 'principal' || inner.startsWith('principal.'))) || mentionsPrincipal(inner),
+    ([key, inner]) =>
+      ((key === 'ref' || key === 'exists') && typeof inner === 'string' && (inner === 'principal' || inner.startsWith('principal.'))) ||
+      mentionsPrincipal(inner),
   );
 }
 
@@ -245,10 +278,15 @@ const BEFORE_LABEL = ': before it saves';
  * An action's steps as the flow that runs before it saves: the same logic, in the language of
  * every other flow. The record the steps name is the flow's input, named after its entity.
  */
-export function stepsFlow(action: Pick<Action, 'label' | 'entity' | 'steps'>, name: string, taken: ReadonlySet<string>): { readonly name: string; readonly flow: AppFlow; readonly run: FlowRun } {
+export function stepsFlow(
+  action: Pick<Action, 'label' | 'entity' | 'steps'>,
+  name: string,
+  taken: ReadonlySet<string>,
+): { readonly name: string; readonly flow: AppFlow; readonly run: FlowRun } {
   const variable = RESERVED_VARIABLES.includes(action.entity) ? `the_${action.entity}`.slice(0, 63) : action.entity;
   const ref = (r: string) => (r === 'record' ? variable : r.startsWith('record.') ? `${variable}.${r.slice('record.'.length)}` : r);
-  const values = (given: Readonly<Record<string, Expression>>) => Object.fromEntries(Object.entries(given).map(([field, expression]) => [field, mapExpressionRefs(expression, ref)]));
+  const values = (given: Readonly<Record<string, Expression>>) =>
+    Object.fromEntries(Object.entries(given).map(([field, expression]) => [field, mapExpressionRefs(expression, ref)]));
   const convert = (step: Step | SimpleStep): FlowStep => {
     switch (step.type) {
       case 'set':
@@ -256,7 +294,13 @@ export function stepsFlow(action: Pick<Action, 'label' | 'entity' | 'steps'>, na
       case 'add_line':
         return { type: 'add_line', record: variable, field: step.field, values: values(step.values) };
       case 'check':
-        return { type: 'check', assert: mapRefs(step.assert, ref), message: step.message, severity: step.severity, ...(step.fields?.length ? { fields: step.fields.map((field) => `${variable}.${field}`) } : {}) };
+        return {
+          type: 'check',
+          assert: mapRefs(step.assert, ref),
+          message: step.message,
+          severity: step.severity,
+          ...(step.fields?.length ? { fields: step.fields.map((field) => `${variable}.${field}`) } : {}),
+        };
       case 'if':
         return { type: 'if', when: mapRefs(step.when, ref), then: step.then.map(convert), else: step.else.map(convert) };
     }
@@ -365,7 +409,8 @@ export function checkBeforeFlows(definition: StoredDefinition, issues: Issue[]):
     const only = `it runs before ${action.label} saves, so it changes only the ${record} it saves`;
     for (const { step, path: at } of flowSteps(flow.steps)) {
       const issue = (message: string) => issues.push({ path: `flows.${found.name}.${at}`, message });
-      for (const variable of givesVariables(step)) if (drafts.has(variable)) issue(`${variable} holds the ${record} that ${action.label} saves: keep other values in other variables`);
+      for (const variable of givesVariables(step))
+        if (drafts.has(variable)) issue(`${variable} holds the ${record} that ${action.label} saves: keep other values in other variables`);
       switch (step.type) {
         case 'create':
           issue(`This flow can't create records: ${only}. Create them in a flow that runs after it saves`);
@@ -385,7 +430,8 @@ export function checkBeforeFlows(definition: StoredDefinition, issues: Issue[]):
           break;
         case 'call': {
           const callee = definition.flows?.[step.flow];
-          if (callee && flowWrites(definition, step.flow)) issue(`${callee.label} changes records or tells people, and this flow calls only flows that read: ${only}`);
+          if (callee && flowWrites(definition, step.flow))
+            issue(`${callee.label} changes records or tells people, and this flow calls only flows that read: ${only}`);
           break;
         }
         default:

@@ -1,18 +1,18 @@
 import { useEffect, useState } from 'react';
 import {
-  defaultValue,
-  fromModel,
-  isGroup,
-  newClause,
-  opLabel,
-  opsFor,
-  toModel,
   type Clause,
   type Condition,
+  defaultValue,
+  fromModel,
   type Group,
+  isGroup,
   type Literal,
+  newClause,
   type Op,
+  opLabel,
+  opsFor,
   type RefChoice,
+  toModel,
 } from '../model/conditions.js';
 import { Button, cx, Select, TextInput } from './ui.js';
 
@@ -49,7 +49,15 @@ export function ConditionEditor({ label, value, onChange, choices, compareWith =
   );
 }
 
-function GroupEditor(props: { group: Group; onChange: (group: Group) => void; choices: readonly RefChoice[]; compareWith: readonly RefChoice[]; depth: number; empty?: string | undefined; clock: boolean }) {
+function GroupEditor(props: {
+  group: Group;
+  onChange: (group: Group) => void;
+  choices: readonly RefChoice[];
+  compareWith: readonly RefChoice[];
+  depth: number;
+  empty?: string | undefined;
+  clock: boolean;
+}) {
   const { group, onChange, choices, compareWith, depth, clock } = props;
   const setItem = (index: number, item: Clause | Group) => onChange({ ...group, items: group.items.map((existing, i) => (i === index ? item : existing)) });
   const remove = (index: number) => onChange({ ...group, items: group.items.filter((_, i) => i !== index) });
@@ -77,7 +85,15 @@ function GroupEditor(props: { group: Group; onChange: (group: Group) => void; ch
             </div>
           </div>
         ) : (
-          <ClauseEditor key={index} clause={item} onChange={(next) => setItem(index, next)} onRemove={() => remove(index)} choices={choices} compareWith={compareWith} clock={clock} />
+          <ClauseEditor
+            key={index}
+            clause={item}
+            onChange={(next) => setItem(index, next)}
+            onRemove={() => remove(index)}
+            choices={choices}
+            compareWith={compareWith}
+            clock={clock}
+          />
         ),
       )}
       {first ? (
@@ -86,7 +102,13 @@ function GroupEditor(props: { group: Group; onChange: (group: Group) => void; ch
             Add a condition
           </Button>
           {depth === 0 ? (
-            <Button size="sm" variant="ghost" onClick={() => onChange({ ...group, items: [...group.items, { match: group.match === 'all' ? 'any' : 'all', items: [newClause(first, clock)] }] })}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                onChange({ ...group, items: [...group.items, { match: group.match === 'all' ? 'any' : 'all', items: [newClause(first, clock)] }] })
+              }
+            >
               Add a group
             </Button>
           ) : null}
@@ -151,7 +173,11 @@ function ClauseEditor({
           </option>
         ))}
       </Select>
-      {needsValue && choice.kind === 'date' ? <DateSide clause={clause} others={others} onChange={onChange} clock={clock} /> : needsValue ? <RightSide clause={clause} choice={choice} others={others} onChange={onChange} /> : null}
+      {needsValue && choice.kind === 'date' ? (
+        <DateSide clause={clause} others={others} onChange={onChange} clock={clock} />
+      ) : needsValue ? (
+        <RightSide clause={clause} choice={choice} others={others} onChange={onChange} />
+      ) : null}
       <Button size="sm" variant="ghost" aria-label="Remove this condition" onClick={onRemove}>
         ✕
       </Button>
@@ -171,7 +197,15 @@ function DateSide({ clause, others, onChange, clock }: { clause: Clause; others:
         value={mode}
         onChange={(e) => {
           const next = e.target.value;
-          onChange({ ...clause, right: next === 'today' || next === 'now' ? { kind: 'relative', unit: next, amount: 0 } : next === 'value' ? { kind: 'value', value: '' } : { kind: 'ref', ref: next } });
+          onChange({
+            ...clause,
+            right:
+              next === 'today' || next === 'now'
+                ? { kind: 'relative', unit: next, amount: 0 }
+                : next === 'value'
+                  ? { kind: 'value', value: '' }
+                  : { kind: 'ref', ref: next },
+          });
         }}
       >
         {/* Where the clock can't be read, today and now show only to be changed. */}
@@ -193,17 +227,35 @@ function DateSide({ clause, others, onChange, clock }: { clause: Clause; others:
             value={right.amount}
             onChange={(e) => onChange({ ...clause, right: { ...right, amount: Math.trunc(Number(e.target.value) || 0) } })}
           />
-          <span className="text-xs text-muted">{right.unit === 'today' ? 'days from today; less than 0 for days ago' : 'hours from now; less than 0 for hours ago'}</span>
+          <span className="text-xs text-muted">
+            {right.unit === 'today' ? 'days from today; less than 0 for days ago' : 'hours from now; less than 0 for hours ago'}
+          </span>
         </>
       ) : null}
       {right.kind === 'value' ? (
-        <TextInput aria-label="Date" type="date" className="w-44" value={typeof right.value === 'string' ? right.value : ''} onChange={(e) => onChange({ ...clause, right: { kind: 'value', value: e.target.value } })} />
+        <TextInput
+          aria-label="Date"
+          type="date"
+          className="w-44"
+          value={typeof right.value === 'string' ? right.value : ''}
+          onChange={(e) => onChange({ ...clause, right: { kind: 'value', value: e.target.value } })}
+        />
       ) : null}
     </span>
   );
 }
 
-function RightSide({ clause, choice, others, onChange }: { clause: Clause; choice: RefChoice; others: readonly RefChoice[]; onChange: (clause: Clause) => void }) {
+function RightSide({
+  clause,
+  choice,
+  others,
+  onChange,
+}: {
+  clause: Clause;
+  choice: RefChoice;
+  others: readonly RefChoice[];
+  onChange: (clause: Clause) => void;
+}) {
   const current = clause.right && clause.right.kind !== 'relative' ? clause.right : { kind: 'value' as const, value: defaultValue(choice, clause.op) };
   const setValue = (value: Literal) => onChange({ ...clause, right: { kind: 'value', value } });
   const list = clause.op === 'in' || clause.op === 'notIn';
@@ -217,7 +269,12 @@ function RightSide({ clause, choice, others, onChange }: { clause: Clause; choic
           aria-label="Compare with"
           className="w-auto"
           value={source}
-          onChange={(e) => onChange({ ...clause, right: e.target.value === 'value' ? { kind: 'value', value: defaultValue(choice, clause.op) } : { kind: 'ref', ref: e.target.value } })}
+          onChange={(e) =>
+            onChange({
+              ...clause,
+              right: e.target.value === 'value' ? { kind: 'value', value: defaultValue(choice, clause.op) } : { kind: 'ref', ref: e.target.value },
+            })
+          }
         >
           {choice.kind === 'person' ? null : <option value="value">a value</option>}
           {sources.map((s) => (
@@ -258,7 +315,14 @@ function ValueInput({ choice, list, value, onChange }: { choice: RefChoice; list
         aria-label="Values, separated by commas"
         className="w-56"
         value={Array.isArray(value) ? value.join(', ') : ''}
-        onChange={(e) => onChange(e.target.value.split(',').map((v) => v.trim()).filter(Boolean))}
+        onChange={(e) =>
+          onChange(
+            e.target.value
+              .split(',')
+              .map((v) => v.trim())
+              .filter(Boolean),
+          )
+        }
         placeholder="a, b, c"
       />
     );
@@ -283,7 +347,15 @@ function ValueInput({ choice, list, value, onChange }: { choice: RefChoice; list
     );
   }
   if (choice.kind === 'number') {
-    return <TextInput aria-label="Value" type="number" className="w-32" value={typeof value === 'number' ? value : ''} onChange={(e) => onChange(e.target.value === '' ? 0 : Number(e.target.value))} />;
+    return (
+      <TextInput
+        aria-label="Value"
+        type="number"
+        className="w-32"
+        value={typeof value === 'number' ? value : ''}
+        onChange={(e) => onChange(e.target.value === '' ? 0 : Number(e.target.value))}
+      />
+    );
   }
   return <TextInput aria-label="Value" className="w-48" value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} />;
 }

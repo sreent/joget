@@ -1,7 +1,7 @@
 import { EXPENSE_APP } from '@platform/app-model';
 import type { InjectOptions } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startTestApp, type Session, type TestApp } from './helpers.js';
+import { type Session, startTestApp, type TestApp } from './helpers.js';
 
 /**
  * References, end to end (design §6.1): a claim can be for several trips. The platform keeps the
@@ -44,13 +44,18 @@ function withTrips() {
 }
 
 async function submit(session: Session, title: string, list: unknown, expected = 201) {
-  return inject({ method: 'POST', url: `/v1/apps/${appId}/actions/submit_claim/run`, ...as(session), payload: { values: { title, lines: [receipt], trips: list } } }, expected);
+  return inject(
+    { method: 'POST', url: `/v1/apps/${appId}/actions/submit_claim/run`, ...as(session), payload: { values: { title, lines: [receipt], trips: list } } },
+    expected,
+  );
 }
 
 beforeAll(async () => {
   t = await startTestApp();
   [alice, bob, carol] = [await t.login('alice'), await t.login('bob'), await t.login('carol')];
-  appId = (await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withTrips() } }, 201)).json().app.id;
+  appId = (
+    await inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, ...as(alice), payload: { name: 'Expenses', definition: withTrips() } }, 201)
+  ).json().app.id;
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'bob@example.com', role: 'requester' } }, 201);
   await inject({ method: 'POST', url: `/v1/apps/${appId}/shares`, ...as(alice), payload: { email: 'carol@example.com', role: 'approver' } }, 201);
   tokyo = (await inject({ method: 'POST', url: trips(), ...as(alice), payload: { values: { name: 'Tokyo summit' } } }, 201)).json().id;
@@ -90,7 +95,11 @@ describe('references to several records', () => {
   it('let a page about a trip list the claims whose list holds it', async () => {
     await submit(bob, 'Only Tokyo', [tokyo]);
     const listed = async (trip: string) =>
-      ((await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/trip_page/blocks/0/records?record=${trip}`, ...as(bob) }, 200)).json().records as Array<{ values: { title: string } }>)
+      (
+        (await inject({ method: 'GET', url: `/v1/apps/${appId}/pages/trip_page/blocks/0/records?record=${trip}`, ...as(bob) }, 200)).json().records as Array<{
+          values: { title: string };
+        }>
+      )
         .map((record) => record.values.title)
         .sort();
     expect(await listed(tokyo)).toEqual(['Both trips', 'Only Tokyo']);
@@ -99,12 +108,18 @@ describe('references to several records', () => {
 
   it('find records by their title, for a picker, matching % and _ as plain characters', async () => {
     const found = async (search: string) =>
-      ((await inject({ method: 'GET', url: `${trips()}?search=${encodeURIComponent(search)}`, ...as(bob) }, 200)).json().records as Array<{ values: { name: string } }>).map((r) => r.values.name);
+      (
+        (await inject({ method: 'GET', url: `${trips()}?search=${encodeURIComponent(search)}`, ...as(bob) }, 200)).json().records as Array<{
+          values: { name: string };
+        }>
+      ).map((r) => r.values.name);
     expect(await found('TOKYO')).toEqual(['Tokyo summit']);
     expect(await found('100%')).toEqual(['Penang 100% retreat']);
     expect(await found('%')).toEqual(['Penang 100% retreat']);
     expect(await found('_')).toEqual([]);
     // Claims have a title too; an entity without one can't be searched.
-    expect((await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_line/records?search=x`, ...as(alice) })).statusCode).toBeGreaterThanOrEqual(400);
+    expect((await inject({ method: 'GET', url: `/v1/apps/${appId}/entities/expense_line/records?search=x`, ...as(alice) })).statusCode).toBeGreaterThanOrEqual(
+      400,
+    );
   });
 });

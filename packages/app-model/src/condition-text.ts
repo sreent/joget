@@ -1,4 +1,4 @@
-import { isRef, isRelativeTime, type Condition, type Operand } from '@platform/authz';
+import { type Condition, isRef, isRelativeTime, type Operand } from '@platform/authz';
 
 /*
  * Conditions as text, such as `record.days > 10 && record.kind == "annual"`: for a change request

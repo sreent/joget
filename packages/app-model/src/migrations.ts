@@ -1,4 +1,15 @@
-import { columnName, formulaOf, hasFiles, lineOwners, refersToMany, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
+import {
+  columnName,
+  formulaOf,
+  hasFiles,
+  lineOwners,
+  refersToMany,
+  rollupOf,
+  type StoredDefinition,
+  type StoredEntity,
+  type StoredField,
+  tableName,
+} from './fields.js';
 import { formulaFields, formulaUpdates } from './formulas.js';
 import { NAME_PATTERN } from './schema.js';
 import { ident } from './sql.js';
@@ -108,7 +119,15 @@ function rollupSignature(definition: StoredDefinition, entity: StoredEntity, fie
 /** What an entity's formulas depend on: each formula and the field that keeps it. A change means working them out again. */
 function formulaSignature(entity: StoredEntity): string {
   return JSON.stringify(
-    formulaFields(entity).map((field) => [field.id, formulaOf(field), field.type, 'decimals' in field ? field.decimals : null, 'maxLength' in field ? field.maxLength : null, 'min' in field ? (field.min ?? null) : null, 'max' in field ? (field.max ?? null) : null]),
+    formulaFields(entity).map((field) => [
+      field.id,
+      formulaOf(field),
+      field.type,
+      'decimals' in field ? field.decimals : null,
+      'maxLength' in field ? field.maxLength : null,
+      'min' in field ? (field.min ?? null) : null,
+      'max' in field ? (field.max ?? null) : null,
+    ]),
   );
 }
 
@@ -240,7 +259,12 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
     const old = before.get(id);
     if (!old) {
       const owner = ownersAfter.get(name);
-      step({ kind: 'create_entity', entity: name, destructive: false, description: owner ? `Create ${name}, the lines of ${owner.parent}.${owner.field}` : `Create ${name}` });
+      step({
+        kind: 'create_entity',
+        entity: name,
+        destructive: false,
+        description: owner ? `Create ${name}, the lines of ${owner.parent}.${owner.field}` : `Create ${name}`,
+      });
       createTable(name, entity);
       continue;
     }
@@ -286,14 +310,36 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
         continue;
       }
       if (oldField.name !== field.name) {
-        step({ kind: 'rename_field', entity: name, from: oldField.name, to: field.name, destructive: false, description: `Rename ${name}.${oldField.name} to ${field.name}; no data changes` });
+        step({
+          kind: 'rename_field',
+          entity: name,
+          from: oldField.name,
+          to: field.name,
+          destructive: false,
+          description: `Rename ${name}.${oldField.name} to ${field.name}; no data changes`,
+        });
         if (field.type !== 'lines') comments.push(`comment on column ${table(entity)}.${column(field)} is ${nameLiteral(field.name)}`);
       }
       // A reference's type names its target table, so pointing it at another entity counts as a new type.
       const [oldType, newType] = [physicalType(oldField, previous!.entities), physicalType(field, next.entities)];
       // A reference to one record becomes a list of records that holds it, losing nothing.
-      if (oldType !== newType && oldField.type === 'reference' && !oldField.multiple && field.type === 'reference' && field.multiple && oldType === `uuid references ${tableName(next.entities[field.entity]!.id)}`) {
-        step({ kind: 'retype_field', entity: name, field: field.name, from: 'reference', to: 'references', destructive: false, description: `Let ${name}.${field.name} hold several records; each record keeps the one it has` });
+      if (
+        oldType !== newType &&
+        oldField.type === 'reference' &&
+        !oldField.multiple &&
+        field.type === 'reference' &&
+        field.multiple &&
+        oldType === `uuid references ${tableName(next.entities[field.entity]!.id)}`
+      ) {
+        step({
+          kind: 'retype_field',
+          entity: name,
+          field: field.name,
+          from: 'reference',
+          to: 'references',
+          destructive: false,
+          description: `Let ${name}.${field.name} hold several records; each record keeps the one it has`,
+        });
         const list = ident(`${columnName(field.id)}_list`);
         drops.push(
           `alter table ${table(entity)} add column ${list} uuid[]`,
@@ -337,12 +383,24 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
         if (field.type === 'lines') {
           const lines = next.entities[field.entity]!;
           step(
-            { kind: 'require_field', entity: name, field: field.name, destructive: false, description: `Make ${name}.${field.name} need at least one line; records without any keep working until edited` },
+            {
+              kind: 'require_field',
+              entity: name,
+              field: field.name,
+              destructive: false,
+              description: `Make ${name}.${field.name} need at least one line; records without any keep working until edited`,
+            },
             `select count(*)::int as n from ${table(entity)} r where not exists (select from ${table(lines)} l where l.parent_id = r.id)`,
           );
         } else {
           step(
-            { kind: 'require_field', entity: name, field: field.name, destructive: false, description: `Make ${name}.${field.name} required; existing records without a value keep working until edited` },
+            {
+              kind: 'require_field',
+              entity: name,
+              field: field.name,
+              destructive: false,
+              description: `Make ${name}.${field.name} required; existing records without a value keep working until edited`,
+            },
             `select count(*)::int as n from ${table(entity)} where ${column(field)} is null`,
           );
         }
@@ -371,7 +429,8 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
       const oldField = old.entity.fields.find((f) => f.id === field.id);
       const lines = entity.fields.find((f) => f.type === 'lines' && f.name === Object.values(rollupOf(field)!)[0]!.split('.')[0]);
       const lineEntity = next.entities[(lines as { entity: string }).entity]!;
-      const unchanged = oldField && rollupSignature(previous!, old.entity, oldField) === signature && !fresh.has(lineEntity.id) && !formulasChanged.has(lineEntity.id);
+      const unchanged =
+        oldField && rollupSignature(previous!, old.entity, oldField) === signature && !fresh.has(lineEntity.id) && !formulasChanged.has(lineEntity.id);
       if (unchanged) continue;
       rolledUp.add(id);
       step(
@@ -386,14 +445,26 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
     if (fresh.has(id) || !(formulasChanged.has(id) || rolledUp.has(id)) || !formulaFields(entity).length) continue;
     const line = ownersAfter.has(name);
     for (const field of formulaFields(entity)) {
-      step({ kind: 'compute_field', entity: name, field: field.name, destructive: false, description: `Work out ${name}.${field.name} for existing ${line ? 'lines' : 'records'}` }, `select count(*)::int as n from ${table(entity)}`);
+      step(
+        {
+          kind: 'compute_field',
+          entity: name,
+          field: field.name,
+          destructive: false,
+          description: `Work out ${name}.${field.name} for existing ${line ? 'lines' : 'records'}`,
+        },
+        `select count(*)::int as n from ${table(entity)}`,
+      );
     }
     (line ? lineFormulas : recordFormulas).push(...formulaUpdates(entity, table(entity), { line }));
   }
 
   const dropped = [...before].filter(([id]) => !after.has(id));
   for (const [, { name, entity }] of dropped) {
-    step({ kind: 'drop_entity', entity: name, destructive: true, description: `Delete ${name} and all its records` }, `select count(*)::int as n from ${table(entity)}`);
+    step(
+      { kind: 'drop_entity', entity: name, destructive: true, description: `Delete ${name} and all its records` },
+      `select count(*)::int as n from ${table(entity)}`,
+    );
     dropTables.push(table(entity));
   }
   // Drop the tables together, so references between them don't get in the way.
@@ -405,7 +476,19 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
   return {
     steps,
     destructive: steps.some((s) => s.destructive),
-    statements: [...drops, ...fileTables, ...creates, ...lineCreates, ...adds, ...references, ...indexes, ...comments, ...lineFormulas, ...computes, ...recordFormulas],
+    statements: [
+      ...drops,
+      ...fileTables,
+      ...creates,
+      ...lineCreates,
+      ...adds,
+      ...references,
+      ...indexes,
+      ...comments,
+      ...lineFormulas,
+      ...computes,
+      ...recordFormulas,
+    ],
     impact,
   };
 }

@@ -1,12 +1,11 @@
-import { describe, expect, it } from 'vitest';
 import {
   accessChanges,
-  adHocStarts,
   addDuration,
+  adHocStarts,
   automaticStarts,
   canRepeat,
-  caughtSignals,
   capabilityChanges,
+  caughtSignals,
   decideVotes,
   decisionsBy,
   diffDefinitions,
@@ -16,15 +15,17 @@ import {
   insideOf,
   isAdHoc,
   isEventSub,
-  linkTarget,
   LEAVE_PROCESS_APP,
+  linkTarget,
   lintDefinition,
-  messageActions,
   mergeDefinitions,
+  messageActions,
+  type Process,
   plainStartOf,
   processGraph,
   processWork,
   reachable,
+  type StoredDefinition,
   scopeOf,
   sentMessages,
   signalStarts,
@@ -33,9 +34,8 @@ import {
   timerFiresAt,
   validateDefinition,
   votesNeeded,
-  type Process,
-  type StoredDefinition,
 } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 const ids = () => {
   let n = 0;
@@ -124,8 +124,22 @@ describe('inclusive gateways, messages and errors', () => {
   /** The leave app with withdrawal, a payroll update that can fail, and an inclusive gateway for who hears of it. */
   const more = (edit: (process: Record<string, any>) => void = () => undefined) =>
     leave((process, definition) => {
-      definition['actions'].withdraw_leave = { label: 'Withdraw', description: 'Withdraw a leave request.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' } };
-      definition['actions'].tell_payroll = { label: 'Tell payroll', description: 'Mark the leave as known to payroll.', entity: 'leave_request', operation: 'update', input: [], set: { reason: 'Payroll knows' } };
+      definition['actions'].withdraw_leave = {
+        label: 'Withdraw',
+        description: 'Withdraw a leave request.',
+        entity: 'leave_request',
+        operation: 'update',
+        input: [],
+        set: { status: 'rejected' },
+      };
+      definition['actions'].tell_payroll = {
+        label: 'Tell payroll',
+        description: 'Mark the leave as known to payroll.',
+        entity: 'leave_request',
+        operation: 'update',
+        input: [],
+        set: { reason: 'Payroll knows' },
+      };
       definition['roles'].employee.actions.push('withdraw_leave');
       process.elements.withdrawn = { type: 'boundaryEvent', name: 'Withdrawn', attachedTo: 'decide', message: { action: 'withdraw_leave' } };
       process.elements.gone = { type: 'endEvent', name: 'Withdrawn' };
@@ -257,16 +271,16 @@ describe('sub-processes and call activities', () => {
     expect(issues).toEqual(
       expect.arrayContaining([
         "processes.leave_approval.flows.out_of_it: A flow can't cross the edge of a sub-process: Start event review_start is in Review, and Leave rejected is in the process itself",
-        "processes.leave_approval.elements.review_start: A start event inside a sub-process starts when the sub-process does: it names no action, timer, condition or signal",
+        'processes.leave_approval.elements.review_start: A start event inside a sub-process starts when the sub-process does: it names no action, timer, condition or signal',
         "processes.leave_approval.elements.stray.in: Decide on the leave isn't a sub-process: only a sub-process holds other elements",
         "processes.leave_approval.elements.look.record: manager doesn't refer to a record",
         'processes.leave_approval.elements.look.process: Second look has no start event without actions, where a call starts it',
         'processes.leave_approval.elements.wrong.record: Cover plan is about team: name the reference field whose record it runs on',
       ]),
     );
-    expect(issuesOf(nested((process) => void (process.elements.too_long = { type: 'boundaryEvent', attachedTo: 'review', message: { action: 'withdraw' } })))).toEqual(
-      expect.arrayContaining(['processes.leave_approval.elements.too_long.message.action: No action named withdraw']),
-    );
+    expect(
+      issuesOf(nested((process) => void (process.elements.too_long = { type: 'boundaryEvent', attachedTo: 'review', message: { action: 'withdraw' } }))),
+    ).toEqual(expect.arrayContaining(['processes.leave_approval.elements.too_long.message.action: No action named withdraw']));
   });
 
   it('are checked: a sub-process starts once and ends, and processes call no one in a ring', () => {
@@ -325,7 +339,15 @@ function tasks(edit: (process: Record<string, any>, definition: Record<string, a
       ],
     };
     definition['entities'].leave_request.fields.push({ name: 'team', label: 'Team', type: 'reference', entity: 'team' });
-    const update = (entity: string, label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity, operation: 'update', input: [], set, confirm: 'none' });
+    const update = (entity: string, label: string, set: Record<string, string>) => ({
+      label,
+      description: `${label}.`,
+      entity,
+      operation: 'update',
+      input: [],
+      set,
+      confirm: 'none',
+    });
     definition['actions'].tell_payroll = update('leave_request', 'Tell payroll', { reason: 'Payroll knows' });
     definition['actions'].confirm_leave = update('leave_request', 'Confirm the leave', { reason: 'Confirmed' });
     definition['actions'].note_team = update('team', 'Note the team', { note: 'Someone is away' });
@@ -391,7 +413,7 @@ describe('script, rule check, send and receive tasks, and simple events', () => 
     );
     expect(issues).toEqual(
       expect.arrayContaining([
-        "processes.leave_approval.elements.flag.steps: Flag long leave reads the person who runs it, but a process runs it with no person",
+        'processes.leave_approval.elements.flag.steps: Flag long leave reads the person who runs it, but a process runs it with no person',
         'processes.leave_approval.elements.rules_check.rules[0]: No rule named no_such_rule',
         'processes.leave_approval.elements.tell.message.action: note_team works on team, not on leave_request',
         "processes.leave_approval.elements.team_note.message.record: manager doesn't refer to a record",
@@ -399,7 +421,9 @@ describe('script, rule check, send and receive tasks, and simple events', () => 
         'processes.leave_approval.elements.jump.link: No catch link named elsewhere is where Event jump is',
       ]),
     );
-    expect(issuesOf(tasks((process) => void (process.elements.flag.steps = [])))).toEqual(expect.arrayContaining(['processes.leave_approval.elements.flag.steps: Flag long leave needs a step']));
+    expect(issuesOf(tasks((process) => void (process.elements.flag.steps = [])))).toEqual(
+      expect.arrayContaining(['processes.leave_approval.elements.flag.steps: Flag long leave needs a step']),
+    );
     expect(
       issuesOf(
         tasks((process) => {
@@ -437,7 +461,15 @@ describe('script, rule check, send and receive tasks, and simple events', () => 
  */
 function waits(edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined): Record<string, any> {
   return leave((process, definition) => {
-    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    const update = (label: string, set: Record<string, string>) => ({
+      label,
+      description: `${label}.`,
+      entity: 'leave_request',
+      operation: 'update',
+      input: [],
+      set,
+      confirm: 'none',
+    });
     definition['actions'].confirm_leave = update('Confirm the leave', { reason: 'Confirmed' });
     definition['actions'].withdraw_leave = update('Withdraw the leave', { status: 'rejected' });
     const simple = (label: string, start: Record<string, unknown>) => ({
@@ -517,7 +549,15 @@ describe('conditions, event-based gateways and starts by themselves', () => {
  */
 function raises(edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined): Record<string, any> {
   return leave((process, definition) => {
-    const update = (label: string, set: Record<string, string>) => ({ label, description: `${label}.`, entity: 'leave_request', operation: 'update', input: [], set, confirm: 'none' });
+    const update = (label: string, set: Record<string, string>) => ({
+      label,
+      description: `${label}.`,
+      entity: 'leave_request',
+      operation: 'update',
+      input: [],
+      set,
+      confirm: 'none',
+    });
     definition['actions'].book_room = update('Book a room', { reason: 'Room booked' });
     definition['actions'].free_room = update('Free the room', { reason: 'Room freed' });
     Object.assign(process.elements, {
@@ -652,7 +692,15 @@ describe('event sub-processes', () => {
    */
   const withSubs = (edit: (process: Record<string, any>, definition: Record<string, any>) => void = () => undefined) =>
     leave((process, definition) => {
-      definition['actions'].withdraw_leave = { label: 'Withdraw', description: 'Withdraw.', entity: 'leave_request', operation: 'update', input: [], set: { status: 'rejected' }, confirm: 'none' };
+      definition['actions'].withdraw_leave = {
+        label: 'Withdraw',
+        description: 'Withdraw.',
+        entity: 'leave_request',
+        operation: 'update',
+        input: [],
+        set: { status: 'rejected' },
+        confirm: 'none',
+      };
       Object.assign(process.elements, {
         withdrawn: { type: 'subProcess', name: 'If withdrawn', event: true },
         w_start: { type: 'startEvent', in: 'withdrawn', actions: ['withdraw_leave'] },
@@ -702,7 +750,7 @@ describe('event sub-processes', () => {
     );
     expect(issues).toEqual([
       'processes.leave_approval.flows.into.from: Withdrawn is an end event: no flow leaves it',
-      'processes.leave_approval.flows.into: A flow can\'t cross the edge of a sub-process: Withdrawn is in If withdrawn, and If late is in the process itself',
+      "processes.leave_approval.flows.into: A flow can't cross the edge of a sub-process: Withdrawn is in If withdrawn, and If late is in the process itself",
       'processes.leave_approval.elements.requested: Leave requested starts the process: only a start event in an event sub-process catches an error or an escalation, or lets the rest go on',
       'processes.leave_approval.elements.w_start: Start event w_start starts its event sub-process on an action, a timer, a condition, a signal, an error or an escalation: one of these',
       "processes.leave_approval.elements.late: If late starts on its start event's trigger: no flow leads into it or out of it",
@@ -774,7 +822,9 @@ describe('complex gateways', () => {
   });
 
   it('are checked: they wait for no more paths than lead into them', () => {
-    expect(issuesOf(complex((process) => (process.elements.enough.waitFor = 4)))).toEqual(['processes.leave_approval.elements.enough.waitFor: Two checks waits for 4 paths, but 3 lead into it']);
+    expect(issuesOf(complex((process) => (process.elements.enough.waitFor = 4)))).toEqual([
+      'processes.leave_approval.elements.enough.waitFor: Two checks waits for 4 paths, but 3 lead into it',
+    ]);
   });
 });
 
@@ -815,14 +865,18 @@ describe('loops', () => {
           process.elements.decide.repeat.before = true;
         }),
       ),
-    ).toEqual(['processes.leave_approval.elements.decide.repeat.before: Decide on the leave leaves by its outcome, so it checks whether to repeat after it runs, not before']);
+    ).toEqual([
+      'processes.leave_approval.elements.decide.repeat.before: Decide on the leave leaves by its outcome, so it checks whether to repeat after it runs, not before',
+    ]);
     expect(
       issuesOf(
         looping((process) => {
           process.elements.decide.several = { people: { everyone: true }, decide: { first: true } };
         }),
       ),
-    ).toEqual(expect.arrayContaining(['processes.leave_approval.elements.decide.repeat: Decide on the leave repeats, or several people decide it: one of the two']));
+    ).toEqual(
+      expect.arrayContaining(['processes.leave_approval.elements.decide.repeat: Decide on the leave repeats, or several people decide it: one of the two']),
+    );
   });
 });
 
@@ -865,7 +919,9 @@ describe('calls for each record', () => {
       "processes.leave_approval.elements.days.each.field: day doesn't refer to leave_request: a call runs for each record that refers to this one",
     ]);
     expect(issuesOf(forEach((process) => (process.elements.days.record = 'manager')))).toEqual(
-      expect.arrayContaining(['processes.leave_approval.elements.days: Check each day runs on the record a field names, or for each record that refers to this one: one of the two']),
+      expect.arrayContaining([
+        'processes.leave_approval.elements.days: Check each day runs on the record a field names, or for each record that refers to this one: one of the two',
+      ]),
     );
   });
 });
@@ -899,8 +955,8 @@ describe('votes, when several people decide', () => {
       "processes.leave_approval.elements.decide.several.people.fields[1]: reason doesn't name a person",
       'processes.leave_approval.elements.decide.several.decide.otherwise: Decide on the leave has no outcome maybe',
       'processes.leave_approval.elements.decide.several.decide.count: 3 votes are needed, but only 2 people vote',
-      "processes.leave_approval.elements.decide.outcomes[0].action: approve_leave reads the person who runs it, but when several people decide, it runs with no one person",
-      "processes.leave_approval.elements.decide.outcomes[1].action: reject_leave reads the person who runs it, but when several people decide, it runs with no one person",
+      'processes.leave_approval.elements.decide.outcomes[0].action: approve_leave reads the person who runs it, but when several people decide, it runs with no one person',
+      'processes.leave_approval.elements.decide.outcomes[1].action: reject_leave reads the person who runs it, but when several people decide, it runs with no one person',
     ]);
   });
 });
@@ -1036,7 +1092,8 @@ describe('the checks of a process', () => {
       role.entities['absence'] = role.entities['leave_request'];
       delete role.entities['leave_request'];
     }
-    for (const page of Object.values(renamed['pages']) as Array<{ blocks: Array<{ entity?: string }> }>) for (const block of page.blocks) if (block.entity) block.entity = 'absence';
+    for (const page of Object.values(renamed['pages']) as Array<{ blocks: Array<{ entity?: string }> }>)
+      for (const block of page.blocks) if (block.entity) block.entity = 'absence';
     const result = validateDefinition(renamed, before, ids());
     if (!result.ok) throw new Error(JSON.stringify(result.issues));
     const process = result.definition.processes!['leave_approval']!;
@@ -1079,10 +1136,13 @@ describe('a process in review', () => {
         process.flows.paid = { from: 'pay', to: 'approved' };
       }),
     );
-    expect(capabilityChanges(head, paying).map((change) => change.text)).toEqual(['New tool mark_recorded: updates Leave request, and asks the person to confirm a preview', 'Leave approval now runs mark_recorded by itself']);
+    expect(capabilityChanges(head, paying).map((change) => change.text)).toEqual([
+      'New tool mark_recorded: updates Leave request, and asks the person to confirm a preview',
+      'Leave approval now runs mark_recorded by itself',
+    ]);
   });
 
-  it("ignores a change of layout, and names a change of the flow", () => {
+  it('ignores a change of layout, and names a change of the flow', () => {
     const moved = valid(leave((process) => void (process.diagram.shapes.decide.x = 300)));
     expect(capabilityChanges(head, moved)).toEqual([]);
     expect(diffDefinitions(head, moved)).toEqual([{ section: 'processes', name: 'leave_approval', change: 'changed', details: [] }]);

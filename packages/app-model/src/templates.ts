@@ -17,21 +17,34 @@ export const LEAVE_APP = {
       pluralLabel: 'Leave requests',
       titleField: 'kind',
       fields: [
-        { name: 'kind', label: 'Kind of leave', type: 'choice', required: true, default: 'annual', options: [
-          { value: 'annual', label: 'Annual leave' },
-          { value: 'sick', label: 'Sick leave' },
-          { value: 'unpaid', label: 'Unpaid leave' },
-        ] },
+        {
+          name: 'kind',
+          label: 'Kind of leave',
+          type: 'choice',
+          required: true,
+          default: 'annual',
+          options: [
+            { value: 'annual', label: 'Annual leave' },
+            { value: 'sick', label: 'Sick leave' },
+            { value: 'unpaid', label: 'Unpaid leave' },
+          ],
+        },
         { name: 'starts', label: 'First day', type: 'date', required: true },
         { name: 'ends', label: 'Last day', type: 'date', required: true },
         { name: 'days', label: 'Working days', type: 'number', decimals: 1, min: 0.5, max: 60, required: true },
         { name: 'reason', label: 'Reason', type: 'text', maxLength: 500 },
         { name: 'manager', label: 'Manager', type: 'user', required: true },
-        { name: 'status', label: 'Status', type: 'choice', default: 'submitted', options: [
-          { value: 'submitted', label: 'Waiting for a decision' },
-          { value: 'approved', label: 'Approved' },
-          { value: 'rejected', label: 'Rejected' },
-        ] },
+        {
+          name: 'status',
+          label: 'Status',
+          type: 'choice',
+          default: 'submitted',
+          options: [
+            { value: 'submitted', label: 'Waiting for a decision' },
+            { value: 'approved', label: 'Approved' },
+            { value: 'rejected', label: 'Rejected' },
+          ],
+        },
         { name: 'decided_on', label: 'Decided on', type: 'date' },
       ],
     },
@@ -110,7 +123,15 @@ export const LEAVE_APP = {
       entity: 'leave_request',
       action: 'request_leave',
       sections: [
-        { title: 'When', fields: [{ field: 'kind' }, { field: 'starts', width: 'half' }, { field: 'ends', width: 'half' }, { field: 'days', width: 'half', help: 'Leave out weekends and public holidays' }] },
+        {
+          title: 'When',
+          fields: [
+            { field: 'kind' },
+            { field: 'starts', width: 'half' },
+            { field: 'ends', width: 'half' },
+            { field: 'days', width: 'half', help: 'Leave out weekends and public holidays' },
+          ],
+        },
         { title: 'Why, and who decides', fields: [{ field: 'reason' }, { field: 'manager', width: 'half' }] },
       ],
     },
@@ -184,7 +205,14 @@ export const LEAVE_APP = {
           filter: { eq: [status, 'approved'] },
           range: { field: 'starts', within: 'this_year' },
         },
-        { type: 'chart', title: 'Days by kind of leave', entity: 'leave_request', measure: { op: 'sum', field: 'days' }, group: { field: 'kind' }, show: 'bar' },
+        {
+          type: 'chart',
+          title: 'Days by kind of leave',
+          entity: 'leave_request',
+          measure: { op: 'sum', field: 'days' },
+          group: { field: 'kind' },
+          show: 'bar',
+        },
         {
           type: 'chart',
           title: 'Days by month',
@@ -278,9 +306,28 @@ export const LEAVE_PROCESS_APP = {
           rejected: { x: 432, y: 162, width: 36, height: 36, label: { x: 408, y: 205, width: 84, height: 14 } },
         },
         edges: {
-          to_decide: { points: [{ x: 188, y: 120 }, { x: 250, y: 120 }] },
-          on_approve: { points: [{ x: 350, y: 105 }, { x: 390, y: 105 }, { x: 390, y: 60 }, { x: 432, y: 60 }] },
-          on_reject: { points: [{ x: 350, y: 135 }, { x: 390, y: 135 }, { x: 390, y: 180 }, { x: 432, y: 180 }] },
+          to_decide: {
+            points: [
+              { x: 188, y: 120 },
+              { x: 250, y: 120 },
+            ],
+          },
+          on_approve: {
+            points: [
+              { x: 350, y: 105 },
+              { x: 390, y: 105 },
+              { x: 390, y: 60 },
+              { x: 432, y: 60 },
+            ],
+          },
+          on_reject: {
+            points: [
+              { x: 350, y: 135 },
+              { x: 390, y: 135 },
+              { x: 390, y: 180 },
+              { x: 432, y: 180 },
+            ],
+          },
         },
       },
     },
@@ -307,11 +354,17 @@ export const PURCHASE_APP = {
         { name: 'items', label: 'Items', type: 'lines', entity: 'purchase_item', required: true, max: 50 },
         { name: 'total', label: 'Total (SGD)', type: 'number', decimals: 2, rollup: { sum: 'items.amount' } },
         { name: 'needed_by', label: 'Needed by', type: 'date' },
-        { name: 'status', label: 'Status', type: 'choice', default: 'submitted', options: [
-          { value: 'submitted', label: 'Waiting for approval' },
-          { value: 'approved', label: 'Approved' },
-          { value: 'ordered', label: 'Ordered' },
-        ] },
+        {
+          name: 'status',
+          label: 'Status',
+          type: 'choice',
+          default: 'submitted',
+          options: [
+            { value: 'submitted', label: 'Waiting for approval' },
+            { value: 'approved', label: 'Approved' },
+            { value: 'ordered', label: 'Ordered' },
+          ],
+        },
         { name: 'approver', label: 'Approver', type: 'user' },
         { name: 'ordered_on', label: 'Ordered on', type: 'date' },
       ],
@@ -322,11 +375,17 @@ export const PURCHASE_APP = {
       titleField: 'description',
       fields: [
         { name: 'description', label: 'Description', type: 'text', required: true, maxLength: 200 },
-        { name: 'category', label: 'Category', type: 'choice', required: true, options: [
-          { value: 'goods', label: 'Goods' },
-          { value: 'services', label: 'Services' },
-          { value: 'software', label: 'Software' },
-        ] },
+        {
+          name: 'category',
+          label: 'Category',
+          type: 'choice',
+          required: true,
+          options: [
+            { value: 'goods', label: 'Goods' },
+            { value: 'services', label: 'Services' },
+            { value: 'software', label: 'Software' },
+          ],
+        },
         { name: 'amount', label: 'Amount (SGD)', type: 'number', decimals: 2, min: 0, required: true },
       ],
     },
@@ -411,7 +470,13 @@ export const PURCHASE_APP = {
       action: 'request_purchase',
       sections: [
         { title: 'What', fields: [{ field: 'title' }, { field: 'supplier', width: 'half' }, { field: 'needed_by', width: 'half' }] },
-        { title: 'Items', fields: [{ field: 'items', help: 'One line per item' }, { field: 'total', width: 'half', readOnly: true }] },
+        {
+          title: 'Items',
+          fields: [
+            { field: 'items', help: 'One line per item' },
+            { field: 'total', width: 'half', readOnly: true },
+          ],
+        },
       ],
     },
   },
@@ -530,7 +595,14 @@ export const PURCHASE_APP = {
           filter: { in: [status, ['approved', 'ordered']] },
           range: { field: 'created_at', within: 'this_year' },
         },
-        { type: 'chart', title: 'Spending by category (SGD)', entity: 'purchase_request', measure: { op: 'sum', field: 'items.amount' }, group: { field: 'items.category' }, show: 'bar' },
+        {
+          type: 'chart',
+          title: 'Spending by category (SGD)',
+          entity: 'purchase_request',
+          measure: { op: 'sum', field: 'items.amount' },
+          group: { field: 'items.category' },
+          show: 'bar',
+        },
         {
           type: 'chart',
           title: 'Requests by month',
@@ -562,7 +634,8 @@ export const TEMPLATES: readonly AppTemplate[] = [
   {
     id: 'expenses',
     name: 'Expense claims',
-    description: 'Claims with one line per receipt and its file, a total worked out from them, approval by someone other than the claimant, and a spending dashboard.',
+    description:
+      'Claims with one line per receipt and its file, a total worked out from them, approval by someone other than the claimant, and a spending dashboard.',
     definition: EXPENSE_APP,
   },
   {

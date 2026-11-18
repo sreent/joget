@@ -1,7 +1,7 @@
 import type { Connection, ConnectionAuth, Webhook } from '@platform/app-model';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError, type AppAt } from '../api.js';
+import { ApiError, type AppAt, api } from '../api.js';
 import { Badge, Button, Card, Checkbox, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
 import { toName } from '../model/edit.js';
 import type { Definition, IntegrationStatus } from '../types.js';
@@ -15,7 +15,12 @@ import type { Definition, IntegrationStatus } from '../types.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
-const AUTH_WORDS: Readonly<Record<ConnectionAuth['type'], string>> = { none: 'no secret', bearer: 'a bearer token', basic: 'a user name and a password', header: 'a key in a header' };
+const AUTH_WORDS: Readonly<Record<ConnectionAuth['type'], string>> = {
+  none: 'no secret',
+  bearer: 'a bearer token',
+  basic: 'a user name and a password',
+  header: 'a key in a header',
+};
 const authOf = (connection: Connection) => (connection.kind === 'service' ? AUTH_WORDS[connection.auth.type] : "the channel's address");
 
 function withConnections(definition: Definition, connections: Record<string, Connection>): Definition {
@@ -72,7 +77,10 @@ export function ConnectionsDesigner({ definition, onChange }: Props) {
             disabled={!label.trim()}
             onClick={() => {
               const added = toName(label, names);
-              const spec: Connection = kind === 'service' ? { kind, label: label.trim(), url: 'https://api.example.com', auth: { type: 'bearer' }, personalData: false } : { kind, label: label.trim() };
+              const spec: Connection =
+                kind === 'service'
+                  ? { kind, label: label.trim(), url: 'https://api.example.com', auth: { type: 'bearer' }, personalData: false }
+                  : { kind, label: label.trim() };
               onChange(withConnections(definition, { ...connections, [added]: spec }));
               setChosen(added);
               setLabel('');
@@ -85,11 +93,15 @@ export function ConnectionsDesigner({ definition, onChange }: Props) {
       {connection && name ? (
         <Card className="grid content-start gap-3 p-4" aria-label="Connection">
           <h3 className="m-0 text-base font-semibold">{connection.label}</h3>
-          <Field label="Label">{(id) => <TextInput id={id} value={connection.label} onChange={(e) => update({ ...connection, label: e.target.value })} />}</Field>
+          <Field label="Label">
+            {(id) => <TextInput id={id} value={connection.label} onChange={(e) => update({ ...connection, label: e.target.value })} />}
+          </Field>
           {connection.kind === 'service' ? (
             <>
               <Field label="Address" hint="Every call goes under it. Keep secrets out of it: each environment keeps its own.">
-                {(id) => <TextInput id={id} className="font-mono" value={connection.url} onChange={(e) => update({ ...connection, url: e.target.value.trim() })} />}
+                {(id) => (
+                  <TextInput id={id} className="font-mono" value={connection.url} onChange={(e) => update({ ...connection, url: e.target.value.trim() })} />
+                )}
               </Field>
               <Field label="How it knows the app">
                 {(id) => (
@@ -98,7 +110,14 @@ export function ConnectionsDesigner({ definition, onChange }: Props) {
                     value={connection.auth.type}
                     onChange={(e) => {
                       const type = e.target.value;
-                      const auth: ConnectionAuth = type === 'none' ? { type } : type === 'basic' ? { type, user: 'a3t' } : type === 'header' ? { type, header: 'X-Api-Key' } : { type: 'bearer' };
+                      const auth: ConnectionAuth =
+                        type === 'none'
+                          ? { type }
+                          : type === 'basic'
+                            ? { type, user: 'a3t' }
+                            : type === 'header'
+                              ? { type, header: 'X-Api-Key' }
+                              : { type: 'bearer' };
                       update({ ...connection, auth });
                     }}
                   >
@@ -111,10 +130,27 @@ export function ConnectionsDesigner({ definition, onChange }: Props) {
                 )}
               </Field>
               {connection.auth.type === 'basic' ? (
-                <Field label="User name">{(id) => <TextInput id={id} value={connection.auth.type === 'basic' ? connection.auth.user : ''} onChange={(e) => update({ ...connection, auth: { type: 'basic', user: e.target.value } })} />}</Field>
+                <Field label="User name">
+                  {(id) => (
+                    <TextInput
+                      id={id}
+                      value={connection.auth.type === 'basic' ? connection.auth.user : ''}
+                      onChange={(e) => update({ ...connection, auth: { type: 'basic', user: e.target.value } })}
+                    />
+                  )}
+                </Field>
               ) : null}
               {connection.auth.type === 'header' ? (
-                <Field label="Header">{(id) => <TextInput id={id} className="font-mono" value={connection.auth.type === 'header' ? connection.auth.header : ''} onChange={(e) => update({ ...connection, auth: { type: 'header', header: e.target.value.trim() } })} />}</Field>
+                <Field label="Header">
+                  {(id) => (
+                    <TextInput
+                      id={id}
+                      className="font-mono"
+                      value={connection.auth.type === 'header' ? connection.auth.header : ''}
+                      onChange={(e) => update({ ...connection, auth: { type: 'header', header: e.target.value.trim() } })}
+                    />
+                  )}
+                </Field>
               ) : null}
               <Checkbox label="It takes personal data" checked={connection.personalData} onChange={(personalData) => update({ ...connection, personalData })} />
               <p className="m-0 text-xs text-muted">Only then may flows send it fields that hold personal data. A change request shows it.</p>
@@ -160,7 +196,12 @@ export function WebhooksDesigner({ definition, onChange }: Props) {
                     <strong>{hook.label}</strong>
                     <span className="item-about">Other systems run {flow?.label ?? 'a flow'} through it, with the app's authority</span>
                   </div>
-                  <Button size="sm" variant="ghost" aria-label={`Remove the webhook ${hook.label}`} onClick={() => onChange({ ...definition, webhooks: Object.fromEntries(Object.entries(hooks).filter(([key]) => key !== name)) })}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Remove the webhook ${hook.label}`}
+                    onClick={() => onChange({ ...definition, webhooks: Object.fromEntries(Object.entries(hooks).filter(([key]) => key !== name)) })}
+                  >
                     ✕
                   </Button>
                 </div>
@@ -180,7 +221,14 @@ export function WebhooksDesigner({ definition, onChange }: Props) {
                 </Field>
                 {Object.keys(flow?.input ?? {}).map((input) => (
                   <Field key={input} label={`${input}, from the request`} hint="A place in its JSON, such as order.id. A record comes by its ID.">
-                    {(id) => <TextInput id={id} className="font-mono" value={hook.input[input] ?? ''} onChange={(e) => update(name, { ...hook, input: { ...hook.input, [input]: e.target.value.trim() } })} />}
+                    {(id) => (
+                      <TextInput
+                        id={id}
+                        className="font-mono"
+                        value={hook.input[input] ?? ''}
+                        onChange={(e) => update(name, { ...hook, input: { ...hook.input, [input]: e.target.value.trim() } })}
+                      />
+                    )}
                   </Field>
                 ))}
               </li>
@@ -212,7 +260,17 @@ export function WebhooksDesigner({ definition, onChange }: Props) {
  * The secrets an environment keeps for what is saved: each connection's, and each webhook's key.
  * Nothing shows a secret again; a webhook's new key shows once.
  */
-export function IntegrationSecrets({ appId, team, part, revision }: { appId: string; team: boolean; part: 'connections' | 'webhooks'; /** The saved revision: what the environment keeps secrets for changes with it. */ revision: number }) {
+export function IntegrationSecrets({
+  appId,
+  team,
+  part,
+  revision,
+}: {
+  appId: string;
+  team: boolean;
+  part: 'connections' | 'webhooks' /** The saved revision: what the environment keeps secrets for changes with it. */;
+  revision: number;
+}) {
   const client = useQueryClient();
   const [env, setEnv] = useState<'staging' | 'prod'>('staging');
   const target: AppAt = team ? { id: appId, env } : { id: appId };
@@ -234,17 +292,27 @@ export function IntegrationSecrets({ appId, team, part, revision }: { appId: str
         ) : null}
       </div>
       <p className="m-0 text-sm text-muted">
-        {team ? 'Each environment keeps its own, for what it runs.' : 'Your sandbox keeps them, for what is saved.'} Nothing shows a secret again, and a flow never sees one.
+        {team ? 'Each environment keeps its own, for what it runs.' : 'Your sandbox keeps them, for what is saved.'} Nothing shows a secret again, and a flow
+        never sees one.
       </p>
       {status.error ? <Notice tone="warn">{status.error instanceof ApiError ? status.error.message : 'The environment can’t be reached'}</Notice> : null}
-      {status.data ? part === 'connections' ? <ConnectionSecrets target={target} status={status.data} onDone={refresh} /> : <WebhookKeys target={target} status={status.data} onDone={refresh} /> : null}
+      {status.data ? (
+        part === 'connections' ? (
+          <ConnectionSecrets target={target} status={status.data} onDone={refresh} />
+        ) : (
+          <WebhookKeys target={target} status={status.data} onDone={refresh} />
+        )
+      ) : null}
     </Card>
   );
 }
 
 function ConnectionSecrets({ target, status, onDone }: { target: AppAt; status: IntegrationStatus; onDone: () => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
-  const keep = useMutation({ mutationFn: ({ name, value }: { name: string; value: string }) => api.setConnectionSecret(target, name, value), onSuccess: (_, { name }) => (setValues((now) => ({ ...now, [name]: '' })), onDone()) });
+  const keep = useMutation({
+    mutationFn: ({ name, value }: { name: string; value: string }) => api.setConnectionSecret(target, name, value),
+    onSuccess: (_, { name }) => (setValues((now) => ({ ...now, [name]: '' })), onDone()),
+  });
   const clear = useMutation({ mutationFn: (name: string) => api.clearConnectionSecret(target, name), onSuccess: onDone });
   if (!status.connections.length) return <p className="m-0 text-sm text-faint">Save a connection first; then keep its secret here.</p>;
   return (
@@ -255,7 +323,11 @@ function ConnectionSecrets({ target, status, onDone }: { target: AppAt; status: 
             <div className="hook-what">
               <strong>{connection.label}</strong>
               <span className="item-about">
-                {connection.needsSecret ? (connection.secret.set ? `A secret is kept, since ${new Date(connection.secret.setAt!).toLocaleString()}` : 'No secret yet: its calls fail until one is kept') : 'It needs no secret'}
+                {connection.needsSecret
+                  ? connection.secret.set
+                    ? `A secret is kept, since ${new Date(connection.secret.setAt!).toLocaleString()}`
+                    : 'No secret yet: its calls fail until one is kept'
+                  : 'It needs no secret'}
               </span>
             </div>
             {connection.needsSecret ? <Badge tone={connection.secret.set ? 'good' : 'warn'}>{connection.secret.set ? 'Kept' : 'Missing'}</Badge> : null}
@@ -271,7 +343,12 @@ function ConnectionSecrets({ target, status, onDone }: { target: AppAt; status: 
                 value={values[connection.name] ?? ''}
                 onChange={(e) => setValues((now) => ({ ...now, [connection.name]: e.target.value }))}
               />
-              <Button size="sm" variant="primary" disabled={!values[connection.name] || keep.isPending} onClick={() => keep.mutate({ name: connection.name, value: values[connection.name]! })}>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={!values[connection.name] || keep.isPending}
+                onClick={() => keep.mutate({ name: connection.name, value: values[connection.name]! })}
+              >
                 Keep it
               </Button>
               {connection.secret.set ? (
@@ -290,7 +367,10 @@ function ConnectionSecrets({ target, status, onDone }: { target: AppAt; status: 
 
 function WebhookKeys({ target, status, onDone }: { target: AppAt; status: IntegrationStatus; onDone: () => void }) {
   const [made, setMade] = useState<{ name: string; key: string; url: string } | null>(null);
-  const make = useMutation({ mutationFn: (name: string) => api.makeWebhookKey(target, name), onSuccess: (result, name) => (setMade({ name, ...result }), onDone()) });
+  const make = useMutation({
+    mutationFn: (name: string) => api.makeWebhookKey(target, name),
+    onSuccess: (result, name) => (setMade({ name, ...result }), onDone()),
+  });
   if (!status.webhooks.length) return <p className="m-0 text-sm text-faint">Save a webhook first; then make its key here.</p>;
   return (
     <>
@@ -300,7 +380,11 @@ function WebhookKeys({ target, status, onDone }: { target: AppAt; status: Integr
             <div className="hook-head">
               <div className="hook-what">
                 <span className="mono hook-url">{hook.url}</span>
-                <span className="item-about">{hook.secret.set ? `${hook.label} · a key is kept, since ${new Date(hook.secret.setAt!).toLocaleString()}` : `${hook.label} · no key yet: it takes no request`}</span>
+                <span className="item-about">
+                  {hook.secret.set
+                    ? `${hook.label} · a key is kept, since ${new Date(hook.secret.setAt!).toLocaleString()}`
+                    : `${hook.label} · no key yet: it takes no request`}
+                </span>
               </div>
               <Badge tone={hook.secret.set ? 'good' : 'warn'}>{hook.secret.set ? 'Takes requests' : 'No key'}</Badge>
             </div>
@@ -321,7 +405,8 @@ function WebhookKeys({ target, status, onDone }: { target: AppAt; status: Integr
         <div className="pair">
           <dt>Signed</dt>
           <dd>
-            <code>X-A3T-Timestamp</code>: the time, in seconds. <code>X-A3T-Signature</code>: <code>sha256=</code> and the HMAC-SHA256, in hex, of the time, a dot and the body, under the key.
+            <code>X-A3T-Timestamp</code>: the time, in seconds. <code>X-A3T-Signature</code>: <code>sha256=</code> and the HMAC-SHA256, in hex, of the time, a
+            dot and the body, under the key.
           </dd>
         </div>
         <div className="pair">

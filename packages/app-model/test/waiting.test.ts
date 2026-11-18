@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest';
 import {
   automaticStarts,
   capabilityChanges,
@@ -9,13 +8,14 @@ import {
   flowSubject,
   flowWaits,
   LEAVE_APP,
-  lintDefinition,
   LEAVE_PROCESS_APP,
+  lintDefinition,
   runnable,
+  type StoredDefinition,
   startsOf,
   validateDefinition,
-  type StoredDefinition,
 } from '@platform/app-model';
+import { describe, expect, it } from 'vitest';
 
 const ids = () => {
   let n = 0;
@@ -56,7 +56,14 @@ const REVIEW = {
     {
       type: 'if',
       when: { gt: [{ ref: 'leave.days' }, 10] },
-      then: [{ type: 'task', label: 'Look at long leave', role: 'hr', outcomes: [{ name: 'fine', label: 'Fine', steps: [{ type: 'change', record: 'leave', values: { reason: 'Long' } }] }] }],
+      then: [
+        {
+          type: 'task',
+          label: 'Look at long leave',
+          role: 'hr',
+          outcomes: [{ name: 'fine', label: 'Fine', steps: [{ type: 'change', record: 'leave', values: { reason: 'Long' } }] }],
+        },
+      ],
     },
     { type: 'wait', for: { duration: 'P2D' } },
     {
@@ -84,7 +91,11 @@ describe('a flow that waits', () => {
     expect(flowSubject(flow)).toEqual({ name: 'leave', entity: 'leave_request' });
     expect(lintDefinition(definition)).toEqual([]);
     // A reviewer reads whom it waits for.
-    expect(capabilityChanges(valid(LEAVE_PROCESS_APP), definition)).toContainEqual({ tool: 'leave_approval', change: 'added', text: 'New flow Leave approval: it waits for Manager: Decide on the leave' });
+    expect(capabilityChanges(valid(LEAVE_PROCESS_APP), definition)).toContainEqual({
+      tool: 'leave_approval',
+      change: 'added',
+      text: 'New flow Leave approval: it waits for Manager: Decide on the leave',
+    });
 
     const compiled = compileFlow(definition, 'leave_approval', flow)!;
     expect(compiled.parts).toEqual({});
@@ -138,9 +149,9 @@ describe('a flow that waits', () => {
       steps_2_meet: 'exclusiveGateway',
       steps_3: 'intermediateCatchEvent',
       steps_4: 'eventBasedGateway',
-      'steps_4_ways_0': 'intermediateCatchEvent',
+      steps_4_ways_0: 'intermediateCatchEvent',
       steps_4_ways_0_steps_0: 'endEvent',
-      'steps_4_ways_1': 'intermediateCatchEvent',
+      steps_4_ways_1: 'intermediateCatchEvent',
       steps_5: 'parallelGateway',
       steps_5_ways_0_steps_0: 'serviceTask',
       steps_5_ways_1_steps_0: 'userTask',
@@ -155,10 +166,19 @@ describe('a flow that waits', () => {
     });
     expect(compiled.process.elements['steps_0']).toMatchObject({ type: 'serviceTask', flow: { flow: 'review.steps_0', input: { leave: { ref: 'record' } } } });
     // The engine reads the record where the flow reads its variable.
-    expect(Object.values(compiled.process.flows)).toContainEqual({ from: 'steps_2', to: 'steps_2_then_0', when: { gt: [{ ref: 'record.days' }, 10] }, name: 'Yes' });
+    expect(Object.values(compiled.process.flows)).toContainEqual({
+      from: 'steps_2',
+      to: 'steps_2_then_0',
+      when: { gt: [{ ref: 'record.days' }, 10] },
+      name: 'Yes',
+    });
     expect(Object.values(compiled.process.flows)).toContainEqual({ from: 'steps_2', to: 'steps_2_meet', default: true, name: 'No' });
     expect(compiled.process.elements['steps_3']).toEqual({ type: 'intermediateCatchEvent', name: 'Waits 2 days', timer: { duration: 'P2D' } });
-    expect(compiled.process.elements['steps_4_ways_0']).toEqual({ type: 'intermediateCatchEvent', name: 'Waits for Reject the leave', message: { action: 'reject_leave' } });
+    expect(compiled.process.elements['steps_4_ways_0']).toEqual({
+      type: 'intermediateCatchEvent',
+      name: 'Waits for Reject the leave',
+      message: { action: 'reject_leave' },
+    });
     expect(compiled.process.elements['steps_4_ways_1']).toEqual({ type: 'intermediateCatchEvent', name: 'Waits until First day', timer: { date: 'starts' } });
     expect(compiled.process.elements['steps_4_ways_0_steps_0']).toEqual({ type: 'endEvent', name: 'Ends here', terminate: true });
     // The way that ends the flow doesn't meet the other.
@@ -193,8 +213,29 @@ describe('a flow that waits', () => {
             output: { type: 'number' },
             steps: [
               { type: 'find', var: 'all', entity: 'leave_request' },
-              { type: 'each', in: 'all', as: 'one', steps: [{ type: 'wait', for: { duration: 'P1D' } }, { type: 'return', value: 1 }] },
-              { type: 'try', steps: [{ type: 'task', label: 'Look', role: 'hr', outcomes: [{ name: 'ok', label: 'OK' }, { name: 'ok', label: 'Also OK' }] }] },
+              {
+                type: 'each',
+                in: 'all',
+                as: 'one',
+                steps: [
+                  { type: 'wait', for: { duration: 'P1D' } },
+                  { type: 'return', value: 1 },
+                ],
+              },
+              {
+                type: 'try',
+                steps: [
+                  {
+                    type: 'task',
+                    label: 'Look',
+                    role: 'hr',
+                    outcomes: [
+                      { name: 'ok', label: 'OK' },
+                      { name: 'ok', label: 'Also OK' },
+                    ],
+                  },
+                ],
+              },
               { type: 'first_of', ways: [{ for: { duration: 'P1D' }, steps: [] }] },
               { type: 'all_at_once', ways: [{ steps: [] }, { steps: [{ type: 'wait', for: { signal: 'go' } }] }] },
             ],
@@ -221,7 +262,7 @@ describe('a flow that waits', () => {
     broken.steps[5].ways[1].steps[0].assignee = { field: 'kind' };
     expect(issuesOf(leave((d) => void (d.flows.review = broken)))).toEqual([
       'flows.review.steps[2].then[0].role: No role named nobody',
-      'flows.review.steps[2].then[0].outcomes[0].action: request_leave creates a record; here an action changes the process\'s own record',
+      "flows.review.steps[2].then[0].outcomes[0].action: request_leave creates a record; here an action changes the process's own record",
       "flows.review.steps[4].ways[1].for.date: reason isn't a date or a time",
       "flows.review.steps[5].ways[1].steps[0].assignee.field: kind doesn't name a person",
     ]);
@@ -232,8 +273,16 @@ describe('a flow that waits', () => {
       issuesOf(
         leave((d) => {
           d.entities.team = { label: 'Team', pluralLabel: 'Teams', fields: [{ name: 'name', label: 'Name', type: 'text', required: true }] };
-          d.flows.team_check = { label: 'Team check', input: { team: { type: 'record', entity: 'team' } }, steps: [{ type: 'wait', for: { duration: 'P1D' } }] };
-          d.flows.review = { label: 'Review', input: { leave: { type: 'record', entity: 'leave_request' } }, steps: [{ type: 'call', flow: 'team_check', input: { team: { ref: 'leave' } } }] };
+          d.flows.team_check = {
+            label: 'Team check',
+            input: { team: { type: 'record', entity: 'team' } },
+            steps: [{ type: 'wait', for: { duration: 'P1D' } }],
+          };
+          d.flows.review = {
+            label: 'Review',
+            input: { leave: { type: 'record', entity: 'leave_request' } },
+            steps: [{ type: 'call', flow: 'team_check', input: { team: { ref: 'leave' } } }],
+          };
         }),
       ),
     ).toEqual([
@@ -241,7 +290,10 @@ describe('a flow that waits', () => {
       'flows.review.steps[0].input.team: Give a record of team: a variable that holds one',
     ]);
     const legacy = structuredClone(LEAVE_PROCESS_APP) as unknown as Record<string, any>;
-    legacy.flows = { ...legacy.flows, later: { label: 'Later', input: { leave: { type: 'record', entity: 'leave_request' } }, steps: [{ type: 'wait', for: { duration: 'P1D' } }] } };
+    legacy.flows = {
+      ...legacy.flows,
+      later: { label: 'Later', input: { leave: { type: 'record', entity: 'leave_request' } }, steps: [{ type: 'wait', for: { duration: 'P1D' } }] },
+    };
     legacy.processes.leave_approval.elements.noting = { type: 'serviceTask', name: 'Note it', flow: { flow: 'later', input: { leave: { ref: 'record' } } } };
     legacy.processes.leave_approval.flows.on_approve.to = 'noting';
     legacy.processes.leave_approval.flows.noted = { from: 'noting', to: 'approved' };
@@ -305,7 +357,11 @@ describe('a flow that waits', () => {
     expect(automaticStarts(runnable(definition), 'leave_request').map((start) => start.element)).toEqual(['start_0', 'start_1', 'start_2', 'start_3']);
     // A change request says how the flow now starts.
     const before = valid(leave());
-    expect(capabilityChanges(before, definition).filter((change) => change.tool === 'leave_approval').map((change) => change.text)).toEqual(
+    expect(
+      capabilityChanges(before, definition)
+        .filter((change) => change.tool === 'leave_approval')
+        .map((change) => change.text),
+    ).toEqual(
       expect.arrayContaining([
         'Leave approval now starts by itself when a Leave request is created',
         'Leave approval now starts by itself 1 day after a Leave request is created',
@@ -319,24 +375,33 @@ describe('a flow that waits', () => {
     expect(
       issuesOf(
         leave((d) => {
-          d.flows.leave_approval.starts = [{ date: 'reason' }, { date: 'starts', before: 'P1D', after: 'P1D' }, { condition: { gt: [{ ref: 'leave.nothing' }, 1] } }];
+          d.flows.leave_approval.starts = [
+            { date: 'reason' },
+            { date: 'starts', before: 'P1D', after: 'P1D' },
+            { condition: { gt: [{ ref: 'leave.nothing' }, 1] } },
+          ];
           d.flows.shift = { label: 'Shift', input: {}, starts: [{ created: true }], steps: [{ type: 'set', var: 'x', value: 1 }] };
         }),
       ),
     ).toEqual([
-      "flows.leave_approval.starts[2].condition: leave.nothing: Leave request has no field nothing",
+      'flows.leave_approval.starts[2].condition: leave.nothing: Leave request has no field nothing',
       'flows.shift.starts[0]: Only a flow that waits starts by itself on a record. Run a flow that runs in one go from an action, or on a schedule',
     ]);
     expect(issuesOf(leave((d) => void (d.flows.leave_approval.starts = [{ date: 'reason' }, { date: 'starts', before: 'P1D', after: 'P1D' }])))).toEqual([
       "flows.leave_approval.starts[0].date: reason isn't a date or a time",
       'flows.leave_approval.starts[1]: A timer fires before its date or after it: not both',
     ]);
-    const first = valid(leave((d) => void (d.flows.leave_approval.starts = [{ date: 'starts', after: 'P1D' }, { condition: { eq: [{ ref: 'leave.status' }, 'approved'] } }])));
+    const first = valid(
+      leave((d) => void (d.flows.leave_approval.starts = [{ date: 'starts', after: 'P1D' }, { condition: { eq: [{ ref: 'leave.status' }, 'approved'] } }])),
+    );
     const next = structuredClone(first) as unknown as Record<string, any>;
     const fields = next.entities.leave_request.fields as Array<{ name: string }>;
     fields.find((f) => f.name === 'starts')!.name = 'first_day';
     fields.find((f) => f.name === 'status')!.name = 'state';
-    expect(valid(next, first).flows!['leave_approval']!.starts).toEqual([{ date: 'first_day', after: 'P1D' }, { condition: { eq: [{ ref: 'leave.state' }, 'approved'] } }]);
+    expect(valid(next, first).flows!['leave_approval']!.starts).toEqual([
+      { date: 'first_day', after: 'P1D' },
+      { condition: { eq: [{ ref: 'leave.state' }, 'approved'] } },
+    ]);
   });
 
   it('reminds while a task waits, beside it, with steps that run in one go', () => {
@@ -346,7 +411,13 @@ describe('a flow that waits', () => {
       }),
     );
     const { process, parts } = compileFlow(definition, 'leave_approval', definition.flows!['leave_approval']!)!;
-    expect(process.elements['steps_0_reminders_0']).toEqual({ type: 'boundaryEvent', name: 'Decide on the leave: a reminder after 2 days', attachedTo: 'steps_0', interrupting: false, timer: { duration: 'P2D' } });
+    expect(process.elements['steps_0_reminders_0']).toEqual({
+      type: 'boundaryEvent',
+      name: 'Decide on the leave: a reminder after 2 days',
+      attachedTo: 'steps_0',
+      interrupting: false,
+      timer: { duration: 'P2D' },
+    });
     expect(process.elements['steps_0_reminders_0_end']).toEqual({ type: 'endEvent', name: 'Reminded', terminate: false });
     expect(Object.values(process.flows)).toEqual(
       expect.arrayContaining([
@@ -358,7 +429,10 @@ describe('a flow that waits', () => {
     expect(
       issuesOf(
         leave((d) => {
-          d.flows.leave_approval.steps[0].reminders = [{ after: 'P1D', steps: [] }, { after: 'P2D', steps: [{ type: 'wait', for: { duration: 'P1D' } }, { type: 'return' }] }];
+          d.flows.leave_approval.steps[0].reminders = [
+            { after: 'P1D', steps: [] },
+            { after: 'P2D', steps: [{ type: 'wait', for: { duration: 'P1D' } }, { type: 'return' }] },
+          ];
         }),
       ),
     ).toEqual([
@@ -377,7 +451,16 @@ describe('a flow that waits', () => {
             while: { ne: [{ ref: 'leave.status' }, 'approved'] },
             max: 3,
             steps: [
-              { type: 'task', label: 'Review', role: 'manager', assignee: { field: 'manager' }, outcomes: [{ name: 'approve', label: 'Approve', action: 'approve_leave' }, { name: 'redo', label: 'Ask again' }] },
+              {
+                type: 'task',
+                label: 'Review',
+                role: 'manager',
+                assignee: { field: 'manager' },
+                outcomes: [
+                  { name: 'approve', label: 'Approve', action: 'approve_leave' },
+                  { name: 'redo', label: 'Ask again' },
+                ],
+              },
               { type: 'change', record: 'leave', values: { reason: 'Seen' } },
             ],
           },
@@ -385,7 +468,11 @@ describe('a flow that waits', () => {
       }),
     );
     const { process } = compileFlow(definition, 'leave_approval', definition.flows!['leave_approval']!)!;
-    expect(process.elements['steps_0']).toEqual({ type: 'subProcess', name: 'Repeats', repeat: { while: { ne: [{ ref: 'record.status' }, 'approved'] }, max: 3, before: true } });
+    expect(process.elements['steps_0']).toEqual({
+      type: 'subProcess',
+      name: 'Repeats',
+      repeat: { while: { ne: [{ ref: 'record.status' }, 'approved'] }, max: 3, before: true },
+    });
     expect(process.elements['steps_0_start']).toEqual({ type: 'startEvent', actions: [], in: 'steps_0' });
     expect(process.elements['steps_0_steps_0']).toMatchObject({ type: 'userTask', name: 'Review', in: 'steps_0' });
     expect(process.elements['steps_0_steps_1']).toMatchObject({ type: 'serviceTask', in: 'steps_0' });
@@ -413,7 +500,12 @@ describe('a flow that waits', () => {
       issuesOf(
         leave((d) => {
           d.flows.leave_approval.schedule = { every: 'day', at: '07:30' };
-          d.flows.tidy = { label: 'Tidy', input: { n: { type: 'number' } }, schedule: { every: 'week', day: 3, zone: 'Mars/Olympus' }, steps: [{ type: 'set', var: 'x', value: 1 }] };
+          d.flows.tidy = {
+            label: 'Tidy',
+            input: { n: { type: 'number' } },
+            schedule: { every: 'week', day: 3, zone: 'Mars/Olympus' },
+            steps: [{ type: 'set', var: 'x', value: 1 }],
+          };
         }),
       ),
     ).toEqual([
@@ -424,8 +516,19 @@ describe('a flow that waits', () => {
       'flows.tidy.schedule.zone: No time zone named Mars/Olympus: give one such as Europe/London',
     ]);
     const before = valid(leave());
-    const after = valid(leave((d) => void (d.flows.tidy = { label: 'Tidy', schedule: { every: 'weekday', at: '07:30', zone: 'Europe/London' }, steps: [{ type: 'set', var: 'x', value: 1 }] })));
-    expect(capabilityChanges(before, after).find((change) => change.tool === 'tidy')?.text).toBe("New flow Tidy: it runs by itself, with the app's authority: every weekday at 07:30, Europe/London time");
+    const after = valid(
+      leave(
+        (d) =>
+          void (d.flows.tidy = {
+            label: 'Tidy',
+            schedule: { every: 'weekday', at: '07:30', zone: 'Europe/London' },
+            steps: [{ type: 'set', var: 'x', value: 1 }],
+          }),
+      ),
+    );
+    expect(capabilityChanges(before, after).find((change) => change.tool === 'tidy')?.text).toBe(
+      "New flow Tidy: it runs by itself, with the app's authority: every weekday at 07:30, Europe/London time",
+    );
   });
   it('informs people the record names, a role or the person running it, and keeps personal data out of email', () => {
     const inform = (step: Record<string, unknown>) =>
@@ -435,8 +538,20 @@ describe('a flow that waits', () => {
           d.flows.leave_approval.steps[0].outcomes[0].steps = [{ type: 'inform', title: 'Approved', ...step }];
         }),
       );
-    expect(inform({ to: [{ person: { ref: 'leave.manager' } }, { person: { ref: 'leave.owner' } }, { role: 'hr' }], about: 'leave', message: { concat: ['For ', { ref: 'leave.days' }, ' days'] } })).toEqual([]);
-    expect(inform({ to: [{ person: { ref: 'leave.days' } }, { role: 'nobody' }, { person: { ref: 'principal.id' } }], about: 'nothing', message: { ref: 'leave.reason' } })).toEqual([
+    expect(
+      inform({
+        to: [{ person: { ref: 'leave.manager' } }, { person: { ref: 'leave.owner' } }, { role: 'hr' }],
+        about: 'leave',
+        message: { concat: ['For ', { ref: 'leave.days' }, ' days'] },
+      }),
+    ).toEqual([]);
+    expect(
+      inform({
+        to: [{ person: { ref: 'leave.days' } }, { role: 'nobody' }, { person: { ref: 'principal.id' } }],
+        about: 'nothing',
+        message: { ref: 'leave.reason' },
+      }),
+    ).toEqual([
       'flows.leave_approval.steps[0].outcomes[0].steps[0].to[0].person: Name a person: a user field of a record, such as leave.manager, or the person running the flow',
       'flows.leave_approval.steps[0].outcomes[0].steps[0].to[1].role: No role named nobody',
       'flows.leave_approval.steps[0].outcomes[0].steps[0].to[2].person: principal.id: a flow that waits runs with no person',
@@ -447,12 +562,23 @@ describe('a flow that waits', () => {
     expect(inform({ to: [{ role: 'hr' }], message: { ref: 'leave.reason' }, email: false })).toEqual([]);
     // A change request says whom a flow now tells, and a rename follows into what it says.
     const before = valid(leave());
-    const after = valid(leave((d) => void (d.flows.leave_approval.steps[0].outcomes[0].steps = [{ type: 'inform', to: [{ person: { ref: 'leave.owner' } }, { role: 'hr' }], title: { ref: 'leave.days' } }])));
-    expect(capabilityChanges(before, after).filter((change) => change.tool === 'leave_approval').map((change) => change.text)).toEqual(
-      expect.arrayContaining(['Leave approval now tells the owner', 'Leave approval now tells HR']),
+    const after = valid(
+      leave(
+        (d) =>
+          void (d.flows.leave_approval.steps[0].outcomes[0].steps = [
+            { type: 'inform', to: [{ person: { ref: 'leave.owner' } }, { role: 'hr' }], title: { ref: 'leave.days' } },
+          ]),
+      ),
     );
+    expect(
+      capabilityChanges(before, after)
+        .filter((change) => change.tool === 'leave_approval')
+        .map((change) => change.text),
+    ).toEqual(expect.arrayContaining(['Leave approval now tells the owner', 'Leave approval now tells HR']));
     const next = structuredClone(after) as unknown as Record<string, any>;
     next.entities.leave_request.fields.find((f: { name: string }) => f.name === 'days').name = 'working_days';
-    expect(valid(next, after).flows!['leave_approval']!.steps[0]).toMatchObject({ outcomes: [{ steps: [{ type: 'inform', title: { ref: 'leave.working_days' } }] }, expect.anything()] });
+    expect(valid(next, after).flows!['leave_approval']!.steps[0]).toMatchObject({
+      outcomes: [{ steps: [{ type: 'inform', title: { ref: 'leave.working_days' } }] }, expect.anything()],
+    });
   });
 });

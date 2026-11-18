@@ -1,23 +1,14 @@
-import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
-import { conditionRefs, evaluateCondition, partialEvaluate, type Binding, type Condition, type Policy, type QueryGrant } from '@platform/authz';
 import {
+  type Action,
+  type AppTest,
+  appRoleId,
   beforeGives,
   blockAt,
-  appRoleId,
   buildCard,
-  cellValue,
-  testMismatches,
-  withGivenIds,
-  type AppTest,
-  importColumns,
-  isComputed,
-  MAX_IMPORT_ROWS,
-  parseCsv,
-  safeCell,
-  writeCsv,
-  type ImportColumn,
-  withFormulas,
+  type CardData,
+  type ChartBlock,
   canonicalValue,
+  cellValue,
   checkActionInput,
   checkInput,
   completeLines,
@@ -29,71 +20,80 @@ import {
   entityFields,
   evaluateRules,
   excludedBy,
+  type FieldValue,
+  type FileInfo,
+  type Finding,
   fieldAccess,
   grantsFor,
+  type HistoryChange,
+  type ImportColumn,
+  importColumns,
   insertHistory,
   insertRecord,
+  isComputed,
   isSortableKind,
+  type LineInput,
+  type LinesChange,
+  type LineValues,
+  type ListBlock,
   linesFieldsOf,
   linesWritten,
   listsOf,
   lockRecords,
+  MAX_IMPORT_ROWS,
+  type Measure,
+  type Period,
+  Provenance,
+  parseCsv,
   parseLines,
   parseRecord,
-  Provenance,
+  type RecordLines,
+  type RecordValues,
+  rangeStart,
   recordValues,
   refersToMany,
   rollupValues,
-  selectHeld,
-  selectHistory,
-  stepsFlow,
-  selectLines,
-  selectRecords,
-  updateRecord,
-  writeGrant,
-  writeLines,
-  type CardData,
-  type FieldValue,
-  type FileInfo,
-  type Finding,
-  type HistoryChange,
-  type LineInput,
-  type LinesChange,
-  type LineValues,
-  type RecordLines,
-  type RecordValues,
+  type StatBlock,
+  type Step,
   type StoredEntity,
   type StoredLine,
   type StoredLinesField,
   type StoredRecord,
+  safeCell,
+  selectHeld,
+  selectHistory,
+  selectLines,
+  selectRecords,
+  stepsFlow,
+  summarize,
+  type TimeRange,
+  testMismatches,
+  updateRecord,
   type ValueIssue,
   type ValueKind,
   type WriteContext,
-  type Action,
-  type Step,
-  rangeStart,
-  summarize,
-  type ChartBlock,
-  type StatBlock,
-  type ListBlock,
-  type Measure,
-  type Period,
-  type TimeRange,
+  withFormulas,
+  withGivenIds,
+  writeCsv,
+  writeGrant,
+  writeLines,
 } from '@platform/app-model';
+import { canonicalJson, sha256Hex, uuidv7 } from '@platform/audit';
+import { type Binding, type Condition, conditionRefs, evaluateCondition, type Policy, partialEvaluate, type QueryGrant } from '@platform/authz';
 import { proposals, users } from '@platform/db';
 import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { checkPermission, checkQuery, principalEnv } from '../access/check.js';
-import { requirePerson, type AllowedQuery } from '../access/rules.js';
-import { auditScopeFor, recordAudit, type AuditScope } from '../audit/writer.js';
+import { type AllowedQuery, requirePerson } from '../access/rules.js';
+import { type AuditScope, auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
-import type { FileUse } from '../files/service.js';
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
+import type { FileUse } from '../files/service.js';
 import type { LoadedApp } from './catalog.js';
-import { capabilityResource, recordResource } from './resources.js';
 import { pgError } from './pg-errors.js';
-import { withAppTransaction, type AppTransaction } from './transaction.js';
+import { capabilityResource, recordResource } from './resources.js';
+import { type AppTransaction, withAppTransaction } from './transaction.js';
 
 /** A line as the API returns it: its ID, and the values of the fields of it the caller may see. */
 export type LineOut = { readonly id: string } & Readonly<Record<string, FieldValue>>;
@@ -191,7 +191,6 @@ interface SealedEffect {
   /** The fields the flow before it saves set, which the permission check counts as written. */
   readonly stepFields?: string[];
 }
-
 
 /** What a caller gives an action. */
 export interface ActionInput {
@@ -306,7 +305,13 @@ export interface ProcessHooks {
   afterAction(
     tx: AppTransaction,
     loaded: LoadedApp,
-    event: { readonly action: string; readonly recordId: string; readonly by: AuthContext['actor']; readonly writer: Writer; readonly before: RecordValues | null },
+    event: {
+      readonly action: string;
+      readonly recordId: string;
+      readonly by: AuthContext['actor'];
+      readonly writer: Writer;
+      readonly before: RecordValues | null;
+    },
   ): Promise<void>;
 }
 
@@ -376,7 +381,6 @@ function decodeCursor(cursor: string, kinds: readonly ValueKind[]): FieldValue[]
 
 const encodeCursor = (values: readonly FieldValue[]) => Buffer.from(JSON.stringify(values)).toString('base64url');
 
-
 /**
  * The runtime of the built-in store: records, queries, actions and proposals (design §6).
  * Every path checks the caller's permissions with the policy engine, runs the entity's rules on
@@ -410,7 +414,11 @@ export class AppRuntime {
     return {
       actorId: auth.actor.id,
       scope: (now) => auditScopeFor(request, this.#ctx.org.id, now),
-      history: { actorType: auth.agent ? 'service_account' : auth.actor.type, actorId: auth.agent?.id ?? auth.actor.id, onBehalfOf: auth.agent ? auth.actor.id : null },
+      history: {
+        actorType: auth.agent ? 'service_account' : auth.actor.type,
+        actorId: auth.agent?.id ?? auth.actor.id,
+        onBehalfOf: auth.agent ? auth.actor.id : null,
+      },
     };
   }
 
@@ -457,7 +465,9 @@ export class AppRuntime {
   /** The read grants of a decision, or none if reading isn't allowed at all. */
   async #readGrants(auth: AuthContext, loaded: LoadedApp, entity: string, inside = false): Promise<AllowedQuery | null> {
     const principal = inside ? withoutScopes(auth) : auth.principal;
-    const decision = await this.#ctx.policy.query(principal, 'record.read', recordResource(this.#ctx.org.id, loaded, entity), { policy: await this.policy(loaded) });
+    const decision = await this.#ctx.policy.query(principal, 'record.read', recordResource(this.#ctx.org.id, loaded, entity), {
+      policy: await this.policy(loaded),
+    });
     return decision.allowed ? (decision as AllowedQuery) : null;
   }
 
@@ -465,7 +475,14 @@ export class AppRuntime {
    * A record as the caller may see it, given the read grants that apply to it. Its lines come with
    * it if they were read, each showing only the fields of lines the grants show.
    */
-  project(loaded: LoadedApp, entity: StoredEntity, record: StoredRecord, grants: readonly QueryGrant[], fields?: readonly string[], lines?: LinesRead): RecordOut {
+  project(
+    loaded: LoadedApp,
+    entity: StoredEntity,
+    record: StoredRecord,
+    grants: readonly QueryGrant[],
+    fields?: readonly string[],
+    lines?: LinesRead,
+  ): RecordOut {
     const values: Record<string, FieldValue | LineOut[]> = {};
     const masked: string[] = [];
     const held = grants.map((grant) => grant.grant);
@@ -479,7 +496,10 @@ export class AppRuntime {
         const lineFields = loaded.definition.entities[field.entity]!.fields;
         const shown = lineFields.filter((f) => fieldAccess(held, `${field.name}.${f.name}`) === 'full');
         masked.push(...lineFields.filter((f) => fieldAccess(held, `${field.name}.${f.name}`) === 'masked').map((f) => `${field.name}.${f.name}`));
-        values[field.name] = (stored.get(record.id) ?? []).map((line) => ({ id: line.id, ...Object.fromEntries(shown.map((f) => [f.name, line.values[f.name] ?? null])) }));
+        values[field.name] = (stored.get(record.id) ?? []).map((line) => ({
+          id: line.id,
+          ...Object.fromEntries(shown.map((f) => [f.name, line.values[f.name] ?? null])),
+        }));
         continue;
       }
       if (access === 'full') values[field.name] = record.values[field.name] ?? null;
@@ -490,7 +510,12 @@ export class AppRuntime {
   }
 
   /** The lines of some records, by lines field and record, read in the transaction given. */
-  async #readLines(tx: AppTransaction, loaded: LoadedApp, parentIds: readonly string[], fields: readonly StoredLinesField[]): Promise<Map<string, Map<string, StoredLine[]>>> {
+  async #readLines(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    parentIds: readonly string[],
+    fields: readonly StoredLinesField[],
+  ): Promise<Map<string, Map<string, StoredLine[]>>> {
     const read = new Map<string, Map<string, StoredLine[]>>();
     if (!parentIds.length) return read;
     for (const field of fields) {
@@ -542,9 +567,17 @@ export class AppRuntime {
       const info = fields.get(sort.field);
       if (!info || !isSortableKind(info.kind)) throw badRequest('invalid_sort', `Can't sort by ${sort.field}`);
     }
-    this.#requireVisible(decision, (options.sort ?? []).map((s) => s.field), 'sort by');
+    this.#requireVisible(
+      decision,
+      (options.sort ?? []).map((s) => s.field),
+      'sort by',
+    );
     if (options.where && options.where !== true) {
-      this.#requireVisible(decision, conditionRefs(options.where).map((ref) => ref.slice('record.'.length)), 'filter on');
+      this.#requireVisible(
+        decision,
+        conditionRefs(options.where).map((ref) => ref.slice('record.'.length)),
+        'filter on',
+      );
     }
     const base = {
       names: this.#names(loaded),
@@ -559,7 +592,12 @@ export class AppRuntime {
       limit: options.limit + 1,
     };
     const shape = selectRecords(base);
-    const after = options.cursor ? decodeCursor(options.cursor, shape.sortKeys.map((key) => key.info.kind)) : undefined;
+    const after = options.cursor
+      ? decodeCursor(
+          options.cursor,
+          shape.sortKeys.map((key) => key.info.kind),
+        )
+      : undefined;
     const query = after ? selectRecords({ ...base, after }) : shape;
     // Lines are read with their records, in the same snapshot, when anyone here may see them.
     const linesWanted = linesFieldsOf(entity).filter(
@@ -599,7 +637,13 @@ export class AppRuntime {
     return row ? parseRecord(entity, row).record : null;
   }
 
-  async #checkPeople(loaded: LoadedApp, entity: StoredEntity, values: RecordValues, explicitOwner: boolean, lines: Readonly<Record<string, readonly LineValues[]>> = {}): Promise<void> {
+  async #checkPeople(
+    loaded: LoadedApp,
+    entity: StoredEntity,
+    values: RecordValues,
+    explicitOwner: boolean,
+    lines: Readonly<Record<string, readonly LineValues[]>> = {},
+  ): Promise<void> {
     const ids = new Set<string>();
     for (const field of entity.fields) {
       const value = values[field.name];
@@ -633,7 +677,13 @@ export class AppRuntime {
     }
   }
 
-  #rules(loaded: LoadedApp, entityName: string, principal: Record<string, unknown>, values: RecordValues, lines: Readonly<Record<string, readonly LineValues[]>> = {}): Finding[] {
+  #rules(
+    loaded: LoadedApp,
+    entityName: string,
+    principal: Record<string, unknown>,
+    values: RecordValues,
+    lines: Readonly<Record<string, readonly LineValues[]>> = {},
+  ): Finding[] {
     const findings = evaluateRules(loaded.definition, entityName, values, { principal }, lines);
     const errors = findings.filter((finding) => finding.severity === 'error');
     if (errors.length) throw unprocessable('rule_failed', errors.map((e) => e.message).join('; '), { findings });
@@ -680,7 +730,13 @@ export class AppRuntime {
   }
 
   /** A record's lines now, for the lines fields named, read under the record's lock. */
-  async #currentLines(tx: AppTransaction, loaded: LoadedApp, entity: StoredEntity, id: string, names: readonly string[]): Promise<Record<string, StoredLine[]>> {
+  async #currentLines(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    entity: StoredEntity,
+    id: string,
+    names: readonly string[],
+  ): Promise<Record<string, StoredLine[]>> {
     const fields = linesFieldsOf(entity).filter((field) => names.includes(field.name));
     const read = await this.#readLines(tx, loaded, [id], fields);
     return Object.fromEntries(fields.map((field) => [field.name, read.get(field.name)?.get(id) ?? []]));
@@ -714,7 +770,13 @@ export class AppRuntime {
     let after: StoredRecord | null = null;
     try {
       if (write.operation === 'create') {
-        const query = insertRecord(names, entity, { id: write.id ?? uuidv7(now.getTime()), owner: write.owner ?? writer.actorId, actor: writer.actorId, at, values: write.values });
+        const query = insertRecord(names, entity, {
+          id: write.id ?? uuidv7(now.getTime()),
+          owner: write.owner ?? writer.actorId,
+          actor: writer.actorId,
+          at,
+          values: write.values,
+        });
         after = parseRecord(entity, (await tx.query(query.text, query.values)).rows[0]!).record;
       } else if (write.operation === 'update') {
         const query = updateRecord(names, entity, { id: write.before!.id, actor: writer.actorId, at, values: write.values });
@@ -752,7 +814,12 @@ export class AppRuntime {
       if (change) changes[field.id] = { name, lines: change };
     }
     if (write.files?.length && write.operation !== 'delete') {
-      await ctx.files.attach(tx, loaded, { entityId: entity.id, recordId: record.id }, write.files.map((use) => use.fileId));
+      await ctx.files.attach(
+        tx,
+        loaded,
+        { entityId: entity.id, recordId: record.id },
+        write.files.map((use) => use.fileId),
+      );
     }
     const event = await recordAudit(tx.db, writer.scope(now), {
       action: `record.${write.operation}`,
@@ -784,13 +851,27 @@ export class AppRuntime {
     return after;
   }
 
-  async #respond(auth: AuthContext, loaded: LoadedApp, entityName: string, record: StoredRecord, inside = false): Promise<RecordOut | { id: string; version: number }> {
+  async #respond(
+    auth: AuthContext,
+    loaded: LoadedApp,
+    entityName: string,
+    record: StoredRecord,
+    inside = false,
+  ): Promise<RecordOut | { id: string; version: number }> {
     const read = await this.#readGrants(auth, loaded, entityName, inside);
     const grants = read ? grantsFor(read.grants, recordValues(record)) : [];
     if (!grants.length) return { id: record.id, version: record.version };
     const entity = this.entity(loaded, entityName);
-    const wanted = linesFieldsOf(entity).filter((field) => fieldAccess(grants.map((g) => g.grant), field.name) === 'full');
-    const lines = wanted.length ? await withAppTransaction(this.#ctx.pool, loaded.env, 'records', (tx) => this.#readLines(tx, loaded, [record.id], wanted)) : undefined;
+    const wanted = linesFieldsOf(entity).filter(
+      (field) =>
+        fieldAccess(
+          grants.map((g) => g.grant),
+          field.name,
+        ) === 'full',
+    );
+    const lines = wanted.length
+      ? await withAppTransaction(this.#ctx.pool, loaded.env, 'records', (tx) => this.#readLines(tx, loaded, [record.id], wanted))
+      : undefined;
     const out = this.project(loaded, entity, record, grants, undefined, lines);
     await this.#withFiles(loaded, entity, [out]);
     await this.#withTitles(auth, loaded, entity, [out], inside);
@@ -804,7 +885,9 @@ export class AppRuntime {
       if (field.type === 'file') return typeof value === 'string' ? [value] : [];
       if (field.type !== 'lines' || !Array.isArray(value)) return [];
       const fileFields = loaded.definition.entities[field.entity]!.fields.filter((f) => f.type === 'file');
-      return (value as Array<Record<string, unknown>>).flatMap((line) => fileFields.flatMap((f) => (typeof line[f.name] === 'string' ? [line[f.name] as string] : [])));
+      return (value as Array<Record<string, unknown>>).flatMap((line) =>
+        fileFields.flatMap((f) => (typeof line[f.name] === 'string' ? [line[f.name] as string] : [])),
+      );
     });
   }
 
@@ -820,7 +903,11 @@ export class AppRuntime {
   }
 
   /** The records a record refers to, as the caller sees it: by its references, one or several, and its lines'. */
-  #referenceIds(loaded: LoadedApp, entity: StoredEntity, record: { readonly values?: Readonly<Record<string, unknown>> | undefined }): Array<{ readonly entity: string; readonly id: string }> {
+  #referenceIds(
+    loaded: LoadedApp,
+    entity: StoredEntity,
+    record: { readonly values?: Readonly<Record<string, unknown>> | undefined },
+  ): Array<{ readonly entity: string; readonly id: string }> {
     const values = record.values ?? {};
     const of = (fields: readonly StoredEntity['fields'][number][], from: Readonly<Record<string, unknown>>) =>
       fields.flatMap((field) => {
@@ -834,7 +921,9 @@ export class AppRuntime {
       ...linesFieldsOf(entity).flatMap((field) => {
         const lines = values[field.name];
         const lineFields = loaded.definition.entities[field.entity]!.fields;
-        return Array.isArray(lines) ? lines.flatMap((line) => (typeof line === 'object' && line !== null ? of(lineFields, line as Record<string, unknown>) : [])) : [];
+        return Array.isArray(lines)
+          ? lines.flatMap((line) => (typeof line === 'object' && line !== null ? of(lineFields, line as Record<string, unknown>) : []))
+          : [];
       }),
     ];
   }
@@ -845,7 +934,8 @@ export class AppRuntime {
    */
   async #withTitles(auth: AuthContext, loaded: LoadedApp, entity: StoredEntity, records: RecordOut[], inside = false): Promise<void> {
     const wanted = new Map<string, Set<string>>();
-    for (const record of records) for (const { entity: target, id } of this.#referenceIds(loaded, entity, record)) wanted.set(target, (wanted.get(target) ?? new Set()).add(id));
+    for (const record of records)
+      for (const { entity: target, id } of this.#referenceIds(loaded, entity, record)) wanted.set(target, (wanted.get(target) ?? new Set()).add(id));
     const titles = new Map<string, string>();
     for (const [target, ids] of wanted) {
       const about = loaded.definition.entities[target];
@@ -868,8 +958,17 @@ export class AppRuntime {
           const flag = query.flagGrants.indexOf(index);
           return flag === -1 ? grant.filter === true : flags[flag];
         });
-        if (fieldAccess(applicable.map((grant) => grant.grant), titleField) !== 'full') continue;
-        const title = titleText(about.fields.find((field) => field.name === titleField), record.values[titleField]);
+        if (
+          fieldAccess(
+            applicable.map((grant) => grant.grant),
+            titleField,
+          ) !== 'full'
+        )
+          continue;
+        const title = titleText(
+          about.fields.find((field) => field.name === titleField),
+          record.values[titleField],
+        );
         if (title) titles.set(record.id, title);
       }
     }
@@ -881,7 +980,13 @@ export class AppRuntime {
   }
 
   /** Lists of records take only records that exist, and keep them until the write commits, as a foreign key would. */
-  async #lockListed(tx: AppTransaction, loaded: LoadedApp, entity: StoredEntity, values: RecordValues, lines: Readonly<Record<string, { readonly next: readonly LineValues[] }>> = {}): Promise<void> {
+  async #lockListed(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    entity: StoredEntity,
+    values: RecordValues,
+    lines: Readonly<Record<string, { readonly next: readonly LineValues[] }>> = {},
+  ): Promise<void> {
     const wanted = new Map<string, Set<string>>();
     const add = (fields: readonly StoredEntity['fields'][number][], from: Readonly<Record<string, unknown>>) => {
       for (const field of fields) {
@@ -925,7 +1030,11 @@ export class AppRuntime {
     lines: Readonly<Record<string, readonly LineValues[]>>,
     current: Readonly<Record<string, readonly StoredLine[]>>,
   ): FileUse[] {
-    const held = new Set(this.#fileIds(loaded, entity, { values: { ...(before ?? {}), ...Object.fromEntries(Object.entries(current).map(([name, list]) => [name, list.map((line) => line.values)])) } }));
+    const held = new Set(
+      this.#fileIds(loaded, entity, {
+        values: { ...(before ?? {}), ...Object.fromEntries(Object.entries(current).map(([name, list]) => [name, list.map((line) => line.values)])) },
+      }),
+    );
     const uses: FileUse[] = [];
     for (const field of entity.fields) {
       const value = values[field.name];
@@ -988,12 +1097,29 @@ export class AppRuntime {
   }
 
   /** Write a prepared create, in the caller's transaction. */
-  async #writeCreate(tx: AppTransaction, request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, ready: PreparedCreate, reason?: Record<string, unknown>): Promise<StoredRecord> {
+  async #writeCreate(
+    tx: AppTransaction,
+    request: FastifyRequest,
+    auth: AuthContext,
+    loaded: LoadedApp,
+    ready: PreparedCreate,
+    reason?: Record<string, unknown>,
+  ): Promise<StoredRecord> {
     const { entity, entityName, values, owner, provenance, prepared } = ready;
     const files = this.#newFiles(loaded, entity, null, values, prepared.lines, {});
     await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: null });
     const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
-    return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines, files, ...(reason ? { reason } : {}) }))!;
+    return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, {
+      entityName,
+      operation: 'create',
+      before: null,
+      values,
+      owner,
+      provenance,
+      lines,
+      files,
+      ...(reason ? { reason } : {}),
+    }))!;
   }
 
   /**
@@ -1006,7 +1132,10 @@ export class AppRuntime {
   async runTests(request: FastifyRequest, loaded: LoadedApp, only?: readonly string[]): Promise<TestResult[]> {
     // A test makes records and runs flows, even if it undoes them: never among the records people use.
     if (loaded.env.kind === 'staging' || loaded.env.kind === 'prod') {
-      throw unprocessable('not_a_sandbox', `Tests run in a sandbox or in a change request's preview, not in ${loaded.env.kind === 'prod' ? 'Prod' : 'Staging'}: run them in a working copy`);
+      throw unprocessable(
+        'not_a_sandbox',
+        `Tests run in a sandbox or in a change request's preview, not in ${loaded.env.kind === 'prod' ? 'Prod' : 'Staging'}: run them in a working copy`,
+      );
     }
     const results: TestResult[] = [];
     for (const [name, test] of Object.entries(loaded.definition.tests ?? {})) {
@@ -1018,7 +1147,11 @@ export class AppRuntime {
   async #runTest(request: FastifyRequest, loaded: LoadedApp, name: string, test: AppTest): Promise<TestResult> {
     const auth = testAuth(loaded, test.when.as);
     const action = loaded.definition.actions[test.when.action]!;
-    const result = (outcome: TestResult['outcome'], passed: boolean, more: { readonly message?: string; readonly mismatches?: TestResult['mismatches'] } = {}): TestResult => ({
+    const result = (
+      outcome: TestResult['outcome'],
+      passed: boolean,
+      more: { readonly message?: string; readonly mismatches?: TestResult['mismatches'] } = {},
+    ): TestResult => ({
       name,
       label: test.label,
       passed,
@@ -1032,7 +1165,14 @@ export class AppRuntime {
       const ids = new Map<string, string>();
       for (const [given, record] of Object.entries(test.given)) {
         try {
-          const ready = await this.#prepareCreate(request, auth, loaded, record.entity, { values: withGivenIds(record.values, ids) }, processAuthority('record.create', record.entity, 'test'));
+          const ready = await this.#prepareCreate(
+            request,
+            auth,
+            loaded,
+            record.entity,
+            { values: withGivenIds(record.values, ids) },
+            processAuthority('record.create', record.entity, 'test'),
+          );
           ids.set(given, (await this.#writeCreate(tx, request, auth, loaded, ready)).id);
         } catch (error) {
           if (!(error instanceof HttpError)) throw error;
@@ -1040,13 +1180,27 @@ export class AppRuntime {
         }
       }
       // The action, as someone in the role.
-      const allowed = await this.#ctx.policy.authorize(auth.principal, 'action.run', this.capability(loaded, 'action', test.when.action), undefined, await this.policy(loaded));
+      const allowed = await this.#ctx.policy.authorize(
+        auth.principal,
+        'action.run',
+        this.capability(loaded, 'action', test.when.action),
+        undefined,
+        await this.policy(loaded),
+      );
       let saved: StoredRecord | null = null;
-      let refused: string | null = allowed.allowed ? null : `Someone in the role ${loaded.definition.roles[test.when.as]?.label ?? test.when.as} may not ${action.label.toLowerCase()}`;
+      let refused: string | null = allowed.allowed
+        ? null
+        : `Someone in the role ${loaded.definition.roles[test.when.as]?.label ?? test.when.as} may not ${action.label.toLowerCase()}`;
       if (!refused) {
         try {
           const recordId = test.when.record ? ids.get(test.when.record) : undefined;
-          const run = await this.#prepareAction({ kind: 'request', request, auth }, loaded, test.when.action, { values: withGivenIds(test.when.values, ids), ...(recordId ? { recordId } : {}) }, { test: true });
+          const run = await this.#prepareAction(
+            { kind: 'request', request, auth },
+            loaded,
+            test.when.action,
+            { values: withGivenIds(test.when.values, ids), ...(recordId ? { recordId } : {}) },
+            { test: true },
+          );
           const done = await this.#runActionIn(tx, run);
           if (done.status === 'done') saved = await this.#lock(tx, loaded, this.entity(loaded, action.entity), done.record.id);
           else refused = 'It waits for a confirmation';
@@ -1073,7 +1227,11 @@ export class AppRuntime {
         const want = expected[field.name];
         const got = actual[field.name];
         if (Array.isArray(want) && Array.isArray(got) && want.length === got.length) {
-          actual[field.name] = got.map((line, i) => (typeof want[i] === 'object' && want[i] !== null ? Object.fromEntries(Object.keys(want[i] as object).map((key) => [key, (line as Record<string, unknown>)[key] ?? null])) : line));
+          actual[field.name] = got.map((line, i) =>
+            typeof want[i] === 'object' && want[i] !== null
+              ? Object.fromEntries(Object.keys(want[i] as object).map((key) => [key, (line as Record<string, unknown>)[key] ?? null]))
+              : line,
+          );
         }
       }
       const mismatches = testMismatches(expected, actual);
@@ -1126,13 +1284,19 @@ export class AppRuntime {
           else issues.push({ row, field: column.field, message: cell.message });
           return;
         }
-        const found = cell.keys.map((key) => lookups.resolve(cell.lookup, field === 'owner' ? undefined : field.type === 'reference' ? field.entity : undefined, key));
+        const found = cell.keys.map((key) =>
+          lookups.resolve(cell.lookup, field === 'owner' ? undefined : field.type === 'reference' ? field.entity : undefined, key),
+        );
         const problem = found.find((result) => !result.ok);
         if (problem && !problem.ok) issues.push({ row, field: column.field, message: problem.message });
         else values[column.field] = cell.many ? found.map((result) => (result.ok ? result.id : null)) : found[0]!.ok ? found[0]!.id : null;
       });
       if (issues.length > before) continue;
-      const provenance = Object.fromEntries(Object.keys(values).filter((name) => name !== 'owner').map((name) => [name, { source: 'document', document, location: `line ${row}` }]));
+      const provenance = Object.fromEntries(
+        Object.keys(values)
+          .filter((name) => name !== 'owner')
+          .map((name) => [name, { source: 'document', document, location: `line ${row}` }]),
+      );
       try {
         ready.push({ row, create: await this.#prepareCreate(request, auth, loaded, entityName, { values, provenance }, permission) });
       } catch (error) {
@@ -1208,7 +1372,13 @@ export class AppRuntime {
           return flag === -1 ? grant.filter === true : flags[flag];
         });
         // A title the person's role hides finds nothing.
-        if (fieldAccess(applicable.map((grant) => grant.grant), about.titleField) !== 'full') continue;
+        if (
+          fieldAccess(
+            applicable.map((grant) => grant.grant),
+            about.titleField,
+          ) !== 'full'
+        )
+          continue;
         const title = String(record.values[about.titleField]);
         byTitle.set(title, [...(byTitle.get(title) ?? []), record.id]);
       }
@@ -1221,7 +1391,11 @@ export class AppRuntime {
       for (const person of found) if (person.email) emails.set(person.email.toLowerCase(), person.id);
     }
     return {
-      resolve: (kind: 'record' | 'person', target: string | undefined, key: string): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
+      resolve: (
+        kind: 'record' | 'person',
+        target: string | undefined,
+        key: string,
+      ): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
         if (UUID_TEXT.test(key)) return { ok: true, id: key.toLowerCase() };
         if (kind === 'person') {
           const id = emails.get(key.toLowerCase());
@@ -1231,7 +1405,9 @@ export class AppRuntime {
         const ids = titles.get(target!)?.get(key) ?? [];
         if (ids.length === 1) return { ok: true, id: ids[0]! };
         const what = about.label.toLowerCase();
-        return ids.length ? { ok: false, message: `Several ${(about.pluralLabel ?? about.label).toLowerCase()} are titled ${key}: give the ID of the one you mean` } : { ok: false, message: `No ${what} you can see is titled ${key}` };
+        return ids.length
+          ? { ok: false, message: `Several ${(about.pluralLabel ?? about.label).toLowerCase()} are titled ${key}: give the ID of the one you mean` }
+          : { ok: false, message: `No ${what} you can see is titled ${key}` };
       },
     };
   }
@@ -1241,7 +1417,13 @@ export class AppRuntime {
    * (labels, titles, email addresses), what their role masks left empty, and cells that a
    * spreadsheet won't run as formulas. The role needs to allow exporting.
    */
-  async exportRecords(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, entityName: string, decision?: AllowedQuery): Promise<{ readonly csv: string; readonly count: number }> {
+  async exportRecords(
+    request: FastifyRequest,
+    auth: AuthContext,
+    loaded: LoadedApp,
+    entityName: string,
+    decision?: AllowedQuery,
+  ): Promise<{ readonly csv: string; readonly count: number }> {
     const entity = this.entity(loaded, entityName);
     const read = decision ?? (await this.decide(request, auth, loaded, 'record.read', entityName));
     const fields = entity.fields.filter((field) => field.type !== 'lines' && field.type !== 'file');
@@ -1262,7 +1444,10 @@ export class AppRuntime {
     }
     const emails = new Map<string, string>();
     if (people.size) {
-      const found = await this.#ctx.db.select({ id: users.id, email: users.email }).from(users).where(and(eq(users.orgId, this.#ctx.org.id), inArray(users.id, [...people])));
+      const found = await this.#ctx.db
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(and(eq(users.orgId, this.#ctx.org.id), inArray(users.id, [...people])));
       for (const person of found) if (person.email) emails.set(person.id, person.email);
     }
     const text = (field: StoredEntity['fields'][number], record: RecordOut): string => {
@@ -1271,13 +1456,20 @@ export class AppRuntime {
       if (field.type === 'reference') return (Array.isArray(value) ? value : [value]).map((id) => record.titles?.[String(id)] ?? String(id)).join('; ');
       if (field.type === 'user') return emails.get(String(value)) ?? String(value);
       if (field.type === 'boolean') return value ? 'Yes' : 'No';
-      if (field.type === 'choice') return (Array.isArray(value) ? value : [value]).map((v) => field.options.find((o) => o.value === v)?.label ?? String(v)).join('; ');
+      if (field.type === 'choice')
+        return (Array.isArray(value) ? value : [value]).map((v) => field.options.find((o) => o.value === v)?.label ?? String(v)).join('; ');
       // Text could start as a formula does; numbers, dates and times can't.
       return field.type === 'text' || field.type === 'email' ? safeCell(String(value)) : String(value);
     };
     const rows = [
       ['ID', ...fields.map((field) => field.label), 'Owner', 'Created', 'Last changed'],
-      ...records.map((record) => [record.id, ...fields.map((field) => text(field, record)), record.owner ? (emails.get(record.owner) ?? record.owner) : '', record.createdAt ?? '', record.updatedAt ?? '']),
+      ...records.map((record) => [
+        record.id,
+        ...fields.map((field) => text(field, record)),
+        record.owner ? (emails.get(record.owner) ?? record.owner) : '',
+        record.createdAt ?? '',
+        record.updatedAt ?? '',
+      ]),
     ];
     // Data that leaves the platform is on the audit log: who took which records out.
     await recordAudit(this.#ctx.db, auditScopeFor(request, this.#ctx.org.id, this.#ctx.now()), {
@@ -1315,7 +1507,9 @@ export class AppRuntime {
       const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false, new Set(), this.#writing(auth));
       const beforeValues = recordValues(before);
       const derived = this.#derived(loaded, entityName, { ...beforeValues, ...check.values, ...prepared.rollups });
-      const changed = Object.fromEntries(Object.entries(derived).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)));
+      const changed = Object.fromEntries(
+        Object.entries(derived).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)),
+      );
       const afterValues = { ...beforeValues, ...changed };
       const fields = [...this.#entered(loaded, entityName, changed), ...prepared.paths];
       if (!writeGrant(permission.grants, { fields, before: beforeValues, after: afterValues })) {
@@ -1333,7 +1527,15 @@ export class AppRuntime {
       await this.#checkPeople(loaded, entity, changed, 'owner' in changed, Object.fromEntries(prepared.changed.map((name) => [name, prepared.lines[name]!])));
       const files = this.#newFiles(loaded, entity, beforeValues, changed, prepared.lines, current);
       await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: before.id });
-      return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'update', before, values: changed, provenance, lines, files }))!;
+      return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, {
+        entityName,
+        operation: 'update',
+        before,
+        values: changed,
+        provenance,
+        lines,
+        files,
+      }))!;
     });
     return this.#respond(auth, loaded, entityName, record);
   }
@@ -1354,8 +1556,18 @@ export class AppRuntime {
         throw forbidden('not_allowed', 'You may not delete this record');
       }
       this.#blockedBy(permission, values);
-      const current = await this.#currentLines(tx, loaded, entity, before.id, linesFieldsOf(entity).map((f) => f.name));
-      const lines = Object.fromEntries(Object.entries(current).filter(([, list]) => list.length).map(([name, list]) => [name, { next: [], current: list }]));
+      const current = await this.#currentLines(
+        tx,
+        loaded,
+        entity,
+        before.id,
+        linesFieldsOf(entity).map((f) => f.name),
+      );
+      const lines = Object.fromEntries(
+        Object.entries(current)
+          .filter(([, list]) => list.length)
+          .map(([name, list]) => [name, { next: [], current: list }]),
+      );
       await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'delete', before, values: {}, lines });
     });
   }
@@ -1395,7 +1607,7 @@ export class AppRuntime {
             if (fieldId === 'owner' && 'before' in change) return [{ field: 'owner', before: change.before, after: change.after }];
             const field = entity.fields.find((f) => f.id === fieldId);
             // A field deleted since, or one whose type changed between lines and a single value.
-            if (!field || ('lines' in change) !== (field.type === 'lines')) return [{ field: change.name, removed: true }];
+            if (!field || 'lines' in change !== (field.type === 'lines')) return [{ field: change.name, removed: true }];
             const access = fieldAccess(read, field.name);
             if (access === 'hidden') return [];
             if (access === 'masked') return [{ field: field.name, masked: true }];
@@ -1426,7 +1638,9 @@ export class AppRuntime {
       return { values, ...(masked.length ? { masked } : {}) };
     };
     const sources = (byId: Readonly<Record<string, unknown>> | undefined) => {
-      const named = Object.fromEntries(Object.entries(byId ?? {}).flatMap(([id, source]) => (fields.get(id)?.access === 'full' ? [[fields.get(id)!.name, source]] : [])));
+      const named = Object.fromEntries(
+        Object.entries(byId ?? {}).flatMap(([id, source]) => (fields.get(id)?.access === 'full' ? [[fields.get(id)!.name, source]] : [])),
+      );
       return Object.keys(named).length ? { sources: named } : {};
     };
     return {
@@ -1438,7 +1652,9 @@ export class AppRuntime {
           changes: Object.entries(line.changes).flatMap(([id, c]): LinesChangeOut['changed'][number]['changes'] => {
             const f = fields.get(id);
             if (!f || f.access === 'hidden') return [];
-            return f.access === 'masked' ? [{ field: f.name, masked: true as const }] : [{ field: f.name, before: c.before, after: c.after, ...(c.source ? { source: c.source } : {}) }];
+            return f.access === 'masked'
+              ? [{ field: f.name, masked: true as const }]
+              : [{ field: f.name, before: c.before, after: c.after, ...(c.source ? { source: c.source } : {}) }];
           }),
         }))
         .filter((line) => line.changes.length),
@@ -1487,13 +1703,19 @@ export class AppRuntime {
     const decision = await this.decide(request, auth, loaded, 'record.read', query.entity, { inside: true });
     if (query.summary) {
       const { summary } = query;
-      return this.#summarize(auth, loaded, {
-        entity: query.entity,
-        measure: summary.measure,
-        ...(summary.group ? { group: summary.group, limit: summary.limit } : {}),
-        ...(summary.range ? { range: summary.range } : {}),
-        ...(query.filter ? { filter: query.filter } : {}),
-      }, decision, parameters);
+      return this.#summarize(
+        auth,
+        loaded,
+        {
+          entity: query.entity,
+          measure: summary.measure,
+          ...(summary.group ? { group: summary.group, limit: summary.limit } : {}),
+          ...(summary.range ? { range: summary.range } : {}),
+          ...(query.filter ? { filter: query.filter } : {}),
+        },
+        decision,
+        parameters,
+      );
     }
     const where = query.filter ? partialEvaluate(query.filter, { principal: principalEnv(auth), input: parameters, context: {} }, ['record']) : true;
     if (where === false) return { records: [], nextCursor: null };
@@ -1520,7 +1742,12 @@ export class AppRuntime {
    * On a page about one record, a block of the records that refer to it: the condition that keeps
    * only those. It narrows what the block shows; the caller's own permissions still decide.
    */
-  #referringTo(loaded: LoadedApp, block: { readonly entity: string; readonly of?: string | undefined }, record: string | undefined, filter: Condition | undefined): Condition | undefined {
+  #referringTo(
+    loaded: LoadedApp,
+    block: { readonly entity: string; readonly of?: string | undefined },
+    record: string | undefined,
+    filter: Condition | undefined,
+  ): Condition | undefined {
     if (block.of === undefined) return filter;
     if (!record) throw unprocessable('record_required', 'This block shows the records that refer to one record: give its ID');
     const field = this.entity(loaded, block.entity).fields.find((f) => f.name === block.of);
@@ -1534,16 +1761,30 @@ export class AppRuntime {
    * their lines. A field it totals, groups by or filters on must show in full to the caller in
    * every record: otherwise the number would tell them what their role hides.
    */
-  async runSummary(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, page: string, path: string, decision: AllowedQuery, record?: string): Promise<SummaryOut> {
+  async runSummary(
+    request: FastifyRequest,
+    auth: AuthContext,
+    loaded: LoadedApp,
+    page: string,
+    path: string,
+    decision: AllowedQuery,
+    record?: string,
+  ): Promise<SummaryOut> {
     const block = this.summaryBlock(loaded, page, path);
     const filter = this.#referringTo(loaded, block, record, block.filter);
-    return this.#summarize(auth, loaded, {
-      entity: block.entity,
-      measure: block.measure,
-      ...(block.type === 'chart' ? { group: block.group, limit: block.limit } : {}),
-      ...(block.range ? { range: block.range } : {}),
-      ...(filter ? { filter } : {}),
-    }, decision, {});
+    return this.#summarize(
+      auth,
+      loaded,
+      {
+        entity: block.entity,
+        measure: block.measure,
+        ...(block.type === 'chart' ? { group: block.group, limit: block.limit } : {}),
+        ...(block.range ? { range: block.range } : {}),
+        ...(filter ? { filter } : {}),
+      },
+      decision,
+      {},
+    );
   }
 
   /** Work out numbers for a summary, a number or one for each group, as runSummary says. */
@@ -1565,13 +1806,19 @@ export class AppRuntime {
     const { group, measure } = spec;
     const paths = [measure.field, group?.field, spec.range?.field].filter((path): path is string => path !== undefined);
     this.#requireVisible(decision, paths, 'work out numbers from');
-    if (spec.filter) this.#requireVisible(decision, conditionRefs(spec.filter).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : [])), 'filter on');
+    if (spec.filter)
+      this.#requireVisible(
+        decision,
+        conditionRefs(spec.filter).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : [])),
+        'filter on',
+      );
     const where = spec.filter ? partialEvaluate(spec.filter, { principal: principalEnv(auth), input, context: {} }, ['record']) : true;
     if (where === false) return group ? { groups: [], other: null, more: 0 } : { value: measure.op === 'count' || measure.op === 'sum' ? 0 : null };
 
     // A summary over lines names them as `lines.amount`, or counts them by their lines field.
     const linesFieldOf = (path: string | undefined) => (path?.includes('.') ? path.split('.')[0] : undefined);
-    const over = linesFieldOf(measure.field) ?? (measure.op === 'count' ? measure.field : undefined) ?? linesFieldOf(group?.field) ?? linesFieldOf(spec.range?.field);
+    const over =
+      linesFieldOf(measure.field) ?? (measure.op === 'count' ? measure.field : undefined) ?? linesFieldOf(group?.field) ?? linesFieldOf(spec.range?.field);
     const linesField = over ? entity.fields.find((field) => field.name === over) : undefined;
     const lineEntity = linesField?.type === 'lines' ? loaded.definition.entities[linesField.entity] : undefined;
     const at = (path: string) => {
@@ -1586,10 +1833,7 @@ export class AppRuntime {
       grants: decision.grants.map((grant) => grant.filter),
       exclude: decision.exclude.map((exclusion) => exclusion.when),
       where: [where],
-      measure:
-        measure.op === 'count'
-          ? { op: 'count', onLines: measure.field !== undefined }
-          : { op: measure.op, ...at(measure.field!) },
+      measure: measure.op === 'count' ? { op: 'count', onLines: measure.field !== undefined } : { op: measure.op, ...at(measure.field!) },
       ...(group ? { group: { ...at(group.field), ...(group.period ? { period: group.period } : {}), limit: spec.limit ?? 8 } } : {}),
       ...(spec.range
         ? (() => {
@@ -1693,7 +1937,13 @@ export class AppRuntime {
    * the action's own conditions, flows and rules still run. If they stop it, nothing it did stays,
    * and the answer says why.
    */
-  async runForProcess(tx: AppTransaction, loaded: LoadedApp, name: string, recordId: string, origin: ProcessOrigin): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+  async runForProcess(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    name: string,
+    recordId: string,
+    origin: ProcessOrigin,
+  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
     await tx.platformQuery('savepoint process_action');
     try {
       const run = await this.#prepareAction(origin, loaded, name, { values: {}, recordId }, {});
@@ -1719,11 +1969,28 @@ export class AppRuntime {
     origin: ProcessOrigin,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
     // The steps run as every app's logic runs: as a flow, here one before an update of the record saves.
-    const moved = stepsFlow({ label: script.label, entity: script.entity, steps: [...script.steps] }, script.name, new Set(Object.keys(loaded.definition.flows ?? {})));
-    const action: Action = { label: script.label, description: script.label, entity: script.entity, operation: 'update', input: [], set: {}, confirm: 'none', before: moved.run };
+    const moved = stepsFlow(
+      { label: script.label, entity: script.entity, steps: [...script.steps] },
+      script.name,
+      new Set(Object.keys(loaded.definition.flows ?? {})),
+    );
+    const action: Action = {
+      label: script.label,
+      description: script.label,
+      entity: script.entity,
+      operation: 'update',
+      input: [],
+      set: {},
+      confirm: 'none',
+      before: moved.run,
+    };
     const inline: LoadedApp = {
       ...loaded,
-      definition: { ...loaded.definition, flows: { ...loaded.definition.flows, [moved.name]: moved.flow }, actions: { ...loaded.definition.actions, [script.name]: action } },
+      definition: {
+        ...loaded.definition,
+        flows: { ...loaded.definition.flows, [moved.name]: moved.flow },
+        actions: { ...loaded.definition.actions, [script.name]: action },
+      },
     };
     return this.runForProcess(tx, inline, script.name, recordId, origin);
   }
@@ -1733,7 +2000,13 @@ export class AppRuntime {
     const entity = this.entity(loaded, entityName);
     const values = await this.recordIn(tx, loaded, entityName, id);
     if (!values) return null;
-    const lines = await this.#currentLines(tx, loaded, entity, id, linesFieldsOf(entity).map((field) => field.name));
+    const lines = await this.#currentLines(
+      tx,
+      loaded,
+      entity,
+      id,
+      linesFieldsOf(entity).map((field) => field.name),
+    );
     const findings = evaluateRules(loaded.definition, entityName, values, { principal: {} }, lines);
     return only ? findings.filter((finding) => only.includes(finding.rule)) : findings;
   }
@@ -1773,7 +2046,9 @@ export class AppRuntime {
     if (action.operation === 'update' && !input.recordId) throw unprocessable('record_required', `${name} changes an existing record: give its ID`);
     const permission =
       origin.kind === 'request'
-        ? await this.decide(origin.request, origin.auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity, { inside: true })
+        ? await this.decide(origin.request, origin.auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity, {
+            inside: true,
+          })
         : processAuthority(action.operation === 'create' ? 'record.create' : 'record.update', action.entity, origin.instanceId);
     // Revising a proposal is the person's own edit: it waits for their approval again, through the same review.
     const needsConfirmation =
@@ -1786,20 +2061,66 @@ export class AppRuntime {
     // A new record gets its ID now, so that its flow before it saves can name it.
     const newId = action.operation === 'create' ? uuidv7(now.getTime()) : undefined;
     // Lines fields the flow before it saves may read or add to, which the caller sent no lines for.
-    const stepLines = shaped ? linesFieldsOf(entity).map((field) => field.name).filter((field) => !(field in check.lines)) : [];
+    const stepLines = shaped
+      ? linesFieldsOf(entity)
+          .map((field) => field.name)
+          .filter((field) => !(field in check.lines))
+      : [];
     const given = [...new Set([...Object.keys(input.values), ...Object.keys(action.set)])];
     const givenScalars = given.filter((field) => !(field in check.lines));
     const writer = origin.kind === 'request' ? this.#writer(origin.request, origin.auth) : processWriter(ctx.org.id, origin);
     const principal = origin.kind === 'request' ? principalEnv(origin.auth) : {};
     const onBehalfOf = origin.kind === 'request' ? (origin.auth.actor.type === 'user' ? origin.auth.actor.id : null) : origin.onBehalfOf;
     return {
-      origin, loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, writing, now, commit, proposed, newId, stepLines, given, givenScalars, writer, principal, onBehalfOf,
+      origin,
+      loaded,
+      name,
+      action,
+      entity,
+      input,
+      options,
+      check,
+      provenance,
+      permission,
+      needsConfirmation,
+      shaped,
+      writing,
+      now,
+      commit,
+      proposed,
+      newId,
+      stepLines,
+      given,
+      givenScalars,
+      writer,
+      principal,
+      onBehalfOf,
     };
   }
 
   /** An action's work, in a transaction: work out the change, then propose it, or write it and move the processes it touches. */
   async #runActionIn(tx: AppTransaction, run: ActionRun): Promise<ActionResult> {
-    const { loaded, name, action, entity, input, options, check, provenance, permission, needsConfirmation, shaped, writing, now, commit, proposed, newId, stepLines, given, givenScalars } = run;
+    const {
+      loaded,
+      name,
+      action,
+      entity,
+      input,
+      options,
+      check,
+      provenance,
+      permission,
+      needsConfirmation,
+      shaped,
+      writing,
+      now,
+      commit,
+      proposed,
+      newId,
+      stepLines,
+      given,
+      givenScalars,
+    } = run;
     const ctx = this.#ctx;
     this.#sameRevision(tx, loaded);
     let before: StoredRecord | null = null;
@@ -1873,8 +2194,10 @@ export class AppRuntime {
       // What the flow was to give, it gave: a new record still has every required value.
       const missing = entity.fields.flatMap((field): ValueIssue[] => {
         if (!field.required) return [];
-        const empty = field.type === 'lines' ? !(worked[field.name]?.length) : draft[field.name] === undefined || draft[field.name] === null;
-        return empty ? [{ field: field.name, code: 'required', message: field.type === 'lines' ? `${field.label}: add at least one line` : `${field.label} is required` }] : [];
+        const empty = field.type === 'lines' ? !worked[field.name]?.length : draft[field.name] === undefined || draft[field.name] === null;
+        return empty
+          ? [{ field: field.name, code: 'required', message: field.type === 'lines' ? `${field.label}: add at least one line` : `${field.label} is required` }]
+          : [];
       });
       if (missing.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: missing });
     }
@@ -1892,12 +2215,18 @@ export class AppRuntime {
     }
     // What its flow sets is the person's write too: an action never does more than its runner may.
     if (shaped && !writeGrant(permission.grants, { fields: [...written, ...delta.paths], ...(before ? { before: beforeValues } : {}), after })) {
-      throw forbidden('not_allowed', `You may not ${action.label.toLowerCase()}: the flow before it saves sets a field or a value outside what your role allows`);
+      throw forbidden(
+        'not_allowed',
+        `You may not ${action.label.toLowerCase()}: the flow before it saves sets a field or a value outside what your role allows`,
+      );
     }
     this.#blockedBy(permission, after);
     // A proposal gives new lines their IDs now, so the person's revisions can follow each line.
     const lines: Record<string, LineValues[]> = Object.fromEntries(
-      Object.entries(worked).map(([field, list]) => [field, commit || input.dryRun ? list : list.map((line) => ({ id: line.id ?? uuidv7(now.getTime()), values: line.values }))]),
+      Object.entries(worked).map(([field, list]) => [
+        field,
+        commit || input.dryRun ? list : list.map((line) => ({ id: line.id ?? uuidv7(now.getTime()), values: line.values })),
+      ]),
     );
     const findings = [...this.#rules(loaded, action.entity, run.principal, after, lines), ...stepFindings];
     await this.#checkPeople(loaded, entity, values, 'owner' in values, lines);
@@ -1916,14 +2245,22 @@ export class AppRuntime {
       lines,
       findings,
       provenance: sources,
-      files: await ctx.files.describe(tx, loaded, this.#fileIds(loaded, entity, { values: { ...after, ...Object.fromEntries(Object.entries(lines).map(([field, list]) => [field, list.map((line) => line.values)])) } })),
+      files: await ctx.files.describe(
+        tx,
+        loaded,
+        this.#fileIds(loaded, entity, {
+          values: { ...after, ...Object.fromEntries(Object.entries(lines).map(([field, list]) => [field, list.map((line) => line.values)])) },
+        }),
+      ),
     });
     if (input.dryRun) return { status: 'preview' as const, needsConfirmation, findings, card };
     if (!commit) {
       if (run.origin.kind !== 'request') throw new Error('A process never waits for a confirmation');
       const { request, auth } = run.origin;
       const sealedInput: SealedEffect['input'] = Object.fromEntries(
-        Object.entries({ ...check.values, ...Object.fromEntries(Object.keys(check.lines).map((field) => [field, toWire(lines[field]!)])) }).filter(([field]) => action.input.includes(field)),
+        Object.entries({ ...check.values, ...Object.fromEntries(Object.keys(check.lines).map((field) => [field, toWire(lines[field]!)])) }).filter(([field]) =>
+          action.input.includes(field),
+        ),
       );
       const sealedLines = Object.fromEntries(delta.changed.map((field) => [field, lines[field]!.map((line) => ({ id: line.id!, values: line.values }))]));
       const proposal = await this.#propose(request, auth, loaded, tx, {
@@ -1969,13 +2306,24 @@ export class AppRuntime {
     }
     // The processes it moves: tasks it decides complete, and processes it starts begin (design §6.10).
     if (run.origin.kind === 'request') {
-      await this.#processes?.afterAction(tx, loaded, { action: name, recordId: record.id, by: run.origin.auth.actor, writer: run.writer, before: before ? beforeValues : null });
+      await this.#processes?.afterAction(tx, loaded, {
+        action: name,
+        recordId: record.id,
+        by: run.origin.auth.actor,
+        writer: run.writer,
+        before: before ? beforeValues : null,
+      });
     }
     return { status: 'done' as const, record: { id: record.id, version: record.version } };
   }
 
   /** The fields of lines a write changes, for the permission check, and which lines fields change at all. */
-  #linesDelta(loaded: LoadedApp, entity: StoredEntity, lines: Readonly<Record<string, readonly LineValues[]>>, current: Readonly<Record<string, readonly StoredLine[]>>) {
+  #linesDelta(
+    loaded: LoadedApp,
+    entity: StoredEntity,
+    lines: Readonly<Record<string, readonly LineValues[]>>,
+    current: Readonly<Record<string, readonly StoredLine[]>>,
+  ) {
     const paths: string[] = [];
     const changed: string[] = [];
     for (const [field, list] of Object.entries(lines)) {
@@ -2015,7 +2363,15 @@ export class AppRuntime {
     limit: number,
   ): Promise<RecordValues[]> {
     const entity = this.entity(loaded, entityName);
-    const query = selectRecords({ names: this.#names(loaded), entity, fields: entity.fields.map((f) => f.name), grants: [true], ...(where ? { where: [where] } : {}), sort: [...sort], limit });
+    const query = selectRecords({
+      names: this.#names(loaded),
+      entity,
+      fields: entity.fields.map((f) => f.name),
+      grants: [true],
+      ...(where ? { where: [where] } : {}),
+      sort: [...sort],
+      limit,
+    });
     return (await tx.query(query.text, query.values)).rows.map((row) => recordValues(parseRecord(entity, row).record));
   }
 
@@ -2027,7 +2383,14 @@ export class AppRuntime {
   }
 
   /** Create a record for a flow. */
-  async flowCreate(tx: AppTransaction, loaded: LoadedApp, writer: Writer, principal: Record<string, unknown>, entityName: string, input: Readonly<Record<string, unknown>>): Promise<RecordValues> {
+  async flowCreate(
+    tx: AppTransaction,
+    loaded: LoadedApp,
+    writer: Writer,
+    principal: Record<string, unknown>,
+    entityName: string,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<RecordValues> {
     const entity = this.entity(loaded, entityName);
     this.#sameRevision(tx, loaded);
     const at: WriteContext = { now: this.#ctx.now(), person: typeof principal['id'] === 'string' ? principal['id'] : undefined };
@@ -2059,7 +2422,9 @@ export class AppRuntime {
     const before = await this.#lock(tx, loaded, entity, id);
     if (!before) throw notFound('Record');
     const current = addLine ? await this.#currentLines(tx, loaded, entity, before.id, [addLine.field]) : {};
-    const given = addLine ? { ...input, [addLine.field]: [...toWire((current[addLine.field] ?? []).map((line) => ({ id: line.id, values: line.values }))), addLine.values] } : input;
+    const given = addLine
+      ? { ...input, [addLine.field]: [...toWire((current[addLine.field] ?? []).map((line) => ({ id: line.id, values: line.values }))), addLine.values] }
+      : input;
     const check = checkInput(loaded.definition, entityName, given, { mode: 'update' });
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
     const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false);
@@ -2081,8 +2446,18 @@ export class AppRuntime {
     this.#sameRevision(tx, loaded);
     const before = await this.#lock(tx, loaded, entity, id);
     if (!before) throw notFound('Record');
-    const current = await this.#currentLines(tx, loaded, entity, before.id, linesFieldsOf(entity).map((f) => f.name));
-    const lines = Object.fromEntries(Object.entries(current).filter(([, list]) => list.length).map(([name, list]) => [name, { next: [], current: list }]));
+    const current = await this.#currentLines(
+      tx,
+      loaded,
+      entity,
+      before.id,
+      linesFieldsOf(entity).map((f) => f.name),
+    );
+    const lines = Object.fromEntries(
+      Object.entries(current)
+        .filter(([, list]) => list.length)
+        .map(([name, list]) => [name, { next: [], current: list }]),
+    );
     await this.#writeRecord(writer, loaded, tx, { entityName, operation: 'delete', before, values: {}, lines });
   }
 
@@ -2200,7 +2575,10 @@ export class AppRuntime {
       })
       .returning();
     if (proposal.revises) {
-      await tx.db.update(proposals).set({ status: 'superseded', decidedAt: now, decisionNote: `Revised as ${id}` }).where(eq(proposals.id, proposal.revises.id));
+      await tx.db
+        .update(proposals)
+        .set({ status: 'superseded', decidedAt: now, decisionNote: `Revised as ${id}` })
+        .where(eq(proposals.id, proposal.revises.id));
     }
     await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
       action: proposal.revises ? 'proposal.revise' : 'proposal.create',
@@ -2233,7 +2611,14 @@ export class AppRuntime {
     const rows = await this.#ctx.db
       .select()
       .from(proposals)
-      .where(and(eq(proposals.orgId, this.#ctx.org.id), eq(proposals.onBehalfOf, auth.actor.id), eq(proposals.status, 'pending'), gt(proposals.expiresAt, this.#ctx.now())))
+      .where(
+        and(
+          eq(proposals.orgId, this.#ctx.org.id),
+          eq(proposals.onBehalfOf, auth.actor.id),
+          eq(proposals.status, 'pending'),
+          gt(proposals.expiresAt, this.#ctx.now()),
+        ),
+      )
       .orderBy(desc(proposals.createdAt))
       .limit(100);
     return rows.map((row) => this.toProposalOut(this.#withFindings(row)));
@@ -2244,7 +2629,12 @@ export class AppRuntime {
    * in an interactive session, naming its digest; and only while the app and the record are as
    * they were when it was made.
    */
-  async approve(request: FastifyRequest, auth: AuthContext, id: string, digest: string): Promise<{ proposal: ProposalOut; record: RecordOut | { id: string; version: number } }> {
+  async approve(
+    request: FastifyRequest,
+    auth: AuthContext,
+    id: string,
+    digest: string,
+  ): Promise<{ proposal: ProposalOut; record: RecordOut | { id: string; version: number } }> {
     requirePerson(auth, 'proposal.approve');
     const ctx = this.#ctx;
     const proposal = await this.proposalFor(auth, id);
@@ -2255,7 +2645,9 @@ export class AppRuntime {
     const permission = await this.decide(request, auth, loaded, action.operation === 'create' ? 'record.create' : 'record.update', action.entity);
     const effect = proposal.effect as unknown as SealedEffect;
     const sealedLines = effect.lines ?? {};
-    const written = [...new Set([...Object.keys(effect.input), ...Object.keys(action.set), ...(effect.stepFields ?? [])])].filter((field) => !(field in sealedLines));
+    const written = [...new Set([...Object.keys(effect.input), ...Object.keys(action.set), ...(effect.stepFields ?? [])])].filter(
+      (field) => !(field in sealedLines),
+    );
     const now = ctx.now();
 
     const stored = await withAppTransaction(ctx.pool, loaded.env, 'records', async (tx) => {
@@ -2279,7 +2671,8 @@ export class AppRuntime {
         });
       if (action.operation === 'create') {
         after = { ...effect.values, owner: (effect.values['owner'] as string | undefined) ?? auth.actor.id };
-        if (!writeGrant(permission.grants, { fields: [...written, ...linePaths()], after })) throw forbidden('not_allowed', 'You may no longer make this change');
+        if (!writeGrant(permission.grants, { fields: [...written, ...linePaths()], after }))
+          throw forbidden('not_allowed', 'You may no longer make this change');
       } else {
         before = await this.#lock(tx, loaded, entity, locked!.recordId!);
         if (!before) throw notFound('Record');
@@ -2288,7 +2681,8 @@ export class AppRuntime {
         current = await this.#currentLines(tx, loaded, entity, before.id, Object.keys(sealedLines));
         const beforeValues = recordValues(before);
         after = { ...beforeValues, ...effect.values };
-        if (!writeGrant(permission.grants, { fields: [...written, ...linePaths()], before: beforeValues, after })) throw forbidden('not_allowed', 'You may no longer make this change');
+        if (!writeGrant(permission.grants, { fields: [...written, ...linePaths()], before: beforeValues, after }))
+          throw forbidden('not_allowed', 'You may no longer make this change');
         this.#blockedBy(permission, beforeValues);
       }
       this.#blockedBy(permission, after);
@@ -2308,9 +2702,22 @@ export class AppRuntime {
         files,
       });
       if (action.flow) {
-        await this.#flows?.afterAction(tx, loaded, { action: proposal.action, entity: action.entity, record: recordValues(record!), writer, principal: principalEnv(auth), auth });
+        await this.#flows?.afterAction(tx, loaded, {
+          action: proposal.action,
+          entity: action.entity,
+          record: recordValues(record!),
+          writer,
+          principal: principalEnv(auth),
+          auth,
+        });
       }
-      await this.#processes?.afterAction(tx, loaded, { action: proposal.action, recordId: record!.id, by: auth.actor, writer, before: before ? recordValues(before) : null });
+      await this.#processes?.afterAction(tx, loaded, {
+        action: proposal.action,
+        recordId: record!.id,
+        by: auth.actor,
+        writer,
+        before: before ? recordValues(before) : null,
+      });
       await tx.db.update(proposals).set({ status: 'approved', decidedAt: now, resultRecordId: record!.id }).where(eq(proposals.id, id));
       await recordAudit(tx.db, auditScopeFor(request, ctx.org.id, now), {
         action: 'proposal.approve',
@@ -2333,7 +2740,10 @@ export class AppRuntime {
     if (proposal.status !== 'pending') throw conflict('not_pending', `This proposal is already ${proposal.status}`);
     const now = ctx.now();
     await ctx.db.transaction(async (tx) => {
-      await tx.update(proposals).set({ status: 'rejected', decidedAt: now, decisionNote: note ?? null }).where(and(eq(proposals.id, id), eq(proposals.status, 'pending')));
+      await tx
+        .update(proposals)
+        .set({ status: 'rejected', decidedAt: now, decisionNote: note ?? null })
+        .where(and(eq(proposals.id, id), eq(proposals.status, 'pending')));
       await recordAudit(tx, auditScopeFor(request, ctx.org.id, now), {
         action: 'proposal.reject',
         target: { type: 'proposal', id },
@@ -2355,10 +2765,13 @@ export class AppRuntime {
     const entity = this.entity(loaded, action.entity);
     const linesFields = new Set(linesFieldsOf(entity).map((f) => f.name));
     const changed = Object.keys(edits).filter(
-      (field) => !linesFields.has(field) && JSON.stringify(effect.input[field] ?? null) !== JSON.stringify(canonical(loaded, action.entity, field, edits[field])),
+      (field) =>
+        !linesFields.has(field) && JSON.stringify(effect.input[field] ?? null) !== JSON.stringify(canonical(loaded, action.entity, field, edits[field])),
     );
     const before = proposal.provenance as Record<string, Provenance>;
-    const provenance: Record<string, Provenance> = Object.fromEntries(Object.entries(before).filter(([key]) => !LINE_KEY.test(key) || !(LINE_KEY.exec(key)![1]! in edits)));
+    const provenance: Record<string, Provenance> = Object.fromEntries(
+      Object.entries(before).filter(([key]) => !LINE_KEY.test(key) || !(LINE_KEY.exec(key)![1]! in edits)),
+    );
     for (const field of changed) provenance[field] = { source: 'person' };
     // A line's values keep where they came from, unless the person changed them: follow each line by its ID.
     for (const linesField of linesFieldsOf(entity)) {
@@ -2372,7 +2785,11 @@ export class AppRuntime {
         for (const declared of lineEntity.fields) {
           const key = `${field}[${index}].${declared.name}`;
           const given = declared.name in line;
-          const same = was >= 0 && (!given || JSON.stringify(previous[was]![declared.name] ?? null) === JSON.stringify(canonical(loaded, linesField.entity, declared.name, line[declared.name])));
+          const same =
+            was >= 0 &&
+            (!given ||
+              JSON.stringify(previous[was]![declared.name] ?? null) ===
+                JSON.stringify(canonical(loaded, linesField.entity, declared.name, line[declared.name])));
           const source = was >= 0 ? before[`${field}[${was}].${declared.name}`] : undefined;
           if (same && source) provenance[key] = source;
           else if (!same && given) provenance[key] = { source: 'person' };
@@ -2401,7 +2818,9 @@ export class AppRuntime {
 
   /** Refuse, audited, unless the caller may run this action or query, as its own route would check. */
   async checkCapability(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, kind: 'action' | 'query', name: string): Promise<void> {
-    await checkPermission(this.#ctx, request, auth, kind === 'action' ? 'action.run' : 'query.run', this.capability(loaded, kind, name), { policy: await this.policy(loaded) });
+    await checkPermission(this.#ctx, request, auth, kind === 'action' ? 'action.run' : 'query.run', this.capability(loaded, kind, name), {
+      policy: await this.policy(loaded),
+    });
   }
 }
 
@@ -2479,7 +2898,13 @@ export const TEST_PERSON = '00000000-0000-4000-8000-000000007e57';
 
 /** How a test's person signs in: as the test person, holding the test's role in the app's environment, and nothing else. */
 function testAuth(loaded: LoadedApp, role: string): AuthContext {
-  const binding: Binding = { id: `test:${role}`, principalType: 'user', principalId: TEST_PERSON, roleId: appRoleId(loaded.app.id, role), scope: { type: 'env', id: loaded.env.id } };
+  const binding: Binding = {
+    id: `test:${role}`,
+    principalType: 'user',
+    principalId: TEST_PERSON,
+    roleId: appRoleId(loaded.app.id, role),
+    scope: { type: 'env', id: loaded.env.id },
+  };
   return {
     actor: { type: 'user', id: TEST_PERSON, name: 'The test', email: null },
     principal: { type: 'user', id: TEST_PERSON, groupIds: [], bindings: [binding] },
@@ -2513,8 +2938,13 @@ interface ActionOptions {
 
 /** What stopped one line of an import, from the error a create gives. */
 function rowIssues(row: number, error: HttpError): ImportIssue[] {
-  const details = error.details as { issues?: Array<{ field?: string; message: string }>; findings?: Array<{ message: string; fields?: string[] }> } | undefined;
+  const details = error.details as
+    | { issues?: Array<{ field?: string; message: string }>; findings?: Array<{ message: string; fields?: string[] }> }
+    | undefined;
   if (details?.issues?.length) return details.issues.map((issue) => ({ row, ...(issue.field ? { field: issue.field } : {}), message: issue.message }));
-  if (details?.findings?.length) return details.findings.filter((finding) => (finding as { severity?: string }).severity !== 'warning').map((finding) => ({ row, ...(finding.fields?.[0] ? { field: finding.fields[0] } : {}), message: finding.message }));
+  if (details?.findings?.length)
+    return details.findings
+      .filter((finding) => (finding as { severity?: string }).severity !== 'warning')
+      .map((finding) => ({ row, ...(finding.fields?.[0] ? { field: finding.fields[0] } : {}), message: finding.message }));
   return [{ row, message: error.message }];
 }

@@ -3,13 +3,13 @@ import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { requireAuth } from '../access/rules.js';
-import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import { changeRequestRequired } from '../apps/builder.js';
 import { isTeamApp } from '../apps/catalog.js';
 import { appResource } from '../apps/resources.js';
 import { AppParams } from '../apps/schemas.js';
+import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
-import { Attachment, composeError, Focus, Turn, type Composer, type DraftCheck } from './composer.js';
+import { Attachment, type Composer, composeError, type DraftCheck, Focus, Turn } from './composer.js';
 
 const ComposeBody = z.strictObject({
   prompt: z.string().trim().min(1).max(8000),
@@ -45,7 +45,11 @@ export function composeRoutes(ctx: AppContext, composer: Composer): FastifyPlugi
       '/v1/compose',
       {
         config: { access: { kind: 'authenticated' } },
-        schema: { tags: ['compose'], summary: "Whether the installation's chat builds apps: an admin sets a model provider for it", response: { 200: z.object({ enabled: z.boolean() }) } },
+        schema: {
+          tags: ['compose'],
+          summary: "Whether the installation's chat builds apps: an admin sets a model provider for it",
+          response: { 200: z.object({ enabled: z.boolean() }) },
+        },
       },
       async () => ({ enabled: composer.enabled }),
     );
@@ -53,7 +57,9 @@ export function composeRoutes(ctx: AppContext, composer: Composer): FastifyPlugi
     app.post(
       '/v1/apps/:appId/compose',
       {
-        config: { access: { kind: 'permission', action: 'app.compose', resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theRef(request)) } },
+        config: {
+          access: { kind: 'permission', action: 'app.compose', resource: async (request: FastifyRequest) => appResource(ctx.org.id, await theRef(request)) },
+        },
         // Pictures and PDFs of what the app should do come with the request.
         bodyLimit: 25 * 1024 * 1024,
         schema: {
@@ -81,7 +87,10 @@ export function composeRoutes(ctx: AppContext, composer: Composer): FastifyPlugi
         const history = first < 0 ? [] : body.history.slice(first);
         let result;
         try {
-          result = await composer.compose({ prompt: body.prompt, definition: body.definition ?? previous, focus: body.focus, history, attachments: body.attachments }, check);
+          result = await composer.compose(
+            { prompt: body.prompt, definition: body.definition ?? previous, focus: body.focus, history, attachments: body.attachments },
+            check,
+          );
         } catch (error) {
           throw composeError(error) ?? error;
         }
@@ -94,7 +103,8 @@ export function composeRoutes(ctx: AppContext, composer: Composer): FastifyPlugi
           problems = check(result.draft.definition).issues.length;
           const parsed = AppDefinition.safeParse(result.draft.definition);
           if (parsed.success) draft = parsed.data;
-          else reply = `${reply}\n\nThe draft doesn't fit the app's format, so the studio can't show it: your definition stays as it was. Ask again in smaller steps.`;
+          else
+            reply = `${reply}\n\nThe draft doesn't fit the app's format, so the studio can't show it: your definition stays as it was. Ask again in smaller steps.`;
         }
         const now = ctx.now();
         await recordAudit(ctx.db, auditScopeFor(request, ctx.org.id, now), {

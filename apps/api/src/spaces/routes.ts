@@ -2,11 +2,11 @@ import { uuidv7 } from '@platform/audit';
 import { authorize } from '@platform/authz';
 import { bindings, spaces, users } from '@platform/db';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import type { FastifyRequest } from 'fastify';
+import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { describeBindings, BindingOut } from '../access/describe.js';
-import { loadSpace, orgResource, spaceResource, type SpaceRow } from '../access/resources.js';
+import { BindingOut, describeBindings } from '../access/describe.js';
+import { loadSpace, orgResource, type SpaceRow, spaceResource } from '../access/resources.js';
 import { once, requireAuth, requireUser } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
@@ -35,8 +35,7 @@ export function toSpaceOut(space: SpaceRow): z.infer<typeof SpaceOut> {
 const SpaceParams = z.object({ spaceId: z.uuid() });
 
 export function spaceRoutes(ctx: AppContext): FastifyPluginAsyncZod {
-  const theSpace = (request: FastifyRequest) =>
-    once(request, 'space', () => loadSpace(ctx.db, ctx.org.id, (request.params as { spaceId: string }).spaceId));
+  const theSpace = (request: FastifyRequest) => once(request, 'space', () => loadSpace(ctx.db, ctx.org.id, (request.params as { spaceId: string }).spaceId));
   const spaceAsResource = async (request: FastifyRequest) => spaceResource(ctx.org.id, await theSpace(request));
 
   return async (app) => {
@@ -66,8 +65,7 @@ export function spaceRoutes(ctx: AppContext): FastifyPluginAsyncZod {
           );
         const now = ctx.now();
         const visible = candidates.filter(
-          (space) =>
-            authorize(policy, { principal, action: 'space.read', resource: spaceResource(ctx.org.id, space), bindings: held, now }).allowed,
+          (space) => authorize(policy, { principal, action: 'space.read', resource: spaceResource(ctx.org.id, space), bindings: held, now }).allowed,
         );
         visible.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'personal' ? -1 : 1));
         return { spaces: visible.map(toSpaceOut) };

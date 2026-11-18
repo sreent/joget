@@ -34,7 +34,13 @@ export function FlowRunEditor(props: {
       <Field label={props.label} {...(props.hint ? { hint: props.hint } : {})}>
         {(id) => (
           <Select id={id} value={value?.flow ?? ''} onChange={(e) => onChange(e.target.value ? startRun(definition, e.target.value, entity) : undefined)}>
-            {props.none !== undefined ? <option value="">{props.none}</option> : <option value="" disabled>Choose a flow</option>}
+            {props.none !== undefined ? (
+              <option value="">{props.none}</option>
+            ) : (
+              <option value="" disabled>
+                Choose a flow
+              </option>
+            )}
             {value && !flow ? (
               <option value={value.flow} disabled>
                 {value.flow} (gone)

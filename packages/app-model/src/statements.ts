@@ -1,8 +1,8 @@
 import type { Condition } from '@platform/authz';
-import { columnName, entityFields, tableName, type FieldInfo, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
+import { columnName, entityFields, type FieldInfo, type StoredDefinition, type StoredEntity, type StoredField, tableName } from './fields.js';
 import type { EnvironmentNames } from './migrations.js';
-import { afterCursor, compileCondition, fromDatabase, ident, orderBy, selectExpression, SqlBuilder, toDatabase, type SortKey, type SqlQuery } from './sql.js';
 import type { Period, TimeRange } from './schema.js';
+import { afterCursor, compileCondition, fromDatabase, ident, orderBy, type SortKey, SqlBuilder, type SqlQuery, selectExpression, toDatabase } from './sql.js';
 import type { FieldValue, RecordValues } from './values.js';
 
 /** A record as the platform returns it: system fields, and the values of user fields. */
@@ -102,7 +102,11 @@ export function selectRecords(query: SelectRecords): RecordSelect {
     ...(query.where ?? []).map(condition),
     ...(query.id !== undefined ? [`r.id = ${sql.param(query.id, 'uuid')}`] : []),
     // The text is a pattern of its own: % and _ in it are plain characters.
-    ...(query.search ? [`(${selectExpression(field(query.search.field))})::text ilike ${sql.param(`%${query.search.text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`, 'text')} escape '\\'`] : []),
+    ...(query.search
+      ? [
+          `(${selectExpression(field(query.search.field))})::text ilike ${sql.param(`%${query.search.text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`, 'text')} escape '\\'`,
+        ]
+      : []),
   ];
   const sortKeys: SortKey[] = [
     ...(query.sort ?? []).map((s) => ({ info: field(s.field), direction: s.direction })),
@@ -176,7 +180,10 @@ export function insertRecord(
     columns.push(ident(info.column));
     values.push(toDatabase(sql, info, value));
   }
-  return { text: `insert into ${tableOf(names, entity)} as r (${columns.join(', ')}) values (${values.join(', ')}) returning ${returning(entity)}`, values: sql.values };
+  return {
+    text: `insert into ${tableOf(names, entity)} as r (${columns.join(', ')}) values (${values.join(', ')}) returning ${returning(entity)}`,
+    values: sql.values,
+  };
 }
 
 /** Update the given fields (and `owner`, if given), and bump the version. */
@@ -213,7 +220,9 @@ export function lockRecords(names: EnvironmentNames, entity: StoredEntity, ids: 
 
 /** Each field, of an entity or of its lines, that holds several records of an entity. */
 export function listsOf(definition: StoredDefinition, target: string): Array<{ readonly entity: StoredEntity; readonly field: StoredField }> {
-  return Object.values(definition.entities).flatMap((entity) => entity.fields.filter((field) => field.type === 'reference' && field.multiple === true && field.entity === target).map((field) => ({ entity, field })));
+  return Object.values(definition.entities).flatMap((entity) =>
+    entity.fields.filter((field) => field.type === 'reference' && field.multiple === true && field.entity === target).map((field) => ({ entity, field })),
+  );
 }
 
 /** Whether a list of records, in any record or line, holds a record: while one does, the record stays. */
@@ -282,8 +291,14 @@ export function writeLines(
     const changed = infos.filter((info) => !same(old.line.values[info.name], line.values[info.name]));
     if (!changed.length && old.position === position) return;
     const sql = new SqlBuilder();
-    const sets = [`position = ${sql.param(position, 'int')}`, ...changed.map((info) => `${ident(info.column)} = ${toDatabase(sql, info, line.values[info.name] ?? null)}`)];
-    statements.push({ text: `update ${table} set ${sets.join(', ')} where id = ${sql.param(line.id, 'uuid')} and parent_id = ${sql.param(parentId, 'uuid')}`, values: sql.values });
+    const sets = [
+      `position = ${sql.param(position, 'int')}`,
+      ...changed.map((info) => `${ident(info.column)} = ${toDatabase(sql, info, line.values[info.name] ?? null)}`),
+    ];
+    statements.push({
+      text: `update ${table} set ${sets.join(', ')} where id = ${sql.param(line.id, 'uuid')} and parent_id = ${sql.param(parentId, 'uuid')}`,
+      values: sql.values,
+    });
   });
   if (added.length) {
     const sql = new SqlBuilder();
@@ -299,7 +314,11 @@ export function writeLines(
 
 /** How a record's lines changed, with each line's values under its fields' stable IDs. */
 export interface LinesChange {
-  readonly added: ReadonlyArray<{ readonly id: string; readonly values: Readonly<Record<string, FieldValue>>; readonly sources?: Readonly<Record<string, unknown>> }>;
+  readonly added: ReadonlyArray<{
+    readonly id: string;
+    readonly values: Readonly<Record<string, FieldValue>>;
+    readonly sources?: Readonly<Record<string, unknown>>;
+  }>;
   readonly removed: ReadonlyArray<{ readonly id: string; readonly values: Readonly<Record<string, FieldValue>> }>;
   readonly changed: ReadonlyArray<{
     readonly id: string;
@@ -370,7 +389,12 @@ export interface HistoryEntry {
 }
 
 /** The changes between two versions of a record, keyed by field ID. */
-export function diffRecords(entity: StoredEntity, before: RecordValues | null, after: RecordValues | null, sources: Readonly<Record<string, unknown>> = {}): Record<string, HistoryChange> {
+export function diffRecords(
+  entity: StoredEntity,
+  before: RecordValues | null,
+  after: RecordValues | null,
+  sources: Readonly<Record<string, unknown>> = {},
+): Record<string, HistoryChange> {
   const changes: Record<string, HistoryChange> = {};
   const same = (a: FieldValue, b: FieldValue) => JSON.stringify(a) === JSON.stringify(b);
   for (const field of entity.fields) {
@@ -388,7 +412,20 @@ export function insertHistory(names: EnvironmentNames, entry: HistoryEntry): Sql
     text:
       `insert into ${ident(names.schema)}.history (id, entity_id, record_id, version, operation, changes, actor_type, actor_id, on_behalf_of, via, occurred_at, audit_event_id) ` +
       'values ($1::uuid, $2, $3::uuid, $4, $5, $6::jsonb, $7, $8::uuid, $9::uuid, $10, $11::timestamptz, $12::uuid)',
-    values: [entry.id, entry.entityId, entry.recordId, entry.version, entry.operation, JSON.stringify(entry.changes), entry.actorType, entry.actorId, entry.onBehalfOf, entry.via, entry.at, entry.auditEventId],
+    values: [
+      entry.id,
+      entry.entityId,
+      entry.recordId,
+      entry.version,
+      entry.operation,
+      JSON.stringify(entry.changes),
+      entry.actorType,
+      entry.actorId,
+      entry.onBehalfOf,
+      entry.via,
+      entry.at,
+      entry.auditEventId,
+    ],
   };
 }
 

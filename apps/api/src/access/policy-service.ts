@@ -1,11 +1,12 @@
+import { metrics, trace } from '@opentelemetry/api';
 import {
   authorize,
   authorizeQuery,
-  createPolicy,
-  isCondition,
   type Binding,
+  createPolicy,
   type Decision,
   type Guardrail,
+  isCondition,
   type PermissionSet,
   type Policy,
   type Principal,
@@ -13,19 +14,8 @@ import {
   type Resource,
   type Role,
 } from '@platform/authz';
-import {
-  bindings,
-  groupMembers,
-  guardrails,
-  permissionSetGrants,
-  permissionSets,
-  rolePermissionSets,
-  roles,
-  type Database,
-  type Executor,
-} from '@platform/db';
+import { bindings, type Database, type Executor, groupMembers, guardrails, permissionSetGrants, permissionSets, rolePermissionSets, roles } from '@platform/db';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import { metrics, trace } from '@opentelemetry/api';
 
 const decisions = metrics.getMeter('platform-api').createCounter('authz_decisions_total', {
   description: 'Authorization decisions by the policy decision point',
@@ -77,16 +67,31 @@ export class PolicyService {
 
   async #load(): Promise<Policy> {
     const db = this.#db;
-    const visible = <T extends { orgId: unknown }>(table: T) =>
-      or(isNull(table.orgId as never), eq(table.orgId as never, this.#orgId));
+    const visible = <T extends { orgId: unknown }>(table: T) => or(isNull(table.orgId as never), eq(table.orgId as never, this.#orgId));
 
     const setRows = await db.select().from(permissionSets).where(visible(permissionSets));
     const grantRows = setRows.length
-      ? await db.select().from(permissionSetGrants).where(inArray(permissionSetGrants.permissionSetId, setRows.map((s) => s.id)))
+      ? await db
+          .select()
+          .from(permissionSetGrants)
+          .where(
+            inArray(
+              permissionSetGrants.permissionSetId,
+              setRows.map((s) => s.id),
+            ),
+          )
       : [];
     const roleRows = await db.select().from(roles).where(visible(roles));
     const roleSetRows = roleRows.length
-      ? await db.select().from(rolePermissionSets).where(inArray(rolePermissionSets.roleId, roleRows.map((r) => r.id)))
+      ? await db
+          .select()
+          .from(rolePermissionSets)
+          .where(
+            inArray(
+              rolePermissionSets.roleId,
+              roleRows.map((r) => r.id),
+            ),
+          )
       : [];
     const guardrailRows = await db.select().from(guardrails).where(visible(guardrails));
 
@@ -127,9 +132,7 @@ export class PolicyService {
   async bindingsFor(principal: Principal, executor: Executor = this.#db): Promise<Binding[]> {
     if (principal.bindings) return [...principal.bindings];
     const direct = and(eq(bindings.principalType, principal.type), eq(bindings.principalId, principal.id));
-    const viaGroups = principal.groupIds.length
-      ? and(eq(bindings.principalType, 'group'), inArray(bindings.principalId, [...principal.groupIds]))
-      : undefined;
+    const viaGroups = principal.groupIds.length ? and(eq(bindings.principalType, 'group'), inArray(bindings.principalId, [...principal.groupIds])) : undefined;
     const rows = await executor
       .select()
       .from(bindings)
@@ -143,13 +146,7 @@ export class PolicyService {
     return { type: 'user', id: userId, groupIds: rows.map((r) => r.groupId), ...(options.mfaAt ? { mfaAt: options.mfaAt } : {}) };
   }
 
-  async authorize(
-    principal: Principal,
-    action: string,
-    resource: Resource,
-    context?: Record<string, unknown>,
-    policy?: Policy,
-  ): Promise<Decision> {
+  async authorize(principal: Principal, action: string, resource: Resource, context?: Record<string, unknown>, policy?: Policy): Promise<Decision> {
     const [effective, candidateBindings] = await Promise.all([policy ?? this.policy(), this.bindingsFor(principal)]);
     const decision = authorize(effective, {
       principal,

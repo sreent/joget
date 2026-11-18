@@ -52,13 +52,19 @@ const TEXT: Array<[string, string]> = [
   ['good', 'surface'],
   ...['good', 'warn', 'bad', 'idle'].map((tone): [string, string] => [tone, `${tone}-bg`]),
 ];
-const MARKS: Array<[string, string]> = [['focus', 'surface'], ['agent-tone', 'surface']];
+const MARKS: Array<[string, string]> = [
+  ['focus', 'surface'],
+  ['agent-tone', 'surface'],
+];
 
 describe('Ocean, as Ambit uses it', () => {
   it('keeps every colour that carries text readable, in light and dark', () => {
     const short: string[] = [];
     for (const [name, theme] of Object.entries(themes())) {
-      for (const [pairs, least] of [[TEXT, 4.5], [MARKS, 3]] as const) {
+      for (const [pairs, least] of [
+        [TEXT, 4.5],
+        [MARKS, 3],
+      ] as const) {
         for (const [fg, on] of pairs) {
           const ratio = contrast(colour(theme, fg), colour(theme, on));
           if (ratio < least) short.push(`${name}: ${fg} on ${on} is ${ratio.toFixed(2)}`);
@@ -78,6 +84,7 @@ describe('Ocean, as Ambit uses it', () => {
   it('bundles the fonts it declares, with their licences', () => {
     const declared = [...OCEAN.matchAll(/url\(fonts\/([\w.-]+)\)/g)].map((m) => m[1]);
     expect(declared.sort()).toEqual([...FONTS].sort());
-    for (const file of [...FONTS, 'OFL-plex-sans.txt', 'OFL-plex-sans-thai.txt', 'OFL-plex-mono.txt']) expect(() => readFileSync(join(DESIGN_DIR, 'fonts', file))).not.toThrow();
+    for (const file of [...FONTS, 'OFL-plex-sans.txt', 'OFL-plex-sans-thai.txt', 'OFL-plex-mono.txt'])
+      expect(() => readFileSync(join(DESIGN_DIR, 'fonts', file))).not.toThrow();
   });
 });
