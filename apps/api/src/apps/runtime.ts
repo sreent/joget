@@ -4,7 +4,14 @@ import {
   beforeGives,
   blockAt,
   buildCard,
+  cellValue,
+  importColumns,
   isComputed,
+  MAX_IMPORT_ROWS,
+  parseCsv,
+  safeCell,
+  writeCsv,
+  type ImportColumn,
   withFormulas,
   canonicalValue,
   checkActionInput,
@@ -70,7 +77,7 @@ import {
   type TimeRange,
 } from '@platform/app-model';
 import { proposals, users } from '@platform/db';
-import { and, desc, eq, gt, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { checkPermission, checkQuery, principalEnv } from '../access/check.js';
@@ -114,6 +121,8 @@ export interface RecordOut {
   readonly masked: string[];
   /** The files the values name, by ID: their names, types and sizes. */
   readonly files?: Record<string, FileInfo>;
+  /** The titles of the records the values name, by ID, of those the reader may read. */
+  readonly titles?: Record<string, string>;
 }
 
 /** Lines read for some records: by lines field, then by record ID. */
@@ -925,6 +934,23 @@ export class AppRuntime {
     input: { readonly values: Readonly<Record<string, unknown>>; readonly provenance?: unknown },
     decision?: AllowedQuery,
   ): Promise<RecordOut | { id: string; version: number }> {
+    const ready = await this.#prepareCreate(request, auth, loaded, entityName, input, decision);
+    const record = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
+      this.#sameRevision(tx, loaded);
+      return this.#writeCreate(tx, request, auth, loaded, ready);
+    });
+    return this.#respond(auth, loaded, entityName, record);
+  }
+
+  /** A create, checked and worked out but not yet written: what the records API and an import share. */
+  async #prepareCreate(
+    request: FastifyRequest,
+    auth: AuthContext,
+    loaded: LoadedApp,
+    entityName: string,
+    input: { readonly values: Readonly<Record<string, unknown>>; readonly provenance?: unknown },
+    decision?: AllowedQuery,
+  ): Promise<PreparedCreate> {
     const entity = this.entity(loaded, entityName);
     const at = this.#writing(auth);
     const check = checkInput(loaded.definition, entityName, input.values, { mode: 'create', at });
@@ -942,14 +968,223 @@ export class AppRuntime {
     this.#blockedBy(permission, after);
     this.#rules(loaded, entityName, principalEnv(auth), after, prepared.lines);
     await this.#checkPeople(loaded, entity, after, 'owner' in input.values, prepared.lines);
-    const record = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
+    return { entity, entityName, values, owner, provenance, prepared };
+  }
+
+  /** Write a prepared create, in the caller's transaction. */
+  async #writeCreate(tx: AppTransaction, request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, ready: PreparedCreate, reason?: Record<string, unknown>): Promise<StoredRecord> {
+    const { entity, entityName, values, owner, provenance, prepared } = ready;
+    const files = this.#newFiles(loaded, entity, null, values, prepared.lines, {});
+    await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: null });
+    const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
+    return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines, files, ...(reason ? { reason } : {}) }))!;
+  }
+
+  /**
+   * Bring records in from CSV text (design §6.1). Each row is a create, with its checks, rules and
+   * permissions, and the import writes all of its records or none. A dry run writes them in a
+   * transaction it then rolls back, so it also finds what only writing finds, such as a value
+   * another record holds in a unique field.
+   */
+  async importRecords(
+    request: FastifyRequest,
+    auth: AuthContext,
+    loaded: LoadedApp,
+    entityName: string,
+    input: { readonly csv: string; readonly name?: string | undefined; readonly dryRun: boolean },
+    decision?: AllowedQuery,
+  ): Promise<ImportResult> {
+    const entity = this.entity(loaded, entityName);
+    const parsed = parseCsv(input.csv);
+    if (!parsed.ok) throw unprocessable('invalid_csv', parsed.message);
+    const [headers, ...rows] = parsed.rows;
+    if (!headers || !rows.length) throw unprocessable('invalid_csv', 'The file has no records: a line of headers, then a line for each record');
+    if (rows.length > MAX_IMPORT_ROWS) throw unprocessable('too_many_rows', `At most ${MAX_IMPORT_ROWS} records at a time; this file has ${rows.length}`);
+    const columns = importColumns(entity, headers);
+    if (!columns.some((column) => column.field)) throw unprocessable('no_columns', "No column's header is the name or the label of a field");
+    const permission = decision ?? (await this.decide(request, auth, loaded, 'record.create', entityName));
+    const lookups = await this.#importLookups(auth, loaded, entity, columns, rows);
+    const document = input.name ?? 'An imported file';
+    const issues: ImportIssue[] = [];
+    const ready: Array<{ readonly row: number; readonly create: PreparedCreate }> = [];
+    for (const [index, cells] of rows.entries()) {
+      const row = index + 2; // the line in the file: the headers are line 1
+      const values: Record<string, unknown> = {};
+      const before = issues.length;
+      columns.forEach((column, i) => {
+        const text = cells[i] ?? '';
+        // An empty cell gives no value, so a default applies.
+        if (!column.field || text.trim() === '') return;
+        const field = column.field === 'owner' ? 'owner' : entity.fields.find((f) => f.name === column.field)!;
+        const cell = cellValue(field, text);
+        if (!('lookup' in cell)) {
+          if (cell.ok) values[column.field] = cell.value;
+          else issues.push({ row, field: column.field, message: cell.message });
+          return;
+        }
+        const found = cell.keys.map((key) => lookups.resolve(cell.lookup, field === 'owner' ? undefined : field.type === 'reference' ? field.entity : undefined, key));
+        const problem = found.find((result) => !result.ok);
+        if (problem && !problem.ok) issues.push({ row, field: column.field, message: problem.message });
+        else values[column.field] = cell.many ? found.map((result) => (result.ok ? result.id : null)) : found[0]!.ok ? found[0]!.id : null;
+      });
+      if (issues.length > before) continue;
+      const provenance = Object.fromEntries(Object.keys(values).filter((name) => name !== 'owner').map((name) => [name, { source: 'document', document, location: `line ${row}` }]));
+      try {
+        ready.push({ row, create: await this.#prepareCreate(request, auth, loaded, entityName, { values, provenance }, permission) });
+      } catch (error) {
+        if (!(error instanceof HttpError)) throw error;
+        issues.push(...rowIssues(row, error));
+      }
+    }
+    const result = { columns, rows: rows.length, issues, created: 0 };
+    if (issues.length) return result;
+    // All or none: a dry run, or a line that can't be written, rolls every line back.
+    return withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       this.#sameRevision(tx, loaded);
-      const files = this.#newFiles(loaded, entity, null, values, prepared.lines, {});
-      await this.#ctx.files.checkUses(tx, loaded, auth, files, { entityId: entity.id, recordId: null });
-      const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
-      return (await this.#writeRecord(this.#writer(request, auth), loaded, tx, { entityName, operation: 'create', before: null, values, owner, provenance, lines, files }))!;
+      for (const { row, create } of ready) {
+        try {
+          await this.#writeCreate(tx, request, auth, loaded, create, { import: document });
+        } catch (error) {
+          if (error instanceof HttpError) throw new RolledBack({ ...result, issues: rowIssues(row, error) });
+          throw error;
+        }
+      }
+      if (input.dryRun) throw new RolledBack(result);
+      return { ...result, created: ready.length };
+    }).catch((error: unknown) => {
+      if (error instanceof RolledBack) return error.result;
+      throw error;
     });
-    return this.#respond(auth, loaded, entityName, record);
+  }
+
+  /**
+   * The records and people an import's cells name, looked up once for the whole file: records by
+   * their title, among those the person may read; people by their email address. An ID names
+   * itself, and the checks of a create check it.
+   */
+  async #importLookups(auth: AuthContext, loaded: LoadedApp, entity: StoredEntity, columns: readonly ImportColumn[], rows: readonly (readonly string[])[]) {
+    const titles = new Map<string, Map<string, string[]>>(); // entity, then title, then IDs
+    const emails = new Map<string, string>();
+    const wanted = new Map<string, Set<string>>();
+    const people = new Set<string>();
+    columns.forEach((column, i) => {
+      if (!column.field) return;
+      const field = column.field === 'owner' ? 'owner' : entity.fields.find((f) => f.name === column.field)!;
+      for (const cells of rows) {
+        const text = cells[i] ?? '';
+        if (!text.trim()) continue;
+        const cell = cellValue(field, text);
+        if (!('lookup' in cell)) continue;
+        for (const key of cell.keys) {
+          if (UUID_TEXT.test(key)) continue;
+          if (cell.lookup === 'person') people.add(key.toLowerCase());
+          else if (field !== 'owner' && field.type === 'reference') wanted.set(field.entity, (wanted.get(field.entity) ?? new Set()).add(key));
+        }
+      }
+    });
+    for (const [target, keys] of wanted) {
+      const about = loaded.definition.entities[target]!;
+      const byTitle = new Map<string, string[]>();
+      titles.set(target, byTitle);
+      const read = about.titleField ? await this.#readGrants(auth, loaded, target) : null;
+      if (!read || !about.titleField) continue;
+      const query = selectRecords({
+        names: this.#names(loaded),
+        entity: about,
+        fields: [about.titleField],
+        grants: read.grants.map((grant) => grant.filter),
+        exclude: read.exclude.map((exclusion) => exclusion.when),
+        where: [{ in: [{ ref: `record.${about.titleField}` }, [...keys]] }],
+      });
+      const rowsRead = await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => (await tx.query(query.text, query.values)).rows);
+      for (const row of rowsRead) {
+        const { record, flags } = parseRecord(about, row, query.flagGrants.length);
+        const applicable = read.grants.filter((grant, index) => {
+          const flag = query.flagGrants.indexOf(index);
+          return flag === -1 ? grant.filter === true : flags[flag];
+        });
+        // A title the person's role hides finds nothing.
+        if (fieldAccess(applicable.map((grant) => grant.grant), about.titleField) !== 'full') continue;
+        const title = String(record.values[about.titleField]);
+        byTitle.set(title, [...(byTitle.get(title) ?? []), record.id]);
+      }
+    }
+    if (people.size) {
+      const found = await this.#ctx.db
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(and(eq(users.orgId, this.#ctx.org.id), eq(users.status, 'active'), inArray(sql`lower(${users.email})`, [...people])));
+      for (const person of found) if (person.email) emails.set(person.email.toLowerCase(), person.id);
+    }
+    return {
+      resolve: (kind: 'record' | 'person', target: string | undefined, key: string): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly message: string } => {
+        if (UUID_TEXT.test(key)) return { ok: true, id: key.toLowerCase() };
+        if (kind === 'person') {
+          const id = emails.get(key.toLowerCase());
+          return id ? { ok: true, id } : { ok: false, message: `Nobody here has the email address ${key}` };
+        }
+        const about = loaded.definition.entities[target!]!;
+        const ids = titles.get(target!)?.get(key) ?? [];
+        if (ids.length === 1) return { ok: true, id: ids[0]! };
+        const what = about.label.toLowerCase();
+        return ids.length ? { ok: false, message: `Several ${(about.pluralLabel ?? about.label).toLowerCase()} are titled ${key}: give the ID of the one you mean` } : { ok: false, message: `No ${what} you can see is titled ${key}` };
+      },
+    };
+  }
+
+  /**
+   * Take records out as CSV text: those the person may read, with each value as people read it
+   * (labels, titles, email addresses), what their role masks left empty, and cells that a
+   * spreadsheet won't run as formulas. The role needs to allow exporting.
+   */
+  async exportRecords(request: FastifyRequest, auth: AuthContext, loaded: LoadedApp, entityName: string, decision?: AllowedQuery): Promise<{ readonly csv: string; readonly count: number }> {
+    const entity = this.entity(loaded, entityName);
+    const read = decision ?? (await this.decide(request, auth, loaded, 'record.read', entityName));
+    const fields = entity.fields.filter((field) => field.type !== 'lines' && field.type !== 'file');
+    const records: RecordOut[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.list(request, auth, loaded, entityName, { decision: read, limit: 200, ...(cursor ? { cursor } : {}) });
+      records.push(...page.records);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor && records.length < MAX_EXPORT_ROWS);
+    const people = new Set<string>();
+    for (const record of records) {
+      if (record.owner) people.add(record.owner);
+      for (const field of fields) {
+        const value = record.values?.[field.name];
+        if (field.type === 'user' && typeof value === 'string') people.add(value);
+      }
+    }
+    const emails = new Map<string, string>();
+    if (people.size) {
+      const found = await this.#ctx.db.select({ id: users.id, email: users.email }).from(users).where(and(eq(users.orgId, this.#ctx.org.id), inArray(users.id, [...people])));
+      for (const person of found) if (person.email) emails.set(person.id, person.email);
+    }
+    const text = (field: StoredEntity['fields'][number], record: RecordOut): string => {
+      const value = record.values?.[field.name] as FieldValue | LineOut[] | undefined;
+      if (value === null || value === undefined) return '';
+      if (field.type === 'reference') return (Array.isArray(value) ? value : [value]).map((id) => record.titles?.[String(id)] ?? String(id)).join('; ');
+      if (field.type === 'user') return emails.get(String(value)) ?? String(value);
+      if (field.type === 'boolean') return value ? 'Yes' : 'No';
+      if (field.type === 'choice') return (Array.isArray(value) ? value : [value]).map((v) => field.options.find((o) => o.value === v)?.label ?? String(v)).join('; ');
+      // Text could start as a formula does; numbers, dates and times can't.
+      return field.type === 'text' || field.type === 'email' ? safeCell(String(value)) : String(value);
+    };
+    const rows = [
+      ['ID', ...fields.map((field) => field.label), 'Owner', 'Created', 'Last changed'],
+      ...records.map((record) => [record.id, ...fields.map((field) => text(field, record)), record.owner ? (emails.get(record.owner) ?? record.owner) : '', record.createdAt ?? '', record.updatedAt ?? '']),
+    ];
+    // Data that leaves the platform is on the audit log: who took which records out.
+    await recordAudit(this.#ctx.db, auditScopeFor(request, this.#ctx.org.id, this.#ctx.now()), {
+      action: 'record.export',
+      target: { type: 'entity', id: entity.id, name: entityName },
+      spaceId: loaded.space.id,
+      appId: loaded.app.id,
+      env: loaded.env.kind,
+      reason: { records: records.length, fields: fields.map((field) => field.name) },
+    });
+    return { csv: writeCsv(rows), count: records.length };
   }
 
   async update(
@@ -2094,4 +2329,49 @@ function titleText(field: StoredEntity['fields'][number] | undefined, value: Fie
   if (value === null || value === undefined || value === '') return null;
   const label = (v: string) => (field?.type === 'choice' ? (field.options.find((option) => option.value === v)?.label ?? v) : v);
   return Array.isArray(value) ? value.map(label).join(', ') : label(String(value));
+}
+
+/** A create that is checked and worked out, ready to write. */
+interface PreparedCreate {
+  readonly entity: StoredEntity;
+  readonly entityName: string;
+  readonly values: Record<string, FieldValue>;
+  readonly owner: string;
+  readonly provenance: Record<string, Provenance>;
+  readonly prepared: ReturnType<AppRuntime['prepareLinesFor']>;
+}
+
+/** A problem with one line of an imported file. */
+export interface ImportIssue {
+  readonly row: number;
+  readonly field?: string;
+  readonly message: string;
+}
+
+export interface ImportResult {
+  readonly columns: ImportColumn[];
+  readonly rows: number;
+  readonly issues: ImportIssue[];
+  /** How many records the import made: none for a dry run, or when a line has a problem. */
+  readonly created: number;
+}
+
+/** The most records one export takes out. */
+const MAX_EXPORT_ROWS = 10_000;
+
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Thrown to roll an import back, a dry run or one with a line that can't be written, with what it found. */
+class RolledBack extends Error {
+  constructor(readonly result: ImportResult) {
+    super('The import wrote nothing');
+  }
+}
+
+/** What stopped one line of an import, from the error a create gives. */
+function rowIssues(row: number, error: HttpError): ImportIssue[] {
+  const details = error.details as { issues?: Array<{ field?: string; message: string }>; findings?: Array<{ message: string; fields?: string[] }> } | undefined;
+  if (details?.issues?.length) return details.issues.map((issue) => ({ row, ...(issue.field ? { field: issue.field } : {}), message: issue.message }));
+  if (details?.findings?.length) return details.findings.filter((finding) => (finding as { severity?: string }).severity !== 'warning').map((finding) => ({ row, ...(finding.fields?.[0] ? { field: finding.fields[0] } : {}), message: finding.message }));
+  return [{ row, message: error.message }];
 }

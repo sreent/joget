@@ -7,6 +7,7 @@ import type {
   EnvironmentInfo,
   FileInfo,
   HistoryEntry,
+  ImportResult,
   Me,
   Person,
   Plan,
@@ -136,6 +137,10 @@ export const api = {
   ui: (target: string | AppAt) => call<UiManifest>('GET', `${app(at(target).id)}/ui${envParams(target)}`),
   records: (target: string | AppAt, entity: string, cursor?: string) =>
     call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '50', ...(cursor ? { cursor } : {}) })}`),
+  /** Bring records in from CSV: all of its lines, or none. A dry run checks it and writes nothing. */
+  importRecords: (target: string | AppAt, entity: string, body: { csv: string; name?: string; dryRun: boolean }) => call<ImportResult>('POST', `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/import${envParams(target)}`, body),
+  /** Where the records the person can read are taken out as CSV. */
+  exportUrl: (target: string | AppAt, entity: string) => `${app(at(target).id)}/entities/${encodeURIComponent(entity)}/export${envParams(target)}`,
   /** Records whose titles contain some text, for a picker: those the person may read. */
   searchRecords: (target: string | AppAt, entity: string, search: string) =>
     call<{ records: RecordOut[]; nextCursor: string | null }>('GET', `${records(target, entity)}${envParams(target, { limit: '20', search })}`),

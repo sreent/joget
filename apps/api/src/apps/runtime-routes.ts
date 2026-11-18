@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { BLOCK_PATH } from '@platform/app-model';
 import { once, requireAuth, requireQueryDecision } from '../access/rules.js';
 import type { AppContext } from '../context.js';
-import { badRequest, notFound } from '../errors.js';
+import { badRequest, notFound, unprocessable } from '../errors.js';
 import { recordResource } from './resources.js';
 import type { AppRuntime } from './runtime.js';
 import { envOf } from './routes.js';
-import { ActionResultOut, AppParams, EntityParams, EnvQuery, PageOut, ProvenanceIn, RecordOut, RecordParams } from './schemas.js';
+import { ActionResultOut, AppParams, EntityParams, EnvQuery, ImportOut, PageOut, ProvenanceIn, RecordOut, RecordParams } from './schemas.js';
 
 /** `amount,-created_at` → ascending amount, then newest first. */
 function parseSort(sort: string | undefined) {
@@ -78,6 +78,48 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
           ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
           ...(request.query.search ? { search: request.query.search } : {}),
         });
+      },
+    );
+
+    app.post(
+      '/v1/apps/:appId/entities/:entity/import',
+      {
+        config: { access: recordRule('record.create') },
+        // A file of up to a thousand records.
+        bodyLimit: 2 * 1024 * 1024,
+        schema: {
+          tags: ['records'],
+          summary: 'Bring records in from CSV: each line is a create with its checks, and the import writes all of them or none. A dry run writes nothing',
+          params: EntityParams,
+          querystring: EnvQuery,
+          body: z.strictObject({
+            csv: z.string().min(1).max(2_000_000),
+            name: z.string().trim().min(1).max(200).optional().describe("The file's name, which each value's history names"),
+            dryRun: z.boolean().default(false),
+          }),
+          response: { 200: ImportOut, 201: ImportOut },
+        },
+      },
+      async (request, reply) => {
+        const result = await runtime.importRecords(request, requireAuth(request), await theApp(request), request.params.entity, request.body, requireQueryDecision(request));
+        if (request.body.dryRun) return result;
+        const first = result.issues[0];
+        if (first) throw unprocessable('invalid_import', `Line ${first.row}: ${first.message}`, result);
+        return reply.code(201).send(result);
+      },
+    );
+
+    app.get(
+      '/v1/apps/:appId/entities/:entity/export',
+      {
+        config: { access: recordRule('record.export') },
+        schema: { tags: ['records'], summary: 'Take the records you can read out as CSV. Your role must allow exporting; the audit log records it', params: EntityParams, querystring: EnvQuery },
+      },
+      async (request, reply) => {
+        const loaded = await theApp(request);
+        const { csv } = await runtime.exportRecords(request, requireAuth(request), loaded, request.params.entity);
+        const name = (loaded.definition.entities[request.params.entity]?.pluralLabel ?? request.params.entity).replace(/[^A-Za-z0-9 _-]/g, '').trim() || 'records';
+        return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${name}.csv"`).send(csv);
       },
     );
 

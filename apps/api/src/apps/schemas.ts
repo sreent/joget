@@ -123,6 +123,14 @@ export const RecordOut = z.object({
 
 export const PageOut = z.object({ records: z.array(RecordOut), nextCursor: z.string().nullable() });
 
+/** What an import of CSV found: which field each column fills, each line's problems, and how many records it made. */
+export const ImportOut = z.object({
+  columns: z.array(z.object({ header: z.string(), field: z.string().nullable(), note: z.string().optional() })),
+  rows: z.number().int(),
+  issues: z.array(z.object({ row: z.number().int(), field: z.string().optional(), message: z.string() })),
+  created: z.number().int(),
+});
+
 export const FindingOut = z.object({
   rule: z.string(),
   severity: z.enum(['error', 'warning']),

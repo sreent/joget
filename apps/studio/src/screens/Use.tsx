@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { api, ApiError, type AppAt } from '../api.js';
 import { ChartCard, StatTile } from '../components/charts.js';
 import { FilesProvider } from '../components/files.js';
+import { ImportPanel } from '../components/import.js';
 import { TitlesProvider, titlesOf } from '../components/records.js';
 import { filledLines, LinesChangeView, LinesEditor, LinesTable, workedOut } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
@@ -528,18 +529,51 @@ function RecordList({ at, manifest, entityName }: { at: AppAt; manifest: UiManif
   const records = useQuery({ queryKey: ['records', at.id, at.env, entityName], queryFn: () => api.records(at, entityName) });
   const columns = entity.fields.filter((f) => f.read && f.type !== 'lines').slice(0, 6);
   const form = Object.entries(manifest.forms).find(([, f]) => f.entity === entityName);
+  // Bringing records in from a file, and how many came in last.
+  const [importing, setImporting] = useState(false);
+  const [imported, setImported] = useState<number | null>(null);
   return (
     <div className="grid gap-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="m-0 text-2xl font-semibold tracking-tight">{entity.pluralLabel}</h2>
-        {form ? (
-          <Link to={{ name: 'use', ...atRoute(at), page: 'new', recordId: form[0] }} className="no-underline">
-            <Button variant="primary" tabIndex={-1}>
-              {form[1].label}
+        <div className="flex flex-wrap items-center gap-2">
+          {entity.can.export ? (
+            <a href={api.exportUrl(at, entityName)} download className="text-sm">
+              Take out as CSV
+            </a>
+          ) : null}
+          {entity.can.create ? (
+            <Button
+              aria-expanded={importing}
+              onClick={() => {
+                setImporting(!importing);
+                setImported(null);
+              }}
+            >
+              Bring in from a file
             </Button>
-          </Link>
-        ) : null}
+          ) : null}
+          {form ? (
+            <Link to={{ name: 'use', ...atRoute(at), page: 'new', recordId: form[0] }} className="no-underline">
+              <Button variant="primary" tabIndex={-1}>
+                {form[1].label}
+              </Button>
+            </Link>
+          ) : null}
+        </div>
       </div>
+      {imported !== null ? <Notice tone="good">Brought in {imported} {imported === 1 ? entity.label.toLowerCase() : entity.pluralLabel.toLowerCase()}.</Notice> : null}
+      {importing ? (
+        <ImportPanel
+          at={at}
+          entityName={entityName}
+          entity={entity}
+          onDone={(created) => {
+            setImporting(false);
+            setImported(created);
+          }}
+        />
+      ) : null}
       {records.data?.records.length === 0 ? <EmptyState title={`No ${entity.pluralLabel.toLowerCase()} you can see`} /> : null}
       {records.data?.records.length ? (
         <FilesProvider at={at} known={Object.assign({}, ...records.data.records.map((r) => r.files ?? {}))}>

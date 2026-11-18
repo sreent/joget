@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { EXPENSE_APP } from '@platform/app-model';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startTestApp, type Session, type TestApp } from './helpers.js';
 import { callTool, modelMessage, say, scriptedModel, type ScriptedModel } from './scripted-model.js';
@@ -946,6 +947,40 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     // The claim names each trip by its title, and opens it.
     await page.getByRole('link', { name: 'Tokyo summit' }).click();
     await visible(page.getByRole('heading', { name: 'Tokyo summit' }));
+  });
+
+  it('brings trips in from a file: checks it first, says what is wrong, then brings all of them in', async () => {
+    const draft = structuredClone(EXPENSE_APP) as unknown as Record<string, any>;
+    draft.entities.trip = {
+      label: 'Trip',
+      pluralLabel: 'Trips',
+      titleField: 'name',
+      fields: [
+        { name: 'name', label: 'Name', type: 'text', required: true },
+        { name: 'budget', label: 'Budget', type: 'number', decimals: 2, min: 0 },
+        { name: 'kind', label: 'Kind', type: 'choice', options: [{ value: 'client', label: 'Client visit' }, { value: 'team', label: 'Team offsite' }] },
+      ],
+    };
+    const tripsApp = (await t.app.inject({ method: 'POST', url: `/v1/spaces/${alice.personalSpaceId}/apps`, cookies: alice.cookies, payload: { name: 'Trips from a file', definition: draft } })).json().app.id;
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/apps/${tripsApp}/trip`);
+    await page.getByRole('button', { name: 'Bring in from a file' }).click();
+
+    // A file with a problem: nothing comes in, and the line and field say where.
+    const file = (text: string) => ({ name: 'trips.csv', mimeType: 'text/csv', buffer: Buffer.from(text) });
+    await page.getByLabel('A CSV file').setInputFiles(file('Name,Budget,Kind,Colour\nTokyo summit,"1,200.00",Client visit,red\nPenang retreat,-5,team,'));
+    await visible(page.getByText('One problem in 2 records', { exact: false }));
+    await visible(page.getByRole('cell', { name: 'At least 0' }));
+    await visible(page.getByText('stays out: No field has this name'));
+    await shot(page, '34-import-with-a-problem');
+
+    // Put right, the file comes in whole.
+    await page.getByLabel('A CSV file').setInputFiles(file('Name,Budget,Kind\nTokyo summit,"1,200.00",Client visit\nPenang retreat,800,team'));
+    await page.getByRole('button', { name: 'Bring in 2 trips' }).click();
+    await visible(page.getByText('Brought in 2 trips.'));
+    await visible(page.getByRole('cell', { name: 'Tokyo summit' }));
+    await visible(page.getByRole('cell', { name: 'Penang retreat' }));
+    await shot(page, '35-imported-trips');
   });
 
   it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {

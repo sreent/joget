@@ -223,7 +223,7 @@ export interface UiEntity {
   label: string;
   pluralLabel: string;
   titleField: string | null;
-  can: { read: boolean; create: boolean; update: boolean; delete: boolean };
+  can: { read: boolean; create: boolean; update: boolean; delete: boolean; export?: boolean };
   fields: UiField[];
 }
 
@@ -489,4 +489,12 @@ export interface FlowRunResult {
 /** True for a field the platform works out, from lines or by a formula: shown, never filled in. */
 export function isWorkedOut(field: Field): boolean {
   return Boolean((field.type === 'number' && field.rollup) || ('formula' in field && field.formula !== undefined));
+}
+
+/** What an import of CSV found: which field each column fills, each line's problems, and how many records it made. */
+export interface ImportResult {
+  columns: Array<{ header: string; field: string | null; note?: string }>;
+  rows: number;
+  issues: Array<{ row: number; field?: string; message: string }>;
+  created: number;
 }

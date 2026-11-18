@@ -520,6 +520,14 @@ Not everything is a task. Exploring data, comparing options and monitoring a pro
 
 Screens show the records that values name by their titles, as links that open them. Each record that comes back carries the titles of the records it names, of those the reader may read: a title the reader's role hides stays hidden. A picker finds records by their title, among those the person may read.
 
+**Records come in from other systems, and go out to them, as CSV (added 2026-11-18).** A spreadsheet, or another system's export, brings records in; an export takes them out:
+
+- An import is a write like any other. Each line of the file is a create, with its checks, rules, permissions and formulas, and the import writes all of its records or none, at most a thousand at a time.
+- A column fills the field whose name or label its header is. A cell holds a value as people write it: a number with thousands separated by commas, yes or no, an option's value or its label. A record is named by its ID or its title, among the records the person may read, and a person by their email address.
+- The file is checked first, and nothing is written: which field each column fills, and each line's problems. The check writes the records in a transaction that it rolls back, so it also finds what only writing finds, such as a value that another record holds in a unique field.
+- Each value's history names the file and the line it came from.
+- An export needs a role that may export, not only read. It holds the records the person may read, each value as people read it, with what the role masks left empty. A text that starts as a spreadsheet formula does is written so that a spreadsheet shows it and doesn't run it. The audit log records who took which fields of how many records out.
+
 **Data is reached through connections.** As in n8n, every system a capability reads or writes is a connection, and capabilities don't care where the data lives. The platform ships a **built-in store** as the first connector, for two reasons. The first processes have no existing system of record (§14). And some guarantees only hold where the platform controls the data:
 
 | | Built-in store | Another system |

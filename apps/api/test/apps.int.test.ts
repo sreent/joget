@@ -136,7 +136,7 @@ describe('sharing with colleagues', () => {
 
   it('describes what each person can use, for screens', async () => {
     const bobs = (await inject({ method: 'GET', url: `/v1/apps/${appId}/ui`, ...as(bob) }, 200)).json();
-    expect(bobs.entities.expense_claim.can).toEqual({ read: true, create: true, update: false, delete: false });
+    expect(bobs.entities.expense_claim.can).toEqual({ read: true, create: true, update: false, delete: false, export: false });
     expect(bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'iban')).toMatchObject({ read: 'full', create: true, update: false });
     expect(bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'total')).toMatchObject({ computed: true, create: false, read: 'full' });
     const lines = bobs.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'lines');

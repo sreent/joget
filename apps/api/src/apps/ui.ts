@@ -115,7 +115,7 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
   for (const [name, entity] of Object.entries(loaded.definition.entities)) {
     // Lines are shown with their records, never as records of their own.
     if (owners.has(name)) continue;
-    const [read, create, update, remove] = await Promise.all(['record.read', 'record.create', 'record.update', 'record.delete'].map((action) => decide(action, name)));
+    const [read, create, update, remove, exported] = await Promise.all(['record.read', 'record.create', 'record.update', 'record.delete', 'record.export'].map((action) => decide(action, name)));
     if (!read!.allowed && !create!.allowed) continue;
     const grantsOf = (decision: typeof read) => (decision!.allowed ? decision!.grants.map((g) => g.grant) : []);
     const grants = { read: grantsOf(read), create: grantsOf(create), update: grantsOf(update) };
@@ -125,7 +125,7 @@ export async function describeUi(ctx: AppContext, runtime: AppRuntime, request: 
       label: entity.label,
       pluralLabel: entity.pluralLabel ?? entity.label,
       titleField: entity.titleField ?? null,
-      can: { read: read!.allowed, create: create!.allowed, update: update!.allowed, delete: remove!.allowed },
+      can: { read: read!.allowed, create: create!.allowed, update: update!.allowed, delete: remove!.allowed, export: read!.allowed && exported!.allowed },
       fields,
     };
   }
