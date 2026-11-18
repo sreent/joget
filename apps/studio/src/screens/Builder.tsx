@@ -2,6 +2,7 @@ import { type StoredDefinition, validateDefinition } from '@platform/app-model';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.js';
+import { Icon } from '../components/icon.js';
 import { ProblemsBadge, ProblemsContext, ProblemsList } from '../components/problems.js';
 import { Badge, Button, Checkbox, cx, Dialog, Notice } from '../components/ui.js';
 import { normalize } from '../model/edit.js';
@@ -224,219 +225,217 @@ export function Builder({ appId, tab, item }: { appId: string; tab: BuildTab; it
   const chatting = canChat && chat;
 
   return (
-    // With the chat beside them, the page widens: the designers lay themselves out by the room they have.
-    <div data-wide={chatting || undefined} className={chatting ? 'grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]' : undefined}>
-      <div className="grid min-w-0 gap-5 pb-24">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="m-0 text-sm text-muted">
-              <Link to={{ name: 'home' }}>Your apps</Link> / Build
-            </p>
-            <h1 className="m-0 text-2xl font-semibold tracking-tight">{summary.data.name}</h1>
-          </div>
-          <div className="flex items-center gap-2">
-            {team ? <Badge tone="accent">Team app</Badge> : null}
-            <Badge>revision {saved.data.revision}</Badge>
-            {team ? null : <ProblemsBadge count={problems.length} open={showProblems} onToggle={() => setShowProblems(!showProblems)} />}
-            {team ? null : (
-              <>
-                <Button size="sm" variant="ghost" disabled={!past.length || chatBusy} onClick={undo} aria-keyshortcuts="Control+Z Meta+Z">
-                  Undo
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!future.length || chatBusy}
-                  onClick={redo}
-                  aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y"
-                >
-                  Redo
-                </Button>
-              </>
-            )}
-            {canChat ? (
-              <Button aria-expanded={chat} onClick={() => setChat(!chat)}>
-                {chat ? 'Hide the chat' : 'Build by chat'}
-              </Button>
-            ) : null}
-            {live ? (
-              <Link to={{ name: 'use', appId }} className="no-underline">
-                <Button tabIndex={-1}>{team ? 'Open in Prod' : 'Open the app'}</Button>
-              </Link>
-            ) : null}
-          </div>
-        </div>
-
-        {showProblems && problems.length && !team ? <ProblemsList appId={appId} definition={draft} problems={problems} /> : null}
-        {app.workingCopyOf ? <WorkingCopyBar app={app} dirty={dirty} /> : null}
-        {app.movedTo ? <MovedNotice movedTo={app.movedTo} /> : null}
-
-        {/* The workbench's views, as Ocean's modes; around them, what concerns the whole app. */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <nav aria-label="The app" className="inline-flex overflow-hidden rounded-md border border-line-strong bg-surface">
-            {VIEWS.map((each, index) => (
-              <Link
-                key={each.label}
-                to={{ name: 'build', appId, tab: each.parts[0]!.tab }}
-                aria-current={each === view ? 'true' : undefined}
-                className={cx(
-                  'px-3.5 py-1.5 text-sm no-underline',
-                  index > 0 && 'border-l border-line-strong',
-                  each === view ? 'bg-accent-soft font-semibold text-accent' : 'text-text hover:bg-sunken',
-                )}
-              >
-                {each.label}
-              </Link>
-            ))}
-          </nav>
-          <nav aria-label="Around the app" className="flex gap-1">
-            {around.map((item) => (
-              <Link
-                key={item.tab}
-                to={{ name: 'build', appId, tab: item.tab }}
-                aria-current={item.tab === tab ? 'page' : undefined}
-                className={cx(
-                  'rounded-md px-3 py-1.5 text-sm no-underline',
-                  item.tab === tab ? 'bg-accent-soft font-semibold text-accent' : 'text-muted hover:text-text',
-                )}
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
-        </div>
-        {view ? (
-          <nav aria-label={view.label} className="flex gap-1 overflow-x-auto border-b border-line">
-            {view.parts.map((part) => (
-              <Link
-                key={part.tab}
-                to={{ name: 'build', appId, tab: part.tab }}
-                aria-current={part.tab === tab ? 'page' : undefined}
-                className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap no-underline ${part.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
-              >
-                {partLabel(part)}
-              </Link>
-            ))}
-          </nav>
+    <>
+      {/* The workbench's toolbar: which app, where its draft stands, and what to do; then its views. */}
+      <header className="wb-bar">
+        <Link to={{ name: 'home' }} className="crumb">
+          <Icon name="back" />
+          Your apps
+        </Link>
+        <h1>{summary.data.name}</h1>
+        {team ? <Badge tone="accent">Team app</Badge> : null}
+        <Badge>revision {saved.data.revision}</Badge>
+        {team ? null : <ProblemsBadge count={problems.length} open={showProblems} onToggle={() => setShowProblems(!showProblems)} />}
+        <span className="wb-spacer" />
+        {team ? null : (
+          <>
+            <Button size="sm" variant="ghost" disabled={!past.length || chatBusy} onClick={undo} aria-keyshortcuts="Control+Z Meta+Z">
+              Undo
+            </Button>
+            <Button size="sm" variant="ghost" disabled={!future.length || chatBusy} onClick={redo} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y">
+              Redo
+            </Button>
+          </>
+        )}
+        {canChat ? (
+          <Button aria-expanded={chat} onClick={() => setChat(!chat)}>
+            {chat ? 'Hide the chat' : 'Build by chat'}
+          </Button>
         ) : null}
+        {live ? (
+          <Link to={{ name: 'use', appId }} className="no-underline">
+            <Button tabIndex={-1}>{team ? 'Open in Prod' : 'Open the app'}</Button>
+          </Link>
+        ) : null}
+        <span className="wb-break" />
+        {/* The workbench's views, as Ocean's modes; at the end of the row, what concerns the whole app. */}
+        <nav aria-label="The app" className="inline-flex overflow-hidden rounded-md border border-line-strong bg-surface">
+          {VIEWS.map((each, index) => (
+            <Link
+              key={each.label}
+              to={{ name: 'build', appId, tab: each.parts[0]!.tab }}
+              aria-current={each === view ? 'true' : undefined}
+              className={cx(
+                'px-3.5 py-1.5 text-sm no-underline',
+                index > 0 && 'border-l border-line-strong',
+                each === view ? 'bg-accent-soft font-semibold text-accent' : 'text-text hover:bg-sunken',
+              )}
+            >
+              {each.label}
+            </Link>
+          ))}
+        </nav>
+        <span className="wb-spacer" />
+        <nav aria-label="Around the app" className="flex gap-1">
+          {around.map((item) => (
+            <Link
+              key={item.tab}
+              to={{ name: 'build', appId, tab: item.tab }}
+              aria-current={item.tab === tab ? 'page' : undefined}
+              className={cx(
+                'rounded-md px-3 py-1.5 text-sm no-underline',
+                item.tab === tab ? 'bg-accent-soft font-semibold text-accent' : 'text-muted hover:text-text',
+              )}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+      </header>
+      {/* The work scrolls on its own, under the toolbar; with the chat, the chat is a pane beside it. On a
+          phone the page scrolls, as Ocean's workbench does there, so the bar of unsaved changes stays in view. */}
+      <div className={cx('wb-body grid-cols-[minmax(0,1fr)]', chatting && 'xl:grid-cols-[minmax(0,1fr)_24rem]')}>
+        <div className="min-h-0 min-[761px]:overflow-auto">
+          <div className="mx-auto grid w-full max-w-[110rem] min-w-0 gap-5 px-4 py-5 sm:px-6">
+            {showProblems && problems.length && !team ? <ProblemsList appId={appId} definition={draft} problems={problems} /> : null}
+            {app.workingCopyOf ? <WorkingCopyBar app={app} dirty={dirty} /> : null}
+            {app.movedTo ? <MovedNotice movedTo={app.movedTo} /> : null}
+            {view ? (
+              <nav aria-label={view.label} className="flex gap-1 overflow-x-auto border-b border-line">
+                {view.parts.map((part) => (
+                  <Link
+                    key={part.tab}
+                    to={{ name: 'build', appId, tab: part.tab }}
+                    aria-current={part.tab === tab ? 'page' : undefined}
+                    className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap no-underline ${part.tab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
+                  >
+                    {partLabel(part)}
+                  </Link>
+                ))}
+              </nav>
+            ) : null}
 
-        {team && designing ? <TeamAppNotice app={app} /> : null}
-        {/* A team app's main line is read-only here: a disabled fieldset disables every control in the designers. */}
-        {/* While the chat works, the designers wait: its draft replaces the one it was given. */}
-        <fieldset disabled={team || chatBusy} className="m-0 min-w-0 border-0 p-0">
-          <div className="@container">
-            <ProblemsContext.Provider value={problems}>
-              {tab === 'data' ? <DataDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'forms' ? <FormDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'pages' ? <PagesDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'menu' ? <MenuDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'rules' ? <RulesDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'actions' ? <ActionsDesigner appId={appId} definition={draft} onChange={edit} /> : null}
-              {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'cards' ? <CardsDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'roles' ? <RolesDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'flows' ? (
-                <FlowsDesigner appId={appId} definition={draft} onChange={edit} readOnly={team || chatBusy} dirty={dirty} {...(item ? { open: item } : {})} />
-              ) : null}
-              {tab === 'connections' ? <ConnectionsDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'webhooks' ? <WebhooksDesigner definition={draft} onChange={edit} /> : null}
-              {tab === 'tests' && !team ? <TestsDesigner appId={appId} definition={draft} onChange={edit} dirty={dirty} /> : null}
-              {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={edit} /> : null}
-            </ProblemsContext.Provider>
+            {team && designing ? <TeamAppNotice app={app} /> : null}
+            {/* A team app's main line is read-only here: a disabled fieldset disables every control in the designers. */}
+            {/* While the chat works, the designers wait: its draft replaces the one it was given. */}
+            <fieldset disabled={team || chatBusy} className="m-0 min-w-0 border-0 p-0">
+              <div className="@container">
+                <ProblemsContext.Provider value={problems}>
+                  {tab === 'data' ? <DataDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'forms' ? <FormDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'pages' ? <PagesDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'menu' ? <MenuDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'rules' ? <RulesDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'actions' ? <ActionsDesigner appId={appId} definition={draft} onChange={edit} /> : null}
+                  {tab === 'queries' ? <QueriesDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'cards' ? <CardsDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'roles' ? <RolesDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'flows' ? (
+                    <FlowsDesigner
+                      appId={appId}
+                      definition={draft}
+                      onChange={edit}
+                      readOnly={team || chatBusy}
+                      dirty={dirty}
+                      {...(item ? { open: item } : {})}
+                    />
+                  ) : null}
+                  {tab === 'connections' ? <ConnectionsDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'webhooks' ? <WebhooksDesigner definition={draft} onChange={edit} /> : null}
+                  {tab === 'tests' && !team ? <TestsDesigner appId={appId} definition={draft} onChange={edit} dirty={dirty} /> : null}
+                  {tab === 'advanced' && !team ? <AdvancedPanel definition={draft} onChange={edit} /> : null}
+                </ProblemsContext.Provider>
+              </div>
+            </fieldset>
+            {/* Secrets are each environment's, for what is saved: whoever manages connections keeps them, a team app's too. */}
+            {tab === 'connections' || tab === 'webhooks' ? <IntegrationSecrets appId={appId} team={team} part={tab} revision={saved.data.revision} /> : null}
+            {tab === 'share' && team ? <AccessPanel app={app} definition={saved.data.definition} /> : null}
+            {tab === 'share' && !team && app.access.share ? <SharePanel at={{ id: appId }} definition={saved.data.definition} /> : null}
+            {tab === 'share' && !team && !app.workingCopyOf ? <MovePanel app={app} /> : null}
+            {tab === 'history' ? <HistoryPanel appId={appId} /> : null}
+            {tab === 'delivery' && team ? <DeliveryPanel app={app} /> : null}
+            {tab === 'changes' && team ? <ChangesPanel app={app} /> : null}
           </div>
-        </fieldset>
-        {/* Secrets are each environment's, for what is saved: whoever manages connections keeps them, a team app's too. */}
-        {tab === 'connections' || tab === 'webhooks' ? <IntegrationSecrets appId={appId} team={team} part={tab} revision={saved.data.revision} /> : null}
-        {tab === 'share' && team ? <AccessPanel app={app} definition={saved.data.definition} /> : null}
-        {tab === 'share' && !team && app.access.share ? <SharePanel at={{ id: appId }} definition={saved.data.definition} /> : null}
-        {tab === 'share' && !team && !app.workingCopyOf ? <MovePanel app={app} /> : null}
-        {tab === 'history' ? <HistoryPanel appId={appId} /> : null}
-        {tab === 'delivery' && team ? <DeliveryPanel app={app} /> : null}
-        {tab === 'changes' && team ? <ChangesPanel app={app} /> : null}
-
-        {dirty && !team ? (
-          <div className="fixed inset-x-0 bottom-0 z-10 border-t border-line bg-surface/95 backdrop-blur">
-            <div className={`mx-auto flex items-center justify-between gap-3 px-4 py-3 ${chatting ? 'max-w-[110rem]' : 'max-w-7xl'}`}>
-              <p className="m-0 text-sm">
-                <strong>Unsaved changes.</strong>{' '}
-                <span className="text-muted">
-                  {app.workingCopyOf ? 'They apply to your working copy once saved; submit them for review after.' : 'They apply to your sandbox once saved.'}
-                </span>
-              </p>
-              <div className="flex gap-2">
-                <Button onClick={() => edit(normalize(saved.data.definition))} disabled={chatBusy}>
-                  Discard
-                </Button>
-                <Button variant="primary" onClick={() => check.mutate()} disabled={check.isPending || chatBusy}>
-                  {check.isPending ? 'Checking…' : 'Review and save'}
-                </Button>
+          {dirty && !team ? (
+            <div className="sticky bottom-0 z-10 border-t border-line bg-surface/95 backdrop-blur">
+              <div className="mx-auto flex max-w-[110rem] items-center justify-between gap-3 px-4 py-3 sm:px-6">
+                <p className="m-0 text-sm">
+                  <strong>Unsaved changes.</strong>{' '}
+                  <span className="text-muted">
+                    {app.workingCopyOf ? 'They apply to your working copy once saved; submit them for review after.' : 'They apply to your sandbox once saved.'}
+                  </span>
+                </p>
+                <div className="flex gap-2">
+                  <Button onClick={() => edit(normalize(saved.data.definition))} disabled={chatBusy}>
+                    Discard
+                  </Button>
+                  <Button variant="primary" onClick={() => check.mutate()} disabled={check.isPending || chatBusy}>
+                    {check.isPending ? 'Checking…' : 'Review and save'}
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
+          ) : null}
+        </div>
+        {canChat ? (
+          // A pane beside the work on a wide screen; over it on a narrow one. Hidden, it keeps the conversation.
+          <aside hidden={!chat} className="fixed inset-0 z-30 bg-page p-2 xl:static xl:z-auto xl:min-h-0 xl:border-l xl:border-line xl:p-3">
+            <ComposePanel appId={appId} definition={draft} onDraft={edit} onBusy={setChatBusy} onClose={() => setChat(false)} />
+          </aside>
         ) : null}
-
-        <Dialog
-          open={review !== null}
-          title={review?.issues ? 'Some things need fixing first' : 'Save these changes?'}
-          onClose={() => setReview(null)}
-          actions={
-            <>
-              <Button onClick={() => setReview(null)}>{review?.issues || review?.conflict ? 'Back to editing' : 'Cancel'}</Button>
-              {review?.conflict ? (
-                <Button variant="primary" onClick={() => void saved.refetch().then(() => setReview(null))}>
-                  Reload the saved version
-                </Button>
-              ) : plan && !review?.issues ? (
-                <Button variant="primary" onClick={() => save.mutate()} disabled={save.isPending || (plan.destructive && !confirmLoss)}>
-                  {save.isPending ? 'Saving…' : `Save as revision ${plan.revision}`}
-                </Button>
-              ) : null}
-            </>
-          }
-        >
-          {review?.error ? <Notice tone="bad">{review.error}</Notice> : null}
-          {review?.issues ? (
-            <ul className="m-0 grid gap-2 pl-5">
-              {review.issues.map((issue, i) => (
-                <li key={i}>
-                  {issue.message} <code className="text-xs text-faint">{issue.path}</code>
+      </div>
+      <Dialog
+        open={review !== null}
+        title={review?.issues ? 'Some things need fixing first' : 'Save these changes?'}
+        onClose={() => setReview(null)}
+        actions={
+          <>
+            <Button onClick={() => setReview(null)}>{review?.issues || review?.conflict ? 'Back to editing' : 'Cancel'}</Button>
+            {review?.conflict ? (
+              <Button variant="primary" onClick={() => void saved.refetch().then(() => setReview(null))}>
+                Reload the saved version
+              </Button>
+            ) : plan && !review?.issues ? (
+              <Button variant="primary" onClick={() => save.mutate()} disabled={save.isPending || (plan.destructive && !confirmLoss)}>
+                {save.isPending ? 'Saving…' : `Save as revision ${plan.revision}`}
+              </Button>
+            ) : null}
+          </>
+        }
+      >
+        {review?.error ? <Notice tone="bad">{review.error}</Notice> : null}
+        {review?.issues ? (
+          <ul className="m-0 grid gap-2 pl-5">
+            {review.issues.map((issue, i) => (
+              <li key={i}>
+                {issue.message} <code className="text-xs text-faint">{issue.path}</code>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {plan ? (
+          <>
+            {plan.steps.length === 0 ? <p className="m-0 text-muted">No change to the data model: names, labels, forms or rules only.</p> : null}
+            <ul className="m-0 grid list-none gap-2 p-0">
+              {plan.steps.map((step, i) => (
+                <li key={i} className={`rounded-md px-3 py-2 text-sm ${step.destructive ? 'bg-bad-bg text-bad' : 'bg-sunken'}`}>
+                  {step.description}
+                  {step.records !== undefined && step.destructive ? <strong> — {step.records} record(s) have values here</strong> : null}
                 </li>
               ))}
             </ul>
-          ) : null}
-          {plan ? (
-            <>
-              {plan.steps.length === 0 ? <p className="m-0 text-muted">No change to the data model: names, labels, forms or rules only.</p> : null}
-              <ul className="m-0 grid list-none gap-2 p-0">
-                {plan.steps.map((step, i) => (
-                  <li key={i} className={`rounded-md px-3 py-2 text-sm ${step.destructive ? 'bg-bad-bg text-bad' : 'bg-sunken'}`}>
-                    {step.description}
-                    {step.records !== undefined && step.destructive ? <strong> — {step.records} record(s) have values here</strong> : null}
-                  </li>
-                ))}
-              </ul>
-              {plan.notes.map((note, i) => (
-                <p key={i} className="m-0 text-sm text-muted">
-                  {note}
-                </p>
-              ))}
-              {plan.destructive ? (
-                <Checkbox label="I understand this deletes data, and it can't be undone" checked={confirmLoss} onChange={setConfirmLoss} />
-              ) : null}
-            </>
-          ) : null}
-        </Dialog>
-      </div>
-      {canChat ? (
-        // Beside the designers on a wide screen; over them on a narrow one. Hidden, it keeps the conversation.
-        <aside
-          hidden={!chat}
-          className="fixed inset-0 z-30 bg-page p-2 xl:sticky xl:inset-auto xl:top-[4.5rem] xl:z-auto xl:h-[calc(100vh-9.5rem)] xl:bg-transparent xl:p-0"
-        >
-          <ComposePanel appId={appId} definition={draft} onDraft={edit} onBusy={setChatBusy} onClose={() => setChat(false)} />
-        </aside>
-      ) : null}
-    </div>
+            {plan.notes.map((note, i) => (
+              <p key={i} className="m-0 text-sm text-muted">
+                {note}
+              </p>
+            ))}
+            {plan.destructive ? (
+              <Checkbox label="I understand this deletes data, and it can't be undone" checked={confirmLoss} onChange={setConfirmLoss} />
+            ) : null}
+          </>
+        ) : null}
+      </Dialog>
+    </>
   );
 }
 

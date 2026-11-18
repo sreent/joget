@@ -91,8 +91,8 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await t?.close();
   });
 
-  const open = async (session: Session, colorScheme: 'light' | 'dark' = 'light'): Promise<Page> => {
-    const context = await browser.newContext({ viewport: { width: 1360, height: 860 }, colorScheme });
+  const open = async (session: Session, colorScheme: 'light' | 'dark' = 'light', viewport = { width: 1360, height: 860 }): Promise<Page> => {
+    const context = await browser.newContext({ viewport, colorScheme });
     await context.addCookies([{ name: 'platform_session', value: session.cookies['platform_session']!, url: BASE }]);
     const page = await context.newPage();
     page.on('pageerror', (error) => {
@@ -676,9 +676,24 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     const done = await t.app.inject({ method: 'POST', url: `/v1/tasks/${task.id}/complete`, cookies: bob.cookies, payload: { outcome: 'approve' } });
     expect(done.statusCode, done.body).toBe(200);
 
-    // Alice reads that it's approved, linked to her request.
+    // Alice reads that it's approved, linked to her request. On the workbench, the rail says it waits.
     const requester = await open(alice);
-    await requester.goto(`${BASE}/studio/notices`);
+    await requester.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    const rail = requester.getByRole('navigation', { name: "a3t's pages" });
+    await visible(rail.getByRole('link', { name: 'Your apps' }));
+    await visible(rail.getByRole('link', { name: /^Notices, \d+ unread$/ }));
+    await shot(requester, '16e-rail');
+    // On a phone, the rail is a row of icons above the work.
+    const phone = await open(alice, 'light', { width: 390, height: 844 });
+    await phone.goto(`${BASE}/studio/apps/${leaveId}/build/flows`);
+    const row = phone.getByRole('navigation', { name: "a3t's pages" });
+    await visible(row.getByRole('link', { name: /^Notices, \d+ unread$/ }));
+    const middle = (box: { y: number; height: number } | null) => (box ? box.y + box.height / 2 : Number.NaN);
+    const mark = middle(await phone.getByRole('link', { name: 'a3t, your apps' }).boundingBox());
+    expect(Math.abs(mark - middle(await row.getByRole('link', { name: /^Notices/ }).boundingBox()))).toBeLessThan(6);
+    await shot(phone, '16f-rail-phone');
+    await rail.getByRole('link', { name: /^Notices/ }).click();
+    await requester.waitForURL(/\/studio\/notices$/);
     const told = requester.getByTestId('notice-group').filter({ hasText: 'Your leave is approved' });
     await visible(told.getByRole('link', { name: 'Leave request: Annual leave' }));
     await shot(requester, '16d-notice-told');

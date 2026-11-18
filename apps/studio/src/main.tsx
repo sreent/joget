@@ -9,6 +9,7 @@ import { Home } from './screens/Home.js';
 import { NoticeCount, Notices } from './screens/Notices.js';
 import { TaskCount, Tasks } from './screens/Tasks.js';
 import { Use } from './screens/Use.js';
+import { Workbench } from './screens/Workbench.js';
 import './styles.css';
 
 const queries = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
@@ -16,6 +17,14 @@ const queries = new QueryClient({ defaultOptions: { queries: { retry: 1, refetch
 function App() {
   const route = useRoute();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me });
+  // The builder is a workbench: the whole window, the frame shrunk to the rail beside it.
+  if (route.name === 'build' && me.data) {
+    return (
+      <Workbench me={me.data}>
+        <Builder appId={route.appId} tab={route.tab} {...(route.item ? { item: route.item } : {})} />
+      </Workbench>
+    );
+  }
   return (
     <div className="min-h-screen">
       {/* The family's frame names the product by its name and its mark, as Ocean's Shell does: a3t, a3. */}
@@ -33,7 +42,7 @@ function App() {
           {me.data ? <span className="text-sm text-muted">{me.data.displayName ?? me.data.email}</span> : null}
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-4 py-6 has-[[data-wide]]:max-w-[110rem]">
+      <main className="mx-auto max-w-7xl px-4 py-6">
         {me.isError ? (
           <p className="text-bad">a3t can't be reached right now.</p>
         ) : !me.data ? null : route.name === 'home' ? (
