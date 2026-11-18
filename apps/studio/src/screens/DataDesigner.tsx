@@ -3,7 +3,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from '@dnd-kit/utilities';
 import { useState } from 'react';
 import { ConditionEditor } from '../components/condition.js';
-import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
+import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Modes, Select, TextInput } from '../components/ui.js';
 import { recordChoices } from '../model/conditions.js';
 import {
   addEntity,
@@ -87,14 +87,14 @@ export function DataDesigner({ definition, onChange }: Props) {
       </Card>
 
       <div className="grid min-w-0 content-start gap-3">
-        <div className="modes justify-self-end" role="group" aria-label="Show the data as">
+        <Modes label="Show the data as" className="justify-self-end">
           <button type="button" aria-pressed={show === 'canvas'} onClick={() => setShow('canvas')}>
             Canvas
           </button>
           <button type="button" aria-pressed={show === 'list'} onClick={() => setShow('list')}>
             List
           </button>
-        </div>
+        </Modes>
         {show === 'canvas' && entityName ? (
           <ModelCanvas
             definition={definition}

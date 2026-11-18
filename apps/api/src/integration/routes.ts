@@ -232,7 +232,7 @@ export function integrationRoutes(ctx: AppContext, flows: FlowEngine, secrets: S
             .select({ appId: appEnvironments.appId, status: appEnvironments.status })
             .from(appEnvironments)
             .where(eq(appEnvironments.id, environmentId));
-          if (!env || env.status !== 'active') throw refused();
+          if (env?.status !== 'active') throw refused();
           const loaded = await ctx.apps.load(env.appId, { id: environmentId });
           const hook = loaded.definition.webhooks?.[name];
           const key = hook ? await secrets.reveal(ctx.db, environmentId, 'webhook', name) : undefined;

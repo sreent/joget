@@ -98,7 +98,7 @@ function resolve(env: ConditionEnv, path: string): Value {
   return current;
 }
 
-function valueOf(operand: Operand, env: ConditionEnv): Value {
+function operandValue(operand: Operand, env: ConditionEnv): Value {
   if (isRef(operand)) return resolve(env, operand.ref);
   return isRelativeTime(operand) ? relativeValue(operand, clockOf(env)) : operand;
 }
@@ -146,13 +146,15 @@ export function evaluateCondition(condition: Condition, env: ConditionEnv): bool
   if ('exists' in condition) return resolve(env, condition.exists) !== MISSING;
   if ('in' in condition) {
     const [needle, haystack] = condition.in;
-    const items: Value = Array.isArray(haystack) ? (haystack as readonly Operand[]).map((operand) => valueOf(operand, env)) : valueOf(haystack as Operand, env);
-    return member(valueOf(needle, env), items);
+    const items: Value = Array.isArray(haystack)
+      ? (haystack as readonly Operand[]).map((operand) => operandValue(operand, env))
+      : operandValue(haystack as Operand, env);
+    return member(operandValue(needle, env), items);
   }
   const op = binaryOperator(condition);
   if (!op) return false;
   const [left, right] = (condition as Record<BinaryOperator, readonly [Operand, Operand]>)[op];
-  return binary(op, valueOf(left, env), valueOf(right, env));
+  return binary(op, operandValue(left, env), operandValue(right, env));
 }
 
 /** True if a reference points into one of the pending roots, for example `record.status` for `record`. */
@@ -165,7 +167,7 @@ type Partial = { readonly pending: true; readonly operand: Operand } | { readonl
 
 function substitute(operand: Operand, env: ConditionEnv, pending: readonly string[]): Partial {
   if (isRef(operand) && isPendingRef(operand.ref, pending)) return { pending: true, operand };
-  return { pending: false, value: valueOf(operand, env) };
+  return { pending: false, value: operandValue(operand, env) };
 }
 
 /** A known value as a literal operand. Only called for present scalars. */
@@ -262,9 +264,10 @@ function partialIn(args: readonly [Operand, Operand | readonly Operand[]], env: 
 export function conditionRefs(condition: Condition): string[] {
   const refs = new Set<string>();
   const visit = (c: Condition): void => {
-    if ('all' in c) return c.all.forEach(visit);
-    if ('any' in c) return c.any.forEach(visit);
-    if ('not' in c) return visit(c.not);
+    if ('all' in c || 'any' in c || 'not' in c) {
+      for (const each of 'all' in c ? c.all : 'any' in c ? c.any : [c.not]) visit(each);
+      return;
+    }
     if ('exists' in c) {
       refs.add(c.exists);
       return;

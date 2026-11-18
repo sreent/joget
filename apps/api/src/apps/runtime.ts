@@ -1761,15 +1761,7 @@ export class AppRuntime {
    * their lines. A field it totals, groups by or filters on must show in full to the caller in
    * every record: otherwise the number would tell them what their role hides.
    */
-  async runSummary(
-    request: FastifyRequest,
-    auth: AuthContext,
-    loaded: LoadedApp,
-    page: string,
-    path: string,
-    decision: AllowedQuery,
-    record?: string,
-  ): Promise<SummaryOut> {
+  async runSummary(auth: AuthContext, loaded: LoadedApp, page: string, path: string, decision: AllowedQuery, record?: string): Promise<SummaryOut> {
     const block = this.summaryBlock(loaded, page, path);
     const filter = this.#referringTo(loaded, block, record, block.filter);
     return this.#summarize(

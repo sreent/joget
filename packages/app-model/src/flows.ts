@@ -466,9 +466,10 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
       else if (resolved.kind.kind !== 'value') issue(at, `${ref} is ${describeKind(resolved.kind)}, not a value`);
     }
     const visit = (inner: Condition): void => {
-      if ('all' in inner) return inner.all.forEach(visit);
-      if ('any' in inner) return inner.any.forEach(visit);
-      if ('not' in inner) return visit(inner.not);
+      if ('all' in inner || 'any' in inner || 'not' in inner) {
+        for (const each of 'all' in inner ? inner.all : 'any' in inner ? inner.any : [inner.not]) visit(each);
+        return;
+      }
       if ('exists' in inner || 'in' in inner) return;
       const op = (['eq', 'ne', ...COMPARISON_OPERATORS] as const).find((key) => key in inner)!;
       if (op === 'eq' || op === 'ne') return;

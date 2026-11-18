@@ -287,7 +287,10 @@ export function writeLines(
   const added: Array<{ line: StoredLine; position: number }> = [];
   next.forEach((line, position) => {
     const old = before.get(line.id);
-    if (!old) return void added.push({ line, position });
+    if (!old) {
+      added.push({ line, position });
+      return;
+    }
     const changed = infos.filter((info) => !same(old.line.values[info.name], line.values[info.name]));
     if (!changed.length && old.position === position) return;
     const sql = new SqlBuilder();

@@ -216,7 +216,7 @@ function PageCanvas(
         : type === 'fields'
           ? 'Say which records the page is about'
           : 'Add a form or another page first';
-  const row = (block: Block | InnerBlockOf, path: string, label: string) => (
+  const row = (block: Block | InnerBlockOf, label: string) => (
     <>
       <Badge tone={badgeTone(block.type)}>{block.type === 'text' && block.style === 'heading' ? 'Heading' : BLOCK_NAMES[block.type]}</Badge>
       <span className="min-w-0 flex-1 truncate" title={describeBlock(definition, block as Block)}>
@@ -306,7 +306,7 @@ function PageCanvas(
               selected={props.block === String(index)}
               onSelect={() => props.onBlock(String(index))}
             >
-              {row(block, String(index), `${BLOCK_NAMES[block.type]} block ${index + 1}`)}
+              {row(block, `${BLOCK_NAMES[block.type]} block ${index + 1}`)}
             </Row>
           ))}
         </SortableRows>
@@ -334,7 +334,7 @@ function PageCanvas(
                             )}
                             onClick={() => props.onBlock(path)}
                           >
-                            {row(inner, path, '')}
+                            {row(inner, '')}
                           </button>
                         </li>
                       );

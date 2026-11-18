@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { orgResource } from '../access/resources.js';
 import { once, requireAuth, requireSession } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
-import { IdpUnavailableError, InvalidSubjectTokenError } from '../auth/oidc.js';
+import { IdpUnavailableError, InvalidSubjectTokenError, type OidcIdentity } from '../auth/oidc.js';
 import { provisionUser } from '../auth/provisioning.js';
 import type { AppContext } from '../context.js';
 import { conflict, HttpError, notFound } from '../errors.js';
@@ -163,7 +163,7 @@ export function agentRoutes(ctx: AppContext): FastifyPluginAsyncZod {
 
         const now = ctx.now();
         const audit = auditScopeFor(request, ctx.org.id, now);
-        let identity;
+        let identity: OidcIdentity;
         try {
           identity = await ctx.oidc.verifyToken(subjectToken);
         } catch (error) {

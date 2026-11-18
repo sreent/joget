@@ -32,6 +32,10 @@
       "complexity": {
         "useLiteralKeys": "off"
       },
+      "a11y": {
+        // A label that holds one of the studio's own inputs is a label of a control.
+        "noLabelWithoutControl": { "level": "error", "options": { "inputComponents": ["Select", "TextInput"] } }
+      },
       "suspicious": {
         "noExplicitAny": "error",
         // A decision's steps and a test's outcome are named then, as in the definition format.

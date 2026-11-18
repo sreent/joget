@@ -5,7 +5,7 @@ import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput
 import { type RefChoice, recordChoices } from '../model/conditions.js';
 import { isName, lineOwner } from '../model/edit.js';
 import { addBeforeFlow } from '../model/flows.js';
-import { addItem, recordEntities, removeItem, renameItem, type Section, updateItem, writableFields } from '../model/logic.js';
+import { addItem, removeItem, renameItem, type Section, updateItem, writableFields } from '../model/logic.js';
 import { groupPaths } from '../model/pages.js';
 import { Link, navigate } from '../router.js';
 import type { Definition, Field as FieldDef } from '../types.js';
@@ -83,7 +83,14 @@ function ItemsLayout(props: Props & { section: Exclude<Section, 'roles'>; descri
           />
           {props.panel(current)}
           <div className="border-t border-line pt-3">
-            <Button variant="danger" size="sm" onClick={() => (onChange(removeItem(definition, section, current)), setSelected(null))}>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                onChange(removeItem(definition, section, current));
+                setSelected(null);
+              }}
+            >
               Delete this {words.noun}
             </Button>
           </div>
@@ -935,7 +942,7 @@ function CardPanel({ definition, onChange, name }: Props & { name: string }) {
           </>
         ) : null}
       </div>
-      <div className="grid content-start gap-2" aria-label="Preview">
+      <section className="grid content-start gap-2" aria-label="Preview">
         <span className="text-sm text-muted">Preview</span>
         <div className="overflow-hidden rounded-lg border border-line bg-surface shadow-card">
           <div className="h-1 bg-[var(--changes)]" />
@@ -957,7 +964,7 @@ function CardPanel({ definition, onChange, name }: Props & { name: string }) {
             ) : null}
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

@@ -219,6 +219,7 @@ function Bars({ spec, rows }: { spec: ChartSpec; rows: readonly ChartGroup[] }) 
         return (
           <li
             key={`${row.key}:${i}`}
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: a bar takes the focus, so that a keyboard shows its tooltip as the mouse does
             tabIndex={0}
             className="relative grid grid-cols-[minmax(5rem,9rem)_minmax(0,1fr)] items-center gap-3 rounded-sm py-1 outline-offset-2 hover:bg-sunken"
             onPointerEnter={() => setActive(i)}
@@ -328,6 +329,7 @@ function Plot({ spec, rows }: { spec: ChartSpec; rows: readonly ChartGroup[] }) 
             {formatValue(rows[last]?.value ?? null, spec.decimals, true)}
           </text>
           {rows.map((row, i) => (
+            // biome-ignore lint/a11y/noStaticElementInteractions: a column takes the focus, so that a keyboard shows its tooltip as the mouse does
             <rect
               key={`hit:${i}`}
               x={LEFT + band * i}

@@ -21,7 +21,6 @@ const env = {
   resource: { status: 'active' },
   context: {},
 };
-const record = (values: Record<string, unknown>) => ({ ...env, record: values });
 
 describe('partialEvaluate', () => {
   it('fills in the principal and leaves the record', () => {

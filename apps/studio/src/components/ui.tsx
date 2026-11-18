@@ -87,6 +87,16 @@ export function Card({ className, children, 'aria-label': label }: { className?:
   );
 }
 
+/** Ocean's choice of views: a button for each view, the one shown pressed. */
+export function Modes({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: Ocean draws a choice of views as a group of buttons, without a fieldset's frame
+    <div className={cx('modes', className)} role="group" aria-label={label}>
+      {children}
+    </div>
+  );
+}
+
 export function Notice({ tone, children }: { tone: 'bad' | 'warn' | 'good'; children: ReactNode }) {
   return (
     <div role={tone === 'bad' ? 'alert' : 'status'} className={cx('rounded-md px-3 py-2 text-sm', TONES[tone])}>

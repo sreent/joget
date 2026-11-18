@@ -1,9 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
-import { api } from '../api.js';
 import { ConditionEditor, THE_PERSON } from '../components/condition.js';
-import { Badge, Button, Field, Select, TextInput } from '../components/ui.js';
-import { type Condition, type RefChoice, recordChoices } from '../model/conditions.js';
+import { Button, Select, TextInput } from '../components/ui.js';
+import { type RefChoice, recordChoices } from '../model/conditions.js';
 import {
   betweenOf,
   CALC_OPS,

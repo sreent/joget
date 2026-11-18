@@ -14,6 +14,7 @@ export function Icon({ name, className }: { name: IconName; className?: string }
       strokeWidth={1.8}
       strokeLinecap="round"
       strokeLinejoin="round"
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: Ocean's icons are fixed markup in the bundle, never text from people
       dangerouslySetInnerHTML={{ __html: ICONS[name] }}
     />
   );

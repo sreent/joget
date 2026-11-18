@@ -17,7 +17,7 @@ import type { FastifyRequest } from 'fastify';
 import { requirePerson } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext, AuthContext } from '../context.js';
-import { conflict, forbidden, HttpError, notFound, unprocessable } from '../errors.js';
+import { conflict, HttpError, notFound, unprocessable } from '../errors.js';
 import { planSchedules } from '../flows/schedules.js';
 import { type AppRef, isTeamApp, type LoadedApp, type SpaceRow } from './catalog.js';
 import { pgError as pgCode } from './pg-errors.js';

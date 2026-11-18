@@ -164,7 +164,11 @@ describe('a form that adapts', () => {
   });
 
   it('follows renames into the condition of a field it shows', () => {
-    const first = valid(edited((d) => void (d.forms.claim_form.sections[2].fields[0].visibleWhen = { exists: 'record.trip' })));
+    const first = valid(
+      edited((d) => {
+        d.forms.claim_form.sections[2].fields[0].visibleWhen = { exists: 'record.trip' };
+      }),
+    );
     const next = structuredClone(first) as unknown as Record<string, any>;
     fieldOf(next, 'trip').name = 'journey';
     const result = validateDefinition(next, first, ids());

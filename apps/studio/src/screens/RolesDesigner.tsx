@@ -58,7 +58,10 @@ export function RolesDesigner({ definition, onChange }: Props) {
                       <button
                         type="button"
                         className="text-left hover:underline"
-                        onClick={() => (setSelected(name), setEntity(e))}
+                        onClick={() => {
+                          setSelected(name);
+                          setEntity(e);
+                        }}
                         aria-label={`${r.label}: ${definition.entities[e]!.label}`}
                       >
                         {summarizeAccess(r.entities?.[e])}
@@ -96,7 +99,10 @@ export function RolesDesigner({ definition, onChange }: Props) {
           name={role}
           entity={shown}
           onEntity={setEntity}
-          onRemove={() => (onChange(removeItem(definition, 'roles', role)), setSelected(null))}
+          onRemove={() => {
+            onChange(removeItem(definition, 'roles', role));
+            setSelected(null);
+          }}
         />
       ) : (
         <EmptyState title="No roles yet">A role says what the people you share the app with may do. Add one above.</EmptyState>

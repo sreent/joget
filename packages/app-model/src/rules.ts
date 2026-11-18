@@ -53,9 +53,9 @@ export function evaluateRules(
   check(entity, values);
   for (const field of definition.entities[entity]?.fields ?? []) {
     if (field.type !== 'lines') continue;
-    (lines[field.name] ?? []).forEach((line, index) =>
-      check(field.entity, { ...line.values, ...(line.id ? { id: line.id } : {}) }, { field: field.name, index }),
-    );
+    for (const [index, line] of (lines[field.name] ?? []).entries()) {
+      check(field.entity, { ...line.values, ...(line.id ? { id: line.id } : {}) }, { field: field.name, index });
+    }
   }
   return findings.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'error' ? -1 : 1));
 }

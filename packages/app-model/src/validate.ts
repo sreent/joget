@@ -572,7 +572,7 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
   const fieldOf = (operand: Operand): FieldInfo | undefined =>
     isRef(operand) && operand.ref.startsWith('record.') ? scope.record?.get(operand.ref.slice('record.'.length)) : undefined;
 
-  const checkRef = (ref: string, presenceOnly = false): void => {
+  const checkRef = (ref: string): void => {
     const [root, name, ...rest] = ref.split('.');
     if (root === 'record') {
       if (!scope.record) issues.push({ path, message: `${ref}: there is no record here` });
@@ -616,10 +616,14 @@ export function checkCondition(condition: Condition, scope: ConditionScope, path
   };
 
   const visit = (c: Condition): void => {
-    if ('all' in c) return c.all.forEach(visit);
-    if ('any' in c) return c.any.forEach(visit);
-    if ('not' in c) return visit(c.not);
-    if ('exists' in c) return checkRef(c.exists, true);
+    if ('all' in c || 'any' in c || 'not' in c) {
+      for (const each of 'all' in c ? c.all : 'any' in c ? c.any : [c.not]) visit(each);
+      return;
+    }
+    if ('exists' in c) {
+      checkRef(c.exists);
+      return;
+    }
     if ('in' in c) {
       const [needle, haystack] = c.in;
       const list = Array.isArray(haystack) ? (haystack as readonly Operand[]) : [haystack as Operand];
@@ -1685,7 +1689,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
         if (element.condition) checkCondition(element.condition, { ...scope, tasks: new Map() }, `${path}.condition`, issues);
         oneOut();
         // In an event sub-process, an action is a message saved on the record; otherwise, it starts the process.
-        if (isEventSub(process, element.in)) element.actions.forEach((action, index) => heard({ action }, `${path}.actions[${index}]`));
+        if (isEventSub(process, element.in)) for (const [index, action] of element.actions.entries()) heard({ action }, `${path}.actions[${index}]`);
         else {
           element.actions.forEach((action, index) => {
             if (!startAction(action, `${path}.actions[${index}]`)) return;
@@ -1875,7 +1879,7 @@ function checkProcess(definition: StoredDefinition, name: string, process: Proce
           const { people, decide } = element.several;
           if (element.assignee) issues.push({ path: `${path}.assignee`, message: 'Several people decide this task, so it has no one assignee' });
           if ('fields' in people) {
-            people.fields.forEach((field, index) => person(field, `${path}.several.people.fields[${index}]`));
+            for (const [index, field] of people.fields.entries()) person(field, `${path}.several.people.fields[${index}]`);
             if (new Set(people.fields).size !== people.fields.length) issues.push({ path: `${path}.several.people.fields`, message: 'Name each field once' });
           }
           if ('lineOf' in people) person(people.lineOf, `${path}.several.people.lineOf`);

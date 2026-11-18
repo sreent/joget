@@ -234,7 +234,9 @@ describe('flows', () => {
   it('tell reviewers what a flow does to records, and who may run it', () => {
     const base = valid(EXPENSE_APP);
     const head = valid(
-      withFlows((d) => void (d.roles.approver.flows = ['over_budget'])),
+      withFlows((d) => {
+        d.roles.approver.flows = ['over_budget'];
+      }),
       base,
     );
     const texts = capabilityChanges(base, head).map((change) => change.text);
@@ -248,8 +250,14 @@ describe('flows', () => {
     const { permissionSets } = compileAppPolicy('0193a7c4-0000-7000-8000-00000000abcd', head);
     expect(permissionSets.find((set) => set.id.endsWith('approver'))!.grants).toContainEqual({ permission: 'flow.run', resource: 'over_budget' });
     expect(lintDefinition(head)).toEqual([]);
-    expect(lintDefinition(valid(withFlows((d) => void (d.actions.approve_claim.flow = undefined))))).toEqual(
-      expect.arrayContaining(['Nothing runs the flow Record the spend: no action, process task, other flow or role names it']),
-    );
+    expect(
+      lintDefinition(
+        valid(
+          withFlows((d) => {
+            d.actions.approve_claim.flow = undefined;
+          }),
+        ),
+      ),
+    ).toEqual(expect.arrayContaining(['Nothing runs the flow Record the spend: no action, process task, other flow or role names it']));
   });
 });

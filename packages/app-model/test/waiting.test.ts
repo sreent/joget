@@ -137,7 +137,11 @@ describe('a flow that waits', () => {
   });
 
   it('runs the steps between two waits in one go, as a flow of their own', () => {
-    const definition = valid(leave((d) => void (d.flows.review = REVIEW)));
+    const definition = valid(
+      leave((d) => {
+        d.flows.review = REVIEW;
+      }),
+    );
     const compiled = compileFlow(definition, 'review', definition.flows!['review']!)!;
     const types = Object.fromEntries(Object.entries(compiled.process.elements).map(([id, element]) => [id, element.type]));
     expect(types).toEqual({
@@ -191,13 +195,23 @@ describe('a flow that waits', () => {
     later.steps.push({ type: 'change', record: 'leave', values: { reason: { ref: 'note' } } });
     later.steps.push({ type: 'change', record: 'leave', values: { reason: { ref: 'principal.id' } } });
     later.steps[2].when = { eq: [{ ref: 'note' }, 'Seen'] };
-    expect(issuesOf(leave((d) => void (d.flows.review = later)))).toEqual([
+    expect(
+      issuesOf(
+        leave((d) => {
+          d.flows.review = later;
+        }),
+      ),
+    ).toEqual([
       "flows.review.steps[2].when: note: note doesn't live on after the flow waits. Keep the value in a field of the record, and read it from there",
       "flows.review.steps[6].values.reason: note: note doesn't live on after the flow waits. Keep the value in a field of the record, and read it from there",
       'flows.review.steps[7].values.reason: principal.id: a flow that waits runs with no person',
     ]);
     // A step after a wait sees only the record.
-    const definition = valid(leave((d) => void (d.flows.review = REVIEW)));
+    const definition = valid(
+      leave((d) => {
+        d.flows.review = REVIEW;
+      }),
+    );
     const scopes = flowScopes(definition, definition.flows!['review']!);
     expect([...scopes.get('steps[1]')!.keys()]).toEqual(['leave', 'note']);
     expect([...scopes.get('steps[3]')!.keys()]).toEqual(['leave']);
@@ -260,7 +274,13 @@ describe('a flow that waits', () => {
     broken.steps[2].then[0].outcomes[0].action = 'request_leave';
     broken.steps[4].ways[1].for = { date: 'reason' };
     broken.steps[5].ways[1].steps[0].assignee = { field: 'kind' };
-    expect(issuesOf(leave((d) => void (d.flows.review = broken)))).toEqual([
+    expect(
+      issuesOf(
+        leave((d) => {
+          d.flows.review = broken;
+        }),
+      ),
+    ).toEqual([
       'flows.review.steps[2].then[0].role: No role named nobody',
       "flows.review.steps[2].then[0].outcomes[0].action: request_leave creates a record; here an action changes the process's own record",
       "flows.review.steps[4].ways[1].for.date: reason isn't a date or a time",
@@ -387,12 +407,20 @@ describe('a flow that waits', () => {
       'flows.leave_approval.starts[2].condition: leave.nothing: Leave request has no field nothing',
       'flows.shift.starts[0]: Only a flow that waits starts by itself on a record. Run a flow that runs in one go from an action, or on a schedule',
     ]);
-    expect(issuesOf(leave((d) => void (d.flows.leave_approval.starts = [{ date: 'reason' }, { date: 'starts', before: 'P1D', after: 'P1D' }])))).toEqual([
+    expect(
+      issuesOf(
+        leave((d) => {
+          d.flows.leave_approval.starts = [{ date: 'reason' }, { date: 'starts', before: 'P1D', after: 'P1D' }];
+        }),
+      ),
+    ).toEqual([
       "flows.leave_approval.starts[0].date: reason isn't a date or a time",
       'flows.leave_approval.starts[1]: A timer fires before its date or after it: not both',
     ]);
     const first = valid(
-      leave((d) => void (d.flows.leave_approval.starts = [{ date: 'starts', after: 'P1D' }, { condition: { eq: [{ ref: 'leave.status' }, 'approved'] } }])),
+      leave((d) => {
+        d.flows.leave_approval.starts = [{ date: 'starts', after: 'P1D' }, { condition: { eq: [{ ref: 'leave.status' }, 'approved'] } }];
+      }),
     );
     const next = structuredClone(first) as unknown as Record<string, any>;
     const fields = next.entities.leave_request.fields as Array<{ name: string }>;
@@ -517,14 +545,13 @@ describe('a flow that waits', () => {
     ]);
     const before = valid(leave());
     const after = valid(
-      leave(
-        (d) =>
-          void (d.flows.tidy = {
-            label: 'Tidy',
-            schedule: { every: 'weekday', at: '07:30', zone: 'Europe/London' },
-            steps: [{ type: 'set', var: 'x', value: 1 }],
-          }),
-      ),
+      leave((d) => {
+        d.flows.tidy = {
+          label: 'Tidy',
+          schedule: { every: 'weekday', at: '07:30', zone: 'Europe/London' },
+          steps: [{ type: 'set', var: 'x', value: 1 }],
+        };
+      }),
     );
     expect(capabilityChanges(before, after).find((change) => change.tool === 'tidy')?.text).toBe(
       "New flow Tidy: it runs by itself, with the app's authority: every weekday at 07:30, Europe/London time",
@@ -563,12 +590,11 @@ describe('a flow that waits', () => {
     // A change request says whom a flow now tells, and a rename follows into what it says.
     const before = valid(leave());
     const after = valid(
-      leave(
-        (d) =>
-          void (d.flows.leave_approval.steps[0].outcomes[0].steps = [
-            { type: 'inform', to: [{ person: { ref: 'leave.owner' } }, { role: 'hr' }], title: { ref: 'leave.days' } },
-          ]),
-      ),
+      leave((d) => {
+        d.flows.leave_approval.steps[0].outcomes[0].steps = [
+          { type: 'inform', to: [{ person: { ref: 'leave.owner' } }, { role: 'hr' }], title: { ref: 'leave.days' } },
+        ];
+      }),
     );
     expect(
       capabilityChanges(before, after)

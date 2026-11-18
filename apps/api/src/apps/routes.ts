@@ -16,7 +16,7 @@ import { type AppBuilder, changeRequestRequired } from './builder.js';
 import { type AppRef, type EnvironmentRow, envSelector, isLoaded, isTeamApp, type LoadedApp } from './catalog.js';
 import { appResource, environmentResource } from './resources.js';
 import type { AppRuntime } from './runtime.js';
-import { AppOut, AppParams, EnvironmentOut, EnvQuery, PlanOut, TestsOut } from './schemas.js';
+import { AppOut, AppParams, type EnvironmentOut, EnvQuery, PlanOut, TestsOut } from './schemas.js';
 import { describeUi } from './ui.js';
 
 type AppOutput = z.infer<typeof AppOut>;

@@ -96,6 +96,7 @@ export function ComposePanel({
   const titleId = useId();
   const promptId = useId();
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new turn scrolls the conversation to its foot
   useEffect(() => {
     const element = conversation.current;
     if (element) element.scrollTop = element.scrollHeight;

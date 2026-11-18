@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { ApiError, type AppAt, api } from '../api.js';
 import { PersonName, PersonPicker } from '../components/people.js';
-import { Badge, Button, Card, EmptyState, Field, Notice, TextInput } from '../components/ui.js';
+import { Badge, Button, Card, EmptyState, Field, Modes, Notice, TextInput } from '../components/ui.js';
 import { Link } from '../router.js';
 import type { ProcessInstance, Task } from '../types.js';
 
@@ -108,14 +108,14 @@ export function Tasks() {
           </p>
           <h1 className="m-0 text-2xl font-semibold tracking-tight">Your tasks</h1>
         </div>
-        <div className="flex gap-1" role="group" aria-label="Which tasks">
-          <Button size="sm" variant={status === 'open' ? 'primary' : 'secondary'} onClick={() => setStatus('open')}>
+        <Modes label="Which tasks">
+          <button type="button" aria-pressed={status === 'open'} onClick={() => setStatus('open')}>
             To do
-          </Button>
-          <Button size="sm" variant={status === 'closed' ? 'primary' : 'secondary'} onClick={() => setStatus('closed')}>
+          </button>
+          <button type="button" aria-pressed={status === 'closed'} onClick={() => setStatus('closed')}>
             Done
-          </Button>
-        </div>
+          </button>
+        </Modes>
       </div>
       {tasks.isError ? <Notice tone="bad">Your tasks can't be loaded right now.</Notice> : null}
       {status === 'open' ? <Cover /> : null}

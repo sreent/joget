@@ -179,7 +179,7 @@ async function capabilityTools(
     const policy = await runtime.policy(loaded);
     const allowed = async (kind: 'action' | 'query', name: string) =>
       (await ctx.policy.authorize(auth.principal, `${kind}.run`, runtime.capability(loaded, kind, name), undefined, policy)).allowed;
-    for (const [name, action] of Object.entries(loaded.definition.actions)) {
+    for (const name of Object.keys(loaded.definition.actions)) {
       if (!(await allowed('action', name))) continue;
       tools.push(actionTool(ctx, runtime, request, auth, loaded, name, toolName(loaded.app.handle, name, taken, loaded.app.id)));
     }
@@ -564,7 +564,6 @@ function builderTools(ctx: AppContext, builder: AppBuilder, runtime: AppRuntime,
 }
 
 function serve(
-  ctx: AppContext,
   path: string,
   server: { name: string; instructions: string },
   tools: (request: FastifyRequest, auth: AuthContext) => Promise<Tool[]>,
@@ -658,7 +657,6 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
   return async (app) => {
     await app.register(
       serve(
-        ctx,
         '/mcp',
         {
           name: 'ambit',
@@ -673,19 +671,17 @@ export function mcpRoutes(ctx: AppContext, builder: AppBuilder, runtime: AppRunt
     );
     await app.register(
       serve(
-        ctx,
         '/mcp/build',
         {
           name: 'ambit-builder',
           instructions:
-            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change. Changes apply at once to the person's sandbox; anything that deletes data waits for them. A team app changes through change requests: start_working_copy, change the copy, then submit_change for review.",
+            "Build apps as the signed-in person: read describe_format first, then create_app or get_definition, plan_change and apply_change, and run_tests to run the app's tests. Changes apply at once to the person's sandbox; anything that deletes data waits for them. A team app changes through change requests: start_working_copy, change the copy, then submit_change for review.",
         },
         async (request, auth) => builderTools(ctx, builder, runtime, delivery, request, auth),
       ),
     );
     await app.register(
       serve(
-        ctx,
         '/mcp/ops',
         {
           name: 'ambit-ops',

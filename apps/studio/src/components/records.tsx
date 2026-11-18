@@ -195,7 +195,7 @@ export function RecordPicker({
           onKeyDown={onKeyDown}
           onBlur={() => setText(null)}
         />
-        <ul
+        <div
           id={listId}
           role="listbox"
           aria-label={`${about.pluralLabel} that match`}
@@ -205,10 +205,11 @@ export function RecordPicker({
           )}
         >
           {options.map((record, i) => (
-            <li
+            <div
               key={record.id}
               id={`${listId}-${i}`}
               role="option"
+              tabIndex={-1}
               aria-selected={i === active}
               className={cx('cursor-pointer rounded-sm px-2 py-1.5', i === active && 'bg-accent-soft')}
               onMouseDown={(event) => {
@@ -218,9 +219,9 @@ export function RecordPicker({
               onMouseEnter={() => setActive(i)}
             >
               {titleOf(record)}
-            </li>
+            </div>
           ))}
-        </ul>
+        </div>
         {open && !options.length ? (
           <p className="absolute z-10 m-0 mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-muted shadow-raised" role="status">
             {results.isFetching ? 'Searching…' : `No ${about.pluralLabel.toLowerCase()} match`}

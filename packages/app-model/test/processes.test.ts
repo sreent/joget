@@ -279,7 +279,11 @@ describe('sub-processes and call activities', () => {
       ]),
     );
     expect(
-      issuesOf(nested((process) => void (process.elements.too_long = { type: 'boundaryEvent', attachedTo: 'review', message: { action: 'withdraw' } }))),
+      issuesOf(
+        nested((process) => {
+          process.elements.too_long = { type: 'boundaryEvent', attachedTo: 'review', message: { action: 'withdraw' } };
+        }),
+      ),
     ).toEqual(expect.arrayContaining(['processes.leave_approval.elements.too_long.message.action: No action named withdraw']));
   });
 
@@ -304,9 +308,13 @@ describe('sub-processes and call activities', () => {
         'processes.second_look.elements.again.process: Leave approval calls Second look in turn, so they would call each other without end',
       ]),
     );
-    expect(issuesOf(nested((process) => void (process.elements.look.process = 'leave_approval')))).toEqual(
-      expect.arrayContaining(["processes.leave_approval.elements.look.process: A process can't call itself"]),
-    );
+    expect(
+      issuesOf(
+        nested((process) => {
+          process.elements.look.process = 'leave_approval';
+        }),
+      ),
+    ).toEqual(expect.arrayContaining(["processes.leave_approval.elements.look.process: A process can't call itself"]));
   });
 
   it('are named in a change request: what a process calls', () => {
@@ -421,9 +429,13 @@ describe('script, rule check, send and receive tasks, and simple events', () => 
         'processes.leave_approval.elements.jump.link: No catch link named elsewhere is where Event jump is',
       ]),
     );
-    expect(issuesOf(tasks((process) => void (process.elements.flag.steps = [])))).toEqual(
-      expect.arrayContaining(['processes.leave_approval.elements.flag.steps: Flag long leave needs a step']),
-    );
+    expect(
+      issuesOf(
+        tasks((process) => {
+          process.elements.flag.steps = [];
+        }),
+      ),
+    ).toEqual(expect.arrayContaining(['processes.leave_approval.elements.flag.steps: Flag long leave needs a step']));
     expect(
       issuesOf(
         tasks((process) => {
@@ -1022,7 +1034,13 @@ describe('the checks of a process', () => {
       'processes.leave_approval.elements.pay: Pay leads on by one flow',
       'roles.employee.processes[0]: No process named nothing',
     ]);
-    expect(issuesOf(leave((process, definition) => void (definition['roles'].manager.actions = ['approve_leave'])))).toEqual([
+    expect(
+      issuesOf(
+        leave((_process, definition) => {
+          definition['roles'].manager.actions = ['approve_leave'];
+        }),
+      ),
+    ).toEqual([
       "processes.leave_approval.elements.decide.outcomes[1].action: Manager can't run reject_leave, so nobody who may do the task could choose Reject",
     ]);
   });
@@ -1143,15 +1161,27 @@ describe('a process in review', () => {
   });
 
   it('ignores a change of layout, and names a change of the flow', () => {
-    const moved = valid(leave((process) => void (process.diagram.shapes.decide.x = 300)));
+    const moved = valid(
+      leave((process) => {
+        process.diagram.shapes.decide.x = 300;
+      }),
+    );
     expect(capabilityChanges(head, moved)).toEqual([]);
     expect(diffDefinitions(head, moved)).toEqual([{ section: 'processes', name: 'leave_approval', change: 'changed', details: [] }]);
-    const due = valid(leave((process) => void (process.elements.decide.due = 'P5D')));
+    const due = valid(
+      leave((process) => {
+        process.elements.decide.due = 'P5D';
+      }),
+    );
     expect(capabilityChanges(head, due).map((change) => change.text)).toEqual(['The flow of Leave approval changed']);
   });
 
   it('shows who may start a process by hand in the permission diff', () => {
-    const startable = valid(leave((_process, definition) => void (definition['roles'].employee.processes = ['leave_approval'])));
+    const startable = valid(
+      leave((_process, definition) => {
+        definition['roles'].employee.processes = ['leave_approval'];
+      }),
+    );
     expect(accessChanges(head, startable)).toEqual([{ role: 'employee', kind: 'gains', text: 'Employee can now start Leave approval' }]);
   });
 

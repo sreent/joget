@@ -6,7 +6,7 @@ import { requireAuth, requireSession } from '../access/rules.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
 import { badRequest, HttpError, unauthorized } from '../errors.js';
-import { IdpUnavailableError, mfaTimestamp } from './oidc.js';
+import { IdpUnavailableError, mfaTimestamp, type OidcIdentity } from './oidc.js';
 import { provisionUser } from './provisioning.js';
 
 const LOGIN_COOKIE = 'platform_login';
@@ -15,7 +15,7 @@ const LoginState = z.object({ state: z.string(), nonce: z.string(), codeVerifier
 
 /** Only same-site relative paths, so the login flow cannot be used as an open redirect. */
 function safeReturnTo(value: string | undefined): string | null {
-  if (!value || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return null;
+  if (!value?.startsWith('/') || value.startsWith('//') || value.includes('\\')) return null;
   return value;
 }
 
@@ -80,7 +80,7 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
           throw badRequest('invalid_login_state', 'The sign-in attempt expired or was tampered with. Start again.');
         }
 
-        let identity;
+        let identity: OidcIdentity;
         try {
           identity = await ctx.oidc.completeLogin({
             callbackUrl: new URL(request.url, ctx.config.PUBLIC_BASE_URL),
@@ -100,7 +100,7 @@ export function authRoutes(ctx: AppContext): FastifyPluginAsyncZod {
         }
 
         const now = ctx.now();
-        let result;
+        let result: { readonly session: { readonly token: string; readonly expiresAt: Date } };
         try {
           result = await ctx.db.transaction(async (tx) => {
             const user = await provisionUser(tx, { orgId: ctx.org.id, config: ctx.config, identity, audit });

@@ -30,7 +30,7 @@ export function ModelCanvas({
       ? `M${head.x - 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x - 9} ${head.y + 4.6} Z`
       : `M${head.x + 9} ${head.y - 4.6} L${head.x} ${head.y} L${head.x + 9} ${head.y + 4.6} Z`;
   return (
-    <div className="flow h-[40rem] overflow-auto rounded-lg" data-testid="model-canvas" aria-label="The data model">
+    <section className="flow h-[40rem] overflow-auto rounded-lg" data-testid="model-canvas" aria-label="The data model">
       <div className="relative" style={{ width: laid.width, height: laid.height }}>
         <svg className="logic-edges" aria-hidden="true" width={laid.width} height={laid.height}>
           {laid.arrows.map((arrow) => (
@@ -103,6 +103,6 @@ export function ModelCanvas({
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }

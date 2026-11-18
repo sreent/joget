@@ -2,7 +2,6 @@ import {
   type AutomaticStart,
   addDuration,
   adHocStarts,
-  appRoleId,
   appRoleName,
   automaticStarts,
   type BoundaryEventElement,
@@ -753,7 +752,7 @@ export class ProcessEngine implements ProcessHooks {
     const scope = (now: Date): AuditScope => ({ orgId: this.#ctx.org.id, actor: SYSTEM_ACTOR, now, context: { signal: signal.id } });
     await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       const [current] = await tx.db.select().from(processSignals).where(eq(processSignals.id, signal.id)).for('update');
-      if (!current || current.status !== 'waiting') return;
+      if (current?.status !== 'waiting') return;
       const turn = this.#turn(tx, loaded, scope, null);
       const running = await tx.db
         .select()
@@ -852,7 +851,7 @@ export class ProcessEngine implements ProcessHooks {
 
   async #fire(timer: TimerRow): Promise<void> {
     const row = await this.#instanceRow(timer.instanceId);
-    if (!row || row.status !== 'running') {
+    if (row?.status !== 'running') {
       await this.#ctx.db.update(processTimers).set({ status: 'cancelled' }).where(eq(processTimers.id, timer.id));
       return;
     }
@@ -862,7 +861,7 @@ export class ProcessEngine implements ProcessHooks {
       // The record first, then the instance: the order an action takes them in.
       await this.#runtime.lockRecord(tx, loaded, row.entity, row.recordId);
       const [current] = await tx.db.select().from(processTimers).where(eq(processTimers.id, timer.id)).for('update');
-      if (!current || current.status !== 'waiting') return;
+      if (current?.status !== 'waiting') return;
       const turn = this.#turn(tx, loaded, scope, null);
       const live = await this.#live(turn, row.id);
       if (live.row.status !== 'running') {
@@ -907,7 +906,7 @@ export class ProcessEngine implements ProcessHooks {
         await this.#leave(turn, live, timer.element, token.scope);
       } else if (timer.taskId && element?.type === 'boundaryEvent') {
         const [task] = await tx.db.select().from(processTasks).where(eq(processTasks.id, timer.taskId)).for('update');
-        if (!task || task.status !== 'open') return;
+        if (task?.status !== 'open') return;
         const scope = await this.#scopeOf(turn, task.tokenId);
         if (element.interrupting) await this.#closeTask(turn, live, task, 'timer');
         await this.#audit(turn, live, 'process.escalate', { task: task.id, timer: timer.element, interrupting: element.interrupting });
@@ -1265,7 +1264,7 @@ export class ProcessEngine implements ProcessHooks {
     const scope = (now: Date): AuditScope => ({ orgId: this.#ctx.org.id, actor: SYSTEM_ACTOR, now, context: { startTimer: timer.id } });
     await withAppTransaction(this.#ctx.pool, loaded.env, 'records', async (tx) => {
       const [current] = await tx.db.select().from(processStartTimers).where(eq(processStartTimers.id, timer.id)).for('update');
-      if (!current || current.status !== 'waiting') return;
+      if (current?.status !== 'waiting') return;
       const present = loaded.definition.entities[timer.entity] ? await this.#runtime.lockRecord(tx, loaded, timer.entity, timer.recordId) : false;
       const turn = this.#turn(tx, loaded, scope, null);
       await tx.db
@@ -1880,7 +1879,7 @@ export class ProcessEngine implements ProcessHooks {
     const tokenId = called.row.calledByToken;
     if (!tokenId || !called.row.calledByInstance) return null;
     const [caller] = await db.select().from(processInstances).where(eq(processInstances.id, called.row.calledByInstance));
-    if (!caller || caller.status !== 'running') return null;
+    if (caller?.status !== 'running') return null;
     // The caller's record first, then its instance: the order an action takes them in.
     if (caller.recordId !== called.row.recordId) await this.#runtime.lockRecord(turn.tx, turn.loaded, caller.entity, caller.recordId);
     const live = await this.#live(turn, caller.id);
@@ -2461,7 +2460,7 @@ export class ProcessEngine implements ProcessHooks {
     }
     let recordId = live.row.recordId;
     if (message.record) {
-      const value = ((await this.#record(turn, live)) ?? {})[message.record];
+      const value = (await this.#record(turn, live))?.[message.record];
       const action = turn.loaded.definition.actions[message.action];
       if (typeof value !== 'string' || !action) {
         await this.#stuck(turn, live, id, null, `${name}: the record has no ${message.record}`, scope);

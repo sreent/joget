@@ -278,7 +278,10 @@ export function ChangeRequestPage({ id, me }: { id: string; me: Me }) {
   };
   const review = useMutation({
     mutationFn: (verdict: 'approve' | 'request_changes' | 'comment') => api.review(id, verdict, comment.trim() || undefined),
-    onSuccess: async (next) => (setComment(''), await refresh(next)),
+    onSuccess: async (next) => {
+      setComment('');
+      await refresh(next);
+    },
   });
   const merge = useMutation({ mutationFn: () => api.merge(id), onSuccess: refresh });
   const close = useMutation({ mutationFn: () => api.closeChange(id), onSuccess: refresh });
@@ -509,12 +512,20 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
 
   const cut = useMutation({
     mutationFn: (revision?: number) => api.cutRelease(app.id, { ...(revision ? { revision } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}) }),
-    onSuccess: async () => (setCutting(false), setNotes(''), await refresh()),
+    onSuccess: async () => {
+      setCutting(false);
+      setNotes('');
+      await refresh();
+    },
   });
   const request = useMutation({
     mutationFn: ({ release, env, confirm }: { release: Release; env: 'staging' | 'prod'; confirm: boolean }) =>
       api.requestDeployment(app.id, { releaseId: release.id, env, confirmDestructive: confirm, execute: env === 'staging' }),
-    onSuccess: async () => (setDestructive(null), setConfirmLoss(false), await refresh()),
+    onSuccess: async () => {
+      setDestructive(null);
+      setConfirmLoss(false);
+      await refresh();
+    },
     onError: (error, { release, env }) => {
       if (error instanceof ApiError && error.code === 'destructive_change') {
         setDestructive({ release, env, steps: (error.details as { plan: { steps: PlanStep[] } }).plan.steps });
@@ -532,7 +543,10 @@ export function DeliveryPanel({ app }: { app: AppSummary }) {
   });
   const rollback = useMutation({
     mutationFn: (env: 'staging' | 'prod') => api.rollback(app.id, env),
-    onSuccess: async () => (setRollingBack(null), await refresh()),
+    onSuccess: async () => {
+      setRollingBack(null);
+      await refresh();
+    },
   });
 
   const environments = deployments.data?.environments ?? [];

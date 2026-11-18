@@ -103,7 +103,10 @@ export function FormDesigner({ definition, onChange }: Props) {
           slot={slot}
           onSlot={setSlot}
           onChange={onChange}
-          onRemove={() => (onChange(removeForm(definition, formName)), setSelected(null))}
+          onRemove={() => {
+            onChange(removeForm(definition, formName));
+            setSelected(null);
+          }}
         />
       ) : (
         <EmptyState title="No forms yet">A form lays out an entity's fields for people who work in screens. Agents don't need one.</EmptyState>
@@ -201,7 +204,14 @@ function FormCanvas(props: {
               selected={props.slot?.section === s ? props.slot.index : null}
               onSelect={(index) => props.onSlot({ section: s, index })}
               onTitle={(title) => onChange(updateSection(definition, name, s, title))}
-              onRemove={form.sections.length > 1 ? () => (onChange(removeSection(definition, name, s)), props.onSlot(null)) : undefined}
+              onRemove={
+                form.sections.length > 1
+                  ? () => {
+                      onChange(removeSection(definition, name, s));
+                      props.onSlot(null);
+                    }
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -388,7 +398,14 @@ function FormSide({
         empty="Always. A field it hides sends no value."
       />
       <div className="border-t border-line pt-3">
-        <Button size="sm" variant="danger" onClick={() => (onChange(removeFormField(definition, name, slot)), onSlot(null))}>
+        <Button
+          size="sm"
+          variant="danger"
+          onClick={() => {
+            onChange(removeFormField(definition, name, slot));
+            onSlot(null);
+          }}
+        >
           Take off the form
         </Button>
       </div>

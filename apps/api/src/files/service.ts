@@ -12,7 +12,7 @@ import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { Config } from '../config.js';
 import type { AuthContext } from '../context.js';
 import { HttpError, unprocessable } from '../errors.js';
-import { type Scanner, ScannerUnavailableError } from './scan.js';
+import { type Scanner, ScannerUnavailableError, type ScanResult } from './scan.js';
 import { cleanName, sniff } from './sniff.js';
 import type { BlobStore } from './store.js';
 
@@ -97,7 +97,7 @@ export class FileService {
       throw new HttpError(503, 'scanning_unavailable', 'Uploads need a malware scanner, and none is set up here (FILE_SCANNER)');
     }
     const sha256 = createHash('sha256').update(input.content).digest('hex');
-    let scan;
+    let scan: ScanResult;
     try {
       scan = await this.scanner.scan(input.content);
     } catch (error) {

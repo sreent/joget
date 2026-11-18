@@ -1407,7 +1407,7 @@ export function layoutFlow(
   };
   const pieces: Array<{ piece: Piece; index?: number }> = [{ piece: start }];
   if (!flow.steps.length) pieces.push({ piece: slotPiece('steps') });
-  flow.steps.forEach((step, index) => pieces.push({ piece: stepPiece(c, step, `steps[${index}]`), index }));
+  for (const [index, step] of flow.steps.entries()) pieces.push({ piece: stepPiece(c, step, `steps[${index}]`), index });
   const last = pieces[pieces.length - 1]!.piece;
   if (last.exits.length) {
     pieces.push({

@@ -197,7 +197,7 @@ export class Delivery {
       .select()
       .from(spaces)
       .where(and(eq(spaces.id, input.spaceId), eq(spaces.orgId, ctx.org.id)));
-    if (!space || space.kind !== 'team') throw notFound('Team space');
+    if (space?.kind !== 'team') throw notFound('Team space');
     const name = input.name?.trim() || source.app.name;
     const result = await this.bringIn(request, auth, space, {
       name,

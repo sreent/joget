@@ -19,7 +19,13 @@ export function SharePanel({ at, definition, team = false }: { at: AppAt; defini
   const [email, setEmail] = useState('');
   const [role, setRole] = useState(roles[0]?.[0] ?? '');
   const refresh = () => client.invalidateQueries({ queryKey: ['shares', at.id] });
-  const share = useMutation({ mutationFn: () => api.envShare(at, email.trim(), role), onSuccess: () => (setEmail(''), refresh()) });
+  const share = useMutation({
+    mutationFn: () => api.envShare(at, email.trim(), role),
+    onSuccess: () => {
+      setEmail('');
+      refresh();
+    },
+  });
   const unshare = useMutation({ mutationFn: (id: string) => api.envUnshare(at, id), onSuccess: refresh });
 
   if (roles.length === 0) {
@@ -208,7 +214,13 @@ export function AdvancedPanel({ definition, onChange }: { definition: Definition
         >
           Apply to the draft
         </Button>
-        <Button disabled={value === text} onClick={() => (setValue(text), setError(null))}>
+        <Button
+          disabled={value === text}
+          onClick={() => {
+            setValue(text);
+            setError(null);
+          }}
+        >
           Reset
         </Button>
       </div>

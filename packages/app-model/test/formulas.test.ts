@@ -28,7 +28,7 @@ function edited(edit: (draft: Record<string, any>) => void): Record<string, any>
 const ref = (field: string) => ({ ref: `record.${field}` });
 
 /** The example with formulas: a line's tax, the claim's total with tax, a due date, and a heading. */
-export const withFormulasApp = () =>
+const withFormulasApp = () =>
   edited((d) => {
     d.entities.expense_line.fields.push({ name: 'tax', label: 'Tax (SGD)', type: 'number', decimals: 2, formula: { mul: [ref('amount'), 0.09] } });
     d.entities.expense_claim.fields.push(

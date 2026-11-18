@@ -306,7 +306,6 @@ export function runtimeRoutes(ctx: AppContext, runtime: AppRuntime): FastifyPlug
       },
       async (request) =>
         runtime.runSummary(
-          request,
           requireAuth(request),
           await theApp(request),
           request.params.page,

@@ -13,7 +13,7 @@ import { ActionResultOut, ProposalOut, RecordOut } from './schemas.js';
 const ProposalParams = z.object({ proposalId: z.uuid() });
 type FormBody = Record<string, string | string[]>;
 
-const escape = (value: unknown): string =>
+const escapeHtml = (value: unknown): string =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 function sourceTag(source: Record<string, unknown> | undefined): string {
@@ -21,14 +21,14 @@ function sourceTag(source: Record<string, unknown> | undefined): string {
   const tag = (kind: string, text: string) => `<span class="approval-source${kind ? ` ${kind}` : ''}">${text}</span>`;
   switch (source['source']) {
     case 'document':
-      return tag('document', `Read from ${escape(source['document'] ?? 'a document')}${source['location'] ? `, ${escape(source['location'])}` : ''}`);
+      return tag('document', `Read from ${escapeHtml(source['document'] ?? 'a document')}${source['location'] ? `, ${escapeHtml(source['location'])}` : ''}`);
     case 'agent':
-      return tag('agent', `Inferred by the agent${source['note'] ? `: ${escape(source['note'])}` : ''}`);
+      return tag('agent', `Inferred by the agent${source['note'] ? `: ${escapeHtml(source['note'])}` : ''}`);
     case 'person':
       return tag('person', 'Edited by you');
     case 'model': {
       const confidence = typeof source['confidence'] === 'number' ? `, ${Math.round(source['confidence'] * 100)}% sure` : '';
-      return tag('', `Predicted by ${escape(source['model'])}${source['version'] ? ` ${escape(source['version'])}` : ''}${confidence}`);
+      return tag('', `Predicted by ${escapeHtml(source['model'])}${source['version'] ? ` ${escapeHtml(source['version'])}` : ''}${confidence}`);
     }
     case 'platform':
       return tag('', 'Set by the app');
@@ -39,7 +39,7 @@ function sourceTag(source: Record<string, unknown> | undefined): string {
 
 /** A file's link, for those who may open it. */
 const fileLink = (appId: string, id: unknown, name: string) =>
-  `<a href="/v1/apps/${escape(appId)}/files/${escape(id)}" target="_blank" rel="noopener">${escape(name)}</a>`;
+  `<a href="/v1/apps/${escapeHtml(appId)}/files/${escapeHtml(id)}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`;
 
 /** Files on the review page: their names by ID, from the card, and the app they belong to. */
 interface FileLinks {
@@ -49,22 +49,22 @@ interface FileLinks {
 
 function formControl(definition: StoredDefinition, entity: string, name: string, value: unknown, files: FileLinks): string {
   const field = entityFields(definition.entities[entity]!).get(name)?.field;
-  const id = `f-${escape(name)}`;
+  const id = `f-${escapeHtml(name)}`;
   if (field?.type === 'file') return lineFieldControl(field, name, id, value, files);
-  const label = `<label for="${id}">${escape(field?.label ?? name)}</label>`;
+  const label = `<label for="${id}">${escapeHtml(field?.label ?? name)}</label>`;
   if (field?.type === 'boolean') {
-    return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escape(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
+    return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escapeHtml(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
   }
   if (field?.type === 'choice') {
     const chosen = new Set(Array.isArray(value) ? value : [value]);
     const options = field.options
-      .map((o) => `<option value="${escape(o.value)}"${chosen.has(o.value) ? ' selected' : ''}>${escape(o.label)}</option>`)
+      .map((o) => `<option value="${escapeHtml(o.value)}"${chosen.has(o.value) ? ' selected' : ''}>${escapeHtml(o.label)}</option>`)
       .join('');
-    return `<div class="ambit-field">${label}<select class="ambit-input" id="${id}" name="${escape(name)}"${field.multiple ? ' multiple' : ''}>${field.multiple ? '' : '<option value=""></option>'}${options}</select></div>`;
+    return `<div class="ambit-field">${label}<select class="ambit-input" id="${id}" name="${escapeHtml(name)}"${field.multiple ? ' multiple' : ''}>${field.multiple ? '' : '<option value=""></option>'}${options}</select></div>`;
   }
   const type = field?.type === 'number' ? 'number' : field?.type === 'date' ? 'date' : field?.type === 'email' ? 'email' : 'text';
   const step = field?.type === 'number' ? ` step="${field.decimals ? (1 / 10 ** field.decimals).toFixed(field.decimals) : '1'}"` : '';
-  return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escape(name)}" value="${escape(value ?? '')}"></div>`;
+  return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escapeHtml(name)}" value="${escapeHtml(value ?? '')}"></div>`;
 }
 
 /** One labelled control for a field of a line. A file is kept as it is: it's added in the app, not here. */
@@ -72,24 +72,24 @@ function lineFieldControl(field: StoredField, name: string, id: string, value: u
   if (field.type === 'file') {
     const kept =
       typeof value === 'string'
-        ? `<input type="hidden" name="${escape(name)}" value="${escape(value)}">${fileLink(files.appId, value, files.names.get(value) ?? 'The file')}`
+        ? `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">${fileLink(files.appId, value, files.names.get(value) ?? 'The file')}`
         : '<span>None</span>';
-    return `<div class="ambit-field"><span class="ambit-label">${escape(field.label)}</span>${kept}</div>`;
+    return `<div class="ambit-field"><span class="ambit-label">${escapeHtml(field.label)}</span>${kept}</div>`;
   }
-  const label = `<label for="${id}">${escape(field.label)}</label>`;
+  const label = `<label for="${id}">${escapeHtml(field.label)}</label>`;
   if (field.type === 'boolean') {
-    return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escape(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
+    return `<div class="ambit-check"><input type="checkbox" id="${id}" name="${escapeHtml(name)}"${value === true ? ' checked' : ''}>${label}</div>`;
   }
   if (field.type === 'choice') {
     const chosen = new Set(Array.isArray(value) ? value : [value]);
     const options = field.options
-      .map((o) => `<option value="${escape(o.value)}"${chosen.has(o.value) ? ' selected' : ''}>${escape(o.label)}</option>`)
+      .map((o) => `<option value="${escapeHtml(o.value)}"${chosen.has(o.value) ? ' selected' : ''}>${escapeHtml(o.label)}</option>`)
       .join('');
-    return `<div class="ambit-field">${label}<select class="ambit-input" id="${id}" name="${escape(name)}"${field.multiple ? ' multiple' : ''}>${field.multiple ? '' : '<option value=""></option>'}${options}</select></div>`;
+    return `<div class="ambit-field">${label}<select class="ambit-input" id="${id}" name="${escapeHtml(name)}"${field.multiple ? ' multiple' : ''}>${field.multiple ? '' : '<option value=""></option>'}${options}</select></div>`;
   }
   const type = field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : field.type === 'email' ? 'email' : 'text';
   const step = field.type === 'number' ? ` step="${field.decimals ? (1 / 10 ** field.decimals).toFixed(field.decimals) : '1'}"` : '';
-  return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escape(name)}" value="${escape(value ?? '')}"></div>`;
+  return `<div class="ambit-field">${label}<input class="ambit-input" type="${type}"${step} id="${id}" name="${escapeHtml(name)}" value="${escapeHtml(value ?? '')}"></div>`;
 }
 
 /**
@@ -106,16 +106,16 @@ function linesControl(
   const lineEntity = definition.entities[field.entity]!;
   const block = (line: Record<string, unknown> | null, index: number) => {
     const at = (f: string) => `${field.name}[${index}][${f}]`;
-    const id = (f: string) => `f-${escape(field.name)}-${index}-${escape(f)}`;
+    const id = (f: string) => `f-${escapeHtml(field.name)}-${index}-${escapeHtml(f)}`;
     const title = line ? `${lineEntity.label} ${index + 1}` : `Add a ${lineEntity.label.toLowerCase()} (optional)`;
     const fields = lineEntity.fields.map((f) => lineFieldControl(f, at(f.name), id(f.name), line?.[f.name] ?? null, files)).join('');
-    const keep = line && typeof line['id'] === 'string' ? `<input type="hidden" name="${at('id')}" value="${escape(line['id'])}">` : '';
+    const keep = line && typeof line['id'] === 'string' ? `<input type="hidden" name="${at('id')}" value="${escapeHtml(line['id'])}">` : '';
     const remove = line
-      ? `<div class="ambit-check"><input type="checkbox" id="${id('remove')}" name="${at('remove')}"><label for="${id('remove')}">Remove this ${escape(lineEntity.label.toLowerCase())}</label></div>`
+      ? `<div class="ambit-check"><input type="checkbox" id="${id('remove')}" name="${at('remove')}"><label for="${id('remove')}">Remove this ${escapeHtml(lineEntity.label.toLowerCase())}</label></div>`
       : '';
-    return `<div class="approval-line${line ? '' : ' new'}"><p class="approval-line-title">${escape(title)}</p>${keep}<div class="approval-line-fields">${fields}</div>${remove}</div>`;
+    return `<div class="approval-line${line ? '' : ' new'}"><p class="approval-line-title">${escapeHtml(title)}</p>${keep}<div class="approval-line-fields">${fields}</div>${remove}</div>`;
   };
-  return `<fieldset class="approval-line-edit"><legend>${escape(field.label)}</legend>${[...lines.map(block), block(null, lines.length)].join('')}</fieldset>`;
+  return `<fieldset class="approval-line-edit"><legend>${escapeHtml(field.label)}</legend>${[...lines.map(block), block(null, lines.length)].join('')}</fieldset>`;
 }
 
 /** A form value as a typed value, using its field's type. */
@@ -188,7 +188,7 @@ function page(input: {
   // Agents are drawn in the agent tone, and people never are.
   const byAgent = proposal.proposedWithToken !== null || proposal.proposedByType !== 'user' || proposal.proposedBy !== proposal.onBehalfOf;
   const from = byAgent
-    ? `<p class="approval-from">Prepared by ${input.agentName ? escape(input.agentName) : 'an agent'}, acting for you</p>`
+    ? `<p class="approval-from">Prepared by ${input.agentName ? escapeHtml(input.agentName) : 'an agent'}, acting for you</p>`
     : '<p class="approval-from person">Revised by you</p>';
   const findings = card.findings.length
     ? `<ul class="approval-findings">${card.findings
@@ -196,7 +196,7 @@ function page(input: {
           (f) =>
             `<li class="approval-finding${f.severity === 'error' ? ' error' : ''}"><strong>${f.severity === 'error' ? 'Blocked' : 'Check'}:</strong> ${
               f.line ? `Line ${f.line.index + 1}: ` : ''
-            }${escape(f.message)}</li>`,
+            }${escapeHtml(f.message)}</li>`,
         )
         .join('')}</ul>`
     : '<p class="approval-clear">The app\'s rules found nothing to check.</p>';
@@ -207,15 +207,15 @@ function page(input: {
   }
   const files: FileLinks = { appId: proposal.appId, names };
   const shown = (cell: { type: string; value: unknown; display: string }) =>
-    cell.type === 'file' && typeof cell.value === 'string' ? fileLink(proposal.appId, cell.value, cell.display) : escape(cell.display);
+    cell.type === 'file' && typeof cell.value === 'string' ? fileLink(proposal.appId, cell.value, cell.display) : escapeHtml(cell.display);
   const fields = card.fields
-    .map((f) => `<div class="pair"><dt>${escape(f.label)}</dt><dd>${shown(f)}${sourceTag(f.source as Record<string, unknown> | undefined)}</dd></div>`)
+    .map((f) => `<div class="pair"><dt>${escapeHtml(f.label)}</dt><dd>${shown(f)}${sourceTag(f.source as Record<string, unknown> | undefined)}</dd></div>`)
     .join('');
   const tables = (card.tables ?? [])
     .map(
       (table) =>
-        `<section class="approval-lines"><h2>${escape(table.label)}</h2><div class="approval-table-wrap"><table class="approval-table"><thead><tr>${table.columns
-          .map((c) => `<th${c.type === 'number' ? ' class="number"' : ''}>${escape(c.label)}</th>`)
+        `<section class="approval-lines"><h2>${escapeHtml(table.label)}</h2><div class="approval-table-wrap"><table class="approval-table"><thead><tr>${table.columns
+          .map((c) => `<th${c.type === 'number' ? ' class="number"' : ''}>${escapeHtml(c.label)}</th>`)
           .join('')}</tr></thead><tbody>${table.rows
           .map(
             (row) =>
@@ -243,22 +243,22 @@ function page(input: {
           .join('')}<button type="submit" class="ambit-button">Save changes</button></form></details>`
       : '';
   const actions = pending
-    ? `<div class="approval-actions"><form method="post" action="/review/${proposal.id}/approve"><input type="hidden" name="digest" value="${escape(proposal.digest)}"><button type="submit" class="ambit-button primary">Approve and submit</button></form>` +
+    ? `<div class="approval-actions"><form method="post" action="/review/${proposal.id}/approve"><input type="hidden" name="digest" value="${escapeHtml(proposal.digest)}"><button type="submit" class="ambit-button primary">Approve and submit</button></form>` +
       `<form method="post" action="/review/${proposal.id}/reject"><button type="submit" class="ambit-button">Reject</button></form></div>`
     : '';
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Review: ${escape(card.title)}</title>
+<title>Review: ${escapeHtml(card.title)}</title>
 <link rel="stylesheet" href="/assets/ocean.css"><link rel="stylesheet" href="/assets/ambit.css">
 </head>
 <body class="ambit-page"><main class="ambit-review">
-<p><span class="badge ${status.tone}">${escape(status.text)}</span></p>
-${input.error ? `<p class="ambit-error" role="alert">${escape(input.error)}</p>` : ''}
+<p><span class="badge ${status.tone}">${escapeHtml(status.text)}</span></p>
+${input.error ? `<p class="ambit-error" role="alert">${escapeHtml(input.error)}</p>` : ''}
 <article class="approval" aria-labelledby="approval-title">
 <div class="approval-stripe"></div>
 <div class="approval-body">
 ${from}
-<h1 class="approval-title" id="approval-title">${escape(card.title)}</h1>
+<h1 class="approval-title" id="approval-title">${escapeHtml(card.title)}</h1>
 ${findings}
 <dl class="approval-changes">${fields}</dl>
 ${tables}
@@ -266,8 +266,8 @@ ${edit}
 ${actions}
 <p class="approval-signed">${
     pending
-      ? `You are approving exactly this change, sealed as <code>${escape(proposal.digest.slice(0, 16))}</code>…. Expires ${escape(proposal.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.`
-      : `${proposal.status === 'approved' ? 'You approved exactly this change' : 'This change was'}, sealed as <code>${escape(proposal.digest.slice(0, 16))}</code>….`
+      ? `You are approving exactly this change, sealed as <code>${escapeHtml(proposal.digest.slice(0, 16))}</code>…. Expires ${escapeHtml(proposal.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.`
+      : `${proposal.status === 'approved' ? 'You approved exactly this change' : 'This change was'}, sealed as <code>${escapeHtml(proposal.digest.slice(0, 16))}</code>….`
   }</p>
 </div></article>
 </main></body></html>`;

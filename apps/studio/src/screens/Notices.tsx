@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api.js';
 import { Icon, type IconName } from '../components/icon.js';
-import { Badge, Button, Card, Checkbox, EmptyState } from '../components/ui.js';
+import { Badge, Button, Card, Checkbox, EmptyState, Modes } from '../components/ui.js';
 import { href, Link } from '../router.js';
 import type { Notice } from '../types.js';
 
@@ -46,14 +46,14 @@ export function Notices() {
           <p className="m-0 text-sm text-muted">What flows told you, and the tasks that came to you, are due soon or are overdue.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="modes" role="group" aria-label="Which notices">
+          <Modes label="Which notices">
             <button type="button" aria-pressed={unreadOnly} onClick={() => setUnreadOnly(true)}>
               Unread
             </button>
             <button type="button" aria-pressed={!unreadOnly} onClick={() => setUnreadOnly(false)}>
               All
             </button>
-          </div>
+          </Modes>
           <Button size="sm" disabled={!notices.data?.unread || !shownUpTo || read.isPending} onClick={() => shownUpTo && read.mutate({ upTo: shownUpTo })}>
             Mark all read
           </Button>

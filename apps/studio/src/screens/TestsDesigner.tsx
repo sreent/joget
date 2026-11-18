@@ -296,7 +296,7 @@ function TestEditor({
 }
 
 /** A value for a field to start from, as the test adds it. */
-function startingValue(definition: Definition, test: AppTest, field: FieldDef): unknown {
+function startingValue(test: AppTest, field: FieldDef): unknown {
   switch (field.type) {
     case 'number':
       return 0;
@@ -334,7 +334,7 @@ function ValuesEditor(props: {
   const declared = definition.entities[entity]?.fields ?? [];
   const unused = declared.filter((field) => fields.includes(field.name) && !(field.name in values));
   return (
-    <div role="group" aria-label={label} className="grid gap-1.5">
+    <fieldset aria-label={label} className="m-0 grid min-w-0 gap-1.5 border-0 p-0">
       {Object.entries(values).map(([name, value]) => {
         const field = declared.find((each) => each.name === name);
         return (
@@ -375,7 +375,7 @@ function ValuesEditor(props: {
           value=""
           onChange={(event) => {
             const field = declared.find((each) => each.name === event.target.value);
-            if (field) onChange({ ...values, [field.name]: startingValue(definition, test, field) });
+            if (field) onChange({ ...values, [field.name]: startingValue(test, field) });
           }}
         >
           <option value="">{Object.keys(values).length ? 'Add another value…' : 'Add a value…'}</option>
@@ -386,7 +386,7 @@ function ValuesEditor(props: {
           ))}
         </Select>
       ) : null}
-    </div>
+    </fieldset>
   );
 }
 

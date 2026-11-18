@@ -19,7 +19,7 @@ import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { DateShift, DurationInput } from '../components/duration.js';
 import { Icon, type IconName } from '../components/icon.js';
 import { useProblems } from '../components/problems.js';
-import { Button, Card, Checkbox, cx, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
+import { Button, Card, Checkbox, cx, EmptyState, Field, Modes, Notice, Select, TextInput } from '../components/ui.js';
 import { type RefChoice, recordChoices } from '../model/conditions.js';
 import {
   addFlow,
@@ -191,14 +191,14 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
           ) : null}
           {waits ? (
             // Live, each step says how many cases wait there now, and the longest wait.
-            <div className="modes" role="group" aria-label="Show">
+            <Modes label="Show">
               <button type="button" aria-pressed={!liveOn} onClick={() => setLiveOn(false)}>
                 Design
               </button>
               <button type="button" aria-pressed={liveOn} onClick={() => setLiveOn(true)}>
                 Live
               </button>
-            </div>
+            </Modes>
           ) : null}
           {liveNow ? (
             <span className="text-xs text-muted">
@@ -663,14 +663,14 @@ const EDGE_TYPES = { wire: WireEdge };
 /** Canvas or List: the choice of views, at the right of the canvas's foot and at the top of the list. */
 function ShowAs({ show, onShow }: { show: 'canvas' | 'list'; onShow: (show: 'canvas' | 'list') => void }) {
   return (
-    <div className="modes" role="group" aria-label="Show it as">
+    <Modes label="Show it as">
       <button type="button" aria-pressed={show === 'canvas'} onClick={() => onShow('canvas')}>
         Canvas
       </button>
       <button type="button" aria-pressed={show === 'list'} onClick={() => onShow('list')}>
         List
       </button>
-    </div>
+    </Modes>
   );
 }
 
@@ -707,6 +707,7 @@ function FlowCanvas(props: {
   const laid = useMemo(() => layoutFlow(definition, flow, width, folded), [definition, flow, width, folded]);
   // As steps come and go, the view fits the flow again: a new step is never out of sight.
   const [view, setView] = useState<ReactFlowInstance<FlowNode, Edge<WireData>> | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each new layout fits the view again
   useEffect(() => {
     void view?.fitView({ padding: 0.08, maxZoom: 1 });
   }, [view, laid]);
@@ -898,7 +899,7 @@ function FlowListing(props: {
     </ol>
   );
   return (
-    <div className="flow-listing h-[40rem] overflow-auto pt-16" aria-label={`${flow.label}, as a list`}>
+    <section className="flow-listing h-[40rem] overflow-auto pt-16" aria-label={`${flow.label}, as a list`}>
       <ShowAs show="list" onShow={props.onShow} />
       <section>
         <h2>What starts it</h2>
@@ -924,7 +925,7 @@ function FlowListing(props: {
           </Button>
         )}
       </section>
-    </div>
+    </section>
   );
 }
 
@@ -1037,7 +1038,10 @@ function StepEditor(props: {
               size="sm"
               variant="ghost"
               aria-label="Move the step up"
-              onClick={() => (onChange(moveStep(definition, name, path, -1)), props.onMoved(`${base}[${Math.max(0, index - 1)}]`))}
+              onClick={() => {
+                onChange(moveStep(definition, name, path, -1));
+                props.onMoved(`${base}[${Math.max(0, index - 1)}]`);
+              }}
             >
               ↑
             </Button>
@@ -1045,7 +1049,10 @@ function StepEditor(props: {
               size="sm"
               variant="ghost"
               aria-label="Move the step down"
-              onClick={() => (onChange(moveStep(definition, name, path, 1)), props.onMoved(`${base}[${index + 1}]`))}
+              onClick={() => {
+                onChange(moveStep(definition, name, path, 1));
+                props.onMoved(`${base}[${index + 1}]`);
+              }}
             >
               ↓
             </Button>
@@ -1060,7 +1067,15 @@ function StepEditor(props: {
                 Paste after
               </Button>
             ) : null}
-            <Button size="sm" variant="danger" aria-label="Remove the step" onClick={() => (onChange(removeStep(definition, name, path)), props.onRemoved())}>
+            <Button
+              size="sm"
+              variant="danger"
+              aria-label="Remove the step"
+              onClick={() => {
+                onChange(removeStep(definition, name, path));
+                props.onRemoved();
+              }}
+            >
               Remove
             </Button>
             <Button size="sm" variant="ghost" aria-label="Close the step" onClick={props.onClosed}>
@@ -1775,7 +1790,7 @@ function InformFields(props: {
       { ref: `${record}.created_by`, label: `${record}: whoever created it` },
     ]),
   ];
-  const valueOf = (recipient: InformStep['to'][number]) =>
+  const choiceOf = (recipient: InformStep['to'][number]) =>
     'role' in recipient
       ? `role:${recipient.role}`
       : recipient.person !== null && typeof recipient.person === 'object' && !Array.isArray(recipient.person) && 'ref' in recipient.person
@@ -1791,7 +1806,7 @@ function InformFields(props: {
           <div key={index} className="flex items-end gap-2">
             <Field label={`Tells ${index + 1}`}>
               {(id) => (
-                <Select id={id} value={valueOf(recipient)} onChange={(e) => change(index, e.target.value)}>
+                <Select id={id} value={choiceOf(recipient)} onChange={(e) => change(index, e.target.value)}>
                   <option value="" disabled>
                     Choose someone
                   </option>
@@ -2458,7 +2473,7 @@ function TryFlow({ appId, definition, name, flow, dirty }: { appId: string; defi
       </Button>
       {run.error ? <Notice tone="bad">{run.error instanceof ApiError ? run.error.message : 'The flow could not run'}</Notice> : null}
       {run.data ? (
-        <div className="grid gap-1 text-sm" aria-label="What it did">
+        <section className="grid gap-1 text-sm" aria-label="What it did">
           <p className="m-0">
             It would create {run.data.writes.created}, change {run.data.writes.changed} and delete {run.data.writes.deleted} record(s).
           </p>
@@ -2472,7 +2487,7 @@ function TryFlow({ appId, definition, name, flow, dirty }: { appId: string; defi
               {finding.message}
             </p>
           ))}
-        </div>
+        </section>
       ) : null}
     </Card>
   );

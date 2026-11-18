@@ -9,7 +9,7 @@ import { appResource } from '../apps/resources.js';
 import { AppParams } from '../apps/schemas.js';
 import { auditScopeFor, recordAudit } from '../audit/writer.js';
 import type { AppContext } from '../context.js';
-import { Attachment, type Composer, composeError, type DraftCheck, Focus, Turn } from './composer.js';
+import { Attachment, type ComposeResult, type Composer, composeError, type DraftCheck, Focus, Turn } from './composer.js';
 
 const ComposeBody = z.strictObject({
   prompt: z.string().trim().min(1).max(8000),
@@ -85,7 +85,7 @@ export function composeRoutes(ctx: AppContext, composer: Composer): FastifyPlugi
         // The history starts with what the builder said.
         const first = body.history.findIndex((turn) => turn.role === 'user');
         const history = first < 0 ? [] : body.history.slice(first);
-        let result;
+        let result: ComposeResult;
         try {
           result = await composer.compose(
             { prompt: body.prompt, definition: body.definition ?? previous, focus: body.focus, history, attachments: body.attachments },

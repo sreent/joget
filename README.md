@@ -108,6 +108,20 @@ PUBLIC_BASE_URL=http://localhost:5173 pnpm dev
 pnpm --filter @platform/studio dev
 ```
 
+### Lint and format
+
+Biome lints and formats the code (`biome.jsonc`). Check it before you push, and let it format what you change:
+
+```bash
+pnpm lint
+```
+
+```bash
+pnpm format
+```
+
+`.git-blame-ignore-revs` names the commit that formatted the whole repository, so that `git blame` skips it (`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
+
 ### Tests
 
 Unit tests need nothing else:

@@ -34,7 +34,9 @@ function fake(
       return text;
     },
     writeFile: async (path, text) => void files.set(path, text),
-    sleep: async (ms) => void (clock += ms),
+    sleep: async (ms) => {
+      clock += ms;
+    },
     now: () => clock,
   };
   return { io, requests, out, err, files };

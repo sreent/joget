@@ -9,7 +9,7 @@ import { ImportPanel } from '../components/import.js';
 import { filledLines, LinesChangeView, LinesEditor, LinesTable, workedOut } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
 import { TitlesProvider, titlesOf } from '../components/records.js';
-import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
+import { Badge, Button, Card, cx, EmptyState, Modes, Notice } from '../components/ui.js';
 import { asLines, display, ValueInput, ValueView } from '../components/values.js';
 import { atRoute, Link, navigate, type Route } from '../router.js';
 import type { HistoryEntry, Line, RecordOut, RecordValue, UiBlock, UiEntity, UiField, UiForm, UiManifest, Value } from '../types.js';
@@ -91,7 +91,7 @@ export function Use({ appId, env, page, recordId, appPage }: { appId: string; en
                 <EmptyState title="This page isn't here for you">It doesn't exist, or it's meant for people in other roles.</EmptyState>
               )
             ) : view.kind === 'form' && manifest.forms[view.name] ? (
-              <FormRunner at={at} manifest={manifest} name={view.name} form={manifest.forms[view.name]!} />
+              <FormRunner at={at} manifest={manifest} form={manifest.forms[view.name]!} />
             ) : view.kind === 'record' && manifest.entities[view.entity] ? (
               <RecordView at={at} manifest={manifest} entityName={view.entity} recordId={view.id} />
             ) : view.kind === 'list' && manifest.entities[view.entity] ? (
@@ -247,13 +247,13 @@ function TabsBlockView({ where, block }: { where: BlockAt; block: Extract<UiBloc
   const tab = block.tabs[Math.min(shown, block.tabs.length - 1)]!;
   return (
     <div className="grid gap-4">
-      <div className="modes justify-self-start" role="group" aria-label="Tabs">
+      <Modes label="Tabs" className="justify-self-start">
         {block.tabs.map((each, t) => (
           <button key={each.label} type="button" aria-pressed={each === tab} onClick={() => setShown(t)}>
             {each.label}
           </button>
         ))}
-      </div>
+      </Modes>
       <Blocks where={where} blocks={tab.blocks} />
     </div>
   );
@@ -700,7 +700,7 @@ const isEmpty = (value: RecordValue | undefined) => value === undefined || value
  * in steps shows a section at a time, as a path, and checks each before the next; the server
  * checks everything again whatever the form does.
  */
-function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManifest; name: string; form: UiForm }) {
+function FormRunner({ at, manifest, form }: { at: AppAt; manifest: UiManifest; form: UiForm }) {
   const client = useQueryClient();
   const entity = manifest.entities[form.entity]!;
   const items = form.sections.flatMap((s) => s.fields);
@@ -910,7 +910,10 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
     );
   const save = useMutation({
     mutationFn: () => api.updateRecord(at, entityName, recordId, changes(), record.data!.version),
-    onSuccess: async () => (setEdits(null), await refresh()),
+    onSuccess: async () => {
+      setEdits(null);
+      await refresh();
+    },
   });
   const run = useMutation({
     mutationFn: (action: string) => api.runAction(at, action, { values: {}, recordId, version: record.data!.version }),

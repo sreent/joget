@@ -2,7 +2,7 @@ import type { Connection, ConnectionAuth, Webhook } from '@platform/app-model';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { ApiError, type AppAt, api } from '../api.js';
-import { Badge, Button, Card, Checkbox, EmptyState, Field, Notice, Select, TextInput } from '../components/ui.js';
+import { Badge, Button, Card, Checkbox, EmptyState, Field, Modes, Notice, Select, TextInput } from '../components/ui.js';
 import { toName } from '../model/edit.js';
 import type { Definition, IntegrationStatus } from '../types.js';
 
@@ -281,14 +281,14 @@ export function IntegrationSecrets({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="m-0 text-base font-semibold">{part === 'connections' ? 'Their secrets' : 'Their keys'}</h3>
         {team ? (
-          <div className="modes" role="group" aria-label="Environment">
+          <Modes label="Environment">
             <button type="button" aria-pressed={env === 'staging'} onClick={() => setEnv('staging')}>
               Staging
             </button>
             <button type="button" aria-pressed={env === 'prod'} onClick={() => setEnv('prod')}>
               Prod
             </button>
-          </div>
+          </Modes>
         ) : null}
       </div>
       <p className="m-0 text-sm text-muted">
@@ -311,7 +311,10 @@ function ConnectionSecrets({ target, status, onDone }: { target: AppAt; status: 
   const [values, setValues] = useState<Record<string, string>>({});
   const keep = useMutation({
     mutationFn: ({ name, value }: { name: string; value: string }) => api.setConnectionSecret(target, name, value),
-    onSuccess: (_, { name }) => (setValues((now) => ({ ...now, [name]: '' })), onDone()),
+    onSuccess: (_, { name }) => {
+      setValues((now) => ({ ...now, [name]: '' }));
+      onDone();
+    },
   });
   const clear = useMutation({ mutationFn: (name: string) => api.clearConnectionSecret(target, name), onSuccess: onDone });
   if (!status.connections.length) return <p className="m-0 text-sm text-faint">Save a connection first; then keep its secret here.</p>;
@@ -369,7 +372,10 @@ function WebhookKeys({ target, status, onDone }: { target: AppAt; status: Integr
   const [made, setMade] = useState<{ name: string; key: string; url: string } | null>(null);
   const make = useMutation({
     mutationFn: (name: string) => api.makeWebhookKey(target, name),
-    onSuccess: (result, name) => (setMade({ name, ...result }), onDone()),
+    onSuccess: (result, name) => {
+      setMade({ name, ...result });
+      onDone();
+    },
   });
   if (!status.webhooks.length) return <p className="m-0 text-sm text-faint">Save a webhook first; then make its key here.</p>;
   return (
