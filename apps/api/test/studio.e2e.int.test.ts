@@ -837,6 +837,58 @@ describe.skipIf(!enabled)('the studio, in a browser', () => {
     await visible(page.getByRole('heading', { name: 'Taxi' }));
   });
 
+  it('works a field out by a formula: a form shows it as people type, and the platform stores it', async () => {
+    const page = await open(alice);
+    await page.goto(`${BASE}/studio/`);
+    await page.getByLabel('Name').fill('Claims with tax');
+    await page.getByLabel('Start from').selectOption('expenses');
+    await page.getByRole('button', { name: 'Create app' }).click();
+    await page.waitForURL(/\/build\/data$/);
+    const taxId = page.url().split('/apps/')[1]!.split('/')[0]!;
+
+    // A number worked out from the claim's total: nobody fills it in, and nobody can set it.
+    await page.getByLabel('Type of the new field').selectOption('number');
+    await page.getByRole('button', { name: 'Add field' }).click();
+    const field = panel(page, 'Field');
+    await field.getByLabel('Label', { exact: true }).fill('With tax (SGD)');
+    await field.getByLabel('Name', { exact: true }).fill('with_tax');
+    await field.getByLabel('Name', { exact: true }).blur();
+    await field.getByLabel('Decimals', { exact: true }).fill('2');
+    await field.getByLabel('Value', { exact: true }).selectOption('formula');
+    await field.getByLabel('Formula: how', { exact: true }).selectOption('calc');
+    await field.getByLabel('Formula, first: from', { exact: true }).selectOption('record.total');
+    await field.getByLabel('Formula, operation', { exact: true }).selectOption('mul');
+    await field.getByLabel('Formula, second', { exact: true }).fill('1.09');
+    // Nobody can be asked for it.
+    await hidden(field.getByText('Required', { exact: true }));
+    await shot(page, '30-formula');
+
+    // The claim form shows it, read-only.
+    await page.getByRole('link', { name: 'Forms', exact: true }).click();
+    await page.getByRole('button', { name: 'Add With tax (SGD) to the form' }).click();
+    await page.getByRole('button', { name: 'Review and save' }).click();
+    await visible(page.getByText('Work out expense_claim.with_tax for existing records'));
+    await page.getByRole('button', { name: /^Save as revision/ }).click();
+    await hidden(page.getByText('Unsaved changes.'));
+    const saved = (await t.app.inject({ method: 'GET', url: `/v1/apps/${taxId}/definition`, cookies: alice.cookies })).json().definition;
+    expect(saved.entities.expense_claim.fields.find((f: { name: string }) => f.name === 'with_tax')).toMatchObject({ formula: { mul: [{ ref: 'record.total' }, 1.09] }, decimals: 2, required: false });
+    expect(saved.forms.claim_form.sections.flatMap((s: { fields: unknown[] }) => s.fields)).toContainEqual(expect.objectContaining({ field: 'with_tax', readOnly: true }));
+
+    // As people type, the form works it out as the platform will; the platform stores it.
+    await page.goto(`${BASE}/studio/apps/${taxId}/new/claim_form`);
+    await page.getByLabel('Title').fill('Summit in Tokyo');
+    await page.getByLabel('Receipt 1, Date').fill('2026-11-02');
+    await page.getByLabel('Receipt 1, Merchant').fill('Hotel Okura');
+    await page.getByLabel('Receipt 1, Category').selectOption('hotel');
+    await page.getByLabel('Receipt 1, Amount (SGD)').fill('150');
+    await visible(page.locator('#field-with_tax').filter({ hasText: '163.50' }));
+    await shot(page, '31-formula-on-a-form');
+    await page.getByRole('button', { name: 'Submit an expense claim' }).click();
+    await visible(page.getByRole('heading', { name: 'Summit in Tokyo' }));
+    const records = (await t.app.inject({ method: 'GET', url: `/v1/apps/${taxId}/entities/expense_claim/records`, cookies: alice.cookies })).json().records;
+    expect(records[0].values).toMatchObject({ total: 150, with_tax: 163.5 });
+  });
+
   it('designs a page about one claim, with its fields and tabs, which a row of a list opens', async () => {
     const page = await open(alice);
     await page.goto(`${BASE}/studio/apps/${appId}/build/pages`);

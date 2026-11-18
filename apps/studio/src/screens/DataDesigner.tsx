@@ -5,6 +5,8 @@ import { useState } from 'react';
 import { ConditionEditor } from '../components/condition.js';
 import { Badge, Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
 import { recordChoices } from '../model/conditions.js';
+import { SYSTEM_REFS, valueSources } from '../model/expressions.js';
+import { ValueEditor } from './ValueEditor.js';
 import {
   addEntity,
   addField,
@@ -18,12 +20,13 @@ import {
   renameEntity,
   rollupChoices,
   rollupKey,
+  setFormula,
   setRollup,
   typeLabel,
   updateEntity,
   updateField,
 } from '../model/edit.js';
-import type { Definition, Field as FieldDef, FieldType } from '../types.js';
+import { isWorkedOut, type Definition, type Field as FieldDef, type FieldType } from '../types.js';
 import { ModelCanvas } from './ModelCanvas.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
@@ -283,7 +286,7 @@ function FieldRow({ field, selected, onSelect }: { field: FieldDef; selected: bo
         <span className="flex-1" />
         {field.required ? <Badge tone="warn">required</Badge> : null}
         {field.classification === 'pii' ? <Badge tone="bad">PII</Badge> : field.classification === 'confidential' ? <Badge tone="warn">confidential</Badge> : null}
-        {field.type === 'number' && field.rollup ? <Badge tone="good">worked out</Badge> : null}
+        {isWorkedOut(field) ? <Badge tone="good">worked out</Badge> : null}
         <Badge>{typeLabel(field.type)}</Badge>
       </button>
     </li>
@@ -305,6 +308,9 @@ function FieldPanel(props: {
   const set = (patch: Record<string, unknown>) => onChange(updateField(definition, entity, index, patch));
   const [rename, setRename] = useState(field.name);
   const num = (value: string) => (value === '' ? undefined : Number(value));
+  // What the platform works out: a total of lines, or a formula.
+  const rollup = field.type === 'number' ? field.rollup : undefined;
+  const formula = 'formula' in field ? field.formula : undefined;
 
   return (
     <Card className="grid content-start gap-3">
@@ -327,28 +333,45 @@ function FieldPanel(props: {
         )}
       </Field>
       <Field label="Description">{(id) => <TextInput id={id} value={field.description ?? ''} onChange={(e) => set({ description: e.target.value || undefined })} />}</Field>
-      {field.type === 'number' && rollupChoices(definition, entity).length ? (
-        <Field label="Value" hint={field.rollup ? 'Worked out whenever a record is saved. People and agents can\'t set it.' : undefined}>
+      {FORMULA_TYPES.includes(field.type) ? (
+        <Field label="Value" hint={rollup || formula !== undefined ? 'Worked out whenever a record is saved, and stored. People and agents can\'t set it.' : undefined}>
           {(id) => (
-            <Select id={id} value={rollupKey(field)} onChange={(e) => onChange(setRollup(definition, entity, index, e.target.value))}>
+            <Select
+              id={id}
+              value={formula !== undefined ? 'formula' : rollupKey(field)}
+              onChange={(e) => {
+                const choice = e.target.value;
+                if (choice === 'formula') onChange(setFormula(definition, entity, index, startingFormula(definition, entity, field)));
+                else onChange(setRollup(setFormula(definition, entity, index, undefined), entity, index, choice));
+              }}
+            >
               <option value="">Entered by people</option>
-              {rollupChoices(definition, entity).map((choice) => (
-                <option key={choice.key} value={choice.key}>
-                  {choice.label}
-                </option>
-              ))}
+              {field.type === 'number'
+                ? rollupChoices(definition, entity).map((choice) => (
+                    <option key={choice.key} value={choice.key}>
+                      {choice.label}
+                    </option>
+                  ))
+                : null}
+              <option value="formula">Worked out by a formula</option>
             </Select>
           )}
         </Field>
       ) : null}
-      {field.type === 'number' && field.rollup ? null : (
+      {formula !== undefined ? (
+        <div className="grid gap-1">
+          <ValueEditor definition={definition} entity={entity} target={field} label="Formula" value={formula} stored onChange={(next) => set({ formula: next })} />
+          <span className="text-xs text-faint">It reads only this record's fields, not the person or today, so the stored value stays true.</span>
+        </div>
+      ) : null}
+      {rollup || formula !== undefined ? null : (
         <Checkbox
           label={field.type === 'lines' ? 'Needs at least one line' : 'Required'}
           checked={field.required}
           onChange={(value) => set({ required: value, ...(value ? { requiredWhen: undefined } : {}) })}
         />
       )}
-      {field.type === 'lines' || (field.type === 'number' && field.rollup) || field.required ? null : (
+      {field.type === 'lines' || rollup || formula !== undefined || field.required ? null : (
         <ConditionEditor
           label="Required when"
           value={field.requiredWhen}
@@ -357,8 +380,8 @@ function FieldPanel(props: {
           empty="Never: it may stay empty. Every way of writing a record checks it, not only forms."
         />
       )}
-      {field.type === 'date' ? <DateDefault value={field.default} onChange={(value) => set({ default: value })} /> : null}
-      {field.type === 'datetime' ? (
+      {field.type === 'date' && formula === undefined ? <DateDefault value={field.default} onChange={(value) => set({ default: value })} /> : null}
+      {field.type === 'datetime' && formula === undefined ? (
         <Checkbox label="Starts as the moment the record is created" checked={field.default !== undefined} onChange={(on) => set({ default: on ? { now: 0 } : undefined })} />
       ) : null}
       {field.type === 'user' ? (
@@ -504,4 +527,14 @@ function DateDefault({ value, onChange }: { value: DateDefaultValue; onChange: (
       {typeof value === 'string' ? <Field label="The date">{(id) => <TextInput id={id} type="date" className="w-auto" value={value} onChange={(e) => onChange(e.target.value || undefined)} />}</Field> : null}
     </div>
   );
+}
+
+/** The kinds of field a formula can work out. */
+const FORMULA_TYPES: readonly FieldType[] = ['text', 'number', 'boolean', 'date', 'datetime'];
+
+/** A formula to start from: another of the app's fields of the same kind, else a fixed value. */
+function startingFormula(definition: Definition, entity: string, field: FieldDef): unknown {
+  const other = valueSources(definition, entity, field).find((source) => source.ref !== `record.${field.name}` && !SYSTEM_REFS.has(source.ref));
+  if (other) return { ref: other.ref };
+  return field.type === 'number' ? 0 : field.type === 'boolean' ? false : field.type === 'text' ? '' : null;
 }

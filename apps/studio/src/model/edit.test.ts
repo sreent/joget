@@ -14,6 +14,7 @@ import {
   removeSection,
   renameEntity,
   rollupChoices,
+  setFormula,
   setRollup,
   toName,
   unplaced,
@@ -121,5 +122,21 @@ describe('editing a draft', () => {
     d = updateField(d, 'expense_claim_line', 1, { name: 'value' });
     expect(d.entities[entity]!.fields[1]).toMatchObject({ rollup: { sum: 'receipts.value' } });
     expect(setRollup(d, entity, 1, '').entities[entity]!.fields[1]).not.toHaveProperty('rollup');
+  });
+
+  it('works a field out by a formula: forms show it, actions no longer take it, and nobody is asked for it', () => {
+    let { definition: d, entity } = start();
+    d = updateField(d, entity, 0, { name: 'amount', label: 'Amount', required: true, default: 5 });
+    d = addField(d, entity, 'number').definition;
+    d = updateField(d, entity, 2, { name: 'with_tax', label: 'With tax', required: true, default: 1 });
+    d = addForm(d, entity).definition;
+    d.actions['submit'] = { label: 'Submit', description: '', entity, operation: 'create', input: ['amount', 'with_tax'], set: {}, confirm: 'none' } as unknown as (typeof d.actions)[string];
+    d = setFormula(d, entity, 2, { mul: [{ ref: 'record.amount' }, 1.09] });
+    expect(d.entities[entity]!.fields[2]).toMatchObject({ formula: { mul: [{ ref: 'record.amount' }, 1.09] }, required: false });
+    expect(d.entities[entity]!.fields[2]).not.toHaveProperty('default');
+    expect(d.forms['expense_claim_form']!.sections[0]!.fields.find((f) => f.field === 'with_tax')).toMatchObject({ readOnly: true });
+    expect(d.actions['submit']!.input).toEqual(['amount']);
+    // People enter it again once it has no formula.
+    expect(setFormula(d, entity, 2, undefined).entities[entity]!.fields[2]).not.toHaveProperty('formula');
   });
 });

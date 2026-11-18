@@ -1,4 +1,4 @@
-import type { Definition } from '../types.js';
+import { isWorkedOut, type Definition } from '../types.js';
 import { isName, lineOwner, toName } from './edit.js';
 import { forgetRole, renameRowAction } from './pages.js';
 import { forgetInWaits } from './waits.js';
@@ -19,9 +19,9 @@ export function recordEntities(definition: Definition): string[] {
   return Object.keys(definition.entities).filter((name) => !lineOwner(definition, name));
 }
 
-/** Fields a caller may write: not worked out from lines. Lines fields are listed too. */
+/** Fields a caller may write: not worked out from lines or by a formula. Lines fields are listed too. */
 export function writableFields(definition: Definition, entity: string): string[] {
-  return (definition.entities[entity]?.fields ?? []).filter((f) => !(f.type === 'number' && f.rollup)).map((f) => f.name);
+  return (definition.entities[entity]?.fields ?? []).filter((f) => !isWorkedOut(f)).map((f) => f.name);
 }
 
 /** A new item of a section, with a name from its label, and defaults that pass the platform's checks. */

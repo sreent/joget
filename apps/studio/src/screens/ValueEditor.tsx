@@ -18,6 +18,7 @@ import {
   textFn,
   textFnOf,
   TEXT_FNS,
+  SYSTEM_REFS,
   valueSources,
   startingValue,
   type CalcOp,
@@ -98,16 +99,17 @@ function modesFor(target: FieldDef | undefined): Mode[] {
   }
 }
 
-function startFor(mode: Mode, target: FieldDef | undefined, sources: ReadonlyArray<{ ref: string }>, dates: ReadonlyArray<{ ref: string }> = []): Expression {
+function startFor(mode: Mode, target: FieldDef | undefined, sources: ReadonlyArray<{ ref: string }>, dates: ReadonlyArray<{ ref: string }> = [], stored = false): Expression {
   const first: Operand | undefined = sources[0] ? { ref: sources[0].ref } : undefined;
   const moment: Moment = dates[0] ? { ref: dates[0].ref } : target?.type === 'datetime' ? { now: true } : { today: true };
   switch (mode) {
     case 'shift':
-      return target?.type === 'datetime' ? { add_hours: [moment, 1] } : { add_days: [moment, 1] };
+      return target?.type === 'datetime' && !stored ? { add_hours: [moment, 1] } : { add_days: [moment, 1] };
     case 'between':
-      return { days_between: [{ today: true }, moment] };
+      // A stored value counts the days between two of the record's dates, not from today.
+      return { days_between: [stored ? moment : { today: true }, stored && dates[1] ? { ref: dates[1].ref } : moment] };
     case 'choose': {
-      const plain = startFor('fixed', target, sources);
+      const plain = startFor('fixed', target, sources, dates, stored);
       return { if: [{ exists: sources[0]?.ref ?? 'principal.id' }, plain, plain] };
     }
     case 'text':
@@ -134,6 +136,9 @@ function startFor(mode: Mode, target: FieldDef | undefined, sources: ReadonlyArr
   }
 }
 
+/** The ways a stored value, a formula's, can be given: none reads the person, the clock, or text functions SQL doesn't match. */
+const STORED_MODES: readonly Mode[] = ['fixed', 'field', 'calc', 'join', 'shift', 'between', 'choose', 'first'];
+
 /** A value a step works out: a fixed value, a field, the person, today, a small calculation or joined text. */
 export function ValueEditor({
   definition,
@@ -144,6 +149,7 @@ export function ValueEditor({
   onChange,
   from,
   only,
+  stored = false,
 }: {
   definition: Definition;
   entity: string;
@@ -155,14 +161,22 @@ export function ValueEditor({
   from?: ValueSources;
   /** The ways a value can be given here, instead of those that suit the target. */
   only?: readonly Mode[];
+  /**
+   * A value that is stored, as a formula's is: it reads only the app's own fields, not the target
+   * itself, the fields the platform keeps, the person or the clock.
+   */
+  stored?: boolean;
 }) {
   const mode = modeOf(value);
-  const modes = only ? [...only] : modesFor(target);
-  const sources = from ? from.all : valueSources(definition, entity, target);
-  const numbers = from ? from.numbers : valueSources(definition, entity, 'number');
-  const dates = from ? from.dates : valueSources(definition, entity, 'date');
-  const texts = from ? from.all : valueSources(definition, entity);
-  const choices = from ? from.choices : recordChoices(definition, entity);
+  const own = (list: ReadonlyArray<{ ref: string; label: string }>) => (stored ? list.filter((source) => !SYSTEM_REFS.has(source.ref) && source.ref !== `record.${target?.name}`) : list);
+  const sources = from ? from.all : own(valueSources(definition, entity, target));
+  const numbers = from ? from.numbers : own(valueSources(definition, entity, 'number'));
+  const dates = from ? from.dates : own(valueSources(definition, entity, 'date'));
+  const texts = from ? from.all : own(valueSources(definition, entity));
+  // Lines' choices are their own fields only: those a stored value can read.
+  const choices = from ? from.choices : stored ? recordChoices(definition, entity, true).filter((choice) => choice.ref !== `record.${target?.name}`) : recordChoices(definition, entity);
+  // Shifting and counting days need a date to start from, when today isn't one.
+  const modes = only ? [...only] : stored ? modesFor(target).filter((m) => STORED_MODES.includes(m) && ((m !== 'shift' && m !== 'between') || dates.length > 0)) : modesFor(target);
   const shown = modes.includes(mode) ? modes : [...modes, mode];
   const calculation = mode === 'calc' ? calcOf(value) : undefined;
   const parts = mode === 'join' ? joinOf(value) : undefined;
@@ -174,7 +188,7 @@ export function ValueEditor({
   // A number's text function is its length; text's are the others.
   const fns = TEXT_FNS.filter((fn) => (target?.type === 'number' ? fn === 'text_length' : target ? fn !== 'text_length' : true));
   const inner = (part: Expression, onPart: (next: Expression) => void, name: string) => (
-    <ValueEditor definition={definition} entity={entity} {...(target ? { target } : {})} label={name} value={part} onChange={onPart} {...(from ? { from } : {})} {...(only ? { only } : {})} />
+    <ValueEditor definition={definition} entity={entity} {...(target ? { target } : {})} label={name} value={part} onChange={onPart} {...(from ? { from } : {})} {...(only ? { only } : {})} stored={stored} />
   );
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -184,7 +198,7 @@ export function ValueEditor({
         value={mode}
         onChange={(e) => {
           const next = shown.find((m) => m === e.target.value);
-          if (next) onChange(startFor(next, target, sources, dates));
+          if (next) onChange(startFor(next, target, sources, dates, stored));
         }}
       >
         {shown.map((m) => (
@@ -242,26 +256,37 @@ export function ValueEditor({
       ) : null}
       {shifted ? (
         <>
-          <MomentInput label={`${label}, from`} sources={dates} value={shifted.from} onChange={(next) => onChange(shift(shifted.op, next, shifted.by))} />
+          <MomentInput label={`${label}, from`} sources={dates} value={shifted.from} clock={!stored} onChange={(next) => onChange(shift(shifted.op, next, shifted.by))} />
           <span className="text-sm text-muted">plus</span>
           <OperandInput label={`${label}, how many`} sources={numbers} value={shifted.by} numeric onChange={(by) => onChange(shift(shifted.op, shifted.from, by))} />
-          <Select aria-label={`${label}, unit`} className="w-auto" value={shifted.op} onChange={(e) => onChange(shift(e.target.value === 'add_hours' ? 'add_hours' : 'add_days', shifted.from, shifted.by))}>
-            <option value="add_days">days</option>
-            <option value="add_hours">hours</option>
-          </Select>
+          {stored && shifted.op === 'add_days' ? (
+            <span className="text-sm text-muted">days</span>
+          ) : (
+            <Select aria-label={`${label}, unit`} className="w-auto" value={shifted.op} onChange={(e) => onChange(shift(e.target.value === 'add_hours' ? 'add_hours' : 'add_days', shifted.from, shifted.by))}>
+              <option value="add_days">days</option>
+              <option value="add_hours">hours</option>
+            </Select>
+          )}
         </>
       ) : null}
       {between ? (
         <>
           <span className="text-sm text-muted">from</span>
-          <MomentInput label={`${label}, from`} sources={dates} value={between.from} onChange={(next) => onChange({ days_between: [next, between.to] })} />
+          <MomentInput label={`${label}, from`} sources={dates} value={between.from} clock={!stored} onChange={(next) => onChange({ days_between: [next, between.to] })} />
           <span className="text-sm text-muted">to</span>
-          <MomentInput label={`${label}, to`} sources={dates} value={between.to} onChange={(next) => onChange({ days_between: [between.from, next] })} />
+          <MomentInput label={`${label}, to`} sources={dates} value={between.to} clock={!stored} onChange={(next) => onChange({ days_between: [between.from, next] })} />
         </>
       ) : null}
       {chosen ? (
         <div className="grid w-full gap-2 rounded-md border border-line p-2">
-          <ConditionEditor label="If" value={chosen.when} choices={choices} compareWith={[THE_PERSON, ...choices]} onChange={(when) => onChange({ if: [when ?? chosen.when, chosen.then, chosen.otherwise] })} />
+          <ConditionEditor
+            label="If"
+            value={chosen.when}
+            choices={choices}
+            compareWith={stored ? choices : [THE_PERSON, ...choices]}
+            clock={!stored}
+            onChange={(when) => onChange({ if: [when ?? chosen.when, chosen.then, chosen.otherwise] })}
+          />
           <span className="text-sm text-muted">then</span>
           {inner(chosen.then, (then) => onChange({ if: [chosen.when, then, chosen.otherwise] }), `${label}, then`)}
           <span className="text-sm text-muted">else</span>
@@ -309,12 +334,13 @@ export function ValueEditor({
 }
 
 /** A date or a time that a value reads: today, now, or a date or time field. */
-function MomentInput({ label, sources, value, onChange }: { label: string; sources: ReadonlyArray<{ ref: string; label: string }>; value: Moment; onChange: (value: Moment) => void }) {
+function MomentInput({ label, sources, value, onChange, clock = true }: { label: string; sources: ReadonlyArray<{ ref: string; label: string }>; value: Moment; onChange: (value: Moment) => void; clock?: boolean }) {
   const current = 'ref' in value ? value.ref : 'today' in value ? '·today' : '·now';
   return (
     <Select aria-label={label} className="w-auto" value={current} onChange={(e) => onChange(e.target.value === '·today' ? { today: true } : e.target.value === '·now' ? { now: true } : { ref: e.target.value })}>
-      <option value="·today">Today</option>
-      <option value="·now">Now</option>
+      {/* Where the clock can't be read, today and now show only to be changed. */}
+      {clock || current === '·today' ? <option value="·today">Today</option> : null}
+      {clock || current === '·now' ? <option value="·now">Now</option> : null}
       {sources.map((source) => (
         <option key={source.ref} value={source.ref}>
           {source.label}

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { api, ApiError, type AppAt } from '../api.js';
 import { ChartCard, StatTile } from '../components/charts.js';
 import { FilesProvider } from '../components/files.js';
-import { filledLines, LinesChangeView, LinesEditor, LinesTable, rollupValue } from '../components/lines.js';
+import { filledLines, LinesChangeView, LinesEditor, LinesTable, workedOut } from '../components/lines.js';
 import { PersonName } from '../components/people.js';
 import { Badge, Button, Card, cx, EmptyState, Notice } from '../components/ui.js';
 import { asLines, display, ValueInput, ValueView } from '../components/values.js';
@@ -611,8 +611,8 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
   );
   const [step, setStep] = useState(0);
   const [missing, setMissing] = useState<Record<string, string>>({});
-  // Conditions read the values as they will be saved: with the totals worked out from the lines.
-  const current = { ...values, ...Object.fromEntries(entity.fields.filter((f) => f.computed).map((f) => [f.name, rollupValue(f, values)])) };
+  // Conditions read the values as they will be saved: with what the platform works out.
+  const current = workedOut(entity.fields, values);
   const shown = (item: UiForm['sections'][number]['fields'][number]) => !item.visibleWhen || holdsOn(item.visibleWhen, current);
   const required = (field: UiField) => field.required || Boolean(field.requiredWhen && holdsOn(field.requiredWhen, current));
   /** The fields of a section that are required and still empty, as messages. */
@@ -718,7 +718,7 @@ function FormRunner({ at, manifest, name, form }: { at: AppAt; manifest: UiManif
                     ) : null}
                     {field.computed ? (
                       <p className="m-0 tabular-nums" id={id}>
-                        <ValueView field={field} value={rollupValue(field, values)} />
+                        <ValueView field={field} value={(current[field.name] as Value | undefined) ?? null} />
                       </p>
                     ) : lines && !item.readOnly ? (
                       <LinesEditor id={id} field={field} value={asLines(values[field.name])} onChange={(value) => setValues({ ...values, [field.name]: value })} mode="create" problems={problems.fields} />
@@ -817,7 +817,7 @@ function RecordView({ at, manifest, entityName, recordId }: { at: AppAt; manifes
                     <LinesTable field={field} value={record.data.values?.[field.name]} masked={record.data.masked ?? []} />
                   ) : field.computed && edits ? (
                     <span className="tabular-nums">
-                      <ValueView field={field} value={rollupValue(field, { ...record.data.values, ...edits })} />
+                      <ValueView field={field} value={(workedOut(entity.fields, { ...record.data.values, ...edits })[field.name] as Value | undefined) ?? null} />
                     </span>
                   ) : (
                     <Cell field={field} record={record.data} />

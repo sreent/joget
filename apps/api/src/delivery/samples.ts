@@ -1,4 +1,4 @@
-import { lineOwners, rollupOf, type StoredDefinition, type StoredEntity, type StoredField } from '@platform/app-model';
+import { isComputed, lineOwners, type StoredDefinition, type StoredEntity, type StoredField } from '@platform/app-model';
 import type { FastifyRequest } from 'fastify';
 import type { LoadedApp } from '../apps/catalog.js';
 import type { AppRuntime } from '../apps/runtime.js';
@@ -32,6 +32,8 @@ function sampleValue(
   n: number,
   context: { readonly userId: string; readonly today: Date; readonly samples: ReadonlyMap<string, readonly string[]> },
 ): unknown {
+  // The platform works these out.
+  if (isComputed(field)) return undefined;
   switch (field.type) {
     case 'text': {
       if (field.default !== undefined) return field.default;
@@ -41,7 +43,6 @@ function sampleValue(
     case 'email':
       return `sample${n}@example.com`;
     case 'number': {
-      if (rollupOf(field)) return undefined;
       if (field.default !== undefined) return field.default;
       const low = field.min ?? 0;
       const value = Math.min(field.max ?? Number.MAX_SAFE_INTEGER, low + 10 * n + (field.decimals ? 0.5 : 0));

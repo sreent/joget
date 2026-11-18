@@ -1,10 +1,11 @@
 import type { Condition } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
-import { mapExpressionRefs, roundTo, type Expression, type ExpressionValue } from './expressions.js';
+import { mapExpressionRefs, type Expression, type ExpressionValue } from './expressions.js';
 import { entityFields, isWritable, type FieldInfo, type StoredDefinition } from './fields.js';
 import { checkFlowRun, flowSteps, RESERVED_VARIABLES } from './flows.js';
+import { withFormulas } from './formulas.js';
 import type { Action, AppFlow, FlowRun, FlowStep, SimpleStep, Step } from './schema.js';
-import { canonicalValue, defaultValue, rollupValues, type FieldValue, type LineValues, type RecordLines, type RecordValues, type ValueIssue, type WriteContext } from './values.js';
+import { canonicalValue, defaultValue, fitValue, rollupValues, type FieldValue, type LineValues, type RecordLines, type RecordValues, type ValueIssue, type WriteContext } from './values.js';
 import { flowWaits } from './waiting.js';
 
 /*
@@ -20,20 +21,13 @@ interface Issue {
   readonly message: string;
 }
 
-/** Fit a worked-out value to its field: a number to the field's decimal places, as money is rounded; a time to its day. */
-function fit(info: FieldInfo, raw: ExpressionValue): ExpressionValue {
-  if (info.field?.type === 'number' && typeof raw === 'number') return roundTo(raw, info.field.decimals);
-  if (info.field?.type === 'date' && typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw.slice(0, 10);
-  return raw;
-}
-
 /** A value as its field holds it; or undefined, with the issue, when the field can't hold it. */
 function assign(info: FieldInfo | undefined, raw: ExpressionValue, field: string, where: string, issues: ValueIssue[], label = info?.field?.label ?? field): FieldValue | undefined {
   if (!info || !isWritable(info) || info.field?.type === 'file') {
     issues.push({ field, code: 'not_writable', message: `${where}: ${label} can't be set here` });
     return undefined;
   }
-  const result = canonicalValue(info, fit(info, raw));
+  const result = canonicalValue(info, fitValue(info, raw));
   if (!result.ok) {
     issues.push({ field, code: result.issue.code, message: `${where}: ${label}: ${result.issue.message}` });
     return undefined;
@@ -123,7 +117,14 @@ export class Draft {
     if (issues.length) return issues;
     Object.assign(this.#record, next);
     for (const field of Object.keys(next)) this.#set.add(field);
-    return [];
+    return this.#derive();
+  }
+
+  /** Work out the record's formulas again, from its values now. */
+  #derive(): ValueIssue[] {
+    const worked = withFormulas(this.#definition.entities[this.#entity]!, this.#record);
+    Object.assign(this.#record, worked.values);
+    return worked.issues;
   }
 
   /** Add a line to a lines field. Fields it gives no value get their defaults. */
@@ -147,14 +148,17 @@ export class Draft {
       line[declared.name] = value;
     }
     if (issues.length) return issues;
-    const next = [...current, { id: null, values: line }];
+    // The line's formulas, then the record's totals of its lines, then the record's formulas.
+    const worked = withFormulas(lineEntity, line, { line: true });
+    if (worked.issues.length) return worked.issues.map((issue) => ({ ...issue, field: `${position}.${issue.field}` }));
+    const next = [...current, { id: null, values: worked.values }];
     // What follows sees the new totals.
     const rollups = rollupValues(this.#definition, this.#entity, { [field]: next });
     if (rollups.issues.length) return rollups.issues;
     this.#lines[field] = next;
     this.#linesAdded.add(field);
     Object.assign(this.#record, rollups.values);
-    return [];
+    return this.#derive();
   }
 }
 

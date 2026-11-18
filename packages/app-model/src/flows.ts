@@ -1,7 +1,7 @@
 import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
 import { mapRefs } from './condition-refs.js';
 import { calculationKind, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
-import { entityFields, fieldKind, isOrderedKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
+import { entityFields, workedOutBy, fieldKind, isOrderedKind, isSortableKind, isWritable, lineOwners, type FieldInfo, type StoredDefinition } from './fields.js';
 import { JSON_PATH, MAX_FLOW_DEPTH, MAX_FLOW_STEPS, type AppFlow, type Field, type FlowRun, type FlowStart, type FlowStep, type FlowType, type Voters, type WaitFor } from './schema.js';
 import { scheduleIssues } from './schedules.js';
 import { canonicalValue } from './values.js';
@@ -367,7 +367,7 @@ function checkFlow(definition: StoredDefinition, name: string, flow: AppFlow, is
       const where = `${at}.${field}`;
       if (!info) issue(where, known.fields.some((f) => f.name === field && f.type === 'lines') ? `${field} holds lines: add one with an add_line step` : `${known.label} has no field ${field}`);
       else if (line && info.system) issue(where, `${field} is set by the platform`);
-      else if (!isWritable(info)) issue(where, info.system ? `${field} is set by the platform` : `${field} is worked out from lines`);
+      else if (!isWritable(info)) issue(where, info.system ? `${field} is set by the platform` : `${field} is ${workedOutBy(info)}`);
       else if (info.field?.type === 'file') issue(where, "A flow can't set a file");
       else fits(info, expression, scope, where);
     }

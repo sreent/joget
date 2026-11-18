@@ -1,4 +1,4 @@
-import { appRoleName, covers, defaultValue, entityFields, fieldAccess, lineOwners, rollupOf, type ChartBlock, type FieldAccess, type FieldValue, type StatBlock, type StoredDefinition, type StoredField, type TabBlock, type WriteContext } from '@platform/app-model';
+import { appRoleName, covers, defaultValue, entityFields, fieldAccess, formulaOf, isComputed, lineOwners, type ChartBlock, type FieldAccess, type FieldValue, type StatBlock, type StoredDefinition, type StoredField, type TabBlock, type WriteContext } from '@platform/app-model';
 import type { Condition } from '@platform/authz';
 import type { PermissionGrant } from '@platform/authz';
 import type { FastifyRequest } from 'fastify';
@@ -30,6 +30,8 @@ export interface UiField {
   readonly computed?: boolean;
   /** How it is worked out, such as `{ sum: 'lines.amount' }`, so screens can show it while people type. */
   readonly rollup?: Readonly<Record<string, string>>;
+  /** Its formula, worked out from the record's other fields. */
+  readonly formula?: unknown;
   /** For a lines field: the most lines, what a line is called and named by, and its fields, with what the caller may do with them. */
   readonly lines?: { readonly max: number; readonly label: string; readonly titleField: string | null; readonly fields: UiField[] };
   /** How the caller sees it at best: some records may show less. */
@@ -49,6 +51,8 @@ function describeField(field: StoredField): Omit<UiField, 'read' | 'create' | 'u
     ...(field.type === 'choice' ? { options: field.options, multiple: field.multiple } : {}),
     ...(field.type === 'reference' || field.type === 'lines' ? { entity: field.entity } : {}),
     ...(field.type === 'number' ? { decimals: field.decimals, ...(field.rollup ? { computed: true, rollup: field.rollup as Record<string, string> } : {}) } : {}),
+    // A formula, so that a form shows what it gives as people type.
+    ...(formulaOf(field) ? { computed: true, formula: formulaOf(field) } : {}),
     ...(field.type === 'text' ? { maxLength: field.maxLength, multiline: field.multiline } : {}),
     ...(field.type === 'file' ? { accept: [...field.accept] } : {}),
   };
@@ -71,7 +75,7 @@ function uiField(
   path = field.name,
 ): UiField | null {
   const access = fieldAccess(grants.read, path);
-  const computed = Boolean(rollupOf(field));
+  const computed = isComputed(field);
   const canCreate = !computed && grants.create.some((grant) => covers(grant, path));
   const canUpdate = !computed && grants.update.some((grant) => covers(grant, path));
   if (access === 'hidden' && !canCreate) return null;

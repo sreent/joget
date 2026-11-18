@@ -1,3 +1,4 @@
+import type { Expression } from './expressions.js';
 import type { AppDefinition, Entity, Field, SystemField } from './schema.js';
 
 /** A field with its stable ID, as stored once the platform has assigned IDs. */
@@ -19,6 +20,21 @@ export function linesFieldsOf(entity: StoredEntity): StoredLinesField[] {
 /** A field computed from lines, if it is one. */
 export function rollupOf(field: Field): Extract<Field, { type: 'number' }>['rollup'] {
   return field.type === 'number' ? field.rollup : undefined;
+}
+
+/** A field's formula, if the platform works it out from the record's other fields. */
+export function formulaOf(field: Field): Expression | undefined {
+  return 'formula' in field ? field.formula : undefined;
+}
+
+/** How the platform works a field out, in words: from lines, or by a formula. */
+export function workedOutBy(info: Pick<FieldInfo, 'field'>): string {
+  return info.field && formulaOf(info.field) ? 'worked out by a formula' : 'worked out from lines';
+}
+
+/** Whether the platform works a field out, from lines or by a formula: people and agents can't set it. */
+export function isComputed(field: Field): boolean {
+  return Boolean(rollupOf(field) || formulaOf(field));
 }
 
 /** Where a line entity belongs: the entity whose lines it holds, and the lines field. */
@@ -147,9 +163,9 @@ export function isSortableKind(kind: ValueKind): boolean {
   return kind !== 'text[]';
 }
 
-/** Fields a caller may write: every user field that isn't worked out from lines, plus `owner`. */
+/** Fields a caller may write: every user field that the platform doesn't work out, plus `owner`. */
 export function isWritable(info: FieldInfo): boolean {
-  if (info.field) return !rollupOf(info.field);
+  if (info.field) return !isComputed(info.field);
   return info.name === 'owner';
 }
 

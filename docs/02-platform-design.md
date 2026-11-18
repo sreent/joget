@@ -490,7 +490,7 @@ Not everything is a task. Exploring data, comparing options and monitoring a pro
 
 | Artifact | What it is | Joget equivalent |
 |---|---|---|
-| Entity | A data model: typed fields, relations, line items (child records), files, classification tags (`PII`, `Confidential`) | A form and its `app_fd_*` table |
+| Entity | A data model: typed fields, relations, line items (child records), files, fields the platform works out (totals of lines, and formulas), classification tags (`PII`, `Confidential`) | A form and its `app_fd_*` table |
 | Rule | A check the server runs for every write, whatever the path: form, API, agent or automation. An error blocks the write. A warning travels with the record to the approver | Form validators |
 | Action | A business operation that changes something: create or update records, or start a process. It has typed inputs, a confirmation level and a review card. Its effect starts simple (set these values) and grows with a flow that runs before it saves: it checks the record, sets values and adds lines. Flows take it further (§6.2) | Form submission and process start |
 | Query | A named, parameterized read, such as "my open claims" or "status of a claim" | Datalist |
@@ -502,6 +502,14 @@ Not everything is a task. Exploring data, comparing options and monitoring a pro
 | App roles | Permission sets over the app's capabilities and entities (§5.5) | Userview and form permission plugins, participant mappings |
 | Forms and pages | Designed in the studio's form and page designers, starting from generated defaults. A form adapts as it is filled in: a field shows while a condition holds, a field is required while one holds, defaults such as today or the person fill in a new record, and a form can ask a section at a time. A page can be about one record, with its fields, tabs, and the records that refer to it (§6.5) | Form, Userview |
 | Settings and translations | Values set per environment, and message bundles | Environment variables, message bundles |
+
+**Fields the platform works out are stored (added 2026-11-18).** A number can total a record's lines: a sum, a count, the least or the most. A field can also have a formula over the record's own fields, or a line's over the line's own fields:
+
+- A formula calculates (`add`, `sub`, `mul`, `div`, `round`), joins text (`concat`), chooses by a condition (`if`), takes the first value that is filled in (`coalesce`), moves a date by days (`add_days`) and counts the days between two (`days_between`). A division by zero, or a value that is missing, gives an empty value.
+- A formula reads only the fields of the app. It can't read the person who writes the record, today or now, or the fields the platform keeps, such as the owner: a stored value must not go stale, or change with who saves it. It can't read lines one by one; it reads their totals.
+- The platform works the values out each time a record is written, whatever the path: a form, the API, an agent or a flow. A line's formulas come first, then the totals of the lines, then the record's formulas, each after those it reads. Nobody can set these fields, and a form shows them as people type. A value its field can't hold, such as one over the most a number may be, refuses the write like an entered value.
+- A new or changed formula is worked out again for every record there is, by the migration (§6.8). That SQL gives exactly what the platform gives as it writes, for numbers, text, dates and times, whatever the session's time zone or date style. A test in PostgreSQL holds the two to each other.
+- Because the values are stored, queries, lists, charts, conditions and record-level security read them like any field, and the database indexes and totals them.
 
 **Data is reached through connections.** As in n8n, every system a capability reads or writes is a connection, and capabilities don't care where the data lives. The platform ships a **built-in store** as the first connector, for two reasons. The first processes have no existing system of record (§14). And some guarantees only hold where the platform controls the data:
 
@@ -823,6 +831,7 @@ Each schema has its own `NOLOGIN` database role, which can read and write that s
 | Add an entity, field or index | Applied directly | Normal |
 | Rename an entity or field | None: names are labels over stable IDs | Normal |
 | Make a field unique, or required | An index, or a check on existing records first | Normal, but it fails with the offending records listed |
+| Add or change a formula, or a total of lines | Worked out again for every existing record or line, in SQL that gives what the platform gives as it writes | Normal |
 | Change a type, or drop a field or entity | Destructive | Explicit approval and an automatic snapshot first. Blocked if the entity has a `retention` tag |
 
 Migrations are generated from the model diff. In a personal sandbox, saving applies them at once, but anything destructive waits for the builder's confirmation and shows how many records it touches. In a team space, they are reviewed in the change request and executed by the deployment.

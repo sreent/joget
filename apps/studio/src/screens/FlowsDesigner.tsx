@@ -37,7 +37,7 @@ import {
   type CanvasNode,
   type StepType,
 } from '../model/flows.js';
-import type { Definition, Field as FieldDef, FlowLive } from '../types.js';
+import { isWorkedOut, type Definition, type Field as FieldDef, type FlowLive } from '../types.js';
 import { HowItStarts } from './FlowStarts.js';
 import { CallServiceFields } from './ServiceStep.js';
 import { ValueEditor, type ValueMode, type ValueSources } from './ValueEditor.js';
@@ -1528,7 +1528,7 @@ function InputValue(props: { definition: Definition; input: string; type: FlowTy
 function ValuesEditor(props: { definition: Definition; entity: string; line?: boolean; values: Readonly<Record<string, unknown>>; sources: ValueSources; onChange: (values: Record<string, never>) => void }) {
   const { definition, entity, values, sources } = props;
   const onChange = props.onChange as (values: Record<string, unknown>) => void;
-  const fields = (definition.entities[entity]?.fields ?? []).filter((field) => field.type !== 'lines' && field.type !== 'file' && !(field.type === 'number' && field.rollup));
+  const fields = (definition.entities[entity]?.fields ?? []).filter((field) => field.type !== 'lines' && field.type !== 'file' && !isWorkedOut(field));
   const unset = fields.filter((field) => !(field.name in values));
   const [adding, setAdding] = useState('');
   return (

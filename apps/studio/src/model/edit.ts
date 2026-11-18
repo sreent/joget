@@ -1,4 +1,4 @@
-import type { Definition, Entity, Field, FieldType, Form, FormField } from '../types.js';
+import { isWorkedOut, type Definition, type Entity, type Field, type FieldType, type Form, type FormField } from '../types.js';
 import { forgetEntity, forgetField, forgetForm } from './pages.js';
 import { forgetInWaits } from './waits.js';
 
@@ -235,6 +235,32 @@ export function updateField(definition: Definition, entity: string, index: numbe
 }
 
 /** Make a number field worked out from lines (`sum:lines.amount`), or entered by people again (''). */
+/**
+ * Work a field out by a formula, or stop: undefined lets people enter it again. The platform works
+ * it out, so nobody can be asked for it, and it has no default and no rollup. Forms show it, and
+ * actions no longer take it.
+ */
+export function setFormula(definition: Definition, entity: string, index: number, formula: unknown): Definition {
+  const next = clone(definition);
+  const field = next.entities[entity]!.fields[index]! as Record<string, unknown>;
+  if (formula === undefined) {
+    delete field['formula'];
+    return next;
+  }
+  field['formula'] = formula;
+  field['required'] = false;
+  delete field['requiredWhen'];
+  delete field['default'];
+  delete field['rollup'];
+  const name = next.entities[entity]!.fields[index]!.name;
+  for (const form of Object.values(next.forms)) {
+    if (form.entity !== entity) continue;
+    for (const section of form.sections) for (const item of section.fields) if (item.field === name) item.readOnly = true;
+  }
+  for (const action of Object.values(next.actions)) if (action.entity === entity) action.input = action.input.filter((input) => input !== name);
+  return next;
+}
+
 export function setRollup(definition: Definition, entity: string, index: number, key: string): Definition {
   const next = clone(definition);
   const field = next.entities[entity]!.fields[index]!;
@@ -313,7 +339,7 @@ export function addForm(definition: Definition, entity: string): { definition: D
   next.forms[name] = {
     label: entityDef.label,
     entity,
-    sections: [{ fields: entityDef.fields.map((field) => ({ field: field.name, width: 'full', readOnly: Boolean(field.type === 'number' && field.rollup) })) }],
+    sections: [{ fields: entityDef.fields.map((field) => ({ field: field.name, width: 'full', readOnly: isWorkedOut(field) })) }],
   } as Form;
   return { definition: next, name };
 }
@@ -373,7 +399,7 @@ export function placeField(definition: Definition, form: string, field: string, 
   const next = clone(definition);
   const sections = next.forms[form]!.sections;
   const declared = next.entities[next.forms[form]!.entity]?.fields.find((f) => f.name === field);
-  let item: FormField = { field, width: 'full', readOnly: Boolean(declared?.type === 'number' && declared.rollup) };
+  let item: FormField = { field, width: 'full', readOnly: declared ? isWorkedOut(declared) : false };
   let target = { ...at };
   sections.forEach((section, s) => {
     const index = section.fields.findIndex((f) => f.field === field);

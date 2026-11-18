@@ -139,6 +139,9 @@ const SYSTEM_SOURCES: ReadonlyArray<{ ref: string; label: string; kind: ValueKin
   { ref: 'record.updated_at', label: 'Last changed', kind: 'datetime' },
 ];
 
+/** The fields the platform keeps for every record. A formula can't read them: they're filled in after it. */
+export const SYSTEM_REFS: ReadonlySet<string> = new Set(SYSTEM_SOURCES.map((source) => source.ref));
+
 /**
  * The record's fields a value can come from. For a field, those that hold the same kind of value;
  * a date takes a time's day. Without a target, every field but files.

@@ -26,6 +26,7 @@ const Description = z.string().trim().min(1).max(2000);
 const OptionValue = z.string().trim().min(1).max(100);
 
 export const ConditionSchema = z.custom<Condition>((value) => isCondition(value), { message: 'Not a valid condition' });
+export const ExpressionSchema = z.custom<Expression>((value) => isExpression(value), { message: 'Not a valid expression' });
 
 const fieldCommon = {
   id: Id.optional(),
@@ -44,6 +45,13 @@ export const MAX_TEXT_LENGTH = 10_000;
 export const MAX_NUMBER_MAGNITUDE = 1e15;
 /** The most lines a record can have in one lines field. */
 export const MAX_LINES = 500;
+
+/**
+ * A value the platform works out from the record's own fields each time the record is written, and
+ * stores, so that lists, conditions and charts can use it: a total with tax, a full name, a due date.
+ * People and agents can't set it.
+ */
+const Formula = ExpressionSchema;
 
 /** A field of the lines in a lines field, such as `lines.amount`. */
 export const LINE_PATH_PATTERN = /^([a-z][a-z0-9_]{0,62})\.([a-z][a-z0-9_]{0,62})$/;
@@ -69,6 +77,7 @@ const TextField = z.strictObject({
   multiline: z.boolean().default(false),
   unique: z.boolean().default(false),
   default: z.string().max(MAX_TEXT_LENGTH).optional(),
+  formula: Formula.optional(),
 });
 
 const EmailField = z.strictObject({
@@ -88,20 +97,23 @@ const NumberField = z.strictObject({
   default: z.number().optional(),
   /** Work the value out from a lines field. People and agents can't set it. */
   rollup: Rollup.optional(),
+  formula: Formula.optional(),
 });
 
-const BooleanField = z.strictObject({ ...fieldCommon, type: z.literal('boolean'), default: z.boolean().optional() });
+const BooleanField = z.strictObject({ ...fieldCommon, type: z.literal('boolean'), default: z.boolean().optional(), formula: Formula.optional() });
 const DateField = z.strictObject({
   ...fieldCommon,
   type: z.literal('date'),
   /** A fixed date; or a day so many days from the day a record is created, where `{ today: 0 }` is that day. */
   default: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Give a date as YYYY-MM-DD'), z.strictObject({ today: z.int().min(-3660).max(3660) })]).optional(),
+  formula: Formula.optional(),
 });
 const DateTimeField = z.strictObject({
   ...fieldCommon,
   type: z.literal('datetime'),
   /** The moment a record is created, or so many hours from it. */
   default: z.strictObject({ now: z.int().min(-8784).max(8784) }).optional(),
+  formula: Formula.optional(),
 });
 
 const ChoiceField = z.strictObject({
@@ -202,7 +214,6 @@ const Literal = z.union([z.string().max(MAX_TEXT_LENGTH), z.number(), z.boolean(
 export const CONFIRMATION_LEVELS = ['none', 'preview', 'review'] as const;
 export type ConfirmationLevel = (typeof CONFIRMATION_LEVELS)[number];
 
-export const ExpressionSchema = z.custom<Expression>((value) => isExpression(value), { message: 'Not a valid expression' });
 
 /** Set a field of the record to a value that the step works out. */
 const SetStep = z.strictObject({ type: z.literal('set'), field: Name, value: ExpressionSchema });

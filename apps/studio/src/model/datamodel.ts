@@ -1,4 +1,4 @@
-import type { Definition, Field } from '../types.js';
+import { isWorkedOut, type Definition, type Field } from '../types.js';
 
 /*
  * The data model as a canvas (design §6.11), as Ocean's ModelDesigner draws it and Mendix draws a
@@ -136,7 +136,7 @@ export function fieldTag(field: Field): { readonly text?: string; readonly icon?
 /** A short note on a field, where it helps: its choices, worked out, a file, or the entity a reference names. */
 export function fieldNote(definition: Definition, field: Field): string | undefined {
   if (field.type === 'choice') return `${field.options.length} choice${field.options.length === 1 ? '' : 's'}`;
-  if (field.type === 'number' && field.rollup) return 'worked out';
+  if (isWorkedOut(field)) return 'worked out';
   if (field.type === 'file') return 'a file';
   if (field.type === 'reference') return definition.entities[field.entity]?.label;
   // Lines are named by their arrow.

@@ -4,6 +4,8 @@ import {
   beforeGives,
   blockAt,
   buildCard,
+  isComputed,
+  withFormulas,
   canonicalValue,
   checkActionInput,
   checkInput,
@@ -815,7 +817,7 @@ export class AppRuntime {
     const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true, new Set(), at);
     const permission = decision ?? (await this.decide(request, auth, loaded, 'record.create', entityName));
     const owner = (check.values['owner'] as string | undefined) ?? auth.actor.id;
-    const values = { ...check.values, ...prepared.rollups };
+    const values = this.#derived(loaded, entityName, { ...check.values, ...prepared.rollups });
     const after = { ...values, owner };
     const fields = [...Object.keys(input.values).filter((name) => !(name in check.lines)), ...prepared.paths];
     if (!writeGrant(permission.grants, { fields, after })) {
@@ -857,11 +859,10 @@ export class AppRuntime {
       const current = await this.#currentLines(tx, loaded, entity, before.id, Object.keys(check.lines));
       const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false, new Set(), this.#writing(auth));
       const beforeValues = recordValues(before);
-      const changed = Object.fromEntries(
-        Object.entries({ ...check.values, ...prepared.rollups }).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)),
-      );
+      const derived = this.#derived(loaded, entityName, { ...beforeValues, ...check.values, ...prepared.rollups });
+      const changed = Object.fromEntries(Object.entries(derived).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)));
       const afterValues = { ...beforeValues, ...changed };
-      const fields = [...Object.keys(changed).filter((name) => !(name in prepared.rollups)), ...prepared.paths];
+      const fields = [...this.#entered(loaded, entityName, changed), ...prepared.paths];
       if (!writeGrant(permission.grants, { fields, before: beforeValues, after: afterValues })) {
         const readable = read ? grantsFor(read.grants, beforeValues).length > 0 : false;
         if (!readable) throw notFound('Record');
@@ -1280,6 +1281,22 @@ export class AppRuntime {
     return only ? findings.filter((finding) => only.includes(finding.rule)) : findings;
   }
 
+  /** A record with its formulas worked out from its values: what the platform stores. A value its field can't hold stops the write. */
+  #derived(loaded: LoadedApp, entityName: string, values: RecordValues): Record<string, FieldValue> {
+    const worked = withFormulas(this.entity(loaded, entityName), values);
+    if (worked.issues.length) throw unprocessable('invalid_values', 'A formula works out a value that its field cannot hold', { issues: worked.issues });
+    return worked.values;
+  }
+
+  /** The fields that a change to a record writes, as a person's: not what the platform works out, its rollups and formulas. */
+  #entered(loaded: LoadedApp, entityName: string, changed: Readonly<Record<string, unknown>>): string[] {
+    const entity = this.entity(loaded, entityName);
+    return Object.keys(changed).filter((name) => {
+      const field = entity.fields.find((f) => f.name === name);
+      return !field || !isComputed(field);
+    });
+  }
+
   /** When a person writes, and who: what defaults such as today or the person work out from. */
   #writing(auth: AuthContext): WriteContext {
     return { now: this.#ctx.now(), person: auth.actor.type === 'user' ? auth.actor.id : undefined };
@@ -1392,6 +1409,8 @@ export class AppRuntime {
       stepSet = ran.set;
       linesAdded = ran.linesAdded;
     }
+    // The record's formulas, from its values as the action leaves them.
+    draft = this.#derived(loaded, action.entity, draft);
     if (action.operation === 'create' && shaped) {
       // What the flow was to give, it gave: a new record still has every required value.
       const missing = entity.fields.flatMap((field): ValueIssue[] => {
@@ -1557,7 +1576,7 @@ export class AppRuntime {
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
     const prepared = this.prepareLinesFor(loaded, entityName, check.lines, {}, {}, true, new Set(), at);
     const owner = (check.values['owner'] as string | undefined) ?? writer.actorId;
-    const values = { ...check.values, ...prepared.rollups };
+    const values = this.#derived(loaded, entityName, { ...check.values, ...prepared.rollups });
     this.#rules(loaded, entityName, principal, { ...values, owner }, prepared.lines);
     await this.#checkPeople(loaded, entity, { ...values, owner }, 'owner' in input, prepared.lines);
     const lines = Object.fromEntries(prepared.changed.map((name) => [name, { next: prepared.lines[name]!, current: [] }]));
@@ -1586,9 +1605,8 @@ export class AppRuntime {
     if (check.issues.length) throw unprocessable('invalid_values', 'Some values are not valid', { issues: check.issues });
     const prepared = this.prepareLinesFor(loaded, entityName, check.lines, current, current, false);
     const beforeValues = recordValues(before);
-    const changed = Object.fromEntries(
-      Object.entries({ ...check.values, ...prepared.rollups }).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)),
-    );
+    const derived = this.#derived(loaded, entityName, { ...beforeValues, ...check.values, ...prepared.rollups });
+    const changed = Object.fromEntries(Object.entries(derived).filter(([name, value]) => JSON.stringify(beforeValues[name] ?? null) !== JSON.stringify(value)));
     const after = { ...beforeValues, ...changed };
     this.#rules(loaded, entityName, principal, after, prepared.lines);
     if (!Object.keys(changed).length && !prepared.changed.length) return beforeValues;

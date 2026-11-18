@@ -221,10 +221,10 @@ export const OP_LABELS: Record<Op, string> = {
 };
 
 /** A new clause on a reference: the first operator that suits it, with an empty value. */
-export function newClause(choice: RefChoice): Clause {
+export function newClause(choice: RefChoice, clock = true): Clause {
   const op = opsFor(choice.kind)[0]!;
-  // A date starts out compared with today.
-  if (choice.kind === 'date') return { ref: choice.ref, op, right: { kind: 'relative', unit: 'today', amount: 0 } };
+  // A date starts out compared with today, or, where the clock can't be read, with a date.
+  if (choice.kind === 'date') return { ref: choice.ref, op, right: clock ? { kind: 'relative', unit: 'today', amount: 0 } : { kind: 'value', value: new Date().toISOString().slice(0, 10) } };
   return { ref: choice.ref, op, ...(op === 'exists' ? {} : { right: { kind: 'value', value: defaultValue(choice, op) } }) };
 }
 

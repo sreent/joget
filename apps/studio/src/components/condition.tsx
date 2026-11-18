@@ -29,26 +29,28 @@ interface Props {
   readonly compareWith?: readonly RefChoice[];
   /** Shown when there's nothing to test, for an optional condition: "Every record", for example. */
   readonly empty?: string;
+  /** False where the condition can't compare with today or now, as in a formula, whose value is stored. */
+  readonly clock?: boolean;
 }
 
 /**
  * Edit a condition as clauses: a field, an operator and a value, all of which must hold, or any.
  * Groups nest one level. A condition with another shape is edited as JSON, so nothing is lost.
  */
-export function ConditionEditor({ label, value, onChange, choices, compareWith = [], empty }: Props) {
+export function ConditionEditor({ label, value, onChange, choices, compareWith = [], empty, clock = true }: Props) {
   const model = toModel(value);
   if (!model) return <JsonCondition label={label} value={value} onChange={onChange} />;
   const set = (group: Group) => onChange(fromModel(group));
   return (
     <fieldset className="m-0 grid gap-2 rounded-md border border-line p-3">
       <legend className="px-1 text-sm text-muted">{label}</legend>
-      <GroupEditor group={model} onChange={set} choices={choices} compareWith={compareWith} depth={0} empty={empty} />
+      <GroupEditor group={model} onChange={set} choices={choices} compareWith={compareWith} depth={0} empty={empty} clock={clock} />
     </fieldset>
   );
 }
 
-function GroupEditor(props: { group: Group; onChange: (group: Group) => void; choices: readonly RefChoice[]; compareWith: readonly RefChoice[]; depth: number; empty?: string | undefined }) {
-  const { group, onChange, choices, compareWith, depth } = props;
+function GroupEditor(props: { group: Group; onChange: (group: Group) => void; choices: readonly RefChoice[]; compareWith: readonly RefChoice[]; depth: number; empty?: string | undefined; clock: boolean }) {
+  const { group, onChange, choices, compareWith, depth, clock } = props;
   const setItem = (index: number, item: Clause | Group) => onChange({ ...group, items: group.items.map((existing, i) => (i === index ? item : existing)) });
   const remove = (index: number) => onChange({ ...group, items: group.items.filter((_, i) => i !== index) });
   const first = choices[0];
@@ -67,7 +69,7 @@ function GroupEditor(props: { group: Group; onChange: (group: Group) => void; ch
       {group.items.map((item, index) =>
         isGroup(item) ? (
           <div key={index} className="grid gap-1">
-            <GroupEditor group={item} onChange={(next) => setItem(index, next)} choices={choices} compareWith={compareWith} depth={depth + 1} />
+            <GroupEditor group={item} onChange={(next) => setItem(index, next)} choices={choices} compareWith={compareWith} depth={depth + 1} clock={clock} />
             <div>
               <Button size="sm" variant="ghost" onClick={() => remove(index)}>
                 Remove this group
@@ -75,16 +77,16 @@ function GroupEditor(props: { group: Group; onChange: (group: Group) => void; ch
             </div>
           </div>
         ) : (
-          <ClauseEditor key={index} clause={item} onChange={(next) => setItem(index, next)} onRemove={() => remove(index)} choices={choices} compareWith={compareWith} />
+          <ClauseEditor key={index} clause={item} onChange={(next) => setItem(index, next)} onRemove={() => remove(index)} choices={choices} compareWith={compareWith} clock={clock} />
         ),
       )}
       {first ? (
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => onChange({ ...group, items: [...group.items, newClause(first)] })}>
+          <Button size="sm" onClick={() => onChange({ ...group, items: [...group.items, newClause(first, clock)] })}>
             Add a condition
           </Button>
           {depth === 0 ? (
-            <Button size="sm" variant="ghost" onClick={() => onChange({ ...group, items: [...group.items, { match: group.match === 'all' ? 'any' : 'all', items: [newClause(first)] }] })}>
+            <Button size="sm" variant="ghost" onClick={() => onChange({ ...group, items: [...group.items, { match: group.match === 'all' ? 'any' : 'all', items: [newClause(first, clock)] }] })}>
               Add a group
             </Button>
           ) : null}
@@ -94,7 +96,21 @@ function GroupEditor(props: { group: Group; onChange: (group: Group) => void; ch
   );
 }
 
-function ClauseEditor({ clause, onChange, onRemove, choices, compareWith }: { clause: Clause; onChange: (clause: Clause) => void; onRemove: () => void; choices: readonly RefChoice[]; compareWith: readonly RefChoice[] }) {
+function ClauseEditor({
+  clause,
+  onChange,
+  onRemove,
+  choices,
+  compareWith,
+  clock,
+}: {
+  clause: Clause;
+  onChange: (clause: Clause) => void;
+  onRemove: () => void;
+  choices: readonly RefChoice[];
+  compareWith: readonly RefChoice[];
+  clock: boolean;
+}) {
   const choice = choices.find((c) => c.ref === clause.ref) ?? { ref: clause.ref, label: clause.ref, kind: 'text' as const };
   const ops = opsFor(choice.kind);
   const others = compareWith.filter((c) => c.kind === choice.kind || (choice.kind === 'choice' && c.kind === 'text'));
@@ -107,7 +123,7 @@ function ClauseEditor({ clause, onChange, onRemove, choices, compareWith }: { cl
         value={choice.ref}
         onChange={(e) => {
           const next = choices.find((c) => c.ref === e.target.value);
-          if (next) onChange(newClause(next));
+          if (next) onChange(newClause(next, clock));
         }}
       >
         {choices.some((c) => c.ref === choice.ref) ? null : <option value={choice.ref}>{choice.label}</option>}
@@ -135,7 +151,7 @@ function ClauseEditor({ clause, onChange, onRemove, choices, compareWith }: { cl
           </option>
         ))}
       </Select>
-      {needsValue && choice.kind === 'date' ? <DateSide clause={clause} others={others} onChange={onChange} /> : needsValue ? <RightSide clause={clause} choice={choice} others={others} onChange={onChange} /> : null}
+      {needsValue && choice.kind === 'date' ? <DateSide clause={clause} others={others} onChange={onChange} clock={clock} /> : needsValue ? <RightSide clause={clause} choice={choice} others={others} onChange={onChange} /> : null}
       <Button size="sm" variant="ghost" aria-label="Remove this condition" onClick={onRemove}>
         ✕
       </Button>
@@ -144,8 +160,8 @@ function ClauseEditor({ clause, onChange, onRemove, choices, compareWith }: { cl
 }
 
 /** What a date or a time compares with: today or now, so many days or hours away; a date; or another date. */
-function DateSide({ clause, others, onChange }: { clause: Clause; others: readonly RefChoice[]; onChange: (clause: Clause) => void }) {
-  const right = clause.right ?? { kind: 'relative' as const, unit: 'today' as const, amount: 0 };
+function DateSide({ clause, others, onChange, clock }: { clause: Clause; others: readonly RefChoice[]; onChange: (clause: Clause) => void; clock: boolean }) {
+  const right = clause.right ?? (clock ? { kind: 'relative' as const, unit: 'today' as const, amount: 0 } : { kind: 'value' as const, value: '' });
   const mode = right.kind === 'relative' ? right.unit : right.kind === 'ref' ? right.ref : 'value';
   return (
     <span className="flex flex-wrap items-center gap-1.5">
@@ -158,8 +174,9 @@ function DateSide({ clause, others, onChange }: { clause: Clause; others: readon
           onChange({ ...clause, right: next === 'today' || next === 'now' ? { kind: 'relative', unit: next, amount: 0 } : next === 'value' ? { kind: 'value', value: '' } : { kind: 'ref', ref: next } });
         }}
       >
-        <option value="today">today</option>
-        <option value="now">now</option>
+        {/* Where the clock can't be read, today and now show only to be changed. */}
+        {clock || mode === 'today' ? <option value="today">today</option> : null}
+        {clock || mode === 'now' ? <option value="now">now</option> : null}
         <option value="value">a date</option>
         {others.map((other) => (
           <option key={other.ref} value={other.ref}>

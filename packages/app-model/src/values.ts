@@ -8,6 +8,8 @@ import {
   type StoredEntity,
   type StoredLinesField,
 } from './fields.js';
+import { roundTo, type ExpressionValue } from './expressions.js';
+import { withFormulas } from './formulas.js';
 import { MAX_NUMBER_MAGNITUDE } from './schema.js';
 
 /** When a record is written, and by whom: what a default such as today or the person works out from. */
@@ -83,6 +85,13 @@ function uuid(value: unknown): Result {
 }
 
 /** Check one value against its field, and return it in canonical form. */
+/** Fit a worked-out value to its field: a number to the field's decimal places, as money is rounded; a time to its day. */
+export function fitValue(info: FieldInfo, raw: ExpressionValue): ExpressionValue {
+  if (info.field?.type === 'number' && typeof raw === 'number') return roundTo(raw, info.field.decimals);
+  if (info.field?.type === 'date' && typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw.slice(0, 10);
+  return raw;
+}
+
 /**
  * A field's default, as the field holds it: a fixed value; a day so many days from today; a time so
  * many hours from now; or the person who writes the record. Undefined when it has none, or when no
@@ -263,7 +272,10 @@ export function completeLines(
         issues.push({ field: `${at}.${declared.name}`, code: 'required', message: `${declared.label} is required` });
       }
     }
-    lines.push({ id: line.id ?? null, values });
+    // A line's formulas are worked out from its other values.
+    const worked = withFormulas(lineEntity, values, { line: true });
+    issues.push(...worked.issues.map((issue) => ({ ...issue, field: `${at}.${issue.field}` })));
+    lines.push({ id: line.id ?? null, values: worked.values });
   });
   if (field.required && lines.length === 0 && input.length === 0) {
     issues.push({ field: field.name, code: 'required', message: `${field.label}: add at least one line` });

@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { COMPARISON_OPERATORS, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
+import { COMPARISON_OPERATORS, conditionRefs, isRef, isRelativeTime, timeOf, type Condition, type Operand } from '@platform/authz';
 import {
   entityFields,
+  workedOutBy,
+  formulaOf,
   isOrderedKind,
   isSortableKind,
   isWritable,
@@ -13,7 +15,7 @@ import {
   type StoredEntity,
   type StoredField,
 } from './fields.js';
-import { calculationKind, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
+import { calculationKind, expressionRefs, mapExpressionRefs, operandsOf, operatorOf, roundTo, type Expression } from './expressions.js';
 import { mapRefs } from './condition-refs.js';
 import { checkFlowRun, checkFlows, renameInFlows } from './flows.js';
 import { compileFlows, flowWaits } from './waiting.js';
@@ -25,6 +27,7 @@ import {
   SYSTEM_FIELDS,
   type Action,
   type Entity,
+  type Field,
   type Message,
   type PageBlock,
   type Process,
@@ -35,6 +38,7 @@ import {
 } from './schema.js';
 import { beforeGives, checkBeforeFlows, moveSteps, readsPrincipal } from './before.js';
 import { blockPlace, pageBlocks } from './pages.js';
+import { FORMULA_OPERATORS } from './formulas.js';
 import { canonicalValue } from './values.js';
 
 export interface Issue {
@@ -151,8 +155,10 @@ function propagateRenames(definition: StoredDefinition, previous: StoredDefiniti
         ...entity,
         ...(entity.titleField ? { titleField: fieldName(name)(entity.titleField) } : {}),
         fields: entity.fields.map((original) => {
-          // A field required when a condition holds reads the record's own fields, by their new names.
-          const field = original.requiredWhen ? { ...original, requiredWhen: condition(name, original.requiredWhen) } : original;
+          // A field required when a condition holds, and a formula, read the record's own fields, by their new names.
+          const renamed = original.requiredWhen ? { ...original, requiredWhen: condition(name, original.requiredWhen) } : original;
+          const formula = formulaOf(renamed);
+          const field = formula ? { ...renamed, formula: mapExpressionRefs(formula, refs(name)) } : renamed;
           if (field.type === 'reference' || field.type === 'lines') return { ...field, entity: entityName(field.entity) };
           if (field.type === 'number' && field.rollup) {
             const [op, path] = Object.entries(field.rollup)[0] as [string, string];
@@ -571,6 +577,87 @@ const KIND_WORDS: Readonly<Record<ExpressionKind, string>> = {
 };
 
 /**
+ * Check a field's formula. It reads only the record's own fields, never lines one by one, the person
+ * or the clock, so that the value it stores stays true; it uses only the operations a migration can
+ * work out again in SQL; and what it gives fits its field.
+ */
+/** True if a condition compares with a date or a time relative to the clock, such as today. */
+function comparesWithClock(condition: Condition): boolean {
+  if ('all' in condition) return condition.all.some(comparesWithClock);
+  if ('any' in condition) return condition.any.some(comparesWithClock);
+  if ('not' in condition) return comparesWithClock(condition.not);
+  if ('exists' in condition) return false;
+  const operands: ReadonlyArray<Operand | readonly Operand[]> = Object.values(condition)[0] ?? [];
+  return operands.flat().some((operand) => isRelativeTime(operand));
+}
+
+function checkFormula(field: Field, formula: Expression, fields: ReadonlyMap<string, FieldInfo>, lines: ReadonlySet<string>, path: string, issues: Issue[]): void {
+  const at = `${path}.formula`;
+  const issue = (message: string) => issues.push({ path: at, message });
+  const kindOf = (expression: Expression): ExpressionKind => {
+    if (expression === null) return 'null';
+    if (typeof expression === 'string') return 'text';
+    if (typeof expression === 'number') return 'number';
+    if (typeof expression === 'boolean') return 'boolean';
+    if (Array.isArray(expression)) {
+      issue('A formula gives one value, not a list');
+      return 'any';
+    }
+    if ('ref' in expression) {
+      const [root, name, ...rest] = expression.ref.split('.') as [string, string | undefined, ...string[]];
+      if (root === 'principal') {
+        issue(`${expression.ref}: a formula reads the record's own fields, not the person who writes it`);
+        return 'any';
+      }
+      if (root !== 'record' || !name || rest.length) {
+        issue(`${expression.ref}: a formula reads the record's own fields, as record.<field>`);
+        return 'any';
+      }
+      if (lines.has(name)) {
+        issue(`${expression.ref}: a formula can't read lines one by one. Add a rollup, such as a total, and read that`);
+        return 'any';
+      }
+      const info = fields.get(name);
+      if (!info) {
+        issue(`${expression.ref}: no such field`);
+        return 'any';
+      }
+      // The platform fills these in as it saves the record, after its formulas are worked out.
+      if (info.system) {
+        issue(`${expression.ref}: a formula reads the fields of the app, not those the platform keeps, such as the owner or when the record was made`);
+        return 'any';
+      }
+      return info.kind;
+    }
+    if ('today' in expression || 'now' in expression) {
+      issue("A formula can't read today or now: once stored, its value would go stale");
+      return 'any';
+    }
+    const op = operatorOf(expression);
+    if (!op) return 'any';
+    if (!FORMULA_OPERATORS.includes(op)) {
+      issue(`A formula can't use ${op} yet`);
+      return 'any';
+    }
+    if (op === 'if') {
+      const when = (expression as { if: readonly [Condition, Expression, Expression] }).if[0];
+      checkCondition(when, { record: fields, lines }, at, issues);
+      if (conditionRefs(when).some((ref) => ref === 'principal' || ref.startsWith('principal.'))) issue("A formula's choice reads the record, not the person who writes it");
+      if (conditionRefs(when).some((ref) => fields.get(ref.slice('record.'.length))?.system)) issue("A formula's choice reads the fields of the app, not those the platform keeps");
+      if (comparesWithClock(when)) issue("A formula's choice can't compare with today or now: once stored, its value would go stale");
+    }
+    const worked = calculationKind(op, operandsOf(expression).map(kindOf));
+    for (const message of worked.problems) issue(message);
+    return worked.kind;
+  };
+  const kind = kindOf(formula);
+  const wanted = fields.get(field.name)?.kind;
+  if (wanted && !(kind === 'any' || kind === 'null' || kind === wanted || (wanted === 'date' && kind === 'datetime') || (wanted === 'text' && kind !== 'text[]'))) {
+    issue(`${field.label} holds ${KIND_WORDS[wanted]}, and this formula gives ${KIND_WORDS[kind]}`);
+  }
+}
+
+/**
  * Check an action's steps: what each sets or adds exists and can be set by a step; each value
  * fits its field; conditions and references are sound. A step's values refer to the record and to
  * the person, never to lines one by one.
@@ -642,7 +729,7 @@ function checkSteps(
           const info = fields.get(step.field);
           if (lines.has(step.field)) issues.push({ path: `${at}.field`, message: `${step.field} holds lines: add one with an "add a line" step` });
           else if (!info) issues.push({ path: `${at}.field`, message: `No field named ${step.field}` });
-          else if (!isWritable(info)) issues.push({ path: `${at}.field`, message: info.system ? `${step.field} is set by the platform` : `${step.field} is worked out from lines` });
+          else if (!isWritable(info)) issues.push({ path: `${at}.field`, message: info.system ? `${step.field} is set by the platform` : `${step.field} is ${workedOutBy(info)}` });
           else if (info.field?.type === 'file') issues.push({ path: `${at}.field`, message: 'A step can\'t set a file: take it as input' });
           else fits(info, step.value, `${at}.value`, info.field?.label ?? step.field);
           return;
@@ -758,6 +845,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         }
         if (field.required) issues.push({ path: `${path}.required`, message: 'A field worked out from lines always has its value: it can\'t be required' });
         if ('default' in field && field.default !== undefined) issues.push({ path: `${path}.default`, message: 'A field worked out from lines can\'t have a default' });
+        if (formulaOf(field)) issues.push({ path: `${path}.formula`, message: 'A field is worked out from lines or by a formula, not both' });
         if ('unique' in field && field.unique) issues.push({ path: `${path}.unique`, message: 'A field worked out from lines can\'t be unique' });
       }
       if (field.type === 'number' && field.min !== undefined && field.max !== undefined && field.min > field.max) {
@@ -772,6 +860,12 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         const result = canonicalValue(fieldsOf.get(name)!.get(field.name)!, field.default);
         if (!result.ok) issues.push({ path: `${path}.default`, message: result.issue.message });
       }
+      const formula = formulaOf(field);
+      if (formula && !rollup) {
+        checkFormula(field, formula, fieldsOf.get(name)!, linesOf.get(name)!, path, issues);
+        if (field.required || field.requiredWhen) issues.push({ path: `${path}.required`, message: 'The platform works this field out, so nobody can be asked to fill it in' });
+        if ('default' in field && field.default !== undefined) issues.push({ path: `${path}.default`, message: 'A field worked out by a formula has no default' });
+      }
       if (field.requiredWhen) {
         const at = `${path}.requiredWhen`;
         if (field.type === 'lines') issues.push({ path: at, message: 'A lines field is required always, or not at all' });
@@ -783,6 +877,23 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     if (entity.titleField && !fieldsOf.get(name)!.has(entity.titleField)) {
       issues.push({ path: `${base}.titleField`, message: `No field named ${entity.titleField}` });
     }
+    // Formulas work each other out in order: a loop of them would never end.
+    const reads = new Map(entity.fields.flatMap((field) => {
+      const formula = formulaOf(field);
+      return formula ? [[field.name, expressionRefs(formula).flatMap((ref) => (ref.startsWith('record.') ? [ref.slice('record.'.length)] : []))] as const] : [];
+    }));
+    const looping = new Set<string>();
+    const walk = (field: string, trail: readonly string[]): void => {
+      if (trail.includes(field)) {
+        if (field === trail[0]) looping.add(field);
+        return;
+      }
+      for (const next of reads.get(field) ?? []) if (reads.has(next)) walk(next, [...trail, field]);
+    };
+    for (const field of reads.keys()) walk(field, []);
+    entity.fields.forEach((field, index) => {
+      if (looping.has(field.name)) issues.push({ path: `${base}.fields[${index}].formula`, message: `${field.label}'s formula reads itself, through other formulas: break the loop` });
+    });
   }
 
   for (const [name, rule] of Object.entries(definition.rules)) {
@@ -804,7 +915,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
     for (const field of action.input) {
       const info = fields.get(field);
       if (!info && !lines.has(field)) issues.push({ path: `${path}.input`, message: `No field named ${field}` });
-      else if (info && !isWritable(info)) issues.push({ path: `${path}.input`, message: info.system ? `${field} is set by the platform` : `${field} is worked out from lines` });
+      else if (info && !isWritable(info)) issues.push({ path: `${path}.input`, message: info.system ? `${field} is set by the platform` : `${field} is ${workedOutBy(info)}` });
       if (input.has(field)) issues.push({ path: `${path}.input`, message: `${field} is listed twice` });
       input.add(field);
     }
@@ -827,7 +938,8 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
       if (action.where) issues.push({ path: `${path}.where`, message: 'Only updates apply to existing records' });
       const stepsGive = beforeGives(definition, action);
       for (const field of entity.fields) {
-        const provided = input.has(field.name) || field.name in action.set || stepsGive.has(field.name) || ('default' in field && field.default !== undefined);
+        // The platform works out a formula's value: its own check says it can't be required.
+        const provided = input.has(field.name) || field.name in action.set || stepsGive.has(field.name) || ('default' in field && field.default !== undefined) || Boolean(formulaOf(field));
         if (field.required && !provided) {
           issues.push({
             path: `${path}.input`,
@@ -902,7 +1014,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
         const at = `${path}.sections[${s}].fields[${f}]`;
         const info = fields.get(item.field);
         if (!info && !lines.has(item.field)) issues.push({ path: at, message: `No field named ${item.field}` });
-        else if (info && !item.readOnly && !isWritable(info)) issues.push({ path: at, message: `${item.field} is ${info.system ? 'set by the platform' : 'worked out from lines'}: show it read-only` });
+        else if (info && !item.readOnly && !isWritable(info)) issues.push({ path: at, message: `${item.field} is ${info.system ? 'set by the platform' : workedOutBy(info)}: show it read-only` });
         else if (action && !item.readOnly && !action.input.includes(item.field)) {
           issues.push({ path: at, message: `${item.field} isn't an input of ${form.action}: show it read-only, or add it to the action's inputs` });
         }
@@ -931,7 +1043,7 @@ function checkReferences(definition: StoredDefinition, issues: Issue[]): void {
             const found = fieldAt(entityName, field);
             if (!found) issues.push({ path: `${path}.${verb}.fields`, message: `No field named ${field}` });
             else if (verb !== 'read' && found.info && !isWritable(found.info)) {
-              issues.push({ path: `${path}.${verb}.fields`, message: `${field} is ${found.info.system ? 'set by the platform' : 'worked out from lines'}` });
+              issues.push({ path: `${path}.${verb}.fields`, message: `${field} is ${found.info.system ? 'set by the platform' : workedOutBy(found.info)}` });
             }
           }
         }

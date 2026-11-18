@@ -210,6 +210,8 @@ export interface UiField {
   computed?: boolean;
   /** How it is worked out, such as `{ sum: 'lines.amount' }`. */
   rollup?: Record<string, string>;
+  /** Its formula, worked out from the record's other fields. */
+  formula?: unknown;
   /** For a lines field: the most lines, what a line is called and named by, and the fields of each line. */
   lines?: { max: number; label: string; titleField: string | null; fields: UiField[] };
   read: 'full' | 'masked' | null;
@@ -480,4 +482,9 @@ export interface FlowRunResult {
   readonly findings: ReadonlyArray<{ readonly flow: string; readonly message: string }>;
   readonly writes: { readonly created: number; readonly changed: number; readonly deleted: number };
   readonly dryRun: boolean;
+}
+
+/** True for a field the platform works out, from lines or by a formula: shown, never filled in. */
+export function isWorkedOut(field: Field): boolean {
+  return Boolean((field.type === 'number' && field.rollup) || ('formula' in field && field.formula !== undefined));
 }

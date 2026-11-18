@@ -31,7 +31,7 @@ import {
   updateSection,
   type Slot,
 } from '../model/edit.js';
-import type { Definition, FormField } from '../types.js';
+import { isWorkedOut, type Definition, type FormField } from '../types.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
 
@@ -305,8 +305,8 @@ function FormSide({ definition, name, slot, onSlot, onChange }: { definition: De
           )}
         </Field>
       )}
-      {field?.type === 'number' && field.rollup ? (
-        <p className="m-0 text-sm text-muted">Worked out from lines, so it's shown, never filled in.</p>
+      {field && isWorkedOut(field) ? (
+        <p className="m-0 text-sm text-muted">{field.type === 'number' && field.rollup ? 'Worked out from lines' : 'Worked out by a formula'}, so it's shown, never filled in.</p>
       ) : (
         <Checkbox label="Read-only on this form" checked={item.readOnly} onChange={(value) => set({ readOnly: value })} />
       )}

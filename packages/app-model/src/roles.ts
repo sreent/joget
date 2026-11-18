@@ -1,6 +1,6 @@
 import type { PermissionGrant, PermissionSet, QueryExclusion, QueryGrant, Role } from '@platform/authz';
 import { evaluateCondition } from '@platform/authz';
-import type { StoredDefinition, StoredEntity } from './fields.js';
+import { isComputed, type StoredDefinition, type StoredEntity } from './fields.js';
 import { conditionRecord, type LineValues, type RecordValues } from './values.js';
 import { flowWaits } from './waiting.js';
 
@@ -152,11 +152,13 @@ export function excludedBy(exclusions: readonly QueryExclusion[], values: Record
  * the lines field and every field of its lines; changing lines writes just the fields that change.
  */
 export function linesWritten(lineEntity: StoredEntity, field: string, before: readonly LineValues[], after: readonly LineValues[]): string[] {
-  const all = [field, ...lineEntity.fields.map((f) => `${field}.${f.name}`)];
+  // What the platform works out, a line's formulas, nobody writes.
+  const entered = lineEntity.fields.filter((f) => !isComputed(f));
+  const all = [field, ...entered.map((f) => `${field}.${f.name}`)];
   const old = new Map(before.flatMap((line) => (line.id ? [[line.id, line] as const] : [])));
   const kept = after.map((line) => (line.id ? old.get(line.id) : undefined));
   if (kept.some((line) => !line) || before.length !== after.length || before.some((line, i) => line.id !== after[i]!.id)) return all;
-  const changed = lineEntity.fields.filter((f) => after.some((line, i) => JSON.stringify(line.values[f.name] ?? null) !== JSON.stringify(kept[i]!.values[f.name] ?? null)));
+  const changed = entered.filter((f) => after.some((line, i) => JSON.stringify(line.values[f.name] ?? null) !== JSON.stringify(kept[i]!.values[f.name] ?? null)));
   return changed.map((f) => `${field}.${f.name}`);
 }
 

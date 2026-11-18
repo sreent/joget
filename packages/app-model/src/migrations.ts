@@ -1,4 +1,5 @@
-import { columnName, hasFiles, lineOwners, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
+import { columnName, formulaOf, hasFiles, lineOwners, rollupOf, tableName, type StoredDefinition, type StoredEntity, type StoredField } from './fields.js';
+import { formulaFields, formulaUpdates } from './formulas.js';
 import { NAME_PATTERN } from './schema.js';
 import { ident } from './sql.js';
 
@@ -103,6 +104,13 @@ function rollupSignature(definition: StoredDefinition, entity: StoredEntity, fie
   return JSON.stringify([op, lines.id, lineEntity.id, source?.id ?? null, source ? physicalType(source, definition.entities) : null]);
 }
 
+/** What an entity's formulas depend on: each formula and the field that keeps it. A change means working them out again. */
+function formulaSignature(entity: StoredEntity): string {
+  return JSON.stringify(
+    formulaFields(entity).map((field) => [field.id, formulaOf(field), field.type, 'decimals' in field ? field.decimals : null, 'maxLength' in field ? field.maxLength : null, 'min' in field ? (field.min ?? null) : null, 'max' in field ? (field.max ?? null) : null]),
+  );
+}
+
 /** The statement that works out a stored rollup for every record, or null if the field is no rollup. */
 function rollupUpdate(
   definition: StoredDefinition,
@@ -131,12 +139,17 @@ export function recomputeRollups(definition: StoredDefinition, names: Environmen
   const schema = ident(names.schema);
   const tableOf = (id: string) => `${schema}.${ident(tableName(id))}`;
   const column = (field: StoredField) => ident(columnName(field.id));
-  return Object.values(definition.entities).flatMap((entity) =>
+  // Formulas too: a line's, then the rollups of its lines, then the record's own.
+  const owners = lineOwners(definition);
+  const formulas = (line: boolean) =>
+    Object.entries(definition.entities).flatMap(([name, entity]) => (owners.has(name) === line ? formulaUpdates(entity, tableOf(entity.id), { line }) : []));
+  const rollups = Object.values(definition.entities).flatMap((entity) =>
     entity.fields.flatMap((field) => {
       const statement = rollupUpdate(definition, entity, field, tableOf, column);
       return statement ? [statement] : [];
     }),
   );
+  return [...formulas(true), ...rollups, ...formulas(false)];
 }
 
 /**
@@ -317,6 +330,17 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
     }
   }
 
+  // Formulas are stored too. A line's come first, then its record's rollups, then the record's own.
+  const lineFormulas: string[] = [];
+  const recordFormulas: string[] = [];
+  const formulasChanged = new Set<string>();
+  for (const [id, { entity }] of after) {
+    if (fresh.has(id) || !formulaFields(entity).length) continue;
+    const old = before.get(id);
+    if (!old || formulaSignature(old.entity) !== formulaSignature(entity)) formulasChanged.add(id);
+  }
+  const rolledUp = new Set<string>();
+
   // Rollups are stored, so existing records need them worked out when what they depend on changes.
   for (const [id, { name, entity }] of after) {
     if (fresh.has(id)) continue;
@@ -327,14 +351,24 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
       const oldField = old.entity.fields.find((f) => f.id === field.id);
       const lines = entity.fields.find((f) => f.type === 'lines' && f.name === Object.values(rollupOf(field)!)[0]!.split('.')[0]);
       const lineEntity = next.entities[(lines as { entity: string }).entity]!;
-      const unchanged = oldField && rollupSignature(previous!, old.entity, oldField) === signature && !fresh.has(lineEntity.id);
+      const unchanged = oldField && rollupSignature(previous!, old.entity, oldField) === signature && !fresh.has(lineEntity.id) && !formulasChanged.has(lineEntity.id);
       if (unchanged) continue;
+      rolledUp.add(id);
       step(
         { kind: 'compute_field', entity: name, field: field.name, destructive: false, description: `Work out ${name}.${field.name} for existing records` },
         `select count(*)::int as n from ${table(entity)}`,
       );
       computes.push(rollupUpdate(next, entity, field, tableOf, column)!);
     }
+  }
+
+  for (const [id, { name, entity }] of after) {
+    if (fresh.has(id) || !(formulasChanged.has(id) || rolledUp.has(id)) || !formulaFields(entity).length) continue;
+    const line = ownersAfter.has(name);
+    for (const field of formulaFields(entity)) {
+      step({ kind: 'compute_field', entity: name, field: field.name, destructive: false, description: `Work out ${name}.${field.name} for existing ${line ? 'lines' : 'records'}` }, `select count(*)::int as n from ${table(entity)}`);
+    }
+    (line ? lineFormulas : recordFormulas).push(...formulaUpdates(entity, table(entity), { line }));
   }
 
   const dropped = [...before].filter(([id]) => !after.has(id));
@@ -351,7 +385,7 @@ export function planMigration(previous: StoredDefinition | undefined, next: Stor
   return {
     steps,
     destructive: steps.some((s) => s.destructive),
-    statements: [...drops, ...fileTables, ...creates, ...lineCreates, ...adds, ...references, ...indexes, ...comments, ...computes],
+    statements: [...drops, ...fileTables, ...creates, ...lineCreates, ...adds, ...references, ...indexes, ...comments, ...lineFormulas, ...computes, ...recordFormulas],
     impact,
   };
 }

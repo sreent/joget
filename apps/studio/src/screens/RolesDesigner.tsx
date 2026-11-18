@@ -3,7 +3,7 @@ import { ConditionEditor, THE_PERSON } from '../components/condition.js';
 import { Button, Card, Checkbox, cx, EmptyState, Field, Select, TextInput } from '../components/ui.js';
 import { recordChoices } from '../model/conditions.js';
 import { addItem, recordEntities, removeItem, setRoleEntity, summarizeAccess, updateItem } from '../model/logic.js';
-import type { Definition } from '../types.js';
+import { isWorkedOut, type Definition } from '../types.js';
 import { Checklist, Choice } from './LogicDesigners.js';
 
 type Props = { definition: Definition; onChange: (definition: Definition) => void };
@@ -161,7 +161,7 @@ function EntityAccess({ definition, onChange, role, entity }: Props & { role: st
       ? [{ value: f.name, label: `${f.label} (all their fields)` }, ...(definition.entities[f.entity]?.fields ?? []).map((lf) => ({ value: `${f.name}.${lf.name}`, label: `${f.label}: ${lf.label}` }))]
       : [{ value: f.name, label: f.label }],
   );
-  const writable = paths.filter((p) => !fields.some((f) => f.name === p.value && f.type === 'number' && f.rollup));
+  const writable = paths.filter((p) => !fields.some((f) => f.name === p.value && isWorkedOut(f)));
   const pii = fields.flatMap((f) =>
     f.type === 'lines'
       ? (definition.entities[f.entity]?.fields ?? []).filter((lf) => lf.classification === 'pii').map((lf) => ({ value: `${f.name}.${lf.name}`, label: `${f.label}: ${lf.label}` }))
