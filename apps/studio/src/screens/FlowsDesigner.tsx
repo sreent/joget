@@ -138,7 +138,8 @@ export function FlowsDesigner({ appId, definition, onChange, readOnly = false, d
     // left, and the chosen step, or the flow's settings, on the right.
     <div className="grid gap-4 @min-[62rem]:grid-cols-[minmax(0,1fr)_24rem]">
       <Card className="relative min-w-0 self-start overflow-hidden p-0">
-        <div className="logic-view">
+        {/* On a narrow screen the row wraps inside the card; it stays as wide as what it holds, so the steps under it take clicks. */}
+        <div className="logic-view max-w-[calc(100%-2rem)] flex-wrap">
           {names.length ? (
             <select
               aria-label="Which flow"
